@@ -1,0 +1,882 @@
+import logging
+import os
+from typing import Optional
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.staticfiles import StaticFiles
+
+
+class WebSocketAwareStaticFiles(StaticFiles):
+    """StaticFiles that gracefully handles WebSocket connections.
+
+    For WebSocket connections that don't match static files, we need to
+    return a proper response. The 403 Forbidden occurs when WebSocket
+    reaches this mount without being handled properly.
+    """
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            # WebSocket connections should not be handled by static files
+            # Send a close frame and return - the connection will be closed
+            # If there's another WebSocket handler, it should have matched first
+            await send({"type": "websocket.close", "code": 1000})
+            return
+        await super().__call__(scope, receive, send)
+
+
+from gyra._version import version
+from gyra.component import SystemApp
+from gyra.configs.model_config import (
+    STATIC_MESSAGE_IMG_PATH,
+)
+from gyra.util.fastapi import create_app as create_fastapi_app, replace_router
+from gyra.util.i18n_utils import _
+from gyra.util.i18n_utils import set_default_language
+from gyra.util.tracer import initialize_tracer
+from gyra_app.base import (
+    _migration_db_storage,
+    server_init,
+)
+from gyra_app.config import (
+    ApplicationConfig,
+    ServiceConfig,
+    ServiceWebParameters,
+    SystemParameters,
+)
+from gyra_serve.core import add_exception_handler
+
+ROOT_PATH = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CONFIG_ROOT_PATH = os.path.dirname(os.path.dirname(ROOT_PATH)) + "/configs"
+logger = logging.getLogger(__name__)
+
+
+def scan_configs():
+    from gyra_app.initialization.serve_initialization import scan_serve_configs
+    from gyra_ext.storage import scan_storage_configs
+    from gyra_serve.datasource.manages.connector_manager import ConnectorManager
+
+    ConnectorManager.pkg_import()
+    # Register all serve configs
+    scan_serve_configs()
+    # Register all storage configs
+    scan_storage_configs()
+
+
+def _apply_json_database_config(app_config: ApplicationConfig) -> None:
+    """系统设置(JSON config/pydantic schema)优先于 TOML:用 pydantic
+    DatabaseConfig 覆盖 dataclass 连接配置,使系统设置 UI 的数据库配置生效。
+
+    password_ref 通过 secrets(encryption.get_secret)解析为明文。失败则静默
+    回退 TOML(不影响启动)。
+    """
+    try:
+        from gyra_core.config import ConfigManager
+        from gyra_core.config.encryption import get_secret as get_secret_value
+        from gyra_core.config.home import get_gyra_home
+        from pathlib import Path
+
+        # 输出 JSON 配置文件路径
+        json_config_path = ConfigManager.get_config_path()
+        if json_config_path:
+            json_config_path_obj = Path(json_config_path)
+            json_config_exists = json_config_path_obj.exists()
+        else:
+            json_config_exists = False
+
+        logger.info("=" * 80)
+        logger.info(f"[DB Config] JSON config file: {json_config_path}")
+        logger.info(f"[DB Config] JSON config exists: {json_config_exists}")
+        logger.info("=" * 80)
+
+        cfg = ConfigManager.get()
+        if (
+            not cfg
+            or not getattr(cfg, "web", None)
+            or not getattr(cfg.web, "database", None)
+        ):
+            logger.info("[DB Config] No database config in JSON, using TOML defaults")
+            return
+        db = cfg.web.database
+        db_type = (db.type or "sqlite").lower()
+
+        password = "${env:GYRA_DB_PASSWORD}"
+        password_source = "env"
+        if getattr(db, "password_ref", ""):
+            resolved = get_secret_value(db.password_ref)
+            if resolved:
+                password = resolved
+                password_source = f"secret:{db.password_ref}"
+
+        logger.info("=" * 80)
+        logger.info("[DB Config] Applying database configuration from JSON config:")
+        logger.info(f"[DB Config]   Type:     {db_type}")
+        logger.info(f"[DB Config]   Host:     {db.host or 'localhost'}")
+        logger.info(f"[DB Config]   Port:     {db.port or 3306}")
+        logger.info(f"[DB Config]   User:     {db.user or 'root'}")
+        logger.info(f"[DB Config]   Database: {db.name or 'gyra'}")
+        logger.info(f"[DB Config]   Password: {'***' + password[-4:] if len(password) > 4 else '***'}")
+        logger.info(f"[DB Config]   Password source: {password_source}")
+        logger.info("=" * 80)
+
+        if db_type == "sqlite":
+            from gyra_ext.datasource.rdbms.conn_sqlite import (
+                SQLiteConnectorParameters,
+            )
+
+            app_config.service.web.database = SQLiteConnectorParameters(
+                path=db.path or "pilot/meta_data/gyra.db",
+                check_same_thread=False,
+            )
+            logger.info(f"[DB Config] SQLite path: {db.path or 'pilot/meta_data/gyra.db'}")
+        elif db_type == "mysql":
+            from gyra_ext.datasource.rdbms.conn_mysql import MySQLParameters
+
+            app_config.service.web.database = MySQLParameters(
+                host=db.host or "localhost",
+                port=int(db.port or 3306),
+                user=db.user or "root",
+                password=password,
+                database=db.name or "gyra",
+            )
+            logger.info(f"[DB Config] MySQL connection: {db.user}@{db.host}:{db.port}/{db.name}")
+        elif db_type == "postgresql":
+            from gyra_ext.datasource.rdbms.conn_postgresql import (
+                PostgreSQLParameters,
+            )
+
+            app_config.service.web.database = PostgreSQLParameters(
+                host=db.host or "localhost",
+                port=int(db.port or 5432),
+                user=db.user or "postgres",
+                password=password,
+                database=db.name or "gyra",
+            )
+            logger.info(f"[DB Config] PostgreSQL connection: {db.user}@{db.host}:{db.port}/{db.name}")
+
+        logger.info(f"[DB Config] ✓ Database configuration applied successfully")
+    except Exception as e:
+        logger.warning(
+            f"[DB Config] ✗ Failed to apply system-setting database, fallback to TOML: {e}"
+        )
+
+
+def load_config(config_file: str = None) -> ApplicationConfig:
+    from gyra.configs.model_config import ROOT_PATH as GYRA_ROOT_PATH
+    from gyra_ext.datasource.rdbms.conn_sqlite import SQLiteConnectorParameters
+    from gyra.storage.cache.manager import ModelCacheParameters
+    from gyra.util.tracer import TracerParameters
+    from gyra.util.logger import LoggingParameters
+
+    # 支持环境变量覆盖配置文件
+    env_config = os.environ.get("GYRA_CONFIG_FILE")
+    if env_config and not config_file:
+        config_file = env_config
+
+    logger.info("=" * 80)
+    logger.info("[Config] Loading configuration...")
+    if config_file is None:
+        config_file = os.path.join(GYRA_ROOT_PATH, "configs", "gyra-minimal.toml")
+    elif not os.path.isabs(config_file):
+        config_file = os.path.join(GYRA_ROOT_PATH, config_file)
+
+    logger.info(f"[Config] TOML config file: {config_file}")
+    logger.info(f"[Config] TOML file exists: {os.path.exists(config_file)}")
+    logger.info("=" * 80)
+
+    from gyra.util.configure import ConfigurationManager
+
+    if not os.path.exists(config_file):
+        logger.info("=" * 80)
+        logger.info("[Config] No TOML file found, using zero configuration mode")
+        logger.info(
+            f"Starting with zero configuration (no TOML file needed). "
+            f"Configure models and settings through the web UI at http://localhost:7777"
+        )
+
+        # 支持环境变量覆盖端口和主机
+        env_port = os.environ.get("GYRA_WEB_PORT")
+        env_host = os.environ.get("GYRA_WEB_HOST")
+
+        sys_config = SystemParameters()
+        set_default_language(sys_config.language)
+        scan_configs()
+
+        app_config = ApplicationConfig(
+            system=SystemParameters(),
+            service=ServiceConfig(
+                web=ServiceWebParameters(
+                    host=env_host or "0.0.0.0",
+                    port=int(env_port) if env_port else 7777,
+                    database=SQLiteConnectorParameters(
+                        path="pilot/meta_data/gyra.db",
+                        check_same_thread=False,
+                    ),
+                    model_storage="database",
+                    model_cache=ModelCacheParameters(
+                        enable_model_cache=True,
+                        storage_type="memory",
+                        max_memory_mb=256,
+                    ),
+                ),
+            ),
+            trace=TracerParameters(),
+            log=LoggingParameters(),
+        )
+
+        logger.info(
+            f"Service ready. Open http://localhost:{app_config.service.web.port} to configure."
+        )
+        _apply_json_database_config(app_config)
+
+        # 输出最终使用的数据库配置
+        db = app_config.service.web.database
+        logger.info("=" * 80)
+        logger.info("[Config] Final database configuration (from JSON/TOML):")
+        logger.info(f"[Config]   Type: {type(db).__name__}")
+        if hasattr(db, 'host'):
+            logger.info(f"[Config]   Host: {db.host}")
+            logger.info(f"[Config]   Port: {db.port}")
+            logger.info(f"[Config]   User: {db.user}")
+            logger.info(f"[Config]   Database: {db.database}")
+        else:
+            logger.info(f"[Config]   Path: {db.path}")
+        logger.info("=" * 80)
+
+        return app_config
+
+    logger.info(f"Loading configuration from: {config_file}")
+    cfg = ConfigurationManager.from_file(config_file)
+    sys_config = cfg.parse_config(SystemParameters, prefix="system")
+    set_default_language(sys_config.language)
+
+    scan_configs()
+
+    app_config = cfg.parse_config(ApplicationConfig, hook_section="hooks")
+
+    # 支持环境变量覆盖端口和主机（即使有配置文件）
+    env_port = os.environ.get("GYRA_WEB_PORT")
+    env_host = os.environ.get("GYRA_WEB_HOST")
+    if env_port:
+        app_config.service.web.port = int(env_port)
+    if env_host:
+        app_config.service.web.host = env_host
+
+    _apply_json_database_config(app_config)
+
+    # 输出最终使用的数据库配置
+    db = app_config.service.web.database
+    logger.info("=" * 80)
+    logger.info("[Config] Final database configuration (from JSON/TOML):")
+    logger.info(f"[Config]   Type: {type(db).__name__}")
+    if hasattr(db, 'host'):
+        logger.info(f"[Config]   Host: {db.host}")
+        logger.info(f"[Config]   Port: {db.port}")
+        logger.info(f"[Config]   User: {db.user}")
+        logger.info(f"[Config]   Database: {db.database}")
+    else:
+        logger.info(f"[Config]   Path: {db.path}")
+    logger.info("=" * 80)
+
+    return app_config
+
+
+def mount_routers(app: FastAPI, param: Optional[ApplicationConfig] = None):
+    """Lazy import to avoid high time cost"""
+    # TODO: rewire to new knowledge module (Task #9)
+    knowledge_router = None
+    try:
+        from gyra_app.knowledge.api import router as knowledge_router  # type: ignore
+    except ImportError:
+        pass
+    from gyra_app.openapi.api_v1.api_v1 import router as api_v1
+    from gyra_app.openapi.api_v1.feedback.api_fb_v1 import router as api_fb_v1
+    from gyra_app.openapi.api_v2.api_v2 import router as api_v2
+    from gyra_app.openapi.api_v2.model_api import router as model_api_router
+
+    app.include_router(api_v1, prefix="/api", tags=["Chat"])
+    app.include_router(api_v2, prefix="/api", tags=["ChatV2"])
+    app.include_router(api_fb_v1, prefix="/api", tags=["FeedBack"])
+    if knowledge_router is not None:
+        app.include_router(knowledge_router, tags=["Knowledge"])
+
+    # Compatibility model-management endpoints used by the web UI.
+    # The legacy cluster-based ModelServe module was removed; these endpoints
+    # return the configured AgentLLM provider models instead.
+    app.include_router(
+        model_api_router, prefix="/api/v2/serve/model", tags=["Model Management"]
+    )
+    app.include_router(
+        model_api_router, prefix="/api/v1/serve/model", tags=["Model Management"]
+    )
+
+    from gyra_serve.agent.app.recommend_question.controller import (
+        router as recommend_question_v1,
+    )
+
+    app.include_router(recommend_question_v1, prefix="/api", tags=["RecommendQuestion"])
+
+    from gyra_serve.agent.app.controller import router as agent_app_router
+
+    app.include_router(agent_app_router, prefix="/api", tags=["Agent App"])
+
+    # Tool Management API routes
+    from gyra_app.openapi.api_v1.tool_management_api import (
+        router as tool_management_router,
+    )
+
+    app.include_router(tool_management_router, prefix="/api", tags=["Tool Management"])
+
+    from gyra_serve.agent.agent_selection_api import router as agent_selection_router
+
+    app.include_router(agent_selection_router, tags=["Agent Selection"])
+    # logger.info("[Monitoring] Dashboard API routes registered at /api/v1/monitoring")
+
+    # Add a simple WebSocket handler to reject monitoring/ws connections gracefully
+    from fastapi import WebSocket, WebSocketDisconnect
+
+    @app.websocket("/api/v1/monitoring/ws")
+    async def monitoring_ws_reject(websocket: WebSocket):
+        """Gracefully reject monitoring WebSocket connections (service disabled)."""
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "message": "Monitoring WebSocket service is disabled"})
+        await websocket.close(code=1000, reason="Service disabled")
+
+    # Streaming Configuration API routes
+    from gyra_serve.streaming.api import router as streaming_config_router
+
+    app.include_router(streaming_config_router, tags=["Streaming Config"])
+    logger.info("[Streaming] Config API routes registered at /api/v1/streaming-config")
+
+    # V2 Agent chat API routes (independent of BAIZE)
+    from gyra_serve.agent.agents.chat.v2_chat_endpoint import (
+        router as v2_chat_router,
+    )
+
+    app.include_router(v2_chat_router)
+    logger.info("[V2] Chat API routes registered at /api/v2/chat")
+
+    from gyra_app.feature_plugins.bootstrap import (
+        register_enabled_feature_plugin_routers,
+    )
+
+    register_enabled_feature_plugin_routers(app)
+
+
+def mount_static_files(app: FastAPI, param: ApplicationConfig):
+    if param.service.web.new_web_ui:
+        static_file_path = os.path.join(ROOT_PATH, "src", "gyra_app/static/web")
+    else:
+        static_file_path = os.path.join(ROOT_PATH, "src", "gyra_app/static/old_web")
+
+    os.makedirs(STATIC_MESSAGE_IMG_PATH, exist_ok=True)
+    app.mount(
+        "/images",
+        WebSocketAwareStaticFiles(directory=STATIC_MESSAGE_IMG_PATH, html=True),
+        name="static2",
+    )
+    app.mount(
+        "/",
+        WebSocketAwareStaticFiles(directory=static_file_path, html=True),
+        name="static",
+    )
+
+    app.mount(
+        "/swagger_static",
+        WebSocketAwareStaticFiles(directory=static_file_path),
+        name="swagger_static",
+    )
+
+
+def _sync_oauth2_config_from_db():
+    """Sync OAuth2 config from database to runtime config on startup.
+
+    This ensures that after deployment/restart, the OAuth2 configuration
+    stored in database (which survives redeployment) is loaded into
+    the in-memory config used by the application.
+    """
+    try:
+        from gyra_app.config_storage.oauth2_db_storage import get_oauth2_db_storage
+        from gyra_core.config import ConfigManager, OAuth2Config
+
+        db_storage = get_oauth2_db_storage()
+        # Load with actual secrets for runtime use
+        db_oauth2 = db_storage.load_with_secrets()
+
+        if db_oauth2 is not None:
+            # Update the runtime config with database values
+            cfg = ConfigManager.get()
+            oauth2_config = OAuth2Config(
+                enabled=db_oauth2.get("enabled", False),
+                providers=db_oauth2.get("providers", []),
+                admin_users=db_oauth2.get("admin_users", []),
+            )
+            cfg.oauth2 = oauth2_config
+            logger.info(
+                "OAuth2 config loaded from database (secrets loaded for runtime)"
+            )
+        else:
+            logger.info("No OAuth2 config in database, using file config")
+    except Exception as e:
+        logger.warning(f"Failed to sync OAuth2 from database: {e}")
+
+
+def _sync_feature_plugins_from_db():
+    """Sync feature_plugins config from database to runtime config on startup.
+
+    The database (system_config table) is the source of truth for plugin state
+    after the user toggles plugins via the UI. Without this sync, the runtime
+    ConfigManager still has the file-based defaults, causing _is_permissions_enabled()
+    to return False even when permissions were enabled in the UI.
+    """
+    try:
+        from gyra_app.feature_plugins.system_config_dao import SystemConfigDao
+        from gyra_core.config import ConfigManager, FeaturePluginEntry
+
+        dao = SystemConfigDao()
+        db_state = dao.get_all_configs("feature_plugin")
+        if not db_state:
+            return
+
+        cfg = ConfigManager.get()
+        current = getattr(cfg, "feature_plugins", None) or {}
+        updated = dict(current)
+
+        for plugin_id, state in db_state.items():
+            if isinstance(state, dict):
+                updated[plugin_id] = FeaturePluginEntry(
+                    enabled=bool(state.get("enabled", False)),
+                    settings=state.get("settings"),
+                )
+
+        cfg.feature_plugins = updated
+        enabled_names = [k for k, v in updated.items() if v.enabled]
+        logger.info(
+            "Feature plugins synced from database: %s", enabled_names or "(none)"
+        )
+    except Exception as e:
+        logger.warning("Failed to sync feature_plugins from database: %s", e)
+
+
+def _sync_app_config_to_system_app():
+    """Sync JSON config (agent_llm, default_model, etc.) to system_app.config on startup.
+
+    This ensures that after restart, the LLM configuration saved in gyra.json
+    is properly loaded into system_app.config and ModelConfigCache, making models
+    available immediately without needing manual refresh.
+    """
+    from gyra_core.config import ConfigManager
+
+    # Step 1: 确保 ConfigManager 已初始化
+    config_path = ConfigManager.get_config_path()
+    if not config_path:
+        logger.warning("ConfigManager not initialized, attempting to init from default path")
+        try:
+            ConfigManager.init()
+            config_path = ConfigManager.get_config_path()
+            logger.info(f"ConfigManager initialized at: {config_path}")
+        except Exception as e:
+            logger.error(f"Failed to initialize ConfigManager: {e}", exc_info=True)
+            return
+
+    # Step 2: 获取配置
+    try:
+        cfg = ConfigManager.get()
+        if cfg is None:
+            logger.error("ConfigManager.get() returned None")
+            return
+    except Exception as e:
+        logger.error(f"Failed to get config from ConfigManager: {e}", exc_info=True)
+        return
+
+    # Step 3: 检查 agent_llm 配置
+    agent_llm_conf = getattr(cfg, "agent_llm", None)
+    if not agent_llm_conf:
+        logger.info("No agent_llm config in gyra.json")
+        return
+
+    # 详细记录配置信息
+    try:
+        agent_llm_dict_raw = (
+            agent_llm_conf.model_dump(mode="json")
+            if hasattr(agent_llm_conf, "model_dump")
+            else dict(agent_llm_conf)
+        )
+        providers_raw = agent_llm_dict_raw.get("providers", [])
+        models_count = sum(len(p.get("models", [])) for p in providers_raw if isinstance(p, dict))
+        logger.info(f"[ConfigSync] Found agent_llm: {len(providers_raw)} providers, {models_count} models")
+        for p in providers_raw:
+            if isinstance(p, dict):
+                provider_name = p.get("provider", "unknown")
+                model_names = [m.get("name", "unnamed") for m in p.get("models", []) if isinstance(m, dict)]
+                logger.info(f"[ConfigSync] Provider '{provider_name}': models={model_names}")
+    except Exception as e:
+        logger.warning(f"Failed to log agent_llm details: {e}")
+
+    # Step 4: 获取 SystemApp 实例
+    from gyra.component import SystemApp
+
+    system_app = SystemApp.get_instance()
+    if not system_app:
+        logger.warning("SystemApp not available, cannot sync app config")
+        return
+
+    # Step 5: 转换配置格式
+    from gyra_app.openapi.api_v1.config_api import (
+        _convert_agent_llm_to_system_format,
+    )
+    from gyra.agent.util.llm.model_config_cache import (
+        ModelConfigCache,
+        parse_provider_configs,
+    )
+
+    try:
+        agent_llm_dict = _convert_agent_llm_to_system_format(agent_llm_conf)
+        providers_converted = agent_llm_dict.get("provider", [])
+        logger.info(f"[ConfigSync] Converted format: {len(providers_converted)} providers")
+    except Exception as e:
+        logger.error(f"Failed to convert agent_llm format: {e}", exc_info=True)
+        return
+
+    # Step 6: 同步到 system_app.config
+    try:
+        system_app.config.set("agent.llm", agent_llm_dict, overwrite=True)
+        logger.info("[ConfigSync] Synced agent_llm to system_app.config")
+    except Exception as e:
+        logger.error(f"Failed to set agent.llm in system_app.config: {e}", exc_info=True)
+
+    # Step 7: 解析并注册模型到 ModelConfigCache
+    try:
+        model_configs = parse_provider_configs(agent_llm_dict)
+        if model_configs:
+            ModelConfigCache.clear()
+            ModelConfigCache.register_configs(model_configs)
+            logger.info(f"[ConfigSync] Registered {len(model_configs)} models to ModelConfigCache")
+            for key in model_configs.keys():
+                logger.info(f"[ConfigSync]   Model registered: {key}")
+        else:
+            logger.warning("[ConfigSync] parse_provider_configs returned empty, no models registered")
+    except Exception as e:
+        logger.error(f"Failed to register models to ModelConfigCache: {e}", exc_info=True)
+
+    # Step 7.5: 同步 media_gen 默认模型到 MediaGenProviderRegistry
+    try:
+        media_gen = getattr(cfg, "media_gen", None)
+        if media_gen:
+            from gyra.agent.util.media_gen.provider_registry import (
+                MediaGenProviderRegistry,
+            )
+            MediaGenProviderRegistry.set_default_models(
+                video_model=media_gen.video_default_model,
+                image_model=media_gen.image_default_model,
+            )
+            logger.info(
+                f"[ConfigSync] MediaGen defaults: "
+                f"video={media_gen.video_default_model}, "
+                f"image={media_gen.image_default_model}"
+            )
+    except Exception as e:
+        logger.error(f"Failed to sync media_gen defaults: {e}", exc_info=True)
+
+    # Step 8: 同步 default_model
+    default_model = getattr(cfg, "default_model", None)
+    if default_model:
+        try:
+            default_model_dict = default_model.model_dump(mode="json")
+            system_app.config.set("agent.default_model", default_model_dict, overwrite=True)
+            if default_model.model_id:
+                system_app.config.set("agent.default_llm", default_model.model_id, overwrite=True)
+            logger.info(f"[ConfigSync] Default model synced: {default_model.model_id}")
+        except Exception as e:
+            logger.error(f"Failed to sync default_model: {e}", exc_info=True)
+
+    # Step 9: 最终验证
+    try:
+        registered_models = ModelConfigCache.get_all_models(include_media_gen=True)
+        registered_keys = ModelConfigCache.get_all_model_keys()
+        if registered_models:
+            logger.info(
+                f"[ConfigSync Verification] SUCCESS: {len(registered_models)} models in cache"
+            )
+            logger.info(f"[ConfigSync Verification] Models: {registered_models}")
+        else:
+            logger.warning(
+                "[ConfigSync Verification] WARNING: ModelConfigCache is empty after sync!"
+            )
+            logger.warning(
+                "[ConfigSync Verification] Please check agent_llm configuration in gyra.json"
+            )
+    except Exception as e:
+        logger.error(f"Failed to verify ModelConfigCache: {e}", exc_info=True)
+
+
+def _sync_persisted_embeddings_to_param(param):
+    """Seed the embedding registry from ``AppConfig.embeddings``.
+
+    Runs BEFORE ``initialize_components`` (which registers the embedding
+    factory and seeds the default). Each entry in ``AppConfig.embeddings``
+    is registered in the process-wide ``EmbeddingModelRegistry`` so that
+    ``ProxyEmbeddingFactory`` can pick it up at ``create()`` time. The
+    persisted ``default_embedding`` (if any) is honoured; otherwise
+    first-added wins.
+    """
+    try:
+        from gyra_core.config import ConfigManager
+        from gyra_app.initialization.embedding_component import (
+            get_embedding_registry,
+        )
+
+        cfg = ConfigManager.get()
+        persisted = getattr(cfg, "embeddings", None) or []
+        if not persisted:
+            return
+
+        registry = get_embedding_registry()
+        for emb in persisted:
+            try:
+                registry.add(emb.name)
+            except Exception as one_err:
+                logger.warning(
+                    f"Failed to restore persisted embedding '{emb.name}': {one_err}"
+                )
+
+        # Honour the persisted default; else first-added wins.
+        default_name = getattr(cfg, "default_embedding", None) or registry.get_default()
+        if default_name:
+            registry.set_default(default_name)
+            if not param.models.default_embedding:
+                param.models.default_embedding = default_name
+
+        logger.info(
+            f"Restored {len(persisted)} persisted embedding model(s); "
+            f"default='{param.models.default_embedding}'"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to sync persisted embeddings: {e}")
+
+
+def _verify_model_cache_on_startup():
+    """验证启动后 ModelConfigCache 是否正确初始化。
+
+    此函数在 initialize_app() 完成后调用，用于确认模型配置同步是否成功。
+    """
+    try:
+        from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+        models = ModelConfigCache.get_all_models(include_media_gen=True)
+        model_keys = ModelConfigCache.get_all_model_keys()
+
+        if models:
+            logger.info(
+                f"[Startup Verification] SUCCESS: ModelConfigCache initialized with {len(models)} models"
+            )
+            logger.info(f"[Startup Verification] Models: {models}")
+            logger.info(f"[Startup Verification] Model keys: {model_keys}")
+        else:
+            logger.warning(
+                "[Startup Verification] WARNING: ModelConfigCache is empty!"
+            )
+            logger.warning(
+                "[Startup Verification] Models will not work correctly until configured."
+            )
+            logger.warning(
+                "[Startup Verification] Solutions:"
+            )
+            logger.warning(
+                "[Startup Verification]   1. Configure agent_llm in ~/.gyra/gyra.json"
+            )
+            logger.warning(
+                "[Startup Verification]   2. Or call: curl -X POST http://localhost:7777/api/v1/config/refresh-model-cache"
+            )
+    except Exception as e:
+        logger.error(
+            f"[Startup Verification] FAILED: Error checking ModelConfigCache: {e}",
+            exc_info=True
+        )
+
+
+def initialize_app(param: ApplicationConfig, app: FastAPI, system_app: SystemApp):
+    """Initialize app
+    If you use gunicorn as a process manager, initialize_app can be invoke in
+    `on_starting` hook.
+    Args:
+        param:WebWerverParameters
+        args:List[str]
+    """
+
+    web_config = param.service.web
+    print(param)
+
+    server_init(param, system_app)
+    mount_routers(app, param)
+
+    # Migration db storage, so you db models must be imported before this
+    # Import cron module to register CronJobEntity before create_all
+    from gyra_serve.cron.models.models import CronJobEntity  # noqa: F401
+    from gyra_serve.trigger.models.models import TriggerSourceEntity  # noqa: F401
+    from gyra_serve.usage.models.models import LLMUsageEntity  # noqa: F401
+    from gyra_serve.intervention.models.models import InterventionEntity  # noqa: F401
+    from gyra_serve.task.models.models import TaskEntity  # noqa: F401
+    from gyra_serve.workspace.inbox.models import InboxItemEntity  # noqa: F401
+    from gyra_serve.datasource.manages.connect_config_db import (  # noqa: F401
+        ConnectConfigEntity,
+    )
+    from gyra_serve.ecp.models.models import (  # noqa: F401
+        EcpAssetRefEntity,
+        EcpConfirmerEntity,
+        EcpOpLogEntity,
+        EcpResolutionCacheEntity,
+        EcpSemanticEdgeEntity,
+        EcpSemanticObjectEntity,
+        EcpWorkspaceConfigEntity,
+    )
+
+    _migration_db_storage(
+        param.service.web.database, web_config.disable_alembic_upgrade
+    )
+
+    _sync_oauth2_config_from_db()
+    _sync_feature_plugins_from_db()
+
+    _sync_app_config_to_system_app()
+
+    # Restore embedding models persisted in gyra.json: just register them in
+    # the process-wide registry so ProxyEmbeddingFactory can create them.
+    _sync_persisted_embeddings_to_param(param)
+
+    from gyra_app.component_configs import initialize_components
+
+    initialize_components(
+        param,
+        system_app,
+    )
+    system_app.on_init()
+
+    # After init, when the database is ready
+    system_app.after_init()
+
+    mount_static_files(app, param)
+
+    # Before start, after on_init
+    system_app.before_start()
+
+    # 验证模型缓存是否正确初始化
+    _verify_model_cache_on_startup()
+
+    return param
+
+
+class AppCreator:
+    config_file: str = None
+
+    @classmethod
+    def create(cls):
+        pid = os.getpid()
+        logger.info(f"{cls.__name__} [pid:{pid}]开始启动")
+        try:
+            app = create_fastapi_app(
+                title=_("GYRA Open API"),
+                description=_("GYRA Open API"),
+                version=version,
+                openapi_tags=[],
+            )
+            # Use custom router to support priority
+            replace_router(app)
+
+            # https://github.com/encode/starlette/issues/617
+            # Dynamic CORS: use request Origin when credentials=True (can't use "*")
+            # This allows cookies to work properly across origins
+            def cors_dynamic_origin(origin: str) -> bool:
+                # Allow all origins for development/production
+                # In production, you may want to restrict this to specific domains
+                return bool(origin)
+
+            cors_app = CORSMiddleware(
+                app=app,
+                allow_origin_regex=".*",  # Allow any origin via regex (works with credentials)
+                allow_credentials=True,
+                allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                allow_headers=["*"],
+            )
+
+            add_exception_handler(app)
+
+            @app.get("/doc", include_in_schema=False)
+            async def custom_swagger_ui_html():
+                return get_swagger_ui_html(
+                    openapi_url=app.openapi_url,
+                    title="Custom Swagger UI",
+                    swagger_js_url="/swagger_static/swagger-ui-bundle.js",
+                    swagger_css_url="/swagger_static/swagger-ui.css",
+                )
+
+            config: ApplicationConfig = load_config(cls.config_file)
+            system_app = SystemApp(app)
+            system_app.config.configs["app_config"] = config
+            if hasattr(config, "agent"):
+                system_app.config.set("agent", config.agent)
+
+            initialize_app(param=config, app=app, system_app=system_app)
+            initialize_tracer(
+                system_app=system_app, tracer_parameters=config.service.web.trace
+            )
+            logger.info(f"{cls.__name__} [pid:{pid}]启动成功")
+        except BaseException as e:
+            logger.exception(f"{cls.__name__} [pid:{pid}]启动失败: {repr(e)}")
+            raise
+        return cors_app
+
+    def __init__(self, config_file=None):
+        self.config = load_config(config_file or self.config_file)
+
+    def app(self):
+        return f"{self.__class__.__module__}:{self.__class__.__name__}.create"
+
+    def workers(self):
+        # SQLite 不支持多进程并发写同一文件:WAL 的 -shm 跨进程协调脆弱,
+        # 多 worker 停止时各自残留 -wal 极易导致主库损坏。强制单进程。
+        from gyra_ext.datasource.rdbms.conn_sqlite import SQLiteConnectorParameters
+
+        if isinstance(self.config.service.web.database, SQLiteConnectorParameters):
+            configured = self.config.system.workers
+            if configured and configured > 1:
+                logger.warning(
+                    f"SQLite 不支持多进程并发写,忽略 workers={configured} 强制单进程"
+                )
+            return None
+        return self.config.system.workers
+
+
+class DevAppCreator(AppCreator):
+    config_file: str = CONFIG_ROOT_PATH + "/gyra-dev.toml"
+
+
+class ProdAppCreator(AppCreator):
+    config_file: str = CONFIG_ROOT_PATH + "/gyra-prod.toml"
+
+
+class PreAppCreator(AppCreator):
+    config_file: str = CONFIG_ROOT_PATH + "/gyra-prepub.toml"
+
+
+class GrayAppCreator(AppCreator):
+    config_file: str = CONFIG_ROOT_PATH + "/gyra-gray.toml"
+
+
+class TestAppCreator(AppCreator):
+    config_file: str = CONFIG_ROOT_PATH + "/gyra-test.toml"
+
+
+class CustomAppCreator(AppCreator):
+    def __init__(self, config_file=None):
+        super().__init__(config_file)
+        if config_file:
+            # Dynamically set the class attribute so that the create class method can get the correct configuration file
+            CustomAppCreator.config_file = config_file
+
+    def app(self):
+        return self.create
+
+    def workers(self):
+        return None  # Custom config does not support multi-process mode

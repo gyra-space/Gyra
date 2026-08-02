@@ -1,0 +1,371 @@
+import dataclasses
+from typing import Optional, Type, Tuple, Dict, List
+
+from gyra.agent import Resource, ResourceType
+from gyra.agent.resource import ResourceParameters
+from gyra.core import Chunk
+from gyra.util.i18n_utils import _
+CODE_CONDENSE_PROMPT =  """你是一个专门压缩代码的系统。请仅针对Observation
+后面的内容进行压缩，保留关键信息的同时减少冗余。其他部分保持不变。
+特别注意，你需要识别是文本压缩还是代码压缩，当Observation包含代码时，请根据Question
+中的问题来精简压缩代码，只保留与问题直接相关的部分。
+示例（代码压缩）:
+输入:
+Question: How do I calculate the factorial of a number in Java?
+Thoughts: I need to find a Java function for calculating factorial.
+Action: Search for "Java factorial function"
+Observation:
+Here's a Java function to calculate the factorial of a number:
+public class MathUtils {{
+    public static long factorial(int n) {{
+        if (n == 0 || n == 1) {{
+            return 1;
+        }} else {{
+            return n * factorial(n - 1);
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        int num = 5;
+        long result = factorial(num);
+        System.out.println("The factorial of " + num + " is " + result);
+    }}
+
+    // Additional helper method
+    public static boolean isPrime(int n) {{
+        if (n < 2) {{
+            return false;
+        }}
+        for (int i = 2; i <= Math.sqrt(n); i++) {{
+            if (n % i == 0) {{
+                return false;
+            }}
+        }}
+        return true;
+    }}
+}}
+输出:
+Observation:
+public class MathUtils {{
+    public static long factorial(int n) {{
+        if (n == 0 || n == 1) {{
+            return 1;
+        }} else {{
+            return n * factorial(n - 1);
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        int num = 5;
+        long result = factorial(num);
+        System.out.println("The factorial of " + num + " is " + result);
+    }}
+}}
+
+{text}
+"""
+
+TEXT_CONDENSE_PROMPT = """
+你是一个专门压缩AI代理执行历史中Observation部分的系统。请仅针对Observation
+后面的内容进行文本压缩，保留关键信息的同时减少冗余。其他部分保持不变。
+请根据Question中的问题来精简压缩文本，只保留与问题直接相关的部分。
+
+示例1（文本压缩）: 输入: Question: What is the capital of France? Thoughts: I need to search 
+for the capital city of France. Action: Search for "capital of France" Observation: 
+The capital of France is Paris. Paris is located in northern France and is the 
+country's largest city. It is a global center for art, fashion, gastronomy and 
+culture. Its 19th-century cityscape is crisscrossed by wide boulevards and the River 
+Seine.
+
+输出: Observation: Paris is 
+the capital of France. It's the largest city, located in northern France, known for 
+art, fashion, and culture.
+{text}
+"""
+
+_DEFAULT_TOPIC_LIST = [
+    {"name": "陈述性记忆","description": "陈述性记忆（declarative memory）,knowing what:每一个陈述性记忆是一个基于事实的、非推测的属性信息。从对话中提取关键字相关的陈述性记忆，并将其组织成独立、可管理的事实，尽可能的简洁明了"},
+    {"name":"程序性记忆", "description":"程序性记忆（procedural memory），knowing how：每一个程序性记忆是指抽取出来的流程信息（从上下文信息中提取出的SOP步骤），提取为一个string"}
+]
+
+
+@dataclasses.dataclass
+class MemoryParameters(ResourceParameters):
+    enable_global_session: bool = dataclasses.field(
+        default=True, metadata={"help": _("多智能体协作记忆协作模式，适用于多Agent"
+                                          "协作场景，多智能体协作模式下，打开可查看所有智能体对话记忆，关闭只能看到当前智能体对话记忆"),
+                                "label": _("多智能体协作记忆")}
+    )
+    discard_strategy: str = dataclasses.field(
+        default="fifo", metadata={"help": _("记忆淘汰策略:\n"
+                                            "lru:最近最少使用策略, 优先淘汰最长时间未被访问的数据\n"
+                                            "fifo: 先进先出策略, 优先淘汰最近的记忆，按照数据进入的顺序进行淘汰\n"
+                                            "lifo: 后进先出策略, 优先淘汰最近的记忆\n"
+                                            "similarity:相似度策略。基于新信息与现有记忆的相似程度来决定淘汰\n"
+                                            "condense: 压缩策略。通过总结或合并多条相关信息来减少占用空间"
+                                            "而不是直接删除。"),
+                                  "label": _("记忆淘汰策略"),
+                                  "options": [{"name":"fifo","desc":"先进先出"},{"name":"lifo","desc":"后进先出"}, {"name":"lru", "desc":"最近最少使用"}, {"name":"similarity","desc": "语义相似度"}, {"name":"condense","desc":"记忆压缩"}]}
+    )
+    retrieve_strategy: str = dataclasses.field(
+        default="sliding_window", metadata={"help": _(
+            "记忆检索策略\n"
+            "semantic:语义检索, 通过当前任务目标进行语义相关度匹配\n"
+            "sliding_window:滑动窗口检索，将历史对话消息按照滑动窗口大小方式进行动态返回\n"
+            "keyword:关键词检索, 通过当前任务目标对记忆按照关键词进行搜索\n"
+        ), "options": [{"name":"semantic","desc":"语义检索"}, {"name":"sliding_window","desc":"滑动窗口检索"}, {"name":"keyword","desc":"关键词检索"}], "label": _("记忆检索策略")
+        }
+    )
+    top_k: int = dataclasses.field(
+        default=50, metadata={"help": _("返回记忆片段数量，如果只看最近历史记忆可以将值适当调小"), "label": _("返回记忆片段数量")}
+    )
+    score_threshold: Optional[float] = dataclasses.field(
+        default=0.0, metadata={"help": _("相似度得分阈值"), "label": _("相似度得分阈值"), "max": _("1"), "min": _("0"), "step": _("0.1")}
+    )
+
+    enable_message_condense: bool = dataclasses.field(
+        default=False, metadata={"help": _("是否开启消息压缩"), "label": _("消息压缩")}
+    )
+    message_condense_model: Optional[str] = dataclasses.field(
+        default="aistudio/DeepSeek-V3",
+        metadata={"help": _("消息压缩模型"), "label": _("压缩模型")}
+    )
+    message_condense_strategy: Optional[str] = dataclasses.field(
+        default="text", metadata={"help": _("压缩策略"), "label": _("压缩策略")
+            , "options": [
+                {"name":"text","desc":"文本压缩"}, {"name":"code", "desc":"代码压缩"}
+            ]}
+    )
+    condense_max_token: Optional[int] = dataclasses.field(
+        default=5000,
+        metadata={"help": _("压缩模型最大输出token"), "label": _("压缩模型最大输出token")}
+    )
+    message_condense_prompt: Optional[str] = dataclasses.field(
+        default="""你是一个专门压缩AI代理执行历史中Observation部分的系统。请仅针对Observation
+后面的内容进行压缩，保留关键信息的同时减少冗余。其他部分保持不变。
+特别注意，你需要识别是文本压缩还是代码压缩，当Observation包含代码时，请根据Question
+中的问题来精简压缩代码，只保留与问题直接相关的部分。
+
+示例1（文本压缩）: 输入: Question: What is the capital of France? Thoughts: I need to search 
+for the capital city of France. Action: Search for "capital of France" Observation: 
+The capital of France is Paris. Paris is located in northern France and is the 
+country's largest city. It is a global center for art, fashion, gastronomy and 
+culture. Its 19th-century cityscape is crisscrossed by wide boulevards and the River 
+Seine.
+
+输出: Observation: Paris is 
+the capital of France. It's the largest city, located in northern France, known for 
+art, fashion, and culture.
+
+示例2（代码压缩）:
+输入:
+Question: How do I calculate the factorial of a number in Java?
+Thoughts: I need to find a Java function for calculating factorial.
+Action: Search for "Java factorial function"
+Observation:
+Here's a Java function to calculate the factorial of a number:
+public class MathUtils {{
+    public static long factorial(int n) {{
+        if (n == 0 || n == 1) {{
+            return 1;
+        }} else {{
+            return n * factorial(n - 1);
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        int num = 5;
+        long result = factorial(num);
+        System.out.println("The factorial of " + num + " is " + result);
+    }}
+
+    // Additional helper method
+    public static boolean isPrime(int n) {{
+        if (n < 2) {{
+            return false;
+        }}
+        for (int i = 2; i <= Math.sqrt(n); i++) {{
+            if (n % i == 0) {{
+                return false;
+            }}
+        }}
+        return true;
+    }}
+}}
+输出:
+Observation:
+public class MathUtils {{
+    public static long factorial(int n) {{
+        if (n == 0 || n == 1) {{
+            return 1;
+        }} else {{
+            return n * factorial(n - 1);
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        int num = 5;
+        long result = factorial(num);
+        System.out.println("The factorial of " + num + " is " + result);
+    }}
+}}
+
+{text}
+""", metadata={"help": _("消息压缩提示词"), "label": _("消息压缩提示词")}
+    )
+    enable_user_memory: bool = dataclasses.field(
+        default=False, metadata={"help": _("是否开启用户记忆"),
+                                "label": _("用户记忆")}
+    )
+    agent_whitelist: Optional[str] = dataclasses.field(
+        default="all", metadata={
+            "help": _("查看指定agent记忆"), "label": _("查看指定agent记忆")
+        }
+    )
+    enable_collect_long_term: bool = dataclasses.field(
+        default=False, metadata={"help": _("是否开启长期记忆，开启后将在当前工作空间下创建一个长期记忆提取agent并添加到当前agent的子agent列表中，"
+                                           "关闭后将自动移除记忆提取子agent。"),
+                                 "label": _("是否开启长期记忆")}
+    )
+
+    memory_topic_list: List[dict[str, str]] = dataclasses.field(
+        default_factory=lambda: [],
+        metadata={"help": _("长期记忆使用的topic"),
+                  "label": _("长期记忆topic"),
+                  "options": _DEFAULT_TOPIC_LIST}
+    )
+
+    topic_option_list: List[dict[str, str]] = dataclasses.field(
+        default_factory=lambda :_DEFAULT_TOPIC_LIST,
+        metadata={"help": _("长期记忆topic列表:\n"),
+                  "label": _("长期记忆topic列表"),
+                  "options": _DEFAULT_TOPIC_LIST}
+    )
+
+    enable_long_term_use: bool = dataclasses.field(
+        default=False,
+        metadata={"help": _("是否使用长期记忆，开启后将会把长期记忆输入prompt中"), "label": _("是否使用长期记忆")}
+    )
+
+    name: Optional[str] = dataclasses.field(
+        default="MemoryResource", metadata={"help": _(
+            "MemoryResource"
+        ),
+        }
+    )
+
+
+class MemoryResource(Resource[ResourceParameters]):
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        enable_global_session: bool = False,
+        discard_strategy: str = "fifo",
+        retrieve_strategy: str = "semantic",
+        top_k: int = 50,
+        score_threshold: Optional[float] = 0.0,
+        enable_message_condense: bool = False,
+        message_condense_model: Optional[str] = "aistudio/DeepSeek-V3",
+        message_condense_prompt: Optional[str] = None,
+        agent_whitelist: Optional[str] = None,
+        enable_user_memory: bool = False,
+        enable_collect_long_term: bool = False,
+        enable_long_term_use: bool = False,
+        memory_topic_list:  list[dict[str, str]] = None,
+        topic_option_list: list[dict[str, str]] = None,
+        **kwargs,
+    ):
+        """
+        Initialize a MemoryResource instance.
+        Args:
+            name (Optional[str]): The name of the memory resource.
+            memory_params (Optional[dict]): Parameters for the memory resource.
+    """
+        self._name = name or "MemoryResource"
+        memory_params = {
+            "enable_global_session": enable_global_session,
+            "discard_strategy": discard_strategy,
+            "retrieve_strategy": retrieve_strategy,
+            "top_k": top_k,
+            "score_threshold": score_threshold,
+            "enable_message_condense": enable_message_condense,
+            "message_condense_model": message_condense_model,
+            "message_condense_prompt": message_condense_prompt,
+            "name": self._name,
+        }
+        if agent_whitelist:
+            memory_params["agent_whitelist"] = agent_whitelist
+        if enable_user_memory:
+            memory_params["enable_user_memory"] = enable_user_memory
+        if enable_collect_long_term:
+            memory_params["enable_long_term_use"] = enable_long_term_use
+        if enable_long_term_use:
+            memory_params["enable_long_term_use"] = enable_long_term_use
+        if memory_topic_list:
+            memory_params["memory_topic_list"] = memory_topic_list
+        if topic_option_list:
+            memory_params["topic_option_list"] = topic_option_list
+        self._memory_params = MemoryParameters(**(memory_params or {}))
+
+    @classmethod
+    def type(cls) -> ResourceType:
+        return ResourceType.Memory
+
+    @property
+    def name(self) -> str:
+        """Return the resource name."""
+        return self._name
+
+    @property
+    def memory_params(self) -> MemoryParameters:
+        return self._memory_params
+
+    @classmethod
+    def resource_parameters_class(cls, **kwargs) -> Type[ResourceParameters]:
+        """Return the resource parameters class."""
+        return MemoryParameters
+
+    async def get_prompt(
+        self,
+        *,
+        lang: str = "en",
+        prompt_type: str = "default",
+        question: Optional[str] = None,
+        resource_name: Optional[str] = None,
+        **kwargs,
+    ) -> Tuple[str, Optional[Dict]]:
+        return "", {}
+
+    async def get_resources(
+        self,
+        lang: str = "en",
+        prompt_type: str = "default",
+        question: Optional[str] = None,
+        resource_name: Optional[str] = None,
+    ) -> Tuple[Optional[List[Chunk]], str, Optional[Dict]]:
+        pass
+
+    @classmethod
+    def default_parameters(
+        cls,
+    ) -> MemoryParameters:
+        """Return default parameters for the memory resource."""
+        return MemoryParameters(
+            enable_global_session=True,
+            discard_strategy="fifo",
+            retrieve_strategy="sliding_window",
+            top_k=50,
+            score_threshold=0.0,
+            enable_message_condense=False,
+            message_condense_model="aistudio/DeepSeek-V3",
+            message_condense_prompt=None,
+            name="MemoryResource",
+            condense_max_token=5000,
+            enable_user_memory=False,
+            enable_long_term_use=False,
+            enable_collect_long_term=False,
+            memory_topic_list=[],
+            topic_option_list=_DEFAULT_TOPIC_LIST,
+        )
+
+

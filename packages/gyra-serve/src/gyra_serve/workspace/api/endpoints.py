@@ -1,0 +1,509 @@
+"""Workspace API endpoints."""
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, UploadFile
+from fastapi.security.http import HTTPAuthorizationCredentials, HTTPBearer
+
+from gyra.component import SystemApp
+from gyra_serve.core import Result
+
+from ..dataset_service import WorkspaceDatasetService
+
+from .schemas import (
+    HomeWorkspaceRequest,
+    RenameConversationRequest,
+    SetCurrentConversationRequest,
+    WorkspaceListFilter,
+    WorkspaceMemberListRequest,
+    WorkspaceMemberRequest,
+    WorkspaceMemberResponse,
+    WorkspaceRequest,
+    WorkspaceResourceListRequest,
+    WorkspaceResourceRequest,
+    WorkspaceResourceResponse,
+    WorkspaceResponse,
+)
+from ..config import ServeConfig
+from ..inbox import (
+    INBOX_SERVICE_COMPONENT_NAME,
+    InboxListFilter,
+    InboxResolveRequest,
+    InboxStatusUpdateRequest,
+    InboxService,
+)
+from ..service.service import WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService as Service
+
+router = APIRouter()
+
+global_system_app: Optional[SystemApp] = None
+logger = logging.getLogger(__name__)
+
+
+def get_service() -> Service:
+    if global_system_app is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"message": "System app not initialized", "type": "internal_error"}},
+        )
+    return global_system_app.get_component(WORKSPACE_SERVICE_COMPONENT_NAME, Service)
+
+
+get_bearer_token = HTTPBearer(auto_error=False)
+
+
+async def check_api_key(
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
+    service: Service = Depends(get_service),
+) -> Optional[str]:
+    if service.config.api_keys:
+        api_keys = [k.strip() for k in service.config.api_keys.split(",")]
+        if auth is None or (token := auth.credentials) not in api_keys:
+            raise HTTPException(
+                status_code=401,
+                detail={"error": {"message": "", "type": "invalid_request_error",
+                                   "param": None, "code": "invalid_api_key"}},
+            )
+        return token
+    return None
+
+
+# ----------------------- Workspace -----------------------
+@router.post("/workspaces/create", response_model=Result[WorkspaceResponse],
+             dependencies=[Depends(check_api_key)])
+async def create_workspace(
+    request: WorkspaceRequest, service: Service = Depends(get_service),
+) -> Result[WorkspaceResponse]:
+    try:
+        return Result.succ(service.create(request))
+    except Exception as e:
+        logger.exception("workspace create exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/workspaces/default-or-create",
+             response_model=Result[WorkspaceResponse],
+             dependencies=[Depends(check_api_key)])
+async def default_or_create_workspace(
+    request: HomeWorkspaceRequest, service: Service = Depends(get_service),
+) -> Result[WorkspaceResponse]:
+    """用户首页默认空间(幂等):有标记的返回,无标记取最早创建的补标记,
+    没有任何空间则新建"我的工作台"。"""
+    try:
+        return Result.succ(service.get_or_create_home(request.user_id))
+    except Exception as e:
+        logger.exception("workspace default-or-create exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/workspaces/list", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def list_workspaces(
+    filter_request: WorkspaceListFilter,
+    service: Service = Depends(get_service),
+) -> Result:
+    try:
+        return Result.succ(service.list_workspaces(
+            user_id=filter_request.user_id,
+            scenario_type=filter_request.scenario_type,
+            include_archived=filter_request.include_archived,
+        ))
+    except Exception as e:
+        logger.exception("workspace list exception!")
+        return Result.failed(str(e))
+
+
+@router.get("/workspaces/info", response_model=Result[WorkspaceResponse],
+            dependencies=[Depends(check_api_key)])
+async def get_workspace(
+    workspace_code: str = Query(..., description="workspace code"),
+    service: Service = Depends(get_service),
+) -> Result[WorkspaceResponse]:
+    try:
+        result = service.get_by_code(workspace_code)
+        if not result:
+            return Result.failed(f"workspace '{workspace_code}' not found")
+        return Result.succ(result)
+    except Exception as e:
+        logger.exception("workspace info exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/workspaces/update", response_model=Result[WorkspaceResponse],
+             dependencies=[Depends(check_api_key)])
+async def update_workspace(
+    request: WorkspaceRequest, service: Service = Depends(get_service),
+) -> Result[WorkspaceResponse]:
+    try:
+        return Result.succ(service.update(request))
+    except Exception as e:
+        logger.exception("workspace update exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/workspaces/archive", response_model=Result[WorkspaceResponse],
+             dependencies=[Depends(check_api_key)])
+async def archive_workspace(
+    request: dict, service: Service = Depends(get_service),
+) -> Result[WorkspaceResponse]:
+    try:
+        workspace_code = request.get("workspace_code")
+        if not workspace_code:
+            return Result.failed("workspace_code is required")
+        return Result.succ(service.archive(workspace_code))
+    except Exception as e:
+        logger.exception("workspace archive exception!")
+        return Result.failed(str(e))
+
+
+# ----------------------- Members -----------------------
+@router.post("/members/list", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def list_members(
+    request: WorkspaceMemberListRequest,
+    service: Service = Depends(get_service),
+) -> Result:
+    try:
+        return Result.succ(service.list_members(request.workspace_id))
+    except Exception as e:
+        logger.exception("member list exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/members/add", response_model=Result[WorkspaceMemberResponse],
+             dependencies=[Depends(check_api_key)])
+async def add_member(
+    request: WorkspaceMemberRequest, service: Service = Depends(get_service),
+) -> Result[WorkspaceMemberResponse]:
+    try:
+        return Result.succ(service.add_member(request))
+    except Exception as e:
+        logger.exception("member add exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/members/remove", response_model=Result[bool],
+             dependencies=[Depends(check_api_key)])
+async def remove_member(
+    request: dict, service: Service = Depends(get_service),
+) -> Result[bool]:
+    try:
+        workspace_id = request.get("workspace_id")
+        user_id = request.get("user_id")
+        return Result.succ(service.remove_member(workspace_id, user_id))
+    except Exception as e:
+        logger.exception("member remove exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/members/update_role", response_model=Result[WorkspaceMemberResponse],
+             dependencies=[Depends(check_api_key)])
+async def update_member_role(
+    request: dict, service: Service = Depends(get_service),
+) -> Result[WorkspaceMemberResponse]:
+    try:
+        return Result.succ(service.update_member_role(
+            workspace_id=request.get("workspace_id"),
+            user_id=request.get("user_id"),
+            role=request.get("role"),
+        ))
+    except Exception as e:
+        logger.exception("member update role exception!")
+        return Result.failed(str(e))
+
+
+# ----------------------- Resources -----------------------
+@router.post("/resources/list", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def list_resources(
+    request: WorkspaceResourceListRequest,
+    service: Service = Depends(get_service),
+) -> Result:
+    try:
+        return Result.succ(service.list_resources(request.workspace_id, request.type))
+    except Exception as e:
+        logger.exception("resource list exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/resources/add", response_model=Result[WorkspaceResourceResponse],
+             dependencies=[Depends(check_api_key)])
+async def add_resource(
+    request: WorkspaceResourceRequest, service: Service = Depends(get_service),
+) -> Result[WorkspaceResourceResponse]:
+    try:
+        return Result.succ(service.add_resource(request))
+    except Exception as e:
+        logger.exception("resource add exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/resources/remove", response_model=Result[bool],
+             dependencies=[Depends(check_api_key)])
+async def remove_resource(
+    request: dict, service: Service = Depends(get_service),
+) -> Result[bool]:
+    try:
+        resource_id = request.get("resource_id")
+        return Result.succ(service.remove_resource(resource_id))
+    except Exception as e:
+        logger.exception("resource remove exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/resources/update", response_model=Result[WorkspaceResourceResponse],
+             dependencies=[Depends(check_api_key)])
+async def update_resource(
+    request: dict, service: Service = Depends(get_service),
+) -> Result[WorkspaceResourceResponse]:
+    try:
+        resource_id = request.get("resource_id")
+        rr = WorkspaceResourceRequest(**request.get("resource", {}))
+        return Result.succ(service.update_resource(resource_id, rr))
+    except Exception as e:
+        logger.exception("resource update exception!")
+        return Result.failed(str(e))
+
+
+# ----------------------- Growth -----------------------
+@router.get("/workspaces/{workspace_id}/growth", response_model=Result,
+            dependencies=[Depends(check_api_key)])
+async def get_workspace_growth(
+    workspace_id: int,
+    service: Service = Depends(get_service),
+) -> Result:
+    """获取空间本月成长数据。"""
+    try:
+        return Result.succ(service.get_growth(workspace_id))
+    except Exception as e:
+        logger.exception("workspace growth exception!")
+        return Result.failed(str(e))
+
+
+# ----------------------- Conversation Link -----------------------
+@router.post("/conversations/link", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def link_conversation(
+    request: dict, service: Service = Depends(get_service),
+) -> Result:
+    try:
+        return Result.succ(service.link_conversation(
+            workspace_id=request.get("workspace_id"),
+            conv_uid=request.get("conv_uid"),
+            task_id=request.get("task_id"),
+            user_id=request.get("user_id"),
+        ))
+    except Exception as e:
+        logger.exception("conversation link exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/conversations/list", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def list_conversations(
+    request: dict, service: Service = Depends(get_service),
+) -> Result:
+    try:
+        return Result.succ(service.list_conversations(
+            workspace_id=request.get("workspace_id"),
+            user_id=request.get("user_id"),
+            limit=request.get("limit", 100),
+        ))
+    except Exception as e:
+        logger.exception("conversation list exception!")
+        return Result.failed(str(e))
+
+
+@router.get("/conversations/lookup", response_model=Result,
+            dependencies=[Depends(check_api_key)])
+async def lookup_conversation(
+    conv_uid: str = Query(..., description="conversation uid"),
+    service: Service = Depends(get_service),
+) -> Result:
+    try:
+        return Result.succ(service.get_conversation_workspace(conv_uid))
+    except Exception as e:
+        logger.exception("conversation lookup exception!")
+        return Result.failed(str(e))
+
+
+@router.get("/workspaces/{workspace_id}/conversations/current", response_model=Result,
+            dependencies=[Depends(check_api_key)])
+async def get_current_conversation(
+    workspace_id: int,
+    user_id: Optional[int] = Header(None, alias="X-User-ID"),
+    service: Service = Depends(get_service),
+) -> Result:
+    try:
+        return Result.succ(service.get_current_conversation(
+            workspace_id=workspace_id, user_id=user_id
+        ))
+    except Exception as e:
+        logger.exception("get current conversation exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/workspaces/{workspace_id}/conversations/set-current", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def set_current_conversation(
+    workspace_id: int,
+    request: SetCurrentConversationRequest,
+    user_id: Optional[int] = Header(None, alias="X-User-ID"),
+    service: Service = Depends(get_service),
+) -> Result:
+    try:
+        return Result.succ(service.set_current_conversation(
+            workspace_id=workspace_id, user_id=user_id, conv_uid=request.conv_uid
+        ))
+    except Exception as e:
+        logger.exception("set current conversation exception!")
+        return Result.failed(str(e))
+
+
+@router.patch("/conversations/{conv_uid}/rename", response_model=Result,
+              dependencies=[Depends(check_api_key)])
+async def rename_conversation(
+    conv_uid: str,
+    request: RenameConversationRequest,
+    service: Service = Depends(get_service),
+) -> Result:
+    try:
+        return Result.succ(service.rename_conversation(
+            conv_uid=conv_uid, title=request.title
+        ))
+    except Exception as e:
+        logger.exception("rename conversation exception!")
+        return Result.failed(str(e))
+
+
+# ----------------------- Inbox (个人待办收件箱) -----------------------
+def get_inbox_service() -> InboxService:
+    if global_system_app is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"message": "System app not initialized", "type": "internal_error"}},
+        )
+    return global_system_app.get_component(INBOX_SERVICE_COMPONENT_NAME, InboxService)
+
+
+@router.get("/workspaces/{workspace_id}/inbox", response_model=Result,
+            dependencies=[Depends(check_api_key)])
+async def list_inbox(
+    workspace_id: int,
+    user_id: Optional[int] = Header(None, alias="X-User-ID"),
+    status: Optional[str] = Query(None, description="unread/doing/done/archived"),
+    source_type: Optional[str] = Query(
+        None, description="task/intervention/ecp_proposal/manual"
+    ),
+    limit: int = Query(100),
+    service: InboxService = Depends(get_inbox_service),
+) -> Result:
+    """拉取当前用户的个人待办(收件箱)。"""
+    try:
+        if user_id is None:
+            return Result.failed("X-User-ID header required")
+        f = InboxListFilter(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            status=status,
+            source_type=source_type,
+            limit=limit,
+        )
+        return Result.succ(service.list_inbox(f))
+    except Exception as e:
+        logger.exception("inbox list exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/workspaces/{workspace_id}/inbox/resolve", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def resolve_inbox(
+    workspace_id: int,
+    request: InboxResolveRequest,
+    service: InboxService = Depends(get_inbox_service),
+) -> Result:
+    """标记待办完成(shared 按 source_id 批量消除)。"""
+    try:
+        count = service.resolve(
+            workspace_id=workspace_id,
+            source_type=request.source_type,
+            source_id=request.source_id,
+            user_id=request.user_id,
+        )
+        return Result.succ({"resolved": count})
+    except Exception as e:
+        logger.exception("inbox resolve exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/workspaces/{workspace_id}/inbox/{item_id}/status", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def update_inbox_status(
+    workspace_id: int,
+    item_id: int,
+    request: InboxStatusUpdateRequest,
+    user_id: Optional[int] = Header(None, alias="X-User-ID"),
+    service: InboxService = Depends(get_inbox_service),
+) -> Result:
+    """用户手动推进待办状态(接手/完成/归档)。仅限自己的待办。"""
+    try:
+        if user_id is None:
+            return Result.failed("X-User-ID header required")
+        result = service.update_status(item_id, user_id, request.new_status)
+        if not result:
+            return Result.failed("inbox item not found or not owned by user")
+        return Result.succ(result)
+    except Exception as e:
+        logger.exception("inbox status update exception!")
+        return Result.failed(str(e))
+
+
+# ----------------------- Datasets (空间自持数据资产) -----------------------
+def get_dataset_service() -> WorkspaceDatasetService:
+    return WorkspaceDatasetService(system_app=global_system_app)
+
+
+@router.post("/workspaces/{workspace_id}/datasets/upload", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def upload_dataset(
+    workspace_id: int,
+    file: UploadFile,
+    display_name: Optional[str] = Form(None),
+    user_id: Optional[str] = Header(None, alias="X-User-ID"),
+    service: WorkspaceDatasetService = Depends(get_dataset_service),
+) -> Result:
+    """上传 Excel/CSV 作为空间自持数据集(物化为 DuckDB + 注册数据源 + 自动绑定)。"""
+    try:
+        content = await file.read()
+        result = service.import_dataset(
+            workspace_id=workspace_id,
+            file_name=file.filename or "dataset",
+            file_content=content,
+            display_name=display_name,
+            user_id=user_id,
+        )
+        return Result.succ(result)
+    except Exception as e:
+        logger.exception("dataset upload exception!")
+        return Result.failed(str(e))
+
+
+@router.get("/workspaces/{workspace_id}/datasets", response_model=Result,
+            dependencies=[Depends(check_api_key)])
+async def list_datasets(
+    workspace_id: int,
+    service: WorkspaceDatasetService = Depends(get_dataset_service),
+) -> Result:
+    """列出空间自持数据集。"""
+    try:
+        return Result.succ(service.list_datasets(workspace_id))
+    except Exception as e:
+        logger.exception("dataset list exception!")
+        return Result.failed(str(e))
+
+
+def init_endpoints(system_app: SystemApp, config: ServeConfig) -> None:
+    global global_system_app
+    system_app.register(Service, config=config)
+    system_app.register(InboxService, config=config)
+    global_system_app = system_app

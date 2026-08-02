@@ -1,0 +1,821 @@
+import json
+import logging
+import os
+import time
+from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlparse
+
+from gyra._private.pydantic import BaseModel, model_to_dict
+from gyra.agent.core.llm_config import AgentLLMConfig
+from gyra.agent.util.llm.provider.base import LLMProvider
+from gyra.agent.util.llm.provider.provider_registry import ProviderRegistry
+from gyra.core import (
+    LLMClient,
+    ModelInferenceMetrics,
+    ModelOutput,
+    ModelRequest,
+    ModelRequestContext,
+)
+from gyra.core.interface.output_parser import BaseOutputParser
+from gyra.util.error_types import LLMChatError
+from gyra.util.tracer import root_tracer
+
+logger = logging.getLogger(__name__)
+
+
+def _repr_content(content: Any, max_chars: int = 2000) -> Any:
+    """将消息 content 转为可打印形式,超长做轻量截断(标注原始长度)。
+
+    content 可能是 str、list(多模态段,如 MediaContent / dict 混合)或其它类型。
+    list 中每个段:
+    - dict:取 text/数据原文;否则 default=str
+    - 对象:取 type,文本类取其 data 原文
+    截断只在最终字符串超长时发生,目的是避免日志爆炸,不改变语义可见性。
+    """
+    if content is None:
+        return None
+    if isinstance(content, str):
+        if len(content) > max_chars:
+            return content[:max_chars] + f"...[truncated len={len(content)}]"
+        return content
+    if isinstance(content, list):
+        parts = []
+        for c in content:
+            if isinstance(c, dict):
+                if c.get("type") == "text" and "text" in c:
+                    parts.append(c["text"])
+                elif "text" in c:
+                    parts.append(str(c["text"]))
+                else:
+                    parts.append(str(c))
+            else:
+                c_type = getattr(c, "type", None)
+                if c_type == "text":
+                    obj = getattr(c, "object", None)
+                    if obj is not None and hasattr(obj, "data"):
+                        parts.append(str(getattr(obj, "data", "")))
+                    else:
+                        parts.append(str(getattr(c, "data", str(c))))
+                else:
+                    parts.append(str(c))
+        joined = " ".join(parts)
+        if len(joined) > max_chars:
+            return joined[:max_chars] + f"...[truncated len={len(joined)}]"
+        return joined
+    return str(content)
+
+
+def _normalize_provider_secret_suffix(provider_name: str) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9]+", "_", (provider_name or "").strip().lower()).strip("_")
+
+
+def _get_custom_provider_secret_name(provider_name: str) -> Optional[str]:
+    normalized = _normalize_provider_secret_suffix(provider_name)
+    if not normalized:
+        return None
+    return f"llm_provider_{normalized}_api_key"
+
+
+def _get_custom_secret_candidates(
+    provider_name: str, base_url: Optional[str] = None
+) -> List[str]:
+    candidates: List[str] = []
+
+    provider_secret = _get_custom_provider_secret_name(provider_name)
+    if provider_secret:
+        candidates.append(provider_secret)
+
+    if base_url:
+        try:
+            hostname = urlparse(base_url).hostname or ""
+            host_parts = [part for part in hostname.split(".") if part]
+            derived_names = []
+            if host_parts:
+                derived_names.append(host_parts[0])
+            if len(host_parts) >= 2:
+                derived_names.append(host_parts[-2])
+            for name in derived_names:
+                secret_name = _get_custom_provider_secret_name(name)
+                if secret_name and secret_name not in candidates:
+                    candidates.append(secret_name)
+        except Exception:
+            pass
+
+    return candidates
+
+
+def _get_api_key_from_secrets(
+    provider_name: str, base_url: Optional[str] = None
+) -> Optional[str]:
+    """从加密存储的 secrets 中获取 API Key
+
+    优先级：
+    1. 先尝试获取特定于 provider 的 key (如 openai_api_key, dashscope_api_key)
+    2. 根据 base_url 判断是否使用特定平台的 key
+    3. 如果没有，尝试通用的 llm_api_key
+
+    Args:
+        provider_name: Provider 名称 (如 openai, alibaba, anthropic)
+        base_url: API base URL，用于判断实际使用的平台
+
+    Returns:
+        API Key 或 None
+    """
+    try:
+        from gyra_core.config.encryption import get_secret
+
+        provider_name_lower = provider_name.lower()
+        custom_provider_secrets = _get_custom_secret_candidates(
+            provider_name_lower, base_url
+        )
+
+        # 首先尝试获取 provider 特定的 key
+        provider_specific_keys = {
+            "openai": ["openai_api_key"],
+            "alibaba": ["dashscope_api_key", "alibaba_api_key"],
+            "anthropic": ["anthropic_api_key", "claude_api_key"],
+            "dashscope": ["dashscope_api_key"],
+            "claude": ["anthropic_api_key", "claude_api_key"],
+        }
+
+        # 根据 base_url 判断实际使用的平台（处理 OpenAI 兼容模式）
+        base_url_lower = base_url.lower() if base_url else ""
+        if "dashscope" in base_url_lower or "aliyun" in base_url_lower:
+            # 阿里云 DashScope 使用 OpenAI 兼容 API，但实际 key 是 dashscope_api_key
+            keys_to_try = ["dashscope_api_key", "alibaba_api_key", "llm_api_key"]
+        elif "anthropic" in base_url_lower or "claude" in base_url_lower:
+            keys_to_try = ["anthropic_api_key", "claude_api_key", "llm_api_key"]
+        elif "openai" in base_url_lower or "openai.com" in base_url_lower:
+            keys_to_try = ["openai_api_key", "llm_api_key"]
+        else:
+            # 使用默认的 provider 映射
+            keys_to_try = provider_specific_keys.get(provider_name_lower, [])
+            if provider_name_lower == "openai":
+                # openai provider 可能是 OpenAI 也可能是其他 OpenAI 兼容服务
+                # 尝试所有可能的 key
+                keys_to_try = [
+                    "openai_api_key",
+                    "dashscope_api_key",
+                    "alibaba_api_key",
+                    "anthropic_api_key",
+                ]
+
+        for secret_name in reversed(custom_provider_secrets):
+            if secret_name not in keys_to_try:
+                keys_to_try.insert(0, secret_name)
+
+        # 最后添加通用的 llm_api_key
+        if "llm_api_key" not in keys_to_try:
+            keys_to_try.append("llm_api_key")
+
+        logger.debug(
+            f"Looking for API key: provider={provider_name}, base_url={base_url}, keys_to_try={keys_to_try}"
+        )
+
+        for key_name in keys_to_try:
+            secret_value = get_secret(key_name)
+            if secret_value:
+                # 记录找到的 key（只显示部分信息）
+                key_preview = (
+                    f"{secret_value[:8]}...{secret_value[-4:]}"
+                    if len(secret_value) > 12
+                    else "***"
+                )
+                logger.info(
+                    f"Found API key from secrets: key_name={key_name}, provider={provider_name}, preview={key_preview}, length={len(secret_value)}"
+                )
+                return secret_value
+
+        logger.debug(f"No API key found in secrets for provider={provider_name}")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to get API key from secrets: {e}")
+        return None
+
+
+class AgentLLMOut(BaseModel):
+    llm_name: Optional[str] = None
+    llm_context: Optional[dict] = None
+    in_messages: Optional[List[Dict]] = None
+    thinking_content: Optional[str] = None
+    content: Optional[str] = None
+    tool_calls: Optional[Union[str, List[Dict[str, Any]]]] = None
+    input_tools: Optional[List[Dict[str, Any]]] = None
+    metrics: Optional[ModelInferenceMetrics] = None
+    extra: Optional[Dict[str, Any]] = None
+    ttft: int = 0
+
+    def to_dict(self):
+        dict_value = model_to_dict(self, exclude={"metrics"})
+        if self.metrics:
+            dict_value["metrics"] = self.metrics.to_dict()
+        return dict_value
+
+
+class AIWrapper:
+    """AIWrapper for LLM."""
+
+    cache_path_root: str = ".cache"
+    extra_kwargs = {
+        "cache_seed",
+        "filter_func",
+        "allow_format_str_template",
+        "context",
+        "llm_model",
+        "llm_context",
+        "memory",
+        "conv_id",
+        "sender",
+        "stream_out",
+        "incremental",
+    }
+
+    def __init__(
+        self,
+        llm_client: Optional[LLMClient] = None,
+        llm_config: Optional[AgentLLMConfig] = None,
+        output_parser: Optional[BaseOutputParser] = None,
+    ):
+        """Create an AIWrapper instance.
+
+        Args:
+            llm_client: Deprecated. The legacy LLM client.
+            llm_config: The new AgentLLMConfig.
+            output_parser: The output parser.
+        """
+        self.llm_echo = False
+        self.model_cache_enable = False
+        self._llm_client = llm_client
+        self._llm_config = llm_config
+        self._provider: Optional[LLMProvider] = None
+        self._output_parser = output_parser or BaseOutputParser(is_stream_out=False)
+        self._provider_cache: Dict[str, LLMProvider] = {}
+
+        if self._llm_config:
+            self._init_provider()
+
+    def _init_provider(self):
+        if not self._llm_config:
+            return
+
+        provider_name = self._llm_config.provider.lower()
+        # 接入协议：优先使用配置中的 protocol，否则根据 provider 推断。
+        # 注意 AgentLLMConfig 没有 protocol 字段（只有 provider），所以
+        # getattr 一直返回 None —— 不能 `or provider_name` 兜底，否则
+        # provider="alibaba" 时 protocol="alibaba"（未注册），_provider
+        # 解析失败。必须走 infer_protocol 把 alibaba→openai 这种映射做掉。
+        # create() 方法里已经是这个逻辑，这里对齐。
+        protocol = getattr(self._llm_config, "protocol", None)
+        if not protocol:
+            from gyra.agent.util.llm.model_config_cache import infer_protocol
+            protocol = infer_protocol(provider_name)
+        api_key = self._llm_config.api_key
+        base_url = self._llm_config.base_url
+
+        # 检查 api_key 是否是占位符（未解析的配置引用或默认值）
+        def _is_placeholder_key(key: Optional[str]) -> bool:
+            if not key:
+                return True
+            # 检查是否是 ${env:xxx} 或 ${secrets.xxx} 格式
+            if key.startswith("${"):
+                return True
+            # 检查是否是常见的占位符值
+            placeholder_patterns = [
+                "sk-...",
+                "sk-xxxx",
+                "your_api_key",
+                "xxx",
+                "placeholder",
+            ]
+            key_lower = key.lower()
+            if any(pattern in key_lower for pattern in placeholder_patterns):
+                return True
+            return False
+
+        is_placeholder = _is_placeholder_key(api_key)
+        if is_placeholder and api_key:
+            logger.debug(
+                f"API key appears to be a placeholder: {api_key[:20]}..., will try to get from secrets"
+            )
+
+        # 优先级：系统设置(secrets) > 配置文件 > 环境变量
+        if not api_key or is_placeholder:
+            # 1. 首先尝试从加密存储的 secrets 中获取
+            secrets_key = _get_api_key_from_secrets(provider_name, base_url)
+            if secrets_key:
+                api_key = secrets_key
+                logger.info(
+                    f"Using API key from system secrets for provider={provider_name}"
+                )
+
+        if not api_key:
+            # 2. 然后尝试从环境变量获取
+            env_key = ProviderRegistry.get_env_key(provider_name)
+            if env_key:
+                api_key = os.getenv(env_key)
+
+        final_api_key: str = ""
+        if api_key:
+            final_api_key = api_key
+        else:
+            if ProviderRegistry.has_provider(provider_name):
+                raise ValueError(f"API Key is required for provider {provider_name}")
+            final_api_key = ""
+
+        kwargs = self._llm_config.extra_kwargs.copy()
+
+        provider = ProviderRegistry.create_provider_by_protocol(
+            protocol=protocol,
+            api_key=final_api_key,
+            base_url=base_url,
+            model=self._llm_config.model,
+            **kwargs,
+        )
+
+        if provider:
+            self._provider = provider
+        else:
+            logger.warning(
+                f"Unknown protocol: {protocol} (provider={provider_name}), falling back to legacy LLMClient if available"
+            )
+
+    def _construct_create_params(self, create_config: Dict, extra_kwargs: Dict) -> Dict:
+        """Prime the create_config with additional_kwargs."""
+        # Validate the config
+        prompt = create_config.get("prompt")
+        messages = create_config.get("messages")
+        if prompt is None and messages is None:
+            raise ValueError(
+                "Either prompt or messages should be in create config but not both."
+            )
+
+        context = extra_kwargs.get("context")
+        if context is None:
+            # No need to instantiate if no context is provided.
+            return create_config
+        # Instantiate the prompt or messages
+        extra_kwargs.get("allow_format_str_template", False)
+        # Make a copy of the config
+        params = create_config.copy()
+        params["context"] = context
+
+        return params
+
+    def _separate_create_config(self, config):
+        """Separate the config into create_config and extra_kwargs."""
+        create_config = {k: v for k, v in config.items() if k not in self.extra_kwargs}
+        extra_kwargs = {k: v for k, v in config.items() if k in self.extra_kwargs}
+        return create_config, extra_kwargs
+
+    async def create(self, **config):
+        from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+        from gyra.agent.core.llm_config import AgentLLMConfig
+
+        # merge the input config with the i-th config in the config list
+        full_config = {**config}
+        # separate the config into create_config and extra_kwargs
+        create_config, extra_kwargs = self._separate_create_config(full_config)
+        params = self._construct_create_params(create_config, extra_kwargs)
+
+        # Use config from parameter or self._llm_config
+        llm_model = extra_kwargs.get("llm_model")
+        if self._llm_config:
+            llm_model = self._llm_config.model
+
+        # Ensure llm_model is a string
+        final_llm_model: str = str(llm_model) if llm_model else "default"
+
+        # If the model doesn't exist in cache, fallback to default model
+        if llm_model and not ModelConfigCache.has_model(llm_model):
+            all_models = ModelConfigCache.get_all_models()
+            if all_models:
+                fallback_model = all_models[0]
+                logger.warning(
+                    f"Model '{llm_model}' not found in config, falling back to '{fallback_model}'"
+                )
+                llm_model = fallback_model
+            else:
+                logger.warning(
+                    f"Model '{llm_model}' not found in config and no fallback available"
+                )
+
+        if llm_model and ModelConfigCache.has_model(llm_model):
+            model_config_dict = ModelConfigCache.get_config(llm_model)
+            if model_config_dict:
+                if llm_model not in self._provider_cache:
+                    try:
+                        temp_llm_config = AgentLLMConfig.from_dict(model_config_dict)
+                        provider_name = temp_llm_config.provider.lower()
+                        # 优先使用配置中的 protocol，否则根据 provider 推断
+                        protocol = model_config_dict.get("protocol")
+                        if not protocol:
+                            from gyra.agent.util.llm.model_config_cache import infer_protocol
+                            protocol = infer_protocol(provider_name)
+
+                        base_url = temp_llm_config.base_url
+
+                        # 检查 api_key 是否是占位符
+                        def _is_placeholder_key(key: Optional[str]) -> bool:
+                            if not key:
+                                return True
+                            if key.startswith("${"):
+                                return True
+                            placeholder_patterns = [
+                                "sk-...",
+                                "sk-xxxx",
+                                "your_api_key",
+                                "xxx",
+                                "placeholder",
+                            ]
+                            key_lower = key.lower()
+                            if any(
+                                pattern in key_lower for pattern in placeholder_patterns
+                            ):
+                                return True
+                            return False
+
+                        api_key = temp_llm_config.api_key
+                        is_placeholder = _is_placeholder_key(api_key)
+
+                        # 优先级：系统设置(secrets) > 配置文件 > 环境变量
+                        if not api_key or is_placeholder:
+                            api_key = _get_api_key_from_secrets(provider_name, base_url)
+                            if api_key:
+                                logger.info(
+                                    f"Using API key from system secrets for model={llm_model}, provider={provider_name}"
+                                )
+                        if not api_key:
+                            env_key = ProviderRegistry.get_env_key(provider_name)
+                            if env_key:
+                                api_key = os.getenv(env_key)
+
+                        provider = ProviderRegistry.create_provider_by_protocol(
+                            protocol=protocol,
+                            api_key=api_key or "",
+                            base_url=base_url,
+                            model=temp_llm_config.model,
+                        )
+                        if provider:
+                            self._provider_cache[llm_model] = provider
+                            logger.info(
+                                f"Created {protocol} provider for model={llm_model} (provider={provider_name})"
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to create provider for model {llm_model}: {e}"
+                        )
+
+                self._provider = self._provider_cache.get(llm_model)
+
+        llm_context = extra_kwargs.get("llm_context")
+        stream_out = extra_kwargs.get("stream_out", True)
+        function_calling_context: Optional[Dict] = params.get(
+            "function_calling_context", None
+        )
+
+        # Prepare request payload/ModelRequest
+        messages = params["messages"]
+
+        # Resolve temperature
+        temp_val = params.get("temperature")
+        if temp_val is None and self._llm_config:
+            temp_val = self._llm_config.temperature
+        if temp_val is None:
+            temp_val = 0.5
+        temperature = float(temp_val)
+
+        # Resolve max_new_tokens
+        max_tokens_val = params.get("max_new_tokens")
+        if max_tokens_val is None and self._llm_config:
+            max_tokens_val = self._llm_config.max_new_tokens
+        if max_tokens_val is None:
+            max_tokens_val = 2048
+        max_new_tokens = int(max_tokens_val)
+
+        # Create ModelRequest
+        request = ModelRequest.build_request(
+            model=final_llm_model,
+            messages=messages,
+            stream=stream_out,
+            echo=self.llm_echo,
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+            # Add other parameters from config if needed
+        )
+        if self._llm_config and self._llm_config.stop:
+            request.stop = self._llm_config.stop
+
+        if self._llm_config and self._llm_config.top_p:
+            request.top_p = self._llm_config.top_p
+
+        payload = {
+            "model": llm_model,
+            "prompt": params.get("prompt"),
+            "messages": params["messages"],
+            "temperature": temperature,
+            "max_new_tokens": max_new_tokens,
+            "echo": self.llm_echo,
+            "trace_id": params.get("trace_id", None),
+            "rpc_id": params.get("rpc_id", None),
+            "incremental": params.get("incremental", False),
+        }
+
+        logger.info(f"Model Request:{llm_model}")
+
+        # 详细输入日志：打印发给模型的原始 messages（含 tool_calls/tool_call_id），
+        # 便于排查工具调用链路。超长 content 做轻量截断，但 tool_calls/tool_call_id 全量保留。
+        if request.messages:
+            _MAX_LOG_CONTENT_CHARS = 2000
+            messages_summary = []
+            for msg in request.messages:
+                if isinstance(msg, dict):
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    tool_calls = msg.get("tool_calls")
+                    tool_call_id = msg.get("tool_call_id")
+                else:
+                    role = getattr(msg, "role", "unknown")
+                    content = getattr(msg, "content", str(msg))
+                    tool_calls = getattr(msg, "tool_calls", None)
+                    tool_call_id = getattr(msg, "tool_call_id", None)
+
+                content_repr = _repr_content(content, _MAX_LOG_CONTENT_CHARS)
+                entry = {"role": role, "content": content_repr}
+                if tool_calls:
+                    entry["tool_calls"] = tool_calls
+                if tool_call_id:
+                    entry["tool_call_id"] = tool_call_id
+                messages_summary.append(entry)
+            logger.info(
+                f"Model Input Messages: {json.dumps(messages_summary, ensure_ascii=False, indent=2, default=str)}"
+            )
+
+        if request.tools:
+            tool_names = [
+                t.get("function", {}).get("name", "unknown") for t in request.tools
+            ]
+            logger.info(f"Model Input Tools ({len(request.tools)}): {tool_names}")
+            if request.tool_choice:
+                logger.info(f"Model Tool Choice: {request.tool_choice}")
+            if request.parallel_tool_calls:
+                logger.info(f"Model Parallel Tool Calls: {request.parallel_tool_calls}")
+
+        span = root_tracer.start_span(
+            "Agent.llm_client.no_streaming_call",
+            metadata=self._get_span_metadata(payload),
+        )
+        payload["span_id"] = span.span_id
+        payload["model_cache_enable"] = self.model_cache_enable
+        extra = {}
+        if llm_context:
+            extra.update(llm_context)
+
+        mist_keys = params.get("mist_keys")
+        if mist_keys:
+            # 存在独立配置的mist key
+            extra["mist_keys"] = mist_keys
+
+        # 调用模型的用户信息
+        user = params.get("staff_no")
+        if user:
+            extra["user"] = user
+
+        request.context = ModelRequestContext(
+            extra=extra,
+            trace_id=params.get("trace_id", None),
+            rpc_id=params.get("rpc_id", None),
+        )
+
+        # Apply function_calling_context to request
+        if function_calling_context:
+            tools = function_calling_context.get("tools")
+            if tools:
+                request.tools = tools
+                tool_names = [t.get("function", {}).get("name") for t in tools]
+                logger.info(f"Tools being sent to LLM: {tool_names}")
+            tool_choice = function_calling_context.get("tool_choice")
+            if tool_choice:
+                request.tool_choice = tool_choice
+            parallel_tool_calls = function_calling_context.get("parallel_tool_calls")
+            if parallel_tool_calls is not None:
+                request.parallel_tool_calls = parallel_tool_calls
+            logger.info(
+                f"Applied function_calling_context: tools={len(tools) if tools else 0}, "
+                f"tool_choice={tool_choice}, parallel_tool_calls={parallel_tool_calls}"
+            )
+        else:
+            logger.warning("No function_calling_context provided to LLM call!")
+            tools = None
+
+        input_tools_list = tools if tools else None
+
+        # LLM 调用 usage 采集：计时 + 捕获 usage，finally 里分发到 recorder
+        _usage_start_ms = int(time.time() * 1000)
+        _usage_last: Optional[Dict] = None
+        _usage_first_token_ms: Optional[int] = None
+        _usage_error_code = 0
+
+        try:
+            # Choose client: self._provider or self._llm_client (legacy)
+            if self._provider:
+                client = self._provider
+            elif self._llm_client:
+                client = self._llm_client
+            else:
+                raise ValueError("No LLM provider or client configured.")
+
+            if stream_out:
+                accumulated_thinking = ""
+                accumulated_content = ""
+                # 根据 provider 返回的 incremental 属性判断是否需要累积
+                need_accumulate = None  # 延迟判断，根据第一个 chunk 确定
+                logged_tc_ids: set = set()  # 记录已输出的 tool_call IDs，避免重复日志
+
+                async for output in client.generate_stream(request):  # type: ignore
+                    model_output: ModelOutput = output
+                    if model_output.usage:
+                        _usage_last = model_output.usage
+                    if model_output.error_code != 0:
+                        _usage_error_code = model_output.error_code
+                        raise LLMChatError(
+                            model_output.text,
+                            original_exception=model_output.error_code,
+                        )
+
+                    thinking_text, content_text = model_output.gen_text_and_thinking()
+
+                    # 根据第一个 chunk 的 incremental 属性确定累积策略
+                    if need_accumulate is None:
+                        need_accumulate = model_output.incremental
+
+                    # 如果是增量模式，累积内容；否则直接使用
+                    if need_accumulate:
+                        if thinking_text:
+                            accumulated_thinking += thinking_text
+                        if content_text:
+                            accumulated_content += content_text
+                        thinking_text = accumulated_thinking
+                        content_text = accumulated_content
+
+                    think_blank = not thinking_text or len(thinking_text) <= 0
+                    content_blank = not content_text or len(content_text) <= 0
+                    if think_blank and content_blank and not model_output.tool_calls:
+                        continue
+
+                    if _usage_first_token_ms is None:
+                        _usage_first_token_ms = int(time.time() * 1000)
+
+                    # 详细输出日志：记录 tool_calls（仅首次输出，避免流式重复）
+                    if model_output.tool_calls:
+                        tool_call_summary = []
+                        for tc in model_output.tool_calls:
+                            if tc and isinstance(tc, dict):
+                                func_info = tc.get("function", {})
+                                tool_call_summary.append(
+                                    {
+                                        "id": tc.get("id"),
+                                        "name": func_info.get("name")
+                                        if isinstance(func_info, dict)
+                                        else None,
+                                    }
+                                )
+                        # 只在 tool_calls 内容有变化时输出日志（比较 ID 集合）
+                        current_tc_ids = set(tc.get("id") for tc in tool_call_summary if tc.get("id"))
+                        if current_tc_ids and current_tc_ids != logged_tc_ids:
+                            logged_tc_ids = current_tc_ids
+                            logger.info(
+                                f"Model Output Tool Calls: {json.dumps(tool_call_summary, ensure_ascii=False)}"
+                            )
+
+                    yield AgentLLMOut(
+                        thinking_content=thinking_text,
+                        content=content_text,
+                        metrics=model_output.metrics,
+                        llm_name=llm_model,
+                        llm_context=llm_context,
+                        tool_calls=model_output.tool_calls,
+                        input_tools=input_tools_list,
+                        in_messages=params["messages"],
+                    )
+            else:
+                model_output = await client.generate(request)
+                if model_output.usage:
+                    _usage_last = model_output.usage
+                # 恢复模型调用异常，触发后续的模型兜底策略
+                if model_output.error_code != 0:
+                    _usage_error_code = model_output.error_code
+                    raise LLMChatError(
+                        model_output.text, original_exception=model_output.error_code
+                    )
+                thinking_text, content_text = model_output.gen_text_and_thinking()
+
+                # 详细输出日志：记录 tool_calls
+                if model_output.tool_calls:
+                    tool_call_summary = []
+                    for tc in model_output.tool_calls:
+                        if tc and isinstance(tc, dict):
+                            func_info = tc.get("function", {})
+                            tool_call_summary.append(
+                                {
+                                    "id": tc.get("id"),
+                                    "name": func_info.get("name")
+                                    if isinstance(func_info, dict)
+                                    else None,
+                                }
+                            )
+                    if tool_call_summary:
+                        logger.info(
+                            f"Model Output Tool Calls: {json.dumps(tool_call_summary, ensure_ascii=False)}"
+                        )
+
+                yield AgentLLMOut(
+                    thinking_content=thinking_text,
+                    content=content_text,
+                    metrics=model_output.metrics,
+                    llm_name=llm_model,
+                    llm_context=llm_context,
+                    tool_calls=model_output.tool_calls,
+                    input_tools=input_tools_list,
+                    in_messages=params["messages"],
+                )
+        except LLMChatError as e:
+            logger.exception(f"LLM  Chat error, detail: {str(e)}")
+            raise
+        except Exception as e:
+            _usage_error_code = 1
+            logger.exception(f"Call LLMClient error, detail: {str(e)}")
+            raise ValueError(f"LLM Request Exception!{str(e)}")
+        finally:
+            span.end()
+            # 分发 usage 到已注册 recorder（fire-and-forget，绝不影响主路径）
+            try:
+                from gyra.agent.util.llm.usage_recorder import (
+                    LLMUsageRecord,
+                    record_llm_usage,
+                )
+
+                _end_ms = int(time.time() * 1000)
+                _u = _usage_last or {}
+                _prompt_t = int(_u.get("prompt_tokens") or 0)
+                _comp_t = int(_u.get("completion_tokens") or 0)
+                _total_t = int(_u.get("total_tokens") or (_prompt_t + _comp_t))
+                _latency_ms = _end_ms - _usage_start_ms
+                _tps = (
+                    _comp_t / (_latency_ms / 1000.0)
+                    if _latency_ms > 0 and _comp_t > 0
+                    else None
+                )
+                await record_llm_usage(
+                    LLMUsageRecord(
+                        model_name=llm_model or final_llm_model,
+                        prompt_tokens=_prompt_t,
+                        completion_tokens=_comp_t,
+                        total_tokens=_total_t,
+                        latency_ms=_latency_ms,
+                        stream=stream_out,
+                        error_code=_usage_error_code,
+                        started_at=_usage_start_ms,
+                        conv_id=root_tracer.get_context_conv_id(),
+                        agent_id=root_tracer.get_current_agent_id(),
+                        user_id=root_tracer.get_context_user_id(),
+                        session_id=root_tracer.get_context_session_id(),
+                        trace_id=root_tracer.get_context_trace_id()
+                        or params.get("trace_id"),
+                        first_token_ms=(
+                            _usage_first_token_ms - _usage_start_ms
+                            if _usage_first_token_ms
+                            else None
+                        ),
+                        tokens_per_sec=_tps,
+                    )
+                )
+            except Exception as _ue:  # noqa: BLE001
+                logger.warning(f"[usage] record failed: {_ue}")
+
+    def _get_span_metadata(self, payload: Dict) -> Dict:
+        metadata = {k: v for k, v in payload.items()}
+
+        metadata["messages"] = list(
+            map(lambda m: m if isinstance(m, dict) else m.dict(), metadata["messages"])
+        )
+        return metadata
+
+    async def get_model_metadata(self, model: str) -> "ModelMetadata":
+        """Get model metadata from the provider or LLM client."""
+        from gyra.core.interface.llm import ModelMetadata
+
+        if self._provider:
+            models = await self._provider.models()
+            for m in models:
+                if m.model == model:
+                    return m
+            if models:
+                return models[0]
+            return ModelMetadata(model=model, context_length=128000)
+
+        if self._llm_client:
+            return await self._llm_client.get_model_metadata(model)
+
+        return ModelMetadata(model=model, context_length=128000)

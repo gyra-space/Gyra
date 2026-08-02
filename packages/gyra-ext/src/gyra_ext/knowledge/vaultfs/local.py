@@ -1,0 +1,1189 @@
+"""LocalVaultFS - single-machine storage backend (RFC 002 §4).
+
+Composition:
+- L0 verbatim content: FS under raw/{sources,convos,clips}/
+- L1 document markdown: FS under wiki/<type>/<slug>.md
+- L0/L1/L2 metadata + chunks + edges: SQLite (.ks/index.db)
+- Vectors: LanceDB (.ks/vectors.lance) - lazy-imported, optional
+- Writer lock: flock on .ks/writer.lock
+- Events: in-process asyncio.Queue fan-out
+- Filesystem watcher: watchfiles (optional)
+
+Layout:
+    <root>/
+      schema.md
+      purpose.md
+      raw/
+        sources/
+        convos/
+        clips/
+      wiki/
+        index.md
+        log.md
+        overview.md
+        <type>/<slug>.md
+      .ks/
+        index.db
+        vectors.lance/      (only if embedding used)
+        writer.lock
+        chats/
+
+High-level L0/L1/L2 orchestration (path normalization, schema validation,
+event publishing, lock flow) lives in BaseVaultFS. This subclass only
+implements the SQLite + FS + LanceDB storage seam.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import fcntl
+import logging
+import os
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+import aiosqlite
+
+from gyra.knowledge.frontmatter import parse_markdown
+from gyra.knowledge.schema import default_schema_md
+from gyra.knowledge.schema_sql import init_schema
+from gyra.knowledge.types import (
+    ChangeEvent,
+    DocHit,
+    DocId,
+    Document,
+    DocumentMeta,
+    Edge,
+    EdgeId,
+    EmbedderIdentity,
+    EmbedderState,
+    ExtractMode,
+    FtsHit,
+    ReindexReport,
+    SpaceId,
+    Subgraph,
+    Verbat,
+    VerbatHit,
+    VerbatId,
+    VectorHit,
+    new_doc_id,
+    new_edge_id,
+    new_verbat_id,
+    sha256_hash,
+)
+from gyra.knowledge.vaultfs import Subscription, Watcher
+
+from ._util import (
+    INLINE_THRESHOLD,
+    PROTECTED_FILES,
+    chunk_text,
+    make_snippet,
+    normalize_wiki_path,
+    parse_dt,
+    serialize_markdown,
+    validate_wiki_path,
+)
+from .base import BaseVaultFS, EmbedderMismatchError
+
+logger = logging.getLogger(__name__)
+
+
+class LocalWriteLock:
+    """flock-based cross-process lock handle.
+
+    Returned by `_acquire_distributed_lock` and released by
+    `_release_distributed_lock`. The in-process asyncio.Lock is released
+    separately by `_BaseWriteLock.release()`.
+    """
+
+    def __init__(self, fd: int, lock_path: Path):
+        self.fd = fd
+        self.lock_path = lock_path
+
+
+class LocalSubscription(Subscription):
+    def __init__(self, queue: asyncio.Queue, subscribers: set, task: Optional[asyncio.Task] = None):
+        self._queue = queue
+        self._subscribers = subscribers
+        self._task = task
+
+    def cancel(self) -> None:
+        self._subscribers.discard(self._queue)
+        if self._task is not None:
+            self._task.cancel()
+
+
+class LocalWatcher(Watcher):
+    def __init__(self, stop_fn: Callable[[], None]):
+        self._stop_fn = stop_fn
+
+    def stop(self) -> None:
+        self._stop_fn()
+
+
+class LocalVaultFS(BaseVaultFS):
+    """Single-machine VaultFS implementation.
+
+    Instantiate one per Space. Do not share across spaces.
+    """
+
+    def __init__(self, space_id: SpaceId, root: Path | str):
+        super().__init__(space_id)
+        self._root = Path(root).expanduser().resolve()
+        self._db_path = self._root / ".ks" / "index.db"
+        self._lock_path = self._root / ".ks" / "writer.lock"
+        self._db: Optional[aiosqlite.Connection] = None
+        self._lock_fd: Optional[int] = None
+        self._watcher_task: Optional[asyncio.Task] = None
+
+    # ----- metadata -----
+    @property
+    def backend_type(self) -> str:
+        return "local"
+
+    @property
+    def root(self) -> Path:
+        return self._root
+
+    # ----- lifecycle -----
+    async def initialize(self) -> None:
+        """Create directory structure + open DB + apply schema."""
+        await super().initialize()
+
+        for sub in ["raw/sources", "raw/convos", "raw/clips", "wiki", ".ks/chats"]:
+            (self._root / sub).mkdir(parents=True, exist_ok=True)
+
+        self._db = await aiosqlite.connect(str(self._db_path))
+        self._db.row_factory = aiosqlite.Row
+        await init_schema(self._db)
+
+        self._lock_fd = os.open(str(self._lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+
+        # Seed schema.md + protected files if missing (RFC 003 §3.7)
+        schema_path = self._root / "schema.md"
+        if not schema_path.exists():
+            schema_path.write_text(
+                default_schema_md(self._root.name), encoding="utf-8"
+            )
+        for name in ("index.md", "log.md", "overview.md", "purpose.md"):
+            p = self._root / "wiki" / name if name != "purpose.md" else self._root / name
+            if not p.exists():
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(f"# {name[:-3].title()}\n\n", encoding="utf-8")
+
+    async def close(self) -> None:
+        if self._watcher_task:
+            self._watcher_task.cancel()
+        if self._db:
+            await self._db.close()
+        if self._lock_fd is not None:
+            try:
+                os.close(self._lock_fd)
+            except OSError:
+                pass
+            self._lock_fd = None
+        await super().close()
+
+    # ===================================================================
+    # Schema (config layer)
+    # ===================================================================
+    async def read_schema_md(self) -> str:
+        path = self._root / "schema.md"
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
+
+    async def write_schema_md(self, content: str) -> None:
+        path = self._root / "schema.md"
+        path.write_text(content, encoding="utf-8")
+        await self.publish_event(
+            ChangeEvent(
+                space_id=self._space_id,
+                layer="L1",
+                op="update",
+                id="schema.md",
+                path="schema.md",
+            )
+        )
+
+    async def read_purpose_md(self) -> str:
+        path = self._root / "purpose.md"
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
+
+    # ===================================================================
+    # L0 Verbatim — SQLite storage
+    # ===================================================================
+    async def _verbat_exists_by_hash(self, content_hash: str) -> Optional[VerbatId]:
+        rows = await self._db.execute_fetchall(
+            "SELECT id FROM verbats WHERE space_id=? AND content_hash=? AND deprecated=0",
+            (self._space_id, content_hash),
+        )
+        if rows:
+            return rows[0]["id"]
+        return None
+
+    async def _verbat_insert(
+        self, v: Verbat, inline_content: Optional[str], content_ref: Optional[str]
+    ) -> None:
+        import json as _json
+        meta_json = _json.dumps(v.metadata) if v.metadata else None
+        await self._db.execute(
+            """
+            INSERT INTO verbats
+              (id, space_id, source_file, source_path, content_hash,
+               extract_mode, content_date, filed_at, source_mtime,
+               normalize_version, deprecated, content, content_ref, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+            """,
+            (
+                v.id,
+                self._space_id,
+                v.source_file,
+                v.source_path,
+                v.content_hash,
+                v.extract_mode.value,
+                v.content_date.isoformat() if v.content_date else None,
+                (v.filed_at or datetime.utcnow()).isoformat(),
+                v.source_mtime,
+                v.normalize_version,
+                inline_content,
+                content_ref,
+                meta_json,
+            ),
+        )
+        await self._db.commit()
+
+    async def _verbat_fetch(self, vid: VerbatId) -> Optional[Verbat]:
+        rows = await self._db.execute_fetchall(
+            "SELECT * FROM verbats WHERE id=? AND space_id=?",
+            (vid, self._space_id),
+        )
+        if not rows:
+            return None
+        return self._row_to_verbat(rows[0])
+
+    async def _verbat_list_rows(
+        self, extract_mode: Optional[str], limit: int, offset: int
+    ) -> list[Verbat]:
+        if extract_mode:
+            cursor = await self._db.execute(
+                "SELECT * FROM verbats WHERE space_id=? AND extract_mode=? "
+                "ORDER BY filed_at DESC LIMIT ? OFFSET ?",
+                (self._space_id, extract_mode, limit, offset),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM verbats WHERE space_id=? "
+                "ORDER BY filed_at DESC LIMIT ? OFFSET ?",
+                (self._space_id, limit, offset),
+            )
+        rows = await cursor.fetchall()
+        return [self._row_to_verbat(r) for r in rows]
+
+    async def _verbat_search_rows(
+        self, query: str, limit: int, extract_mode: Optional[str]
+    ) -> list[Verbat]:
+        # With INLINE_THRESHOLD=0 verbat content lives on disk (content
+        # column NULL), so SQL LIKE alone can't match. Pre-filter in SQL
+        # (inline LIKE, or any disk-backed row), then re-check disk-backed
+        # rows in Python after _row_to_verbat loads content from
+        # content_ref. Scan is capped to bound the Python pass.
+        clauses = ["space_id=?", "deprecated=0"]
+        params: list[Any] = [self._space_id]
+        if extract_mode:
+            clauses.append("extract_mode=?")
+            params.append(extract_mode)
+        clauses.append(
+            "(content LIKE ? OR (content IS NULL AND content_ref IS NOT NULL))"
+        )
+        params.append(f"%{query}%")
+        where = " AND ".join(clauses)
+        cursor = await self._db.execute(
+            f"SELECT * FROM verbats WHERE {where} LIMIT ?",
+            (*params, 1000),
+        )
+        rows = await cursor.fetchall()
+        hits: list[Verbat] = []
+        for r in rows:
+            v = self._row_to_verbat(r)
+            if r["content"] is None and query not in v.content:
+                continue  # disk-backed row SQL couldn't pre-filter
+            hits.append(v)
+            if len(hits) >= limit:
+                break
+        return hits
+
+    async def _verbat_deprecate_row(self, vid: VerbatId) -> None:
+        await self._db.execute(
+            "UPDATE verbats SET deprecated=1 WHERE id=? AND space_id=?",
+            (vid, self._space_id),
+        )
+        await self._db.commit()
+
+    async def _verbat_find_by_session(
+        self, conv_session_id: str
+    ) -> Optional[Verbat]:
+        """Find the most recent non-deprecated CONVO verbat for a session.
+
+        SQLite 的 json_extract 在 metadata 上查 conv_session_id。如果 metadata
+        没存这个键（旧数据），返回 None。命中后由 _row_to_verbat 读文件
+        还原 content（INLINE_THRESHOLD=0 时 content 列为 NULL）。
+        """
+        rows = await self._db.execute_fetchall(
+            """
+            SELECT * FROM verbats
+            WHERE space_id=? AND extract_mode='convos' AND deprecated=0
+              AND json_extract(metadata, '$.conv_session_id')=?
+            ORDER BY filed_at DESC LIMIT 1
+            """,
+            (self._space_id, conv_session_id),
+        )
+        if not rows:
+            return None
+        return self._row_to_verbat(rows[0])
+
+    async def _verbat_append_content(
+        self, vid: VerbatId, additional: str
+    ) -> None:
+        """Append `additional` to an existing CONVO verbat's content.
+
+        会话级 verbat 是追加式 transcript：每轮 turn 把文本拼到同一文件
+        + 同一行。content_ref 指向 raw/convos/{vid}.md，覆写整个文件。
+        content 列保持 NULL（INLINE_THRESHOLD=0），content_hash 用新内容
+        重算。如果 vid 不存在或已 deprecated，no-op。
+        """
+        rows = await self._db.execute_fetchall(
+            "SELECT content, content_ref, deprecated FROM verbats "
+            "WHERE id=? AND space_id=?",
+            (vid, self._space_id),
+        )
+        if not rows:
+            return
+        row = rows[0]
+        if bool(row["deprecated"]):
+            return
+        # 读现有 content：优先 inline，否则从文件读
+        if row["content"] is not None:
+            old_content = row["content"]
+        elif row["content_ref"]:
+            old_content = await self._raw_read(row["content_ref"])
+        else:
+            old_content = ""
+        new_content = (
+            old_content + "\n\n" + additional if old_content else additional
+        )
+        # 覆写文件
+        if row["content_ref"]:
+            await self._raw_write(row["content_ref"], new_content)
+        # 更新 DB 行（content 列维持 NULL，content_hash 重算）
+        new_hash = sha256_hash(new_content)
+        await self._db.execute(
+            "UPDATE verbats SET content_hash=?, filed_at=? WHERE id=? AND space_id=?",
+            (new_hash, datetime.utcnow().isoformat(), vid, self._space_id),
+        )
+        await self._db.commit()
+
+    # ===================================================================
+    # L1 Document — SQLite storage
+    # ===================================================================
+    async def _doc_insert(
+        self,
+        doc_id: DocId,
+        norm_path: str,
+        page_type: str,
+        title: str,
+        raw_frontmatter: str,
+        content_hash: str,
+        now: datetime,
+    ) -> None:
+        await self._db.execute(
+            """
+            INSERT INTO documents
+              (id, space_id, path, type, title, frontmatter, content_hash,
+               version, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)
+            """,
+            (
+                doc_id,
+                self._space_id,
+                norm_path,
+                page_type,
+                title,
+                raw_frontmatter,
+                content_hash,
+                now.isoformat(),
+                now.isoformat(),
+            ),
+        )
+        await self._db.commit()
+
+    async def _doc_fetch_meta_by_path(self, norm_path: str) -> Optional[tuple[DocId, int]]:
+        rows = await self._db.execute_fetchall(
+            "SELECT id, version FROM documents WHERE space_id=? AND path=?",
+            (self._space_id, norm_path),
+        )
+        if not rows:
+            return None
+        return (rows[0]["id"], rows[0]["version"])
+
+    async def _doc_fetch_row(self, doc_id: DocId) -> Optional[dict]:
+        rows = await self._db.execute_fetchall(
+            "SELECT * FROM documents WHERE id=? AND space_id=?",
+            (doc_id, self._space_id),
+        )
+        if not rows:
+            return None
+        r = rows[0]
+        return {
+            "type": r["type"],
+            "title": r["title"],
+            "content_hash": r["content_hash"],
+            "version": r["version"],
+            "status": r["status"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+
+    async def _doc_update_version(
+        self,
+        doc_id: DocId,
+        page_type: str,
+        title: str,
+        raw_frontmatter: str,
+        content_hash: str,
+        now: datetime,
+    ) -> None:
+        rows = await self._db.execute_fetchall(
+            "SELECT version FROM documents WHERE id=?", (doc_id,)
+        )
+        new_version = (rows[0]["version"] + 1) if rows else 1
+        await self._db.execute(
+            """
+            UPDATE documents SET
+              type=?, title=?, frontmatter=?, content_hash=?,
+              version=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                page_type,
+                title,
+                raw_frontmatter,
+                content_hash,
+                new_version,
+                now.isoformat(),
+                doc_id,
+            ),
+        )
+        await self._db.commit()
+
+    async def _doc_delete_row(self, doc_id: DocId) -> None:
+        await self._db.execute(
+            "DELETE FROM documents WHERE id=?", (doc_id,)
+        )
+        await self._db.commit()
+
+    async def _doc_list_rows(
+        self, type: Optional[str], limit: int, offset: int
+    ) -> list[DocumentMeta]:
+        if type:
+            cursor = await self._db.execute(
+                "SELECT id, path, type, title, status, created_at, updated_at "
+                "FROM documents WHERE space_id=? AND type=? "
+                "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (self._space_id, type, limit, offset),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT id, path, type, title, status, created_at, updated_at "
+                "FROM documents WHERE space_id=? "
+                "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (self._space_id, limit, offset),
+            )
+        rows = await cursor.fetchall()
+        return [
+            DocumentMeta(
+                id=r["id"],
+                path=r["path"],
+                type=r["type"],
+                title=r["title"],
+                status=r["status"],
+                created_at=parse_dt(r["created_at"]),
+                updated_at=parse_dt(r["updated_at"]),
+            )
+            for r in rows
+        ]
+
+    async def _doc_invalidate_edges(self, doc_id: DocId, now_iso: str) -> None:
+        # Invalidate edges whose source is this doc; NULL the FK so subsequent
+        # document deletion doesn't trip the FOREIGN KEY constraint
+        # (edges.source_document_id has no ON DELETE SET NULL).
+        await self._db.execute(
+            "UPDATE edges SET valid_to=?, source_document_id=NULL "
+            "WHERE source_document_id=? AND valid_to IS NULL",
+            (now_iso, doc_id),
+        )
+        await self._db.commit()
+
+    async def _chunks_replace_for_doc(self, doc_id: DocId, body: str) -> None:
+        await self._db.execute(
+            "DELETE FROM document_chunks WHERE document_id=?", (doc_id,)
+        )
+        chunks = chunk_text(body, max_chars=2000)
+        for idx, chunk_text_body, chunk_hash in chunks:
+            chunk_id = f"{doc_id}_c{chunk_hash}"
+            await self._db.execute(
+                "INSERT INTO document_chunks (id, document_id, chunk_index, chunk_hash, content, token_count) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (chunk_id, doc_id, idx, chunk_hash, chunk_text_body, len(chunk_text_body) // 4),
+            )
+        await self._db.commit()
+
+    async def _doc_list_chunk_hashes(self, doc_id: DocId) -> list[str]:
+        async with self._db.execute(
+            "SELECT chunk_hash FROM document_chunks "
+            "WHERE document_id=? AND chunk_hash IS NOT NULL",
+            (doc_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [r[0] for r in rows]
+
+    async def _fts_search_chunks(self, query: str, limit: int) -> list[FtsHit]:
+        cursor = await self._db.execute(
+            """
+            SELECT c.id as chunk_id, c.document_id, d.path, d.title,
+                   bm25(chunks_fts) as score,
+                   snippet(chunks_fts, 0, '<<', '>>', '...', 20) as snippet
+            FROM chunks_fts
+            JOIN document_chunks c ON c.rowid = chunks_fts.rowid
+            JOIN documents d ON d.id = c.document_id
+            WHERE chunks_fts MATCH ? AND d.space_id=?
+            ORDER BY score LIMIT ?
+            """,
+            (query, self._space_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [
+            FtsHit(
+                chunk_id=r["chunk_id"],
+                document_id=r["document_id"],
+                path=r["path"],
+                title=r["title"],
+                score=-r["score"],
+                snippet=r["snippet"] or "",
+            )
+            for r in rows
+        ]
+
+    async def _lookup_doc_verbats(self, doc_id: DocId) -> list[VerbatId]:
+        cursor = await self._db.execute(
+            "SELECT verbat_id FROM document_sources WHERE document_id=?",
+            (doc_id,),
+        )
+        rows = await cursor.fetchall()
+        return [r["verbat_id"] for r in rows]
+
+    async def _doc_search_references(self, query: str, limit: int) -> list[DocHit]:
+        cursor = await self._db.execute(
+            """
+            SELECT DISTINCT d.id, d.path, d.type, d.title, d.updated_at
+            FROM documents d
+            JOIN edges e ON e.source_document_id = d.id
+            WHERE d.space_id=? AND (e.subject=? OR e.object=?)
+            ORDER BY d.updated_at DESC
+            LIMIT ?
+            """,
+            (self._space_id, query, query, limit),
+        )
+        rows = await cursor.fetchall()
+        return [
+            DocHit(
+                document_id=r["id"],
+                path=r["path"],
+                title=r["title"],
+                type=r["type"],
+                score=1.0,
+                snippet="",
+                verbats=[],
+            )
+            for r in rows
+        ]
+
+    # ===================================================================
+    # File I/O (FS-backed)
+    # ===================================================================
+    async def _raw_write(self, rel_path: str, content: str) -> None:
+        path = self._root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    async def _raw_read(self, rel_path: str) -> str:
+        path = self._root / rel_path
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
+
+    async def _raw_delete(self, rel_path: str) -> None:
+        path = self._root / rel_path
+        if path.exists():
+            path.unlink()
+
+    async def _wiki_write(self, norm_path: str, content: str) -> None:
+        path = self._root / "wiki" / norm_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    async def _wiki_read(self, norm_path: str) -> str:
+        path = self._root / "wiki" / norm_path
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
+
+    async def _wiki_delete(self, norm_path: str) -> None:
+        path = self._root / "wiki" / norm_path
+        if path.exists():
+            path.unlink()
+
+    # ===================================================================
+    # L2 Graph — SQLite storage
+    # ===================================================================
+    async def _edge_insert(self, e: Edge) -> None:
+        await self._db.execute(
+            """
+            INSERT INTO edges
+              (id, space_id, subject, predicate, object, valid_from, valid_to,
+               source_document_id, source_verbat_id, weight, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                e.id,
+                self._space_id,
+                e.subject,
+                e.predicate,
+                e.object,
+                e.valid_from.isoformat() if e.valid_from else None,
+                e.valid_to.isoformat() if e.valid_to else None,
+                e.source_document_id,
+                e.source_verbat_id,
+                e.weight,
+                e.created_at.isoformat(),
+            ),
+        )
+        await self._db.commit()
+
+    async def _edge_invalidate_row(self, eid: EdgeId, valid_to_iso: str) -> None:
+        await self._db.execute(
+            "UPDATE edges SET valid_to=? WHERE id=? AND space_id=? AND valid_to IS NULL",
+            (valid_to_iso, eid, self._space_id),
+        )
+        await self._db.commit()
+
+    async def _edges_query(
+        self,
+        entity: Optional[str],
+        predicate: Optional[str],
+        include_invalid: bool,
+    ) -> list[Edge]:
+        clauses = ["space_id=?"]
+        params: list[Any] = [self._space_id]
+        if entity:
+            clauses.append("(subject=? OR object=?)")
+            params.extend([entity, entity])
+        if predicate:
+            clauses.append("predicate=?")
+            params.append(predicate)
+        if not include_invalid:
+            clauses.append("valid_to IS NULL")
+        where = " AND ".join(clauses)
+
+        cursor = await self._db.execute(
+            f"SELECT * FROM edges WHERE {where} LIMIT 500", params
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_edge(r) for r in rows]
+
+    async def _edges_for_node(self, node: str) -> list[Edge]:
+        cursor = await self._db.execute(
+            "SELECT * FROM edges WHERE space_id=? AND (subject=? OR object=?) "
+            "AND valid_to IS NULL",
+            (self._space_id, node, node),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_edge(r) for r in rows]
+
+    async def _edges_timeline(self, entity: str) -> list[Edge]:
+        cursor = await self._db.execute(
+            "SELECT * FROM edges WHERE space_id=? AND (subject=? OR object=?) "
+            "ORDER BY COALESCE(valid_from, created_at) ASC",
+            (self._space_id, entity, entity),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_edge(r) for r in rows]
+
+    async def _edges_backlinks(self, entity: str) -> list[Edge]:
+        cursor = await self._db.execute(
+            "SELECT * FROM edges WHERE space_id=? AND object=? AND valid_to IS NULL "
+            "ORDER BY created_at DESC",
+            (self._space_id, entity),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_edge(r) for r in rows]
+
+    async def _rebuild_doc_edges(
+        self, doc_id: DocId, frontmatter: dict, body: str
+    ) -> None:
+        from gyra.knowledge.frontmatter import extract_footnotes, extract_wikilinks
+
+        # 1. Wikilinks → links-to edges
+        wikilinks = extract_wikilinks(body)
+        related = frontmatter.get("related", []) or []
+        if isinstance(related, str):
+            related = [related]
+        wikilinks.extend(related)
+
+        title = frontmatter.get("title", "")
+        now = datetime.utcnow()
+        for target in wikilinks:
+            await self._db.execute(
+                "INSERT INTO edges (id, space_id, subject, predicate, object, valid_from, valid_to, "
+                "source_document_id, weight, created_at) "
+                "VALUES (?, ?, ?, 'links-to', ?, ?, NULL, ?, 1.0, ?)",
+                (
+                    new_edge_id(),
+                    self._space_id,
+                    title,
+                    target,
+                    now.isoformat(),
+                    doc_id,
+                    now.isoformat(),
+                ),
+            )
+
+        # 2. Footnotes → cites edges
+        footnotes = extract_footnotes(body)
+        for fn in footnotes:
+            await self._db.execute(
+                "INSERT INTO edges (id, space_id, subject, predicate, object, valid_from, valid_to, "
+                "source_document_id, weight, created_at) "
+                "VALUES (?, ?, ?, 'cites', ?, ?, NULL, ?, 1.0, ?)",
+                (
+                    new_edge_id(),
+                    self._space_id,
+                    title,
+                    fn["source"],
+                    now.isoformat(),
+                    doc_id,
+                    now.isoformat(),
+                ),
+            )
+
+        # 3. sources[] → derived-from edges (and document_sources rows)
+        sources = frontmatter.get("sources", []) or []
+        if isinstance(sources, str):
+            sources = [sources]
+        for vid in sources:
+            await self._db.execute(
+                "INSERT INTO document_sources (document_id, verbat_id) VALUES (?, ?)",
+                (doc_id, vid),
+            )
+            await self._db.execute(
+                "INSERT INTO edges (id, space_id, subject, predicate, object, valid_from, valid_to, "
+                "source_document_id, source_verbat_id, weight, created_at) "
+                "VALUES (?, ?, ?, 'derived-from', ?, ?, NULL, ?, ?, 1.0, ?)",
+                (
+                    new_edge_id(),
+                    self._space_id,
+                    title,
+                    vid,
+                    now.isoformat(),
+                    doc_id,
+                    vid,
+                    now.isoformat(),
+                ),
+            )
+
+        await self._db.commit()
+
+    # ===================================================================
+    # Cross-cutting: vector store (lazy LanceDB)
+    # ===================================================================
+    async def _make_vector_store(self):
+        from gyra_ext.knowledge.vaultfs.vector_lancedb import LanceVectorStore
+
+        return LanceVectorStore(self._root / ".ks" / "vectors.lance")
+
+    # ===================================================================
+    # Cross-cutting: writer lock (flock)
+    # ===================================================================
+    async def _acquire_distributed_lock(self, timeout: int) -> int:
+        """Acquire flock on a dup'd fd. Returns the fd handle.
+
+        Caller (BaseVaultFS.acquire_write_lock) wraps this with the
+        in-process asyncio.Lock and releases via
+        `_release_distributed_lock(fd)`.
+        """
+        dup_fd = os.dup(self._lock_fd)
+        deadline = time.time() + timeout
+        while True:
+            try:
+                fcntl.flock(dup_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return dup_fd
+            except BlockingIOError:
+                if time.time() >= deadline:
+                    os.close(dup_fd)
+                    raise TimeoutError(
+                        f"Could not acquire flock for space {self._space_id} "
+                        f"within {timeout}s"
+                    )
+                await asyncio.sleep(0.1)
+
+    async def _release_distributed_lock(self, handle: Any) -> None:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        finally:
+            try:
+                os.close(handle)
+            except OSError:
+                pass
+
+    # ===================================================================
+    # Cross-cutting: filesystem watcher (LocalVaultFS-specific)
+    # ===================================================================
+    async def watch_changes(
+        self, callback: Callable[[ChangeEvent], None]
+    ) -> LocalWatcher:
+        try:
+            from watchfiles import awatch
+        except ImportError:
+            logger.warning(
+                "watchfiles not installed; filesystem watcher disabled"
+            )
+            return LocalWatcher(stop_fn=lambda: None)
+
+        async def _watch():
+            async for changes in awatch(self._root / "raw", self._root / "wiki"):
+                for change_type, path in changes:
+                    rel = os.path.relpath(path, self._root)
+                    layer = "L0" if rel.startswith("raw/") else "L1"
+                    op_map = {
+                        "added": "create",
+                        "modified": "update",
+                        "deleted": "delete",
+                    }
+                    op = op_map.get(change_type.name.lower(), "update")
+                    await callback(
+                        ChangeEvent(
+                            space_id=self._space_id,
+                            layer=layer,
+                            op=op,
+                            id=rel,
+                            path=rel,
+                        )
+                    )
+
+        task = asyncio.create_task(_watch())
+        self._watcher_task = task
+        return LocalWatcher(stop_fn=task.cancel)
+
+    # ===================================================================
+    # Rebuild helpers
+    # ===================================================================
+    async def _chunks_clear_all(self) -> None:
+        await self._db.execute("DELETE FROM document_chunks")
+        await self._db.commit()
+
+    async def _edges_invalidate_all(self, now_iso: str) -> None:
+        await self._db.execute(
+            "UPDATE edges SET valid_to=? WHERE space_id=? AND valid_to IS NULL",
+            (now_iso, self._space_id),
+        )
+        await self._db.commit()
+
+    # ===================================================================
+    # Embedder identity
+    # ===================================================================
+    async def _embedder_identity_get(self) -> Optional[EmbedderIdentity]:
+        rows = await self._db.execute_fetchall(
+            "SELECT * FROM embedder_identity WHERE space_id=?",
+            (self._space_id,),
+        )
+        if not rows:
+            return None
+        r = rows[0]
+        return EmbedderIdentity(
+            space_id=self._space_id,
+            model_name=r["model_name"],
+            dimension=r["dimension"],
+            state=EmbedderState(r["state"]),
+            updated_at=parse_dt(r["updated_at"]),
+        )
+
+    async def _embedder_identity_upsert(
+        self, model_name: str, dimension: int, state: EmbedderState, now: datetime
+    ) -> None:
+        # Upsert: INSERT OR REPLACE for first-time; UPDATE for swap
+        existing = await self._db.execute_fetchall(
+            "SELECT space_id FROM embedder_identity WHERE space_id=?",
+            (self._space_id,),
+        )
+        if existing:
+            await self._db.execute(
+                "UPDATE embedder_identity SET model_name=?, dimension=?, state=?, updated_at=? "
+                "WHERE space_id=?",
+                (
+                    model_name,
+                    dimension,
+                    state.value,
+                    now.isoformat(),
+                    self._space_id,
+                ),
+            )
+        else:
+            await self._db.execute(
+                "INSERT INTO embedder_identity (space_id, model_name, dimension, state, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (self._space_id, model_name, dimension, state.value, now.isoformat()),
+            )
+        await self._db.commit()
+
+    async def _embedder_identity_update_state(
+        self, state: EmbedderState, now: datetime
+    ) -> None:
+        await self._db.execute(
+            "UPDATE embedder_identity SET state=?, updated_at=? WHERE space_id=?",
+            (state.value, now.isoformat(), self._space_id),
+        )
+        await self._db.commit()
+
+    # ===================================================================
+    # LLM call ledger (RFC-005)
+    # ===================================================================
+    async def llm_call_log_add(
+        self,
+        job_id: Optional[str],
+        task_name: str,
+        model: str,
+        usage: Optional[dict],
+        latency_ms: int = 0,
+        error_code: int = 0,
+    ) -> None:
+        """Record one LLM call's token usage (best-effort ledger)."""
+        import uuid
+
+        usage = usage or {}
+        await self._db.execute(
+            """
+            INSERT INTO llm_call_log
+              (id, space_id, job_id, task_name, model,
+               prompt_tokens, completion_tokens, total_tokens,
+               latency_ms, error_code, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"llm_{uuid.uuid4().hex[:16]}",
+                self._space_id,
+                job_id,
+                task_name,
+                model or "",
+                int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0),
+                int(usage.get("total_tokens") or 0),
+                int(latency_ms or 0),
+                int(error_code or 0),
+                datetime.utcnow().isoformat(),
+            ),
+        )
+        await self._db.commit()
+
+    async def llm_call_log_query(
+        self,
+        limit: int = 100,
+        task_name: Optional[str] = None,
+        job_id: Optional[str] = None,
+    ) -> list[dict]:
+        """List ledger rows (newest first), optionally filtered."""
+        sql = (
+            "SELECT id, job_id, task_name, model, prompt_tokens, "
+            "completion_tokens, total_tokens, latency_ms, error_code, "
+            "created_at FROM llm_call_log WHERE space_id=?"
+        )
+        params: list = [self._space_id]
+        if task_name:
+            sql += " AND task_name=?"
+            params.append(task_name)
+        if job_id:
+            sql += " AND job_id=?"
+            params.append(job_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = await self._db.execute_fetchall(sql, tuple(params))
+        return [dict(r) for r in rows]
+
+    async def llm_call_log_summary(self) -> dict:
+        """Aggregate the ledger: totals + by_task / by_model breakdowns."""
+        rows = await self._db.execute_fetchall(
+            "SELECT task_name, model, prompt_tokens, completion_tokens, "
+            "total_tokens FROM llm_call_log WHERE space_id=?",
+            (self._space_id,),
+        )
+
+        def _bucket() -> dict:
+            return {"tokens": 0, "calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+
+        by_task: dict = {}
+        by_model: dict = {}
+        total_calls = 0
+        total_tokens = 0
+        total_prompt = 0
+        total_completion = 0
+        for r in rows:
+            total_calls += 1
+            total_tokens += r["total_tokens"] or 0
+            total_prompt += r["prompt_tokens"] or 0
+            total_completion += r["completion_tokens"] or 0
+            for bucket, key in ((by_task, r["task_name"]), (by_model, r["model"] or "unknown")):
+                b = bucket.setdefault(key, _bucket())
+                b["tokens"] += r["total_tokens"] or 0
+                b["calls"] += 1
+                b["prompt_tokens"] += r["prompt_tokens"] or 0
+                b["completion_tokens"] += r["completion_tokens"] or 0
+        return {
+            "total_calls": total_calls,
+            "total_tokens": total_tokens,
+            "prompt_tokens": total_prompt,
+            "completion_tokens": total_completion,
+            "by_task": by_task,
+            "by_model": by_model,
+        }
+
+    # ===================================================================
+    # Ingest job ledger
+    # ===================================================================
+    async def ingest_job_save(self, job: dict) -> None:
+        """Upsert one ingest job row (idempotent by job id).
+
+        `job` mirrors the serve layer's IngestJob dataclass fields;
+        verbat_ids / wiki_doc_ids are JSON-encoded lists.
+        """
+        import json as _json
+
+        await self._db.execute(
+            """
+            INSERT OR REPLACE INTO ingest_jobs
+              (id, space_id, space_slug, source_file, verbat_ids, wiki_doc_ids,
+               status, error, started_at, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job["id"],
+                self._space_id,
+                job["space_slug"],
+                job["source_file"],
+                _json.dumps(job.get("verbat_ids") or []),
+                _json.dumps(job.get("wiki_doc_ids") or []),
+                job.get("status") or "pending",
+                job.get("error"),
+                job["started_at"],
+                job.get("finished_at"),
+            ),
+        )
+        await self._db.commit()
+
+    async def ingest_job_get(self, job_id: str) -> Optional[dict]:
+        """Fetch one ingest job row by id, or None."""
+        rows = await self._db.execute_fetchall(
+            "SELECT * FROM ingest_jobs WHERE id=? AND space_id=?",
+            (job_id, self._space_id),
+        )
+        if not rows:
+            return None
+        return self._row_to_ingest_job(rows[0])
+
+    async def ingest_job_list(self, limit: int = 50) -> list[dict]:
+        """List ingest job rows (newest first)."""
+        rows = await self._db.execute_fetchall(
+            "SELECT * FROM ingest_jobs WHERE space_id=? "
+            "ORDER BY started_at DESC LIMIT ?",
+            (self._space_id, limit),
+        )
+        return [self._row_to_ingest_job(r) for r in rows]
+
+    def _row_to_ingest_job(self, r: aiosqlite.Row) -> dict:
+        import json as _json
+
+        def _loads(raw):
+            try:
+                return _json.loads(raw) if raw else []
+            except Exception:
+                return []
+
+        return {
+            "id": r["id"],
+            "space_slug": r["space_slug"],
+            "source_file": r["source_file"],
+            "verbat_ids": _loads(r["verbat_ids"]),
+            "wiki_doc_ids": _loads(r["wiki_doc_ids"]),
+            "status": r["status"],
+            "error": r["error"],
+            "started_at": r["started_at"],
+            "finished_at": r["finished_at"],
+        }
+
+    # ===================================================================
+    # SQLite-specific row mappers
+    # ===================================================================
+    def _row_to_verbat(self, r: aiosqlite.Row) -> Verbat:
+        import json as _json
+        if r["content"] is not None:
+            content = r["content"]
+        elif r["content_ref"]:
+            content = (self._root / r["content_ref"]).read_text(encoding="utf-8")
+        else:
+            content = ""
+
+        meta = None
+        meta_raw = r["metadata"] if "metadata" in r.keys() else None
+        if meta_raw:
+            try:
+                meta = _json.loads(meta_raw)
+            except Exception:
+                meta = None
+
+        return Verbat(
+            id=r["id"],
+            space_id=r["space_id"],
+            source_file=r["source_file"],
+            source_path=r["source_path"],
+            content=content,
+            content_hash=r["content_hash"],
+            extract_mode=ExtractMode(r["extract_mode"]),
+            content_date=parse_dt(r["content_date"]) if r["content_date"] else None,
+            filed_at=parse_dt(r["filed_at"]),
+            source_mtime=r["source_mtime"],
+            normalize_version=r["normalize_version"],
+            deprecated=bool(r["deprecated"]),
+            metadata=meta,
+        )
+
+    def _row_to_edge(self, r: aiosqlite.Row) -> Edge:
+        return Edge(
+            id=r["id"],
+            space_id=r["space_id"],
+            subject=r["subject"],
+            predicate=r["predicate"],
+            object=r["object"],
+            valid_from=parse_dt(r["valid_from"]) if r["valid_from"] else None,
+            valid_to=parse_dt(r["valid_to"]) if r["valid_to"] else None,
+            source_document_id=r["source_document_id"],
+            source_verbat_id=r["source_verbat_id"],
+            weight=r["weight"],
+            created_at=parse_dt(r["created_at"]) if r["created_at"] else None,
+        )
+
+
+# Re-export for backwards compatibility (existing imports reference
+# `from .local import EmbedderMismatchError`).
+__all__ = ["LocalVaultFS", "LocalWriteLock", "LocalSubscription", "EmbedderMismatchError"]

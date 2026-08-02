@@ -1,0 +1,138 @@
+import { getUserId } from '@/utils';
+import { HEADER_USER_ID_KEY, STORAGE_USERINFO_KEY, STORAGE_USERINFO_VALID_TIME_KEY } from '@/utils/constants/index';
+import { getMessage } from '@/utils/antd-instance';
+import axios, { AxiosError, AxiosRequestConfig, AxiosResponse } from 'axios';
+
+export type ResponseType<T = any> = {
+  data: T;
+  err_code: string | null;
+  err_msg: string | null;
+  success: boolean;
+};
+
+export type ApiResponse<T = any, D = any> = AxiosResponse<ResponseType<T>, D>;
+
+export type SuccessTuple<T = any, D = any> = [null, T, ResponseType<T>, ApiResponse<T, D>];
+
+export type FailedTuple<T = any, D = any> = [Error | AxiosError<T, D>, null, null, null];
+
+export const ins = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? '/',
+  withCredentials: true, // Send cookies for session-based auth
+});
+
+const LONG_TIME_API: string[] = [
+  '/db/add',
+  '/db/test/connect',
+  '/db/summary',
+  '/params/file/load',
+  '/chat/prepare',
+  '/model/start',
+  '/model/stop',
+  '/editor/sql/run',
+  '/sql/editor/submit',
+  '/editor/chart/run',
+  '/chart/editor/submit',
+  '/document/upload',
+  '/document/sync',
+  '/agent/install',
+  '/agent/uninstall',
+  '/personal/agent/upload',
+];
+
+// Endpoints whose 401 should NOT trigger a redirect (the page handles them inline).
+const AUTH_ENDPOINTS_BYPASS_REDIRECT = [
+  '/api/v1/auth/me',
+  '/api/v1/auth/local/login',
+  '/api/v1/auth/local/register',
+  '/api/v1/auth/oauth/status',
+];
+
+ins.interceptors.request.use(request => {
+  const isLongTimeApi = LONG_TIME_API.some(item => request.url && request.url.indexOf(item) >= 0);
+  if (!request.timeout) {
+    request.timeout = isLongTimeApi ? 60000 : 100000;
+  }
+  request.headers.set(HEADER_USER_ID_KEY, getUserId());
+  return request;
+});
+
+ins.interceptors.response.use(
+  response => response,
+  (error: AxiosError) => {
+    if (typeof window !== 'undefined' && error.response?.status === 401) {
+      const url = error.config?.url || '';
+      const path = window.location.pathname;
+      const onAuthPage = path.startsWith('/login') || path.startsWith('/auth/callback');
+      const bypass = AUTH_ENDPOINTS_BYPASS_REDIRECT.some(p => url.indexOf(p) >= 0);
+      if (!onAuthPage && !bypass) {
+        try {
+          localStorage.removeItem(STORAGE_USERINFO_KEY);
+          localStorage.removeItem(STORAGE_USERINFO_VALID_TIME_KEY);
+        } catch {
+          /* ignore */
+        }
+        const next = encodeURIComponent(path + window.location.search);
+        window.location.href = `/login?next=${next}`;
+      }
+    } else if (typeof window !== 'undefined' && error.response?.status === 403) {
+      getMessage()?.error('没有访问该资源的权限 (403)');
+    }
+    return Promise.reject(error);
+  },
+);
+
+export const GET = <Params = any, Response = any, D = any>(
+  url: string,
+  params?: Params,
+  config?: AxiosRequestConfig<D>,
+) => {
+  return ins.get<Params, ApiResponse<Response>>(url, { params, ...config });
+};
+
+export const POST = <Data = any, Response = any, D = any>(url: string, data?: Data, config?: AxiosRequestConfig<D>) => {
+  return ins.post<Data, ApiResponse<Response>>(url, data, config);
+};
+
+export const PATCH = <Data = any, Response = any, D = any>(
+  url: string,
+  data?: Data,
+  config?: AxiosRequestConfig<D>,
+) => {
+  return ins.patch<Data, ApiResponse<Response>>(url, data, config);
+};
+
+export const PUT = <Data = any, Response = any, D = any>(url: string, data?: Data, config?: AxiosRequestConfig<D>) => {
+  return ins.put<Data, ApiResponse<Response>>(url, data, config);
+};
+
+export const DELETE = <Params = any, Response = any, D = any>(
+  url: string,
+  params?: Params,
+  config?: AxiosRequestConfig<D>,
+) => {
+  return ins.delete<Params, ApiResponse<Response>>(url, { params, ...config });
+};
+
+export * from './app';
+export * from './chat';
+export * from './evaluate';
+export * from './flow';
+// TODO: rewire to new knowledge-vault page — `export * from './knowledge';` removed.
+export * from './prompt';
+export * from './request';
+export * from './tools';
+export * from './skill';
+export * from './cron';
+export * from './channel';
+export * from './monitoring';
+export * from './usage';
+// Scenario Workspace MVP modules
+export * from './workspace';
+export * from './task';
+export * from './playbook';
+export * from './artifact';
+export * from './workspace-asset';
+export * from './delivery';
+export * from './intervention';
+export * from './trigger';

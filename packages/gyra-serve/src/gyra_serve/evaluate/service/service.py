@@ -1,0 +1,136 @@
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Optional
+
+from gyra.component import SystemApp
+from gyra.core.interface.evaluation import (
+    EVALUATE_FILE_COL_ANSWER,
+    EvaluationResult,
+    metric_manage,
+)
+
+try:
+    from gyra.rag.evaluation.answer import AnswerRelevancyMetric  # type: ignore
+except ImportError:  # pragma: no cover - rag module removed
+    AnswerRelevancyMetric = None  # type: ignore[assignment]
+
+from gyra.storage.metadata import BaseDao
+
+from ...agent.agents.controller import multi_agents
+from ...agent.evaluation.evaluation import AgentEvaluator, AgentOutputOperator
+from ...core import BaseService
+from ...prompt.service.service import Service as PromptService
+
+# gyra_serve.rag was removed; recall evaluation (which depended on
+# RagService) is no longer available. APP-scene evaluation still works.
+
+from ..api.schemas import EvaluateServeRequest, EvaluateServeResponse, EvaluationScene
+from ..config import SERVE_SERVICE_COMPONENT_NAME, ServeConfig
+from ..models.models import ServeDao, ServeEntity
+
+logger = logging.getLogger(__name__)
+
+executor = ThreadPoolExecutor(max_workers=5)
+
+
+def get_prompt_service(system_app) -> PromptService:
+    return system_app.get_component("gyra_serve_prompt_service", PromptService)
+
+
+class Service(BaseService[ServeEntity, EvaluateServeRequest, EvaluateServeResponse]):
+    """The service class for Evaluate"""
+
+    name = SERVE_SERVICE_COMPONENT_NAME
+
+    def __init__(
+        self, system_app: SystemApp, config: ServeConfig, dao: Optional[ServeDao] = None
+    ):
+        self._system_app = system_app
+        self._serve_config: ServeConfig = config
+        self._dao: ServeDao = dao
+        super().__init__(system_app)
+        self.prompt_service = get_prompt_service(system_app)
+
+    def init_app(self, system_app: SystemApp) -> None:
+        """Initialize the service
+
+        Args:
+            system_app (SystemApp): The system app
+        """
+        self._system_app = system_app
+
+    @property
+    def dao(self) -> BaseDao[ServeEntity, EvaluateServeRequest, EvaluateServeResponse]:
+        """Returns the internal DAO."""
+        return self._dao
+
+    @property
+    def config(self) -> ServeConfig:
+        """Returns the internal ServeConfig."""
+        return self._serve_config
+
+    async def run_evaluation(
+        self,
+        scene_key,
+        scene_value,
+        datasets: List[dict],
+        context: Optional[dict] = None,
+        evaluate_metrics: Optional[List[str]] = None,
+        parallel_num: Optional[int] = 1,
+    ) -> List[List[EvaluationResult]]:
+        """Evaluate results
+
+        Args:
+            scene_key (str): The scene_key
+            scene_value (str): The scene_value
+            datasets (List[dict]): The datasets
+            context (Optional[dict]): The run context
+            evaluate_metrics (Optional[str]): The metric_names
+            parallel_num (Optional[int]): The parallel_num
+
+        Returns:
+            List[List[EvaluationResult]]: The response
+        """
+
+        results = []
+        if EvaluationScene.RECALL.value == scene_key:
+            # Recall evaluation depended on gyra_serve.rag (RagService),
+            # which has been removed. APP-scene evaluation still works.
+            raise NotImplementedError(
+                "Recall evaluation is unavailable: gyra_serve.rag module "
+                "was removed. Use APP-scene evaluation instead."
+            )
+        elif EvaluationScene.APP.value == scene_key:
+            evaluator = AgentEvaluator(
+                operator_cls=AgentOutputOperator,
+                operator_kwargs={
+                    "app_code": scene_value,
+                },
+            )
+
+            metrics = []
+            metric_name_list = evaluate_metrics
+            for name in metric_name_list:
+                if name == AnswerRelevancyMetric.name():
+                    # LLM client is resolved by AIWrapper via ProviderRegistry
+                    # at call time (reading agent.llm config). Pass None here.
+                    llm_client = None
+                    prompt = self.prompt_service.get_template(context.get("prompt"))
+                    metrics.append(
+                        AnswerRelevancyMetric(
+                            llm_client=llm_client,
+                            model_name=context.get("model"),
+                            prompt_template=prompt.template,
+                        )
+                    )
+                    for dataset in datasets:
+                        context = await multi_agents.get_knowledge_resources(
+                            app_code=scene_value, question=dataset.get("query")
+                        )
+                        dataset[EVALUATE_FILE_COL_ANSWER] = context
+                else:
+                    metrics.append(metric_manage.get_by_name(name)())
+            results = await evaluator.evaluate(
+                dataset=datasets, metrics=metrics, parallel_num=parallel_num
+            )
+        return results

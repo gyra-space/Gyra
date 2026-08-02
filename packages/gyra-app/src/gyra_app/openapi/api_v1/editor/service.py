@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+import json
+import logging
+from typing import TYPE_CHECKING, Dict, List, Optional
+
+from gyra._private.config import Config
+from gyra.component import BaseComponent, SystemApp
+from gyra.core import BaseOutputParser
+from gyra.core.interface.message import (
+    MessageStorageItem,
+    StorageConversation,
+    _split_messages_by_round,
+)
+from gyra_app.openapi.api_view_model import Result
+from gyra_app.openapi.editor_view_model import (
+    ChartDetail,
+    ChartList,
+    ChatDbRounds,
+    ChatSqlEditContext,
+)
+from gyra_serve.conversation.serve import Serve as ConversationServe
+
+if TYPE_CHECKING:
+    from gyra.datasource.base import BaseConnect
+
+logger = logging.getLogger(__name__)
+
+
+class EditorService(BaseComponent):
+    name = "gyra_app_editor_service"
+
+    def __init__(self, system_app: SystemApp):
+        self._system_app: SystemApp = system_app
+        super().__init__(system_app)
+
+    def init_app(self, system_app: SystemApp):
+        self._system_app = system_app
+
+    def conv_serve(self) -> ConversationServe:
+        return ConversationServe.get_instance(self._system_app)
+
+    def get_storage_conv(self, conv_uid: str) -> StorageConversation:
+        conv_serve: ConversationServe = self.conv_serve()
+        return StorageConversation(
+            conv_uid,
+            conv_storage=conv_serve.conv_storage,
+            message_storage=conv_serve.message_storage,
+        )
+
+    def get_editor_sql_rounds(self, conv_uid: str) -> List[ChatDbRounds]:
+        storage_conv: StorageConversation = self.get_storage_conv(conv_uid)
+        messages_by_round = _split_messages_by_round(storage_conv.messages)
+        result: List[ChatDbRounds] = []
+        for one_round_message in messages_by_round:
+            if not one_round_message:
+                continue
+            for message in one_round_message:
+                if message.type == "human":
+                    round_name = message.content
+                    if message.additional_kwargs.get("param_value"):
+                        chat_db_round: ChatDbRounds = ChatDbRounds(
+                            round=message.round_index,
+                            db_name=message.additional_kwargs.get("param_value"),
+                            round_name=round_name,
+                        )
+                        result.append(chat_db_round)
+
+        return result
+
+    def get_editor_sql_by_round(
+        self, conv_uid: str, round_index: int
+    ) -> Optional[List[Dict]]:
+        storage_conv: StorageConversation = self.get_storage_conv(conv_uid)
+        messages_by_round = _split_messages_by_round(storage_conv.messages)
+        for one_round_message in messages_by_round:
+            if not one_round_message:
+                continue
+            for message in one_round_message:
+                if message.type == "ai" and message.round_index == round_index:
+                    content = message.content
+                    logger.info(f"history ai json resp: {content}")
+                    # context = content.replace("\\n", " ").replace("\n", " ")
+                    context_dict = _parse_pure_dict(content)
+                    return context_dict
+        return None
+
+    def sql_editor_submit_and_save(
+        self, sql_edit_context: ChatSqlEditContext, connection: BaseConnect
+    ):
+        storage_conv: StorageConversation = self.get_storage_conv(
+            sql_edit_context.conv_uid
+        )
+        if not storage_conv.save_message_independent:
+            raise ValueError(
+                "Submit sql and save just support independent conversation "
+                "mode(after v0.4.6)"
+            )
+        conv_serve: ConversationServe = self.conv_serve()
+        messages_by_round = _split_messages_by_round(storage_conv.messages)
+        to_update_messages = []
+        for one_round_message in messages_by_round:
+            if not one_round_message:
+                continue
+            if one_round_message[0].round_index == sql_edit_context.conv_round:
+                for message in one_round_message:
+                    if message.type == "ai":
+                        db_resp = _parse_pure_dict(message.content)
+                        db_resp["thoughts"] = sql_edit_context.new_speak
+                        db_resp["sql"] = sql_edit_context.new_sql
+                        message.content = json.dumps(db_resp, ensure_ascii=False)
+                        to_update_messages.append(
+                            MessageStorageItem(
+                                storage_conv.conv_uid, message.index, message.to_dict()
+                            )
+                        )
+                    # TODO not support update view message now
+                if to_update_messages:
+                    conv_serve.message_storage.save_or_update_list(to_update_messages)
+                return
+
+    def get_editor_chart_list(self, conv_uid: str) -> Optional[ChartList]:
+        storage_conv: StorageConversation = self.get_storage_conv(conv_uid)
+        messages_by_round = _split_messages_by_round(storage_conv.messages)
+        for one_round_message in messages_by_round:
+            if not one_round_message:
+                continue
+            for message in one_round_message:
+                if message.type == "ai":
+                    context_dict = _parse_pure_dict(message.content)
+                    chart_list: ChartList = ChartList(
+                        round=message.round_index,
+                        db_name=message.additional_kwargs.get("param_value"),
+                        charts=context_dict,
+                    )
+                    return chart_list
+
+    def get_editor_chart_info(
+        self, conv_uid: str, chart_title: str, cfg: Config
+    ) -> Result[ChartDetail]:
+        storage_conv: StorageConversation = self.get_storage_conv(conv_uid)
+        messages_by_round = _split_messages_by_round(storage_conv.messages)
+        for one_round_message in messages_by_round:
+            if not one_round_message:
+                continue
+            for message in one_round_message:
+                db_name = message.additional_kwargs.get("param_value")
+                if not db_name:
+                    logger.error(
+                        "this dashboard dialogue version too old, can't support editor!"
+                    )
+                    return Result.failed(
+                        msg="this dashboard dialogue version too old, can't support "
+                        "editor!"
+                    )
+                if message.type == "view":
+                    view_data: dict = _parse_pure_dict(message.content)
+                    charts: List = view_data.get("charts")
+                    find_chart = list(
+                        filter(lambda x: x["chart_name"] == chart_title, charts)
+                    )[0]
+
+                    conn = cfg.local_db_manager.get_connector(db_name)
+                    table_value = conn.run(find_chart["chart_sql"])
+                    table_value = _mask_chart_table_value(db_name, table_value)
+                    detail: ChartDetail = ChartDetail(
+                        chart_uid=find_chart["chart_uid"],
+                        chart_type=find_chart["chart_type"],
+                        chart_desc=find_chart["chart_desc"],
+                        chart_sql=find_chart["chart_sql"],
+                        db_name=db_name,
+                        chart_name=find_chart["chart_name"],
+                        chart_value=find_chart["values"],
+                        table_value=table_value,
+                    )
+                    return Result.succ(detail)
+        return Result.failed(msg="Can't Find Chart Detail Info!")
+
+
+def _mask_chart_table_value(db_name: str, table_value):
+    """Apply privacy masking to a chart's raw table result.
+
+    ``conn.run()`` returns ``[column_tuple, row1, row2, ...]``. We resolve the
+    datasource from ``db_name`` and mask the data rows, preserving the
+    header-first structure expected by the chart renderer.
+    """
+    if not table_value or len(table_value) <= 1:
+        return table_value
+    try:
+        from gyra_serve.datasource.manages.connect_config_db import (
+            ConnectConfigDao,
+        )
+        from gyra_serve.sql_guard.masking import mask_run_result
+
+        ds_id = None
+        entity = ConnectConfigDao().get_by_names(db_name)
+        if entity:
+            ds_id = entity.id
+
+        columns = list(table_value[0])
+        rows = [list(r) for r in table_value[1:]]
+        _, masked_rows, _ = mask_run_result(ds_id, columns, rows)
+        return [table_value[0]] + masked_rows
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"chart table_value masking skipped: {e}")
+        return table_value
+
+
+def _parse_pure_dict(res_str: str) -> Dict:
+    output_parser = BaseOutputParser()
+    context = output_parser.parse_prompt_response(res_str)
+    return json.loads(context)

@@ -1,0 +1,150 @@
+import asyncio
+import logging
+from typing import Union, Optional, Any, List, AsyncGenerator, Tuple, Coroutine
+
+from fastapi import BackgroundTasks
+
+from gyra.core import HumanMessage
+from gyra.util.date_utils import current_ms
+from gyra.util.tracer import root_tracer
+from gyra_serve.agent.agents.chat.agent_chat import AgentChat, _format_vis_msg
+from gyra_serve.building.config.api.schemas import ChatInParamValue
+
+logger = logging.getLogger(__name__)
+
+
+class SimpleAgentChat(AgentChat):
+    async def chat(
+        self,
+        conv_uid: str,
+        gpts_name: str,
+        user_query: Union[str, HumanMessage],
+        background_tasks: Optional[BackgroundTasks] = None,
+        specify_config_code: Optional[str] = None,
+        user_code: Optional[str] = None,
+        sys_code: Optional[str] = None,
+        stream: bool = True,
+        chat_call_back: Optional[Any] = None,
+        chat_in_params: Optional[List[ChatInParamValue]] = None,
+        **ext_info: Any,
+    ) -> Union[AsyncGenerator[str, None], Tuple[str, str]]:
+        """简单对话入口(构建会话、发起Agent对话、处理连接中断、保存对话历史)
+
+        Args:
+            conv_uid: 会话ID
+            gpts_name: 要对话的智能体名称
+            user_query: 用户消息，支持多模态
+            background_tasks: FastAPI后台任务
+            specify_config_code: 指定配置代码
+            user_code: 用户代码
+            sys_code: 系统代码
+            stream: 是否使用流式响应
+            chat_call_back: 对话回调函数
+            chat_in_params: 对话输入参数
+            **ext_info: 扩展信息
+
+        Yields:
+            str: 对话响应内容
+
+        Raises:
+            asyncio.CancelledError: 客户端断开连接
+            Exception: 其他异常
+        """
+        logger.info(
+            f"Simple agent chat initiated - GPT: {gpts_name}, Query: {user_query}, Session: {conv_uid}"
+        )
+
+        current_message = None
+        agent_conv_id = None
+        agent_task: Optional[Coroutine] = None
+        error_info: Optional[str] = None
+        start_ms = root_tracer.get_context_entrance_ms() or current_ms()
+        ttft = None
+        first_chunk_ms = None
+        span = root_tracer.start_span(
+            "agent_chat",
+            metadata={
+                "chat_type": "simple",
+                "app_code": gpts_name,
+                "ttft": None,
+                "succeed": False,
+            },
+        )
+        try:
+            # 初始化对话
+            current_message = await self._initialize_conversation(
+                conv_session_id=conv_uid,
+                app_code=gpts_name,
+                user_query=user_query,
+                user_code=user_code,
+            )
+
+            (
+                agent_conv_id,
+                gpts_conversations,
+            ) = await self._initialize_agent_conversation(
+                conv_session_id=conv_uid, app_code=gpts_name, **ext_info
+            )
+            span.metadata["conv_id"] = agent_conv_id
+
+            # 处理对话流
+            async for task, chunk, conv_id in self.aggregation_chat(
+                conv_id=conv_uid,
+                agent_conv_id=agent_conv_id,
+                gpts_name=gpts_name,
+                user_query=user_query,
+                user_code=user_code,
+                sys_code=sys_code,
+                chat_in_params=chat_in_params,
+                specify_config_code=specify_config_code,
+                gpts_conversations=gpts_conversations,
+                stream=stream,
+                **ext_info,
+            ):
+                agent_task = task
+                first_chunk_ms = (
+                    current_ms() if first_chunk_ms is None else first_chunk_ms
+                )
+                if ttft is None:
+                    ttft = current_ms() - start_ms
+                    span.metadata["ttft"] = ttft
+                    root_tracer.start_span("agent.ttft", metadata={"ttft": ttft}).end()
+                yield chunk, agent_conv_id
+            span.metadata["succeed"] = True
+        except asyncio.CancelledError:
+            logger.warning(f"Chat interrupted by user for session {conv_uid}")
+            if agent_task:
+                logger.info(
+                    f"Cancelling chat with {gpts_name} (Conversation ID: {agent_conv_id})"
+                )
+                agent_task.cancel()
+            yield _format_vis_msg("对话已被用户中断"), agent_conv_id
+            error_info = "对话已被用户中断"
+
+        except Exception as e:
+            error_msg = f"Chat with {gpts_name} failed (Conversation ID: {agent_conv_id}) - {str(e)}"
+            logger.exception(error_msg)
+            error_info = str(e)
+            if agent_task:
+                logger.info(
+                    f"Exception chat with {gpts_name} (Conversation ID: {agent_conv_id})"
+                )
+                agent_task.cancel()
+            yield _format_vis_msg(error_info), agent_conv_id
+
+        finally:
+            logger.info(f"Saving conversation history for session {conv_uid}")
+            try:
+                await self.save_conversation(
+                    conv_session_id=conv_uid,
+                    agent_conv_id=agent_conv_id,
+                    current_message=current_message,
+                    err_msg=error_info,
+                    chat_call_back=chat_call_back,
+                    first_chunk_ms=first_chunk_ms,
+                )
+            except Exception as e:
+                logger.exception(f"Failed to save conversation: {e}")
+                yield f"Failed to save conversation: {e}", agent_conv_id
+            finally:
+                span.end()

@@ -1,0 +1,46 @@
+[project]
+name = "gyra-serve"
+version = "0.7.0"
+description = "Add your description here"
+authors = [
+    { name = "csunny", email = "cfqcsunny@gmail.com" }
+]
+license = "MIT"
+readme = "README.md"
+requires-python = ">= 3.10"
+
+dependencies = [
+    "gyra-ext",
+    "apscheduler==3.11.0",
+    "dacite==1.9.2",
+    "sqlglot>=25.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/gyra-ai/gyra"
+Documentation = "http://docs.gyra.ai/docs/overview"
+Repository = "https://github.com/gyra-ai/gyra.git"
+Issues = "https://github.com/gyra-ai/gyra/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+managed = true
+dev-dependencies = []
+
+[project.optional-dependencies]
+libro = ["libro>=0.1.25"]
+gyras = ["poetry"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gyra_serve"]
+exclude = [
+    "src/gyra_serve/**/tests",
+    "src/gyra_serve/**/tests/*",
+    "src/gyra_serve/tests",
+    "src/gyra_serve/tests/*",
+    "src/gyra_serve/**/examples",
+    "src/gyra_serve/**/examples/*"
+]

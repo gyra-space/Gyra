@@ -1,0 +1,490 @@
+"""Resource manager."""
+
+import json
+import logging
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Type, Union, cast
+
+import orjson
+
+from gyra._private.pydantic import BaseModel, ConfigDict, model_validator
+from gyra.component import BaseComponent, ComponentType, SystemApp
+from gyra.util.parameter_utils import ParameterDescription
+from .base import AgentResource, Resource, ResourceParameters, ResourceType
+from .pack import ResourcePack
+from .tool.pack import ToolResourceType, _is_function_tool, _to_tool_list
+from ...util.executor_utils import execute_to_thread, t
+
+logger = logging.getLogger(__name__)
+
+
+def _is_valid_resource_instance(obj: Any) -> bool:
+    """Check if object is a valid resource instance (Resource or ToolBase)."""
+    if isinstance(obj, Resource):
+        return True
+    # Also accept ToolBase instances from the new unified framework
+    try:
+        from gyra.agent.tools.base import ToolBase
+
+        if isinstance(obj, ToolBase):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+class RegisterResource(BaseModel):
+    """Register resource model."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    name: Optional[str] = None
+    resource_type: Union[ResourceType, str]
+    resource_type_alias: Optional[str] = None
+    # Use Any to allow both Resource and ToolBase subclasses
+    resource_cls: Any
+    resource_instance: Optional[Any] = None
+    is_class: bool = True
+
+    @property
+    def key(self) -> str:
+        """Return the key."""
+        full_cls = f"{self.resource_cls.__module__}.{self.resource_cls.__qualname__}"
+        name = self.name or full_cls
+        resource_type_alias = self.resource_type_alias or self.resource_type.value
+        return f"{resource_type_alias}:{name}"
+
+    @property
+    def type_unique_key(self) -> str:
+        """Return the key."""
+        resource_type_alias = self.resource_type_alias or self.resource_type.value
+        return resource_type_alias
+
+    @model_validator(mode="before")
+    @classmethod
+    def pre_fill(cls, values):
+        """Pre-fill the model."""
+        if not isinstance(values, dict):
+            return values
+        resource_instance = values.get("resource_instance")
+        if resource_instance is not None:
+            values["name"] = values.get("name") or getattr(
+                resource_instance, "name", None
+            )
+            values["is_class"] = False
+            if not _is_valid_resource_instance(resource_instance):
+                raise ValueError(
+                    f"resource_instance must be a Resource or ToolBase instance, not "
+                    f"{type(resource_instance)}"
+                )
+
+        resource_cls = values.get("resource_cls")
+        if not values.get("resource_type"):
+            if resource_cls and hasattr(resource_cls, "type"):
+                values["resource_type"] = resource_cls.type()
+            else:
+                # Default to Tool type for ToolBase instances
+                values["resource_type"] = ResourceType.Tool
+        if not values.get("resource_type_alias"):
+            if resource_cls and hasattr(resource_cls, "type_alias"):
+                values["resource_type_alias"] = resource_cls.type_alias()
+            else:
+                values["resource_type_alias"] = ResourceType.Tool.value
+        return values
+
+    def get_parameter_class(
+        self,
+        **kwargs,
+    ) -> Type[ResourceParameters]:
+        """Return the parameter description."""
+        if self.is_class:
+            return self.resource_cls.resource_parameters_class(**kwargs)
+        return self.resource_instance.prefer_resource_parameters_class(**kwargs)  # type: ignore # noqa
+
+
+class ResourceManager(BaseComponent):
+    """Resource manager.
+
+    To manage the resources.
+    """
+
+    name = ComponentType.RESOURCE_MANAGER
+
+    def __init__(self, system_app: SystemApp):
+        """Create a new AgentManager."""
+        super().__init__(system_app)
+        self.system_app = system_app
+        self._resources: Dict[str, RegisterResource] = {}
+        self._type_to_resources: Dict[str, List[RegisterResource]] = defaultdict(list)
+
+    def init_app(self, system_app: SystemApp):
+        """Initialize the AgentManager."""
+        self.system_app = system_app
+
+    def after_start(self):
+        """Register all resources."""
+        # TODO: Register some internal resources
+        pass
+
+    def register_resource(
+        self,
+        resource_cls: Optional[Type[Resource]] = None,
+        resource_instance: Optional[Union[Resource, ToolResourceType]] = None,
+        resource_type: Optional[ResourceType] = None,
+        resource_type_alias: Optional[str] = None,
+        ignore_duplicate: bool = False,
+    ):
+        """Register a resource."""
+        if resource_instance and _is_function_tool(resource_instance):
+            resource_instance = _to_tool_list(resource_instance)[0]  # type: ignore
+
+        if resource_cls is None and resource_instance is None:
+            raise ValueError("Resource class or instance must be provided.")
+        name: Optional[str] = None
+        if resource_instance is not None:
+            resource_cls = resource_cls or type(resource_instance)  # type: ignore
+            name = resource_instance.name  # type: ignore
+        resource = RegisterResource(
+            name=name,
+            resource_cls=resource_cls,
+            resource_instance=resource_instance,
+            resource_type=resource_type,
+            resource_type_alias=resource_type_alias,
+        )
+        if resource.key in self._resources:
+            if ignore_duplicate:
+                return
+            else:
+                raise ValueError(f"Resource {resource.key} already exists.")
+        self._resources[resource.key] = resource
+        self._type_to_resources[resource.type_unique_key].append(resource)
+
+    def get_supported_resources_type(self) -> List[str]:
+        """Get supported resources types."""
+        unique_types = []
+        for key, resource in self._resources.items():
+            if resource.type_unique_key not in unique_types:
+                unique_types.append(resource.type_unique_key)
+        return unique_types
+
+    def get_supported_resources(
+        self, version: Optional[str] = None, type: Optional[str] = None, **kwargs
+    ) -> Dict[str, Union[List[ParameterDescription], List[str]]]:
+        """Return the resources."""
+        results: Dict[str, Union[List[ParameterDescription], List[str]]] = defaultdict(
+            list
+        )
+        for key, resource in self._resources.items():
+            if type and type != resource.type_unique_key:
+                continue
+            parameter_class = resource.get_parameter_class(**kwargs)
+            resource_type = resource.type_unique_key
+            configs: Any = parameter_class.to_configurations(
+                parameter_class,
+                version=version,
+            )
+            all_instance_options = []
+            if (
+                isinstance(configs, list)
+                and len(configs) > 0
+                and isinstance(configs[0], ParameterDescription)
+            ):
+                # v1, not compatible with class
+                # set_configs_name = set(results[resource_type])
+                set_configs: list = []
+                if not resource.is_class:
+                    for r in self._type_to_resources[resource_type]:
+                        if not r.is_class:
+                            set_configs.append(
+                                {
+                                    "label": f"[{r.resource_instance.name}]{r.resource_instance.description}",  # type: ignore
+                                    "key": r.resource_instance.name,  # type: ignore
+                                    "description": r.resource_instance.description,  # type: ignore # noqa
+                                    "name": r.resource_instance.name,  # type: ignore # noqa
+                                }
+                            )  # type: ignore
+                all_instance_options = set_configs
+
+            if all_instance_options and version == "v1":
+                # v1 resource instance options
+                results[resource_type] = all_instance_options
+            elif (
+                all_instance_options
+                and version != "v1"
+                and isinstance(configs, list)
+                and isinstance(configs[0], ParameterDescription)
+            ):
+                idx = -1
+                for i, config in enumerate(configs):
+                    if config.param_name == "name":
+                        idx = i
+                        break
+                if idx >= 0:
+                    configs[idx].valid_values = all_instance_options
+                # New version, Update the valid values
+                results[resource_type] = configs
+            else:
+                results[resource_type] = configs
+
+        return results
+
+    def build_resource_by_type(
+        self,
+        type_unique_key: str,
+        agent_resource: AgentResource,
+        return_resource: bool = True,
+        ignore_missing: bool = False,
+    ) -> Union[Resource, Dict[str, Any], None]:
+        """Return the resource by type.
+
+        Args:
+            type_unique_key: Resource type key
+            agent_resource: Agent resource instance
+            return_resource: Whether to return resource instance
+            ignore_missing: If True, return None instead of raising error for missing resource type
+
+        Returns:
+            Resource instance, dict, or None if ignore_missing=True and resource not found
+        """
+        logger.info(
+            f"[ResourceManager.build_resource_by_type] type_key='{type_unique_key}', "
+            f"resource_name='{agent_resource.name}', "
+            f"available_type_keys={list(self._type_to_resources.keys())}, "
+            f"rm_id={id(self)}"
+        )
+        item = self._type_to_resources.get(type_unique_key)
+        if not item:
+            if ignore_missing:
+                logger.warning(
+                    f"Resource type {type_unique_key} not found, skipping. "
+                    f"Resource name: {agent_resource.name}. "
+                    f"This may be a deprecated tool type, please update your app configuration."
+                )
+                return None
+            raise ValueError(f"Resource type {type_unique_key} not found.")
+        inst_items = [i for i in item if not i.is_class]
+        resource_value: Union[str, Dict[str, Any]] = agent_resource.value
+        v2_resource = False
+        if resource_value and isinstance(resource_value, str):
+            try:
+                resource_value = json.loads(resource_value)
+                # V2 value is JSON string
+                v2_resource = True
+            except json.JSONDecodeError:
+                pass
+        elif resource_value and isinstance(resource_value, dict):
+            v2_resource = True
+
+        if inst_items:
+            real_resource_name = (
+                resource_value.get("name")
+                if isinstance(resource_value, dict)
+                else resource_value
+            )
+            for i in inst_items:
+                if (
+                    i.resource_instance
+                    and i.resource_instance.name == real_resource_name
+                ):
+                    return (
+                        i.resource_instance
+                        if return_resource
+                        else {"name": real_resource_name}
+                    )
+            if ignore_missing:
+                logger.warning(
+                    f"Resource {real_resource_name} not found in {type_unique_key}, "
+                    f"skipping (ignore_missing=True)"
+                )
+                return None
+            raise ValueError(
+                f"Resource {real_resource_name} not found in {type_unique_key}"
+            )
+            # return cast(Resource, inst_items[0].resource_instance)
+        elif len(inst_items) > 1:
+            if ignore_missing:
+                logger.warning(
+                    f"Multiple instances of resource {type_unique_key} found, "
+                    f"skipping (ignore_missing=True)"
+                )
+                return None
+            raise ValueError(
+                f"Multiple instances of resource {type_unique_key} found, "
+                f"please specify the resource name."
+            )
+        else:
+            single_item = item[0]
+            try:
+                parameter_cls = single_item.get_parameter_class()
+                param = parameter_cls.from_dict(
+                    resource_value if v2_resource else agent_resource.to_dict(),
+                    ignore_extra_fields=True,
+                )
+                param_dict = param.to_dict()
+                if not return_resource:
+                    return param_dict
+                param_dict["system_app"] = self.system_app
+                resource_inst = single_item.resource_cls(**param_dict)
+                return resource_inst
+            except Exception as e:
+                if ignore_missing:
+                    logger.warning(
+                        f"Failed to build resource {single_item.key}: {str(e)}, "
+                        f"skipping (ignore_missing=True). "
+                        f"Resource: type={type_unique_key}, name={agent_resource.name}"
+                    )
+                    return None
+                logger.warning(f"Failed to build resource {single_item.key}: {str(e)}")
+                raise ValueError(
+                    f"Failed to build resource {single_item.key}: {str(e)}"
+                )
+
+    def build_resource(
+        self,
+        agent_resources: Optional[List[AgentResource]] = None,
+        ignore_missing: bool = False,
+    ) -> Optional[Resource]:
+        """Build a resource.
+
+        If there is only one resource, return the resource instance, otherwise return a
+        ResourcePack.
+
+        Args:
+            agent_resources: The agent resources.
+            ignore_missing: If True, ignore missing resource types instead of raising error.
+
+        Returns:
+            Optional[Resource]: The resource instance.
+        """
+        if not agent_resources:
+            return None
+        dependencies: List[Resource] = execute_to_thread(
+            *[
+                t(
+                    self.build_resource_by_type,
+                    resource.type,
+                    resource,
+                    True,
+                    ignore_missing,
+                )
+                for resource in agent_resources
+            ]
+        )
+        # Filter out None values (missing resources when ignore_missing=True)
+        dependencies = [d for d in dependencies if d is not None]
+
+        if len(dependencies) == 0:
+            return None
+        elif len(dependencies) == 1:
+            return dependencies[0]
+        else:
+            return ResourcePack(dependencies)
+
+    async def a_build_resource(
+        self,
+        agent_resources: Optional[List[AgentResource]] = None,
+        ignore_missing: bool = False,
+    ) -> Optional[Resource]:
+        """Build a resource.
+
+        If there is only one resource, return the resource instance, otherwise return a
+        ResourcePack.
+
+        Args:
+            agent_resources: The agent resources.
+            ignore_missing: If True, ignore missing resource types instead of raising error.
+
+        Returns:
+            Optional[Resource]: The resource instance.
+        """
+        if not agent_resources:
+            return None
+        dependencies: List[Resource] = execute_to_thread(
+            *[
+                t(
+                    self.build_resource_by_type,
+                    resource.type,
+                    resource,
+                    True,
+                    ignore_missing,
+                )
+                for resource in agent_resources
+            ]
+        )
+        # Filter out None values (resources that failed to build or were skipped)
+        dependencies = [dep for dep in dependencies if dep is not None]
+        # Summary Agent不放入resource中
+        dependencies = [
+            dependency
+            for dependency in dependencies
+            if not await is_summary_agent_resource(dependency)
+        ]
+
+        if len(dependencies) == 0:
+            return None
+        elif len(dependencies) == 1:
+            return dependencies[0]
+        else:
+            return ResourcePack(dependencies)
+
+
+_SYSTEM_APP: Optional[SystemApp] = None
+
+
+def initialize_resource(system_app: SystemApp):
+    """Initialize the resource manager."""
+    global _SYSTEM_APP
+    _SYSTEM_APP = system_app
+    resource_manager = ResourceManager(system_app)
+    system_app.register_instance(resource_manager)
+
+
+def get_resource_manager(system_app: Optional[SystemApp] = None) -> ResourceManager:
+    """Return the resource manager."""
+    if not _SYSTEM_APP:
+        if not system_app:
+            system_app = SystemApp()
+        initialize_resource(system_app)
+    app = system_app or _SYSTEM_APP
+    return ResourceManager.get_instance(cast(SystemApp, app))
+
+
+async def is_summary_agent_resource(resource: Resource) -> bool:
+    from gyra_serve.agent.resource.app import GptAppResource
+
+    if not resource or not isinstance(resource, GptAppResource):
+        return False
+
+    from gyra_serve.building.app.service.service import Service as AppService
+    from gyra._private.config import Config
+
+    app_service: AppService = AppService.get_instance(Config().SYSTEM_APP)
+    app_detail = await app_service.app_detail(resource.app_code)
+    if not app_detail.all_resources:
+        return False
+
+    for r in app_detail.all_resources:
+        if await is_summary_engine_resource(r):
+            return True
+    return False
+
+
+async def is_summary_engine_resource(resource: AgentResource) -> bool:
+    if (
+        not resource
+        or resource.type != ResourceType.ReasoningEngine.value
+        or not resource.value
+    ):
+        return False
+    if isinstance(resource.value, str):
+        value = orjson.loads(resource.value)
+    else:
+        value = resource.value
+    if not value:
+        return False
+
+    from gyra_ext.reasoning_engine.summary_reasoning_engine import (
+        SUMMARY_REPORT_ENGINE_NAME,
+    )
+
+    return value.get("name", "") == SUMMARY_REPORT_ENGINE_NAME

@@ -1,0 +1,406 @@
+import io
+import json
+import logging
+import uuid
+from functools import cache
+from typing import List, Literal, Optional, Dict
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.security.http import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.responses import JSONResponse, StreamingResponse
+
+from gyra.component import SystemApp
+from gyra.util import PaginationResult
+from gyra_serve.core import Result
+from gyra_serve.utils.auth import UserRequest, get_user_from_headers
+
+from ..config import SERVE_SERVICE_COMPONENT_NAME, ServeConfig
+from ..service.service import Service
+from .schemas import MessageVo, ServeRequest, ServerResponse
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# Add your API endpoints here
+
+global_system_app: Optional[SystemApp] = None
+
+
+def get_service() -> Service:
+    """Get the service instance"""
+    return global_system_app.get_component(SERVE_SERVICE_COMPONENT_NAME, Service)
+
+
+get_bearer_token = HTTPBearer(auto_error=False)
+
+
+@cache
+def _parse_api_keys(api_keys: str) -> List[str]:
+    """Parse the string api keys to a list
+
+    Args:
+        api_keys (str): The string api keys
+
+    Returns:
+        List[str]: The list of api keys
+    """
+    if not api_keys:
+        return []
+    return [key.strip() for key in api_keys.split(",")]
+
+
+async def check_api_key(
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
+    request: Request = None,
+    service: Service = Depends(get_service),
+) -> Optional[str]:
+    """Check the api key
+
+    If the api key is not set, allow all.
+
+    Your can pass the token in you request header like this:
+
+    .. code-block:: python
+
+        import requests
+
+        client_api_key = "your_api_key"
+        headers = {"Authorization": "Bearer " + client_api_key}
+        res = requests.get("http://test/hello", headers=headers)
+        assert res.status_code == 200
+
+    """
+    if request.url.path.startswith("/api/v1"):
+        return None
+
+    if service.config.api_keys:
+        api_keys = _parse_api_keys(service.config.api_keys)
+        if auth is None or (token := auth.credentials) not in api_keys:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": {
+                        "message": "",
+                        "type": "invalid_request_error",
+                        "param": None,
+                        "code": "invalid_api_key",
+                    }
+                },
+            )
+        return token
+    else:
+        # api_keys not set; allow all
+        return None
+
+
+@router.get("/health")
+async def health():
+    """Health check endpoint"""
+    return {"status": "ok"}
+
+
+@router.get("/test_auth", dependencies=[Depends(check_api_key)])
+async def test_auth():
+    """Test auth endpoint"""
+    return {"status": "ok"}
+
+
+@router.post(
+    "/query",
+    response_model=Result[ServerResponse],
+    dependencies=[Depends(check_api_key)],
+)
+async def query(
+    request: ServeRequest, service: Service = Depends(get_service)
+) -> Result[ServerResponse]:
+    """Query Conversation entities
+
+    Args:
+        request (ServeRequest): The request
+        service (Service): The service
+    Returns:
+        ServerResponse: The response
+    """
+    return Result.succ(service.get(request))
+
+
+@router.post(
+    "/new",
+    response_model=Result[ServerResponse],
+    dependencies=[Depends(check_api_key)],
+)
+async def dialogue_new(
+    data: Optional[Dict] = None,
+    workspace_id: Optional[int] = None,
+    task_id: Optional[int] = None,
+    user: UserRequest = Depends(get_user_from_headers),
+):
+    unique_id = uuid.uuid1()
+    ws_id = workspace_id
+    task = task_id
+    if data:
+        app_code = data.get("app_code")
+        user_code = data.get("user_code") or user.user_id
+        sys_code = data.get("sys_code")
+        chat_mode = data.get("chat_mode")
+        if ws_id is None:
+            ws_id = data.get("workspace_id")
+        if task is None:
+            task = data.get("task_id")
+        res = ServerResponse(
+            user_input="",
+            conv_uid=str(unique_id),
+            app_code=app_code or chat_mode,
+            user_name=user_code,
+            sys_code=sys_code,
+            workspace_id=ws_id,
+            task_id=task,
+        )
+    else:
+        res = ServerResponse(
+            user_input="",
+            conv_uid=str(unique_id),
+            user_name=user.user_id,
+            workspace_id=ws_id,
+            task_id=task,
+        )
+
+    # Link conversation to workspace/task if provided
+    if ws_id:
+        try:
+            from gyra_serve.workspace.service.service import (
+                WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService,
+            )
+            ws_service = global_system_app.get_component(
+                WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService,
+            )
+            user_code = res.user_name
+            ws_service.link_conversation(
+                workspace_id=int(ws_id),
+                conv_uid=str(unique_id),
+                task_id=int(task) if task else None,
+                user_id=int(user_code) if user_code else None,
+            )
+        except Exception as e:
+            logger.warning(f"failed to link conversation to workspace {ws_id}: {e}")
+
+    return Result.succ(res)
+
+
+@router.post(
+    "/delete",
+    dependencies=[Depends(check_api_key)],
+)
+async def delete(con_uid: str, service: Service = Depends(get_service)):
+    """Delete a Conversation entity
+
+    Args:
+        con_uid (str): The conversation UID
+        service (Service): The service
+    """
+    service.delete(ServeRequest(conv_uid=con_uid))
+    return Result.succ(None)
+
+
+@router.post(
+    "/clear",
+    dependencies=[Depends(check_api_key)],
+)
+async def clear(
+    con_uid: str,
+    service: Service = Depends(get_service),
+):
+    """Clear a Conversation entity
+
+    Args:
+        con_uid (str): The conversation UID
+        service (Service): The service
+    """
+    service.clear(ServeRequest(conv_uid=con_uid))
+    return Result.succ(None)
+
+
+@router.post(
+    "/query_page",
+    response_model=Result[PaginationResult[ServerResponse]],
+    dependencies=[Depends(check_api_key)],
+)
+async def query_page(
+    request: ServeRequest,
+    page: Optional[int] = Query(default=1, description="current page"),
+    page_size: Optional[int] = Query(default=10, description="page size"),
+    service: Service = Depends(get_service),
+) -> Result[PaginationResult[ServerResponse]]:
+    """Query Conversation entities
+
+    Args:
+        request (ServeRequest): The request
+        page (int): The page number
+        page_size (int): The page size
+        service (Service): The service
+    Returns:
+        ServerResponse: The response
+    """
+    return Result.succ(service.get_list_by_page(request, page, page_size))
+
+
+@router.get(
+    "/list",
+    response_model=Result[List[ServerResponse]],
+    dependencies=[Depends(check_api_key)],
+)
+async def list_latest_conv(
+    user_name: str = None,
+    user_id: str = None,
+    sys_code: str = None,
+    filter: Optional[str] = None,
+    page: Optional[int] = Query(default=1, description="current page"),
+    page_size: Optional[int] = Query(default=10, description="page size"),
+    service: Service = Depends(get_service),
+    user: UserRequest = Depends(get_user_from_headers),
+) -> Result[List[ServerResponse]]:
+    """Return latest conversations, filtered by authenticated user when no explicit user specified."""
+    # 优先使用 authenticated user 的 user_id（用户名），而不是前端传的 user_id（用户ID）
+    # 因为 gpts_conversations 表的 user_code 字段存储的是用户名，不是用户ID
+    # user.user_id 是用户名（如 "admin"），user.user_no 是用户ID（如 "1")
+    effective_user = user_name or (user.user_id if user else None) or user_id
+    request = ServeRequest(
+        user_name=effective_user,
+        sys_code=sys_code,
+    )
+    return Result.succ(service.get_list_by_page(request, page, page_size, filter).items)
+
+
+@router.get(
+    "/messages/history",
+    response_model=Result[List[MessageVo]],
+    dependencies=[Depends(check_api_key)],
+)
+async def get_history_messages(con_uid: str, service: Service = Depends(get_service)):
+    """Get the history messages of a conversation"""
+    return Result.succ(service.get_history_messages(ServeRequest(conv_uid=con_uid)))
+
+
+@router.get(
+    "/{conv_id}/subagents",
+    response_model=Result[List[Dict]],
+    dependencies=[Depends(check_api_key)],
+)
+async def list_subagents(conv_id: str, service: Service = Depends(get_service)):
+    """列出主会话的所有子任务状态。
+
+    兜底数据源：前端 d-subagent-board 面板在无活跃 SSE 时轮询此接口
+    （仿场景空间 hasActiveTask 4s 轮询模式），用于断线恢复/初次加载。
+    实时更新主要靠 coordinator 推送的 d-subagent-board VIS 围栏。
+    """
+    from gyra_serve.agent.subagent_coordinator import get_subagent_coordinator
+
+    coordinator = get_subagent_coordinator()
+    if coordinator is None:
+        return Result.succ([])
+    handles = await coordinator._read_pending(conv_id)
+    items = []
+    for h in handles:
+        board_status = "awaiting_authorization" if h.authorization else h.status.value
+        items.append(
+            {
+                "sub_conv_id": h.sub_conv_id,
+                "agent_name": h.agent_name,
+                "task": h.task,
+                "status": board_status,
+                "mode": h.mode.value,
+                "authorization": h.authorization,
+            }
+        )
+    return Result.succ(items)
+
+
+@router.get(
+    "/export_messages",
+    dependencies=[Depends(check_api_key)],
+)
+async def export_all_messages(
+    user_name: Optional[str] = None,
+    user_id: Optional[str] = None,
+    sys_code: Optional[str] = None,
+    format: Literal["file", "json"] = Query(
+        "file", description="response format(file or json)"
+    ),
+    service: Service = Depends(get_service),
+):
+    """Export all conversations and messages for a user
+
+    Args:
+        user_name (str): The user name
+        user_id (str): The user id (alternative to user_name)
+        sys_code (str): The system code
+        format (str): The format of the response, either 'file' or 'json', defaults to
+            'file'
+
+    Returns:
+        A dictionary containing all conversations and their messages
+    """
+    # 1. Get all conversations for the user
+    request = ServeRequest(
+        user_name=user_name or user_id,
+        sys_code=sys_code,
+    )
+
+    # Initialize pagination variables
+    page = 1
+    page_size = 100  # Adjust based on your needs
+    all_conversations = []
+
+    # Paginate through all conversations
+    while True:
+        pagination_result = service.get_list_by_page(request, page, page_size)
+        all_conversations.extend(pagination_result.items)
+
+        if page >= pagination_result.total_pages:
+            break
+        page += 1
+
+    # 2. For each conversation, get all messages
+    result = {
+        "user_name": user_name or user_id,
+        "sys_code": sys_code,
+        "total_conversations": len(all_conversations),
+        "conversations": [],
+    }
+
+    for conv in all_conversations:
+        messages = service.get_history_messages(ServeRequest(conv_uid=conv.conv_uid))
+        conversation_data = {
+            "conv_uid": conv.conv_uid,
+            "chat_mode": conv.chat_mode,
+            "app_code": conv.app_code,
+            "create_time": conv.gmt_created,
+            "update_time": conv.gmt_modified,
+            "total_messages": len(messages),
+            "messages": [msg.dict() for msg in messages],
+        }
+        result["conversations"].append(conversation_data)
+
+    if format == "json":
+        return JSONResponse(content=result)
+    else:
+        file_name = (
+            f"conversation_export_{user_name or user_id or 'gyra'}_"
+            f"{sys_code or 'gyra'}"
+        )
+        # Return the json file
+        return StreamingResponse(
+            io.BytesIO(
+                json.dumps(result, ensure_ascii=False, indent=4).encode("utf-8")
+            ),
+            media_type="application/file",
+            headers={"Content-Disposition": f"attachment;filename={file_name}.json"},
+        )
+
+
+def init_endpoints(system_app: SystemApp, config: ServeConfig) -> None:
+    """Initialize the endpoints"""
+    global global_system_app
+    system_app.register(Service, config=config)
+    global_system_app = system_app

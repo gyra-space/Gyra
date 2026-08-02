@@ -1,0 +1,639 @@
+import {
+  GetGYRAsListResponse,
+  PostAgentHubUpdateParams,
+  PostAgentMyPluginResponse,
+  PostAgentPluginResponse,
+  PostAgentQueryParams,
+  PostGyraMyQueryParams,
+} from '@/types/agent';
+import { GetAppInfoParams, IApp } from '@/types/app';
+import {
+  ChatHistoryResponse,
+  DialogueListResponse,
+  FeedBack,
+  IChatDialogueSchema,
+  IDB,
+  NewDialogueParam,
+  SceneResponse,
+  UserParam,
+  UserParamResponse,
+} from '@/types/chat';
+import {
+  BatchMaskingConfigRequest,
+  BatchMaskingConfigResponse,
+  ChatFeedBackSchema,
+  DbListResponse,
+  DbSpecResponse,
+  DbSupportTypeResponse,
+  LearningTaskRequest,
+  LearningTaskResponse,
+  MaskingPreviewRequest,
+  MaskingPreviewResponse,
+  PostDbParams,
+  PostDbRefreshParams,
+  SensitiveColumnConfig,
+  TableDataPreview,
+  TableSpecDetail,
+  TableSpecSummary,
+  TableSpecUpdateRequest,
+} from '@/types/db';
+import {
+  GetEditorSQLRoundRequest,
+  GetEditorySqlParams,
+  PostEditorChartRunParams,
+  PostEditorChartRunResponse,
+  PostEditorSQLRunParams,
+  PostSQLEditorSubmitParams,
+} from '@/types/editor';
+import { BaseModelParams, IModelData, StartModelParams, SupportModel } from '@/types/model';
+import { AxiosRequestConfig } from 'axios';
+import { DELETE, GET, POST, PUT } from '.';
+import { getUserId } from '@/utils/storage';
+
+/** App */
+export const postScenes = () => {
+  return POST<null, Array<SceneResponse>>('/api/v1/chat/dialogue/scenes');
+};
+// export const newDialogue = (data: NewDialogueParam) => {
+//   return POST<NewDialogueParam, IChatDialogueSchema>(
+//     `/api/v1/chat/dialogue/new?chat_mode=${data.chat_mode}&model_name=${data.model}`,
+//     data,
+//   );
+// };
+
+export const newDialogue = (data: NewDialogueParam) => {
+  const workspaceSuffix = data.workspace_id ? `&workspace_id=${data.workspace_id}` : '';
+  return POST<NewDialogueParam, IChatDialogueSchema>(
+    `/api/v1/chat/dialogue/new?app_code=${data.app_code}${workspaceSuffix}`,
+    { ...data, user_code: data.user_code || getUserId() },
+  );
+};
+
+const buildUrl = (baseUrl: string, params: any) => {
+  const queryString = Object.keys(params)
+    .filter(key => params[key] !== undefined) //
+    .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
+    .join('&');
+
+  return queryString ? `${baseUrl}?${queryString}` : baseUrl;
+};
+
+export const addUser = (data: UserParam) => {
+  return POST<UserParam, UserParamResponse>('/api/v1/user/add', data);
+};
+
+/** Database Page */
+export const getDbList = (params?: { owner_workspace_id?: number }) => {
+  return GET<{ owner_workspace_id?: number }, DbListResponse>(
+    '/api/v2/serve/datasources',
+    params,
+  );
+};
+export const getDbSupportType = () => {
+  return GET<null, DbSupportTypeResponse>('/api/v2/serve/datasource-types');
+};
+export const postDbDelete = (id: string) => {
+  return DELETE(`/api/v2/serve/datasources/${id}`);
+};
+export const postDbEdit = (data: PostDbParams) => {
+  return PUT<PostDbParams, null>('/api/v2/serve/datasources', data);
+};
+export const uploadDbFile = (file: File) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return POST<FormData, { file_path: string; file_name: string }>(
+    '/api/v2/serve/datasources/upload-db',
+    formData,
+  );
+};
+export const postDbAdd = (data: PostDbParams) => {
+  return POST<PostDbParams, null>('/api/v2/serve/datasources', data);
+};
+export const postDbTestConnect = (data: PostDbParams) => {
+  return POST<PostDbParams, null>('/api/v2/serve/datasources/test-connection', data);
+};
+export const postDbRefresh = (data: PostDbRefreshParams) => {
+  return POST<PostDbRefreshParams, boolean>(`/api/v2/serve/datasources/${data.id}/refresh`);
+};
+
+/** Database Spec & Learning APIs */
+export const postDbLearn = (id: string | number, data?: LearningTaskRequest) => {
+  return POST<LearningTaskRequest | undefined, LearningTaskResponse>(
+    `/api/v2/serve/datasources/${id}/learn`,
+    data,
+  );
+};
+export const cancelDbLearn = (id: string | number) => {
+  return POST<undefined, { cancelled: boolean; task_id?: number; reason?: string }>(
+    `/api/v2/serve/datasources/${id}/learn/cancel`,
+  );
+};
+export const pauseDbLearn = (id: string | number) => {
+  return POST<undefined, { paused: boolean; task_id?: number; reason?: string }>(
+    `/api/v2/serve/datasources/${id}/learn/pause`,
+  );
+};
+export const resumeDbLearn = (id: string | number) => {
+  return POST<undefined, { resumed: boolean; task_id?: number; reason?: string }>(
+    `/api/v2/serve/datasources/${id}/learn/resume`,
+  );
+};
+export const getDbLearnStatus = (id: string | number) => {
+  return GET<null, LearningTaskResponse | null>(
+    `/api/v2/serve/datasources/${id}/learn/status`,
+  );
+};
+export const getDbSpec = (id: string | number) => {
+  return GET<null, DbSpecResponse | null>(`/api/v2/serve/datasources/${id}/spec`);
+};
+export interface GetDbTablesParams {
+  page?: number;
+  page_size?: number;
+  keyword?: string;
+}
+
+export interface GetDbTablesResponse {
+  items: TableSpecSummary[];
+  total: number;
+}
+
+export const getDbTables = (id: string | number, params?: GetDbTablesParams) => {
+  return GET<GetDbTablesParams, GetDbTablesResponse>(
+    `/api/v2/serve/datasources/${id}/tables`,
+    params,
+  );
+};
+export const getDbTableDetail = (id: string | number, tableName: string) => {
+  return GET<null, TableSpecDetail | null>(
+    `/api/v2/serve/datasources/${id}/tables/${tableName}`,
+  );
+};
+export const postDbTablesBatch = (id: string | number, tableNames: string[]) => {
+  return POST<{ table_names: string[] }, TableSpecDetail[]>(
+    `/api/v2/serve/datasources/${id}/tables/batch`,
+    { table_names: tableNames },
+  );
+};
+export const getDbTableData = (
+  id: string | number,
+  tableName: string,
+) => {
+  return GET<null, TableDataPreview>(
+    `/api/v2/serve/datasources/${id}/tables/${tableName}/data`,
+  );
+};
+export const refreshTableSampleData = (
+  id: string | number,
+  tableName: string,
+) => {
+  return POST<null, TableSpecDetail>(
+    `/api/v2/serve/datasources/${id}/tables/${tableName}/refresh-sample`,
+  );
+};
+export const updateTableSpec = (
+  id: string | number,
+  tableName: string,
+  data: TableSpecUpdateRequest,
+) => {
+  return PUT<TableSpecUpdateRequest, TableSpecDetail>(
+    `/api/v2/serve/datasources/${id}/tables/${tableName}`,
+    data,
+  );
+};
+export const enrichTableDescriptions = (
+  id: string | number,
+  tableName: string,
+  force: boolean = true,
+) => {
+  return POST<null, TableSpecDetail>(
+    `/api/v2/serve/datasources/${id}/tables/${tableName}/enrich?force=${force}`,
+  );
+};
+
+/** Sensitive Column Masking APIs */
+export const getSensitiveColumns = (datasourceId: string | number) => {
+  return GET<null, SensitiveColumnConfig[]>(
+    `/api/v2/serve/sql-guard/masking/${datasourceId}/columns`,
+  );
+};
+export const addSensitiveColumn = (
+  datasourceId: string | number,
+  data: { table_name: string; column_name: string; sensitive_type: string; masking_mode: string },
+) => {
+  return POST<typeof data, SensitiveColumnConfig>(
+    `/api/v2/serve/sql-guard/masking/${datasourceId}/columns`,
+    data,
+  );
+};
+export const updateSensitiveColumn = (
+  datasourceId: string | number,
+  tableName: string,
+  columnName: string,
+  data: { sensitive_type?: string; masking_mode?: string; enabled?: boolean },
+) => {
+  return PUT<typeof data, SensitiveColumnConfig>(
+    `/api/v2/serve/sql-guard/masking/${datasourceId}/columns/${tableName}/${columnName}`,
+    data,
+  );
+};
+export const toggleSensitiveColumn = (
+  datasourceId: string | number,
+  tableName: string,
+  columnName: string,
+  enabled: boolean,
+) => {
+  return PUT<null, string>(
+    `/api/v2/serve/sql-guard/masking/${datasourceId}/columns/${tableName}/${columnName}/toggle?enabled=${enabled}`,
+  );
+};
+export const detectSensitiveColumns = (
+  datasourceId: string | number,
+  tableNames?: string[],
+) => {
+  return POST<{ table_names?: string[] } | undefined, SensitiveColumnConfig[]>(
+    `/api/v2/serve/sql-guard/masking/${datasourceId}/detect`,
+    tableNames ? { table_names: tableNames } : undefined,
+  );
+};
+export const batchAddMaskingConfig = (
+  datasourceId: string | number,
+  data: BatchMaskingConfigRequest,
+) => {
+  return POST<BatchMaskingConfigRequest, BatchMaskingConfigResponse>(
+    `/api/v2/serve/sql-guard/masking/${datasourceId}/batch`,
+    data,
+  );
+};
+/** Enable/disable masking for ALL sensitive columns of a table. */
+export const toggleTableMasking = (
+  datasourceId: string | number,
+  tableName: string,
+  enabled: boolean,
+) => {
+  return PUT<null, string>(
+    `/api/v2/serve/sql-guard/masking/${datasourceId}/tables/${tableName}/toggle?enabled=${enabled}`,
+  );
+};
+/** Preview (try-run) the masking effect for a sample value. */
+export const previewMasking = (data: MaskingPreviewRequest) => {
+  return POST<MaskingPreviewRequest, MaskingPreviewResponse>(
+    `/api/v2/serve/sql-guard/masking/preview`,
+    data,
+  );
+};
+
+/** Chat Page */
+export const getDialogueList = (userId?: string) => {
+  const params = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
+  return GET<null, DialogueListResponse>(`/api/v1/chat/dialogue/list${params}`);
+};
+
+export const getDialogueListBByFilter = (name: string, userId?: string) => {
+  const query = new URLSearchParams({ filter: name });
+  if (userId) query.set('user_id', userId);
+  return GET<null, DialogueListResponse>(`/api/v1/chat/dialogue/list?${query.toString()}`);
+};
+export const getUsableModels = () => {
+  return GET<null, Array<string>>('/api/v1/model/types');
+};
+export const postChatModeParamsList = (chatMode: string) => {
+  return POST<null, IDB[]>(`/api/v1/chat/mode/params/list?chat_mode=${chatMode}`);
+};
+export const postChatModeParamsInfoList = (chatMode: string) => {
+  return POST<null, Record<string, string>>(`/api/v1/chat/mode/params/info?chat_mode=${chatMode}`);
+};
+export const getChatHistory = (convId: string) => {
+  return GET<null, ChatHistoryResponse>(`/api/v1/chat/dialogue/messages/history?con_uid=${convId}`);
+};
+export const postChatModeParamsFileLoad = ({
+  convUid,
+  chatMode,
+  data,
+  config,
+  model,
+  temperatureValue,
+  maxNewTokensValue,
+  userName,
+  sysCode,
+}: {
+  convUid: string;
+  chatMode: string;
+  data: FormData;
+  model: string;
+  temperatureValue?: number;
+  maxNewTokensValue?: number;
+  userName?: string;
+  sysCode?: string;
+  config?: Omit<AxiosRequestConfig, 'headers'>;
+}) => {
+  const baseUrl = `/api/v1/resource/file/upload`;
+  const params = {
+    conv_uid: convUid,
+    chat_mode: chatMode,
+    model_name: model,
+    user_name: userName,
+    sys_code: sysCode,
+    temperature: temperatureValue,
+    max_new_tokens: maxNewTokensValue,
+  };
+
+  const url = buildUrl(baseUrl, params);
+  return POST<FormData, any>(url, data, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+    ...config,
+  });
+};
+
+export const clearChatHistory = (conUid: string) => {
+  return POST<null, Record<string, string>>(`/api/v1/chat/dialogue/clear?con_uid=${conUid}`);
+};
+
+/** Menu */
+export const delDialogue = (conv_uid: string) => {
+  return POST(`/api/v1/chat/dialogue/delete?con_uid=${conv_uid}`);
+};
+
+/** Editor */
+export const getEditorSqlRounds = (id: string) => {
+  return GET<null, GetEditorSQLRoundRequest>(`/api/v1/editor/sql/rounds?con_uid=${id}`);
+};
+export const postEditorSqlRun = (data: PostEditorSQLRunParams) => {
+  return POST<PostEditorSQLRunParams>(`/api/v1/editor/sql/run`, data);
+};
+export const postEditorChartRun = (data: PostEditorChartRunParams) => {
+  return POST<PostEditorChartRunParams, PostEditorChartRunResponse>(`/api/v1/editor/chart/run`, data);
+};
+export const postSqlEditorSubmit = (data: PostSQLEditorSubmitParams) => {
+  return POST<PostSQLEditorSubmitParams>(`/api/v1/sql/editor/submit`, data);
+};
+export const getEditorSql = (id: string, round: string | number) => {
+  return POST<GetEditorySqlParams, string | Array<any>>('/api/v1/editor/sql', {
+    con_uid: id,
+    round,
+  });
+};
+
+/** knowledge */
+// TODO: rewire to new knowledge-vault page — old knowledge API functions removed.
+// Memory APIs
+export const getMemoryStatus = (spaceId: string) => {
+  return GET<null, Record<string, any>>(`/memory/${spaceId}/status`);
+};
+export const getMemoryWings = (spaceId: string) => {
+  return GET<null, Record<string, number>>(`/memory/${spaceId}/wings`);
+};
+export const searchMemory = (spaceId: string, data: { query: string; wing?: string; room?: string; top_k?: number; max_distance?: number }) => {
+  return POST<typeof data, Array<{ id: string; content: string; wing: string; room: string; score: number; created_at: string }>>(`/memory/${spaceId}/search`, data);
+};
+export const queryKG = (spaceId: string, data: { entity: string; as_of?: string }) => {
+  return POST<typeof data, Array<{ subject: string; predicate: string; object: string; confidence?: number }>>(`/memory/${spaceId}/kg/query`, data);
+};
+export const getMemoryRooms = (spaceId: string, wing: string) => {
+  return GET<null, string[]>(`/memory/${spaceId}/rooms?wing=${wing}`);
+};
+export const addMemory = (spaceId: string, data: { content: string; wing: string; room: string }) => {
+  return POST<typeof data, { id: string; wing: string; room: string; created_at: string }>(`/memory/${spaceId}/write`, data);
+};
+
+/** models */
+export const getModelList = () => {
+  return GET<null, Array<IModelData>>('/api/v2/serve/model/models');
+};
+
+// Create and deploy a new model
+export const createModel = (data: StartModelParams) => {
+  return POST<StartModelParams, boolean>('/api/v2/serve/model/models', data);
+};
+
+// Stop the running model
+export const stopModel = (data: BaseModelParams) => {
+  return POST<BaseModelParams, boolean>('/api/v2/serve/model/models/stop', data);
+};
+
+// Start the stopped model
+export const startModel = (data: BaseModelParams) => {
+  return POST<BaseModelParams, boolean>('/api/v2/serve/model/models/start', data);
+};
+
+export const getSupportModels = () => {
+  return GET<null, Array<SupportModel>>('/api/v2/serve/model/model-types');
+};
+
+/** Agent */
+export const postAgentQuery = (data: PostAgentQueryParams) => {
+  return POST<PostAgentQueryParams, PostAgentPluginResponse>('/api/v1/agent/query', data);
+};
+export const postGyrasQuery = (data: PostAgentQueryParams) => {
+  return POST<PostAgentQueryParams, PostAgentPluginResponse>(
+    `/api/v1/serve/gyras/hub/query_page?page=${data?.page_index}&page_size=${data?.page_size}`,
+    data,
+  );
+};
+export const postAgentHubUpdate = (data?: PostAgentHubUpdateParams) => {
+  return POST<PostAgentHubUpdateParams>(
+    '/api/v1/agent/hub/update',
+    data ?? { channel: '', url: '', branch: '', authorization: '' },
+  );
+};
+export const postGyrasHubUpdate = (data?: PostAgentHubUpdateParams) => {
+  return POST<PostAgentHubUpdateParams>(
+    '/api/v1/serve/gyras/hub/source/refresh',
+    data ?? { channel: '', url: '', branch: '', authorization: '' },
+  );
+};
+export const postAgentMy = (user?: string) => {
+  return POST<undefined, PostAgentMyPluginResponse>('/api/v1/agent/my', undefined, { params: { user } });
+};
+export const postGyrasMy = (data?: PostGyraMyQueryParams) => {
+  return POST<PostGyraMyQueryParams, PostAgentMyPluginResponse>(
+    `/api/v1/serve/gyras/my/query_page?page=${data?.page_index}&page_size=${data?.page_size}`,
+    data,
+  );
+};
+export const postAgentInstall = (pluginName: string, user?: string) => {
+  return POST('/api/v1/agent/install', undefined, {
+    params: { plugin_name: pluginName, user },
+    timeout: 60000,
+  });
+};
+export const postGyrasInstall = (data: object, user?: string) => {
+  return POST('/api/v1/serve/gyras/hub/install', data, {
+    params: { user },
+    timeout: 60000,
+  });
+};
+export const postAgentUninstall = (pluginName: string, user?: string) => {
+  return POST('/api/v1/agent/uninstall', undefined, {
+    params: { plugin_name: pluginName, user },
+    timeout: 60000,
+  });
+};
+export const postGyrasUninstall = (data: { name: string; type: string }, user?: string) => {
+  return POST('/api/v1/serve/gyras/my/uninstall', undefined, {
+    params: { ...data, user },
+    timeout: 60000,
+  });
+};
+export const postAgentUpload = (user = '', data: FormData, config?: Omit<AxiosRequestConfig, 'headers'>) => {
+  return POST<FormData>('/api/v1/personal/agent/upload', data, {
+    params: { user },
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+    ...config,
+  });
+};
+export const getGyrasList = () => {
+  return GET<undefined, GetGYRAsListResponse>('/api/v1/gyras/list');
+};
+
+/** chat feedback **/
+export const getChatFeedBackSelect = () => {
+  return GET<null, FeedBack>(`/api/v1/feedback/select`, undefined);
+};
+export const getChatFeedBackItme = (conv_uid: string, conv_index: number) => {
+  return GET<null, Record<string, string>>(
+    `/api/v1/feedback/find?conv_uid=${conv_uid}&conv_index=${conv_index}`,
+    undefined,
+  );
+};
+export const postChatFeedBackForm = ({
+  data,
+  config,
+}: {
+  data: ChatFeedBackSchema;
+  config?: Omit<AxiosRequestConfig, 'headers'>;
+}) => {
+  return POST<ChatFeedBackSchema, any>(`/api/v1/feedback/commit`, data, {
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    ...config,
+  });
+};
+
+/** prompt */
+
+/** app */
+
+export const collectApp = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/app/collect', data);
+};
+
+export const unCollectApp = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/app/uncollect', data);
+};
+
+export const getResourceType = () => {
+  return GET<null, string[]>('/api/v1/resource-type/list');
+};
+
+export const publishApp = (app_code: string) => {
+  return POST<Record<string, any>, []>('/api/v1/app/publish', { app_code });
+};
+
+export const unPublishApp = (app_code: string) => {
+  return POST<Record<string, any>, []>('/api/v1/app/unpublish', { app_code });
+};
+export const addOmcDB = (params: Record<string, string>) => {
+  return POST<Record<string, any>, []>('/api/v1/chat/db/add', params);
+  // return POST<Record<string, any>, []>('/api/v2/serve/datasources', params);
+};
+
+export const getAppInfo = (data: GetAppInfoParams) => {
+  return GET<GetAppInfoParams, IApp>('/api/v1/app/info', data);
+};
+
+export const getSupportDBList = (db_name = '') => {
+  return GET<null, Record<string, any>>(`/api/v1/permission/db/list?db_name=${db_name}`);
+};
+
+export const recommendApps = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/app/hot/list', data);
+};
+export const flowSearch = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/serve/awel/flows', data);
+};
+export const modelSearch = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/controller/models', data);
+};
+
+// TODO: rewire to new knowledge-vault page — getKnowledgeAdmins / updateKnowledgeAdmins removed (hit /knowledge/users/...).
+// TODO: rewire to new knowledge-vault page — getSpaceConfig removed (hit /knowledge/space/config).
+
+/** AWEL Flow */
+
+/** app */
+export const delApp = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/app/remove', data);
+};
+
+/** MCP */
+export const getMCPList = (data: Record<string, string>, other: Record<string, string>) => {
+  return POST<Record<string, string>, []>(
+    `/api/v1/serve/mcp/query_fuzzy?page=${other?.page}&page_size=${other?.page_size}`,
+    data,
+  );
+};
+
+/** MCP列表查询 */
+export const getMCPListQuery = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>(`/api/v1/serve/mcp/query`, data);
+};
+
+/** MCP Creat*/
+export const addMCP = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/serve/mcp/create', data);
+};
+
+/** MCP Update*/
+export const updateMCP = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/serve/mcp/update', data);
+};
+
+/** MCP Start*/
+export const startMCP = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/serve/mcp/start', data);
+};
+
+/** MCP Offline*/
+export const offlineMCP = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/serve/mcp/offline', data);
+};
+
+/** MCP tool run*/
+export const mcpToolRun = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/serve/mcp/tool/run', data);
+};
+
+/** MCP delete */
+export const deleteMCP = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/serve/mcp/delete', data);
+};
+
+/** MCP tool list*/
+export const mcpToolList = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/serve/mcp/tool/list', data);
+};
+
+/** MCP tool connect*/
+export const mcpToolConnect = (data: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/serve/mcp/connect', data);
+};
+
+/** MCP tool connect*/
+export const initConfig = (data?: Record<string, string>) => {
+  return POST<Record<string, string>, []>('/api/v1/init/config', data);
+};
+
+/** Tool list by type */
+export const getToolList = (type: string, userId?: string) => {
+  const params = new URLSearchParams();
+  params.append('type', type);
+  if (userId) {
+    params.append('user_id', userId);
+  }
+  return GET<null, any[]>(`/api/v1/tool?${params.toString()}`);
+};

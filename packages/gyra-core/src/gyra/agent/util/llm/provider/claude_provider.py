@@ -1,0 +1,282 @@
+import json
+import logging
+import time
+from typing import Any, AsyncIterator, List, Optional
+
+from gyra.agent.util.llm.provider._image_url_rewriter import get_replace_url_func
+from gyra.agent.util.llm.provider.base import LLMProvider
+from gyra.agent.util.llm.provider.provider_registry import ProviderRegistry
+from gyra.core.interface.llm import ModelMetadata, ModelOutput, ModelRequest
+
+logger = logging.getLogger(__name__)
+
+@ProviderRegistry.register("anthropic", env_key="ANTHROPIC_API_KEY")
+@ProviderRegistry.register("claude", env_key="ANTHROPIC_API_KEY")
+class ClaudeProvider(LLMProvider):
+    """Anthropic Claude LLM provider."""
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: Optional[str] = None,
+        storage_client: Optional[Any] = None,
+        **kwargs,
+    ):
+        from anthropic import AsyncAnthropic
+        # Filter out arguments not accepted by AsyncAnthropic
+        client_kwargs = {k: v for k, v in kwargs.items() if k in ["timeout", "max_retries", "default_headers"]}
+        self.client = AsyncAnthropic(api_key=api_key, base_url=base_url, **client_kwargs)
+        self._storage_client = storage_client
+        self._replace_url_func = None
+
+    def _prepare_request(self, request: ModelRequest) -> dict:
+        """Prepare common request parameters for Anthropic API."""
+        # Get messages in standard format
+        # Anthropic API requires system prompt to be passed separately
+        openai_messages = request.to_common_messages(
+            support_system_role=True,
+            replace_url_func=get_replace_url_func(self),
+        )
+        
+        system_prompt = None
+        messages = []
+        
+        for msg in openai_messages:
+            if msg.get("role") == "system":
+                # Concatenate multiple system messages if present
+                content = msg.get("content", "")
+                if system_prompt:
+                    system_prompt += f"\n{content}"
+                else:
+                    system_prompt = content
+            else:
+                messages.append(msg)
+                
+        params = {
+            "model": request.model,
+            "messages": messages,
+            "max_tokens": request.max_new_tokens or 4096,
+        }
+        if request.temperature is not None:
+            params["temperature"] = request.temperature
+        
+        if system_prompt:
+            # RFC-005 S12:若有 system_blocks(动静态分块),产数组式 system + cache_control;
+            # 否则用展平 str(兼容,OpenAI 路径)。
+            _ctx = getattr(request, "context", None)
+            _extra = getattr(_ctx, "extra", None) or {}
+            _blocks = _extra.get("system_blocks") if isinstance(_extra, dict) else None
+            if _blocks:
+                # 数组式 system;最后一个块挂 cache_control(Anthropic prompt caching)
+                _block_dicts = []
+                for idx, blk in enumerate(_blocks):
+                    if not blk.text:
+                        continue
+                    item = {"type": "text", "text": blk.text}
+                    # 最后一个块挂 cache_control(向前缀缓存)
+                    if idx == len(_blocks) - 1:
+                        item["cache_control"] = {"type": "ephemeral"}
+                    _block_dicts.append(item)
+                params["system"] = _block_dicts if _block_dicts else system_prompt
+            else:
+                params["system"] = system_prompt
+        
+        # Handle image in message
+        if params["messages"]:
+            for message in params["messages"]:
+                if isinstance(message.get("content"), list):
+                    new_content = []
+                    for content in message["content"]:
+                        if isinstance(content, dict):
+                             if content.get("type") == "image_url":
+                                 # Convert openai image_url format to anthropic format
+                                 # Anthropic expects: {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "..."}}
+                                 # But we store it as url in MediaObject. If it's a URL, Anthropic API doesn't support URL images directly in messages API mostly (needs base64).
+                                 # However, if it's a base64 string masquerading as URL or if we are just passing it through, we might need conversion.
+                                 # For now, let's assume if it is a URL, we leave it (or handle if we knew how to fetch).
+                                 # BUT, the current common message format produces `image_url` type for OpenAI compatibility.
+                                 # If we want to support Claude, we might need to handle this conversion or leave it to the user to provide base64.
+                                 
+                                 # As per instructions, we are enabling "multimodal", usually meaning passing image URLs to models like GPT-4o.
+                                 # Claude 3 supports base64 images.
+                                 pass 
+                    # For now we don't modify the structure as the task is focused on OpenAI SDK compatibility primarily for image input.
+                    # We just ensured that the code doesn't crash.
+            
+        return params
+
+    async def generate(self, request: ModelRequest) -> ModelOutput:
+        """Generate a response from the model."""
+        try:
+            params = self._prepare_request(request)
+            
+            log_params = {
+                "model": params.get("model"),
+                "messages": params.get("messages"),
+                "max_tokens": params.get("max_tokens"),
+                "temperature": params.get("temperature"),
+                "system": params.get("system"),
+                "tools": request.tools,
+                "tool_choice": request.tool_choice,
+            }
+            logger.info(f"ClaudeProvider generate request params: {json.dumps(log_params, ensure_ascii=False)}")
+
+            response = await self.client.messages.create(**params)
+            
+            content_text = ""
+            tool_calls = []
+            
+            for content_block in response.content:
+                if content_block.type == "text":
+                    content_text += content_block.text
+                elif content_block.type == "tool_use":
+                    tool_calls.append({
+                        "id": content_block.id,
+                        "type": "function",
+                        "function": {
+                            "name": content_block.name,
+                            "arguments": json.dumps(content_block.input)
+                        }
+                    })
+
+            log_response = {
+                "stop_reason": response.stop_reason,
+                "content": content_text,
+                "tool_calls": tool_calls,
+                "usage": {
+                    "prompt_tokens": response.usage.input_tokens,
+                    "completion_tokens": response.usage.output_tokens,
+                    "total_tokens": response.usage.input_tokens + response.usage.output_tokens
+                }
+            }
+            logger.info(f"ClaudeProvider generate response: {json.dumps(log_response, ensure_ascii=False)}")
+
+            return ModelOutput(
+                error_code=0,
+                text=content_text,
+                tool_calls=tool_calls if tool_calls else None,
+                finish_reason=response.stop_reason,
+                usage={
+                    "prompt_tokens": response.usage.input_tokens,
+                    "completion_tokens": response.usage.output_tokens,
+                    "total_tokens": response.usage.input_tokens + response.usage.output_tokens
+                }
+            )
+        except Exception as e:
+            logger.exception(f"Claude generate error: {e}")
+            return ModelOutput(error_code=1, text=str(e))
+
+    async def generate_stream(self, request: ModelRequest) -> AsyncIterator[ModelOutput]:
+        """Generate a streaming response from the model."""
+        try:
+            params = self._prepare_request(request)
+            params["stream"] = True
+
+            log_params = {
+                "model": params.get("model"),
+                "messages": params.get("messages"),
+                "max_tokens": params.get("max_tokens"),
+                "temperature": params.get("temperature"),
+                "system": params.get("system"),
+                "tools": request.tools,
+                "tool_choice": request.tool_choice,
+                "stream": True,
+            }
+            logger.info(f"ClaudeProvider generate_stream request params: {json.dumps(log_params, ensure_ascii=False)}")
+
+            accumulated_content = ""
+            accumulated_tool_calls = []
+            _last_progress_time = time.time()
+            _input_tokens = None
+            _output_tokens = None
+
+            async with self.client.messages.stream(**params) as stream:
+                async for event in stream:
+                    # Progress log every 10s
+                    _now = time.time()
+                    if _now - _last_progress_time >= 10:
+                        _tc_lens = [
+                            len(tc["function"]["arguments"])
+                            for tc in accumulated_tool_calls
+                        ]
+                        logger.info(
+                            f"ClaudeProvider stream progress: "
+                            f"content_len={len(accumulated_content)}, "
+                            f"tool_args_len={_tc_lens}, "
+                            f"elapsed={_now - _last_progress_time:.1f}s"
+                        )
+                        _last_progress_time = _now
+
+                    # 捕获 usage：input_tokens 在 message_start，output_tokens 在 message_delta
+                    if event.type == "message_start" and getattr(event, "message", None):
+                        _msg_usage = getattr(event.message, "usage", None)
+                        if _msg_usage:
+                            _input_tokens = getattr(_msg_usage, "input_tokens", None)
+                    elif event.type == "message_delta" and getattr(event, "usage", None):
+                        _output_tokens = getattr(event.usage, "output_tokens", None)
+
+                    if event.type == "content_block_delta" and event.delta.type == "text_delta":
+                        accumulated_content += event.delta.text
+                        yield ModelOutput(
+                            error_code=0,
+                            text=event.delta.text,
+                            incremental=True
+                        )
+                    elif event.type == "content_block_start":
+                        if hasattr(event, "content_block") and event.content_block.type == "tool_use":
+                            accumulated_tool_calls.append({
+                                "id": event.content_block.id,
+                                "type": "function",
+                                "function": {
+                                    "name": event.content_block.name,
+                                    "arguments": ""
+                                }
+                            })
+                    elif event.type == "content_block_delta" and hasattr(event.delta, "type") and event.delta.type == "input_json_delta":
+                        if accumulated_tool_calls:
+                            last_tool = accumulated_tool_calls[-1]
+                            last_tool["function"]["arguments"] += event.delta.partial_json
+                    elif event.type == "message_stop":
+                        log_response = {
+                            "content": accumulated_content,
+                            "tool_calls": accumulated_tool_calls,
+                        }
+                        logger.info(f"ClaudeProvider generate_stream response: {json.dumps(log_response, ensure_ascii=False)}")
+
+            # 流结束后补一个带 usage 的终止 chunk，供上层采集 token
+            # 注意: 必须携带累积的 tool_calls,否则上层(按最后一帧取值)拿不到工具调用
+            if _input_tokens is not None or _output_tokens is not None:
+                _pt = _input_tokens or 0
+                _ct = _output_tokens or 0
+                yield ModelOutput(
+                    error_code=0,
+                    text="",
+                    usage={
+                        "prompt_tokens": _pt,
+                        "completion_tokens": _ct,
+                        "total_tokens": _pt + _ct,
+                    },
+                    tool_calls=accumulated_tool_calls or None,
+                    incremental=True,
+                )
+        except Exception as e:
+            logger.exception(f"Claude stream error: {e}")
+            yield ModelOutput(error_code=1, text=str(e))
+
+    async def models(self) -> List[ModelMetadata]:
+        """List available models."""
+        # Anthropic doesn't have a simple public list API like OpenAI used to have in the client broadly,
+        # but we can return common known ones or just return empty.
+        # For safety/simplicity, we return a hardcoded list of known models.
+        known_models = [
+            "claude-3-opus-20240229",
+            "claude-3-sonnet-20240229",
+            "claude-3-haiku-20240307",
+            "claude-3-5-sonnet-20240620"
+        ]
+        return [ModelMetadata(model=m) for m in known_models]
+
+    async def count_token(self, model: str, prompt: str) -> int:
+        """Count tokens in a prompt."""
+        # Approximate
+        return len(prompt) // 4

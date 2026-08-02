@@ -1,0 +1,55 @@
+{
+  "name": "gyra",
+  "version": "0.2.0",
+  "description": "Gyra — The Team-Native AI Flywheel. Compounding intelligence with every task.",
+  "main": "index.js",
+  "bin": {
+    "gyra": "bin/gyra.js",
+    "gyra-server": "bin/gyra-server.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "start": "node bin/gyra.js",
+    "server": "node bin/gyra-server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "gyra",
+    "ai",
+    "multi-agent",
+    "flywheel",
+    "team-native",
+    "sre",
+    "devops",
+    "monitoring",
+    "observability"
+  ],
+  "author": "HongjunYang <yhjun1026@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/gyra-ai/Gyra",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gyra-ai/Gyra.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gyra-ai/Gyra/issues"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "preferGlobal": true,
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ]
+}

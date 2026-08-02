@@ -1,0 +1,678 @@
+@import "tailwindcss";
+@config "../../tailwind.config.js";
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink-900);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --antd-primary-color: #4f46e5;
+  -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+  -webkit-appearance: none;
+}
+
+/* ============================================
+   Gyra Design Tokens (single source of truth)
+   品牌色仅用于关键动作/激活态；语义色以"点"使用；
+   嵌套层级用底色差区分，不堆叠描边。
+   ============================================ */
+:root {
+  /* Brand —— 深靛蓝，比旧 #4f46e5 更沉稳 */
+  --brand: #4f46e5;
+  --brand-rgb: 79, 70, 229;
+  --brand-hover: #6366f1;
+  --brand-active: #4338ca;
+  --brand-soft: #eef0fe;
+
+  /* Ink —— 文字四级 */
+  --ink-900: #14161c;
+  --ink-700: #3b4154;
+  --ink-500: #5d6577;
+  --ink-400: #8a92a6;
+  --ink-300: #b4bac8;
+
+  /* Line —— 描边两级，宁浅勿深 */
+  --line: #e5e8ef;
+  --line-soft: #eff1f6;
+
+  /* Background —— 页面/填充/浮层三级 */
+  --bg-page: #f7f8fa;
+  --bg-fill: #f2f4f8;
+  --bg-elev: #ffffff;
+
+  /* Semantic —— 只以 6px 圆点/小面积使用 */
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+
+  /* Radius */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+
+  /* Shadow —— 弥散、低透明，替代描边堆叠 */
+  --sh-card: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --sh-pop: 0 4px 16px rgba(16, 24, 40, 0.08);
+  --sh-modal: 0 12px 40px rgba(16, 24, 40, 0.12);
+  --sh-glow: 0 0 0 4px rgba(var(--brand-rgb), 0.08);
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, sans-serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono',
+    monospace;
+  --fs-aux: 12px;
+  --fs-body: 13px;
+  --fs-title: 14px;
+  --fs-head: 16px;
+  --fs-page: 18px;
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --transition: 0.2s var(--ease);
+
+  /* ---- MCP aliases（向后兼容，逐步收敛） ---- */
+  --mcp-accent: var(--brand);
+  --mcp-accent-rgb: var(--brand-rgb);
+  --mcp-accent-light: var(--brand-soft);
+  --mcp-success: var(--success);
+  --mcp-success-rgb: 34, 197, 94;
+  --mcp-danger: var(--danger);
+  --mcp-warning: var(--warning);
+
+  --mcp-bg: var(--bg-page);
+  --mcp-surface: var(--bg-elev);
+  --mcp-surface-hover: var(--brand-soft);
+  --mcp-border: var(--line);
+  --mcp-border-subtle: var(--line-soft);
+  --mcp-text-primary: var(--ink-900);
+  --mcp-text-secondary: var(--ink-500);
+  --mcp-text-tertiary: var(--ink-400);
+  --mcp-shadow-sm: var(--sh-card);
+  --mcp-shadow-md: var(--sh-pop);
+  --mcp-shadow-lg: var(--sh-modal);
+  --mcp-shadow-glow: 0 0 24px rgba(var(--brand-rgb), 0.12);
+  --mcp-radius: var(--r-lg);
+  --mcp-radius-sm: var(--r-sm);
+  --mcp-radius-xs: var(--r-xs);
+  --mcp-transition: var(--transition);
+}
+
+.dark {
+  --ink-900: #f1f5f9;
+  --ink-700: #cbd2e0;
+  --ink-500: #8b95a8;
+  --ink-400: #6b748c;
+  --ink-300: #4a5163;
+  --line: #2a2f3e;
+  --line-soft: #1e2230;
+  --bg-page: #0c0e14;
+  --bg-fill: #161a26;
+  --bg-elev: #161a26;
+  --brand-soft: #1d2150;
+  --sh-card: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --sh-pop: 0 4px 16px rgba(0, 0, 0, 0.3);
+  --sh-modal: 0 12px 40px rgba(0, 0, 0, 0.4);
+
+  --mcp-bg: var(--bg-page);
+  --mcp-surface: var(--bg-elev);
+  --mcp-surface-hover: #1e2333;
+  --mcp-border: var(--line);
+  --mcp-border-subtle: var(--line-soft);
+  --mcp-text-primary: var(--ink-900);
+  --mcp-text-secondary: var(--ink-500);
+  --mcp-text-tertiary: var(--ink-400);
+  --mcp-accent-light: var(--brand-soft);
+  --mcp-shadow-sm: var(--sh-card);
+  --mcp-shadow-md: var(--sh-pop);
+  --mcp-shadow-lg: var(--sh-modal);
+  --mcp-shadow-glow: 0 0 32px rgba(var(--brand-rgb), 0.2);
+}
+
+.light {
+  color: var(--ink-900);
+  background-color: var(--bg-page);
+}
+
+.dark {
+  color: #f7f7f7;
+  background-color: #151622;
+}
+
+.dark-sub-bg {
+  background-color: rgb(35, 38, 44);
+}
+
+/* ============================================
+   Motion & Material —— 运动感与材质层
+   ============================================ */
+
+/* 文字选择色:品牌浅底 */
+::selection {
+  background: rgba(79, 70, 229, 0.14);
+}
+
+/* 键盘聚焦环:统一品牌光晕 */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18);
+  border-radius: 6px;
+}
+
+/* 进入浮起动画(消息/卡片/区块通用) */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-rise {
+  animation: rise-in 0.45s var(--ease-expo) both;
+}
+
+.animate-rise-slow {
+  animation: rise-in 0.7s var(--ease-expo) both;
+}
+
+/* 流式"思考中"微光扫过 */
+@keyframes shimmer-sweep {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.text-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--ink-400) 0%,
+    var(--ink-900) 45%,
+    var(--ink-900) 55%,
+    var(--ink-400) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-sweep 2.4s linear infinite;
+}
+
+/* 极光背景:首页 hero / 空态仪式感场景专用 */
+@keyframes aurora-drift {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  33% {
+    transform: translate(4%, -6%) scale(1.08);
+  }
+  66% {
+    transform: translate(-5%, 4%) scale(0.94);
+  }
+}
+
+.aurora-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.aurora-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(72px);
+  opacity: 0.5;
+  animation: aurora-drift 14s ease-in-out infinite;
+  will-change: transform;
+}
+
+.aurora-blob--brand {
+  background: radial-gradient(circle, rgba(79, 70, 229, 0.35), transparent 65%);
+}
+
+.aurora-blob--cyan {
+  background: radial-gradient(circle, rgba(0, 218, 239, 0.28), transparent 65%);
+  animation-delay: -5s;
+}
+
+.aurora-blob--violet {
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.22), transparent 65%);
+  animation-delay: -9s;
+}
+
+/* 玻璃拟态浮层 */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+}
+
+.dark .glass-panel {
+  background: rgba(22, 26, 38, 0.82);
+}
+
+.dark .aurora-blob {
+  opacity: 0.22;
+}
+
+/* 主按钮微交互:悬停浮起 + 按压回弹 */
+.ant-btn-primary {
+  transition: transform 0.15s var(--ease), box-shadow 0.2s var(--ease),
+    background-color 0.2s var(--ease) !important;
+}
+
+.ant-btn-primary:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.32) !important;
+}
+
+.ant-btn-primary:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: 0 1px 4px rgba(79, 70, 229, 0.24) !important;
+}
+
+/* 数字表格化(统计/计数不错位) */
+.tnum,
+.ant-statistic-content,
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* 标题负字距(大字号更紧凑高级) */
+h1,
+h2,
+h3,
+.ws-page-title,
+.ws-console-title {
+  letter-spacing: -0.02em;
+}
+
+/* 流式输出呼吸光标 */
+@keyframes cursor-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.15;
+  }
+}
+
+.stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  background: var(--brand);
+  border-radius: 1px;
+  margin: 2px 0 0 2px;
+  vertical-align: text-bottom;
+  animation: cursor-breathe 0.9s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora-blob,
+  .text-shimmer,
+  .animate-rise,
+  .animate-rise-slow {
+    animation: none;
+  }
+}
+
+.ant-btn-primary {
+  background-color: var(--antd-primary-color);
+}
+
+.ant-pagination .ant-pagination-prev * {
+  color: var(--antd-primary-color) !important;
+}
+
+.ant-pagination .ant-pagination-next * {
+  color: var(--antd-primary-color) !important;
+}
+
+.ant-pagination .ant-pagination-item a {
+  color: rgb(176, 176, 191);
+}
+
+.ant-pagination .ant-pagination-item.ant-pagination-item-active {
+  background-color: var(--antd-primary-color) !important;
+}
+
+.ant-pagination .ant-pagination-item.ant-pagination-item-active a {
+  color: white !important;
+}
+
+.scrollbar-default::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+
+/* 滚动条：默认隐藏,悬停滚动区域时以纤细悬浮条显现 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 99px;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background: rgba(20, 22, 28, 0.16);
+}
+
+.dark *:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+    display: none;
+}
+
+.scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+
+
+.dark :where(.css-dev-only-do-not-override-18iikkb).ant-tabs .ant-tabs-tab-btn {
+  color: white;
+}
+
+:where(.css-dev-only-do-not-override-18iikkb).ant-form-item .ant-form-item-label>label {
+  height: 36px;
+}
+
+@keyframes rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.react-flow__panel {
+  display: none !important;
+}
+
+#home-container .ant-tabs-tab-active {
+  font-size: 16px;
+}
+
+#home-container .ant-tabs-tab {
+  font-size: 16px;
+}
+
+#home-container .ant-card-body {
+  padding: 12px 24px;
+}
+
+pre {
+  width: 100%;
+  overflow: auto;
+  white-space: pre;
+  /* padding-left: 0.5rem; */
+}
+
+table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+}
+
+.ant-spin-nested-loading {
+  height: 100%;
+}
+
+.ant-spin-nested-loading .ant-spin-container {
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Card grids for various pages that need responsive layouts */
+.skill-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 24px;
+}
+
+.explore-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 24px;
+}
+
+/* Knowledge Vault: make tab panels fill the sidebar height */
+.kv-tabs {
+  display: flex;
+  flex-direction: column;
+}
+
+.kv-tabs .ant-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.kv-tabs .ant-tabs-nav {
+  padding: 0 8px;
+  margin-bottom: 0;
+  flex-shrink: 0;
+}
+
+.kv-tabs .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.kv-tabs .ant-tabs-content {
+  height: 100%;
+}
+
+.kv-tabs .ant-tabs-tabpane {
+  height: 100%;
+  overflow: hidden;
+}
+
+.kv-tabs .ant-tabs-tabpane > div {
+  height: 100%;
+}
+
+/* Knowledge Vault: compact tree indentation */
+.kv-tree .ant-tree {
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+}
+
+.kv-tree .ant-tree-list {
+  padding: 0 !important;
+}
+
+.kv-tree .ant-tree-list-holder,
+.kv-tree .ant-tree-list-holder-inner {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.kv-tree .ant-tree-treenode {
+  padding: 2px 0 2px 2px !important;
+  margin: 0 !important;
+}
+
+.kv-tree .ant-tree-indent-unit {
+  width: 6px !important;
+}
+
+.kv-tree .ant-tree-node-content-wrapper {
+  padding: 0 2px 0 0 !important;
+  min-height: 20px !important;
+  line-height: 20px !important;
+  display: flex !important;
+  align-items: center !important;
+  min-width: 0 !important;
+}
+
+.kv-tree .ant-tree-switcher {
+  width: 12px !important;
+  line-height: 20px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.kv-tree .ant-tree-iconEle {
+  margin-right: 2px !important;
+}
+
+.kv-tree .ant-tree-title {
+  font-size: 12px;
+  display: block !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+}
+
+.kv-tree .ant-tree-node-content-wrapper .ant-tree-title > span {
+  display: block !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  width: 100% !important;
+}
+
+/* Knowledge Vault: markdown editor fills center pane and scrolls */
+.rc-md-editor {
+  height: 100% !important;
+  min-height: 0 !important;
+  border: none !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.rc-md-editor .editor-container {
+  flex: 1 !important;
+  min-height: 0 !important;
+  display: flex !important;
+  width: 100% !important;
+  overflow: hidden !important;
+}
+
+.rc-md-editor .editor-container>.section {
+  flex: 1 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.rc-md-editor .editor-container>.section>.section-container {
+  flex: 1 !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  padding: 8px 12px !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.rc-md-editor .editor-container>.section>.section-container .html-wrap {
+  flex: 1 !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+}
+
+.rc-md-editor .editor-container .sec-md .input,
+.rc-md-editor .editor-container .sec-html .html-wrap {
+  height: 100% !important;
+  overflow: auto !important;
+}
+
+@media (max-width: 768px) {
+  .skill-grid,
+  .explore-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== Print styles ===== */
+@media print {
+  /* Hide sidebar, navigation, and non-essential UI */
+  nav,
+  aside,
+  .ant-layout-sider,
+  [class*="sidebar"],
+  [class*="Sidebar"] {
+    display: none !important;
+  }
+
+  /* Hide chat input, header actions, toggle buttons */
+  [class*="UnifiedChatInput"],
+  [class*="chat-input"],
+  .fixed {
+    display: none !important;
+  }
+
+  /* Remove overflow constraints so content flows across pages */
+  html, body {
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  * {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+
+  /* Remove background gradients for cleaner printing */
+  body {
+    background: white !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Make containers full-width and remove fixed heights */
+  .flex.h-full.w-full {
+    display: block !important;
+    height: auto !important;
+    background: white !important;
+  }
+
+  /* Ensure page breaks work properly */
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: avoid;
+  }
+
+  table, figure, img {
+    page-break-inside: avoid;
+  }
+
+  /* Remove shadows and borders for clean print */
+  [style*="boxShadow"],
+  [style*="box-shadow"] {
+    box-shadow: none !important;
+  }
+}

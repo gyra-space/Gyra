@@ -1,0 +1,680 @@
+from functools import cache
+from typing import List, Optional, Union
+
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi.security.http import HTTPAuthorizationCredentials, HTTPBearer
+
+from gyra.component import SystemApp
+from gyra_serve.core import ResourceTypes, Result, blocking_func_to_async
+from gyra_serve.datasource.api.schemas import (
+    BatchTableRequest,
+    DatasourceCreateRequest,
+    DatasourceQueryResponse,
+    DatasourceServeRequest,
+    DbSpecResponse,
+    FailedTableInfo,
+    FileLearningRequest,
+    FileLearningResponse,
+    LearningTaskRequest,
+    LearningTaskResponse,
+    ParsedTablePreview,
+    SchemaFilePreviewResponse,
+    SchemaFileUploadResponse,
+    SupportedFileType,
+    TableDataPreviewResponse,
+    TableSpecDetailResponse,
+    TableSpecSummaryPageResponse,
+    TableSpecSummaryResponse,
+    TableSpecUpdateRequest,
+)
+from gyra_serve.datasource.config import SERVE_SERVICE_COMPONENT_NAME, ServeConfig
+from gyra_serve.datasource.service.service import Service
+
+router = APIRouter()
+
+# Add your API endpoints here
+
+global_system_app: Optional[SystemApp] = None
+
+
+def get_service() -> Service:
+    """Get the service instance"""
+    return global_system_app.get_component(SERVE_SERVICE_COMPONENT_NAME, Service)
+
+
+get_bearer_token = HTTPBearer(auto_error=False)
+
+
+@cache
+def _parse_api_keys(api_keys: str) -> List[str]:
+    """Parse the string api keys to a list
+
+    Args:
+        api_keys (str): The string api keys
+
+    Returns:
+        List[str]: The list of api keys
+    """
+    if not api_keys:
+        return []
+    return [key.strip() for key in api_keys.split(",")]
+
+
+async def check_api_key(
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
+    service: Service = Depends(get_service),
+) -> Optional[str]:
+    """Check the api key
+
+    If the api key is not set, allow all.
+
+    Your can pass the token in you request header like this:
+
+    .. code-block:: python
+
+        import requests
+
+        client_api_key = "your_api_key"
+        headers = {"Authorization": "Bearer " + client_api_key}
+        res = requests.get("http://test/hello", headers=headers)
+        assert res.status_code == 200
+
+    """
+    if service.config.api_keys:
+        api_keys = _parse_api_keys(service.config.api_keys)
+        if auth is None or (token := auth.credentials) not in api_keys:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": {
+                        "message": "",
+                        "type": "invalid_request_error",
+                        "param": None,
+                        "code": "invalid_api_key",
+                    }
+                },
+            )
+        return token
+    else:
+        # api_keys not set; allow all
+        return None
+
+
+@router.get("/health", dependencies=[Depends(check_api_key)])
+async def health():
+    """Health check endpoint"""
+    return {"status": "ok"}
+
+
+@router.get("/test_auth", dependencies=[Depends(check_api_key)])
+async def test_auth():
+    """Test auth endpoint"""
+    return {"status": "ok"}
+
+
+@router.post(
+    "/datasources/upload-db",
+    response_model=Result[dict],
+    dependencies=[Depends(check_api_key)],
+)
+async def upload_db_file(
+    file: UploadFile,
+    service: Service = Depends(get_service),
+) -> Result[dict]:
+    """Upload a database file and return the server-side storage path.
+
+    Used for file-based databases (SQLite, DuckDB, etc.) where the browser
+    cannot provide the server-side file path.
+    """
+    result = await blocking_func_to_async(
+        global_system_app, service.upload_db_file, file
+    )
+    return Result.succ(result)
+
+
+@router.post(
+    "/datasources",
+    response_model=Result[DatasourceQueryResponse],
+    dependencies=[Depends(check_api_key)],
+)
+async def create(
+    request: Union[DatasourceCreateRequest, DatasourceServeRequest],
+    service: Service = Depends(get_service),
+) -> Result[DatasourceQueryResponse]:
+    """Create a new Space entity
+
+    Args:
+        request (Union[DatasourceCreateRequest, DatasourceServeRequest]): The request
+            to create a datasource. DatasourceServeRequest is deprecated.
+        service (Service): The service
+    Returns:
+        ServerResponse: The response
+    """
+    return Result.succ(service.create(request))
+
+
+@router.put(
+    "/datasources",
+    response_model=Result[DatasourceQueryResponse],
+    dependencies=[Depends(check_api_key)],
+)
+async def update(
+    request: Union[DatasourceCreateRequest, DatasourceServeRequest],
+    service: Service = Depends(get_service),
+) -> Result[DatasourceQueryResponse]:
+    """Update a Space entity
+
+    Args:
+        request (DatasourceServeRequest): The request
+        service (Service): The service
+    Returns:
+        ServerResponse: The response
+    """
+    return Result.succ(service.update(request))
+
+
+@router.delete(
+    "/datasources/{datasource_id}",
+    response_model=Result[None],
+    dependencies=[Depends(check_api_key)],
+)
+async def delete(
+    datasource_id: str, service: Service = Depends(get_service)
+) -> Result[None]:
+    """Delete a Space entity
+
+    Args:
+        request (DatasourceServeRequest): The request
+        service (Service): The service
+    Returns:
+        ServerResponse: The response
+    """
+    service.delete(datasource_id)
+    return Result.succ(None)
+
+
+@router.get(
+    "/datasources/{datasource_id}",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[DatasourceQueryResponse],
+)
+async def query(
+    datasource_id: str, service: Service = Depends(get_service)
+) -> Result[DatasourceQueryResponse]:
+    """Query Space entities
+
+    Args:
+        request (DatasourceServeRequest): The request
+        service (Service): The service
+    Returns:
+        List[ServeResponse]: The response
+    """
+    return Result.succ(service.get(datasource_id))
+
+
+@router.get(
+    "/datasources",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[List[DatasourceQueryResponse]],
+)
+async def query_page(
+    db_type: Optional[str] = Query(
+        None, description="Database type, e.g. sqlite, mysql, etc."
+    ),
+    owner_workspace_id: Optional[int] = Query(
+        None,
+        description="Filter to datasources owned by this workspace plus global "
+        "(owner_workspace_id IS NULL) ones. Omit for the full list.",
+    ),
+    service: Service = Depends(get_service),
+) -> Result[List[DatasourceQueryResponse]]:
+    """Query Space entities
+
+    Args:
+        service (Service): The service
+    Returns:
+        ServerResponse: The response
+    """
+    res = service.get_list(db_type=db_type, owner_workspace_id=owner_workspace_id)
+    return Result.succ(res)
+
+
+@router.get(
+    "/datasource-types",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[ResourceTypes],
+)
+async def get_datasource_types(
+    service: Service = Depends(get_service),
+) -> Result[ResourceTypes]:
+    """Get the datasource types."""
+    return Result.succ(service.datasource_types())
+
+
+@router.post(
+    "/datasources/test-connection",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[bool],
+)
+async def test_connection(
+    request: DatasourceCreateRequest, service: Service = Depends(get_service)
+) -> Result[bool]:
+    """Test the connection using datasource configuration before creating it
+
+    Args:
+        request (DatasourceServeRequest): The datasource configuration to test
+        service (Service): The service instance
+
+    Returns:
+        Result[bool]: The test result, True if connection is successful
+    """
+    try:
+        res = await blocking_func_to_async(
+            global_system_app, service.test_connection, request
+        )
+        return Result.succ(res)
+    except Exception as e:
+        return Result.failed(msg=str(e), err_code="E0003")
+
+
+@router.post(
+    "/datasources/{datasource_id}/refresh",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[bool],
+)
+async def refresh_datasource(
+    datasource_id: str, service: Service = Depends(get_service)
+) -> Result[bool]:
+    """Refresh a datasource by its ID
+
+    Args:
+        datasource_id (str): The ID of the datasource to refresh
+        service (Service): The service instance
+
+    Returns:
+        Result[bool]: The refresh result, True if the refresh was successful
+
+    Raises:
+        HTTPException: When the refresh operation fails
+    """
+    res = await blocking_func_to_async(
+        global_system_app, service.refresh, datasource_id
+    )
+    return Result.succ(res)
+
+
+# ============================================================
+# Database Spec & Learning Endpoints
+# ============================================================
+
+
+@router.post(
+    "/datasources/{datasource_id}/learn",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[LearningTaskResponse],
+)
+async def trigger_learning(
+    datasource_id: str,
+    request: Optional[LearningTaskRequest] = None,
+    service: Service = Depends(get_service),
+) -> Result[LearningTaskResponse]:
+    """Trigger a schema learning task for a datasource.
+
+    Args:
+        datasource_id: The datasource ID.
+        request: Optional learning task parameters.
+        service: The service instance.
+    """
+    task_type = request.task_type if request else "full_learn"
+    table_name = request.table_name if request else None
+
+    result = await blocking_func_to_async(
+        global_system_app,
+        service.trigger_learning,
+        datasource_id,
+        task_type,
+        table_name,
+    )
+    return Result.succ(LearningTaskResponse(**result))
+
+
+@router.post(
+    "/datasources/{datasource_id}/learn/cancel",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[dict],
+)
+async def cancel_learning(
+    datasource_id: str,
+    service: Service = Depends(get_service),
+) -> Result[dict]:
+    """Cancel a running learning task for a datasource."""
+    result = await blocking_func_to_async(
+        global_system_app, service.cancel_learning, datasource_id
+    )
+    return Result.succ(result)
+
+
+@router.post(
+    "/datasources/{datasource_id}/learn/pause",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[dict],
+)
+async def pause_learning(
+    datasource_id: str,
+    service: Service = Depends(get_service),
+) -> Result[dict]:
+    """Pause a running learning task for a datasource."""
+    result = await blocking_func_to_async(
+        global_system_app, service.pause_learning, datasource_id
+    )
+    return Result.succ(result)
+
+
+@router.post(
+    "/datasources/{datasource_id}/learn/resume",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[dict],
+)
+async def resume_learning(
+    datasource_id: str,
+    service: Service = Depends(get_service),
+) -> Result[dict]:
+    """Resume a paused learning task for a datasource."""
+    result = await blocking_func_to_async(
+        global_system_app, service.resume_learning, datasource_id
+    )
+    return Result.succ(result)
+
+
+@router.get(
+    "/datasources/{datasource_id}/learn/status",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[Optional[LearningTaskResponse]],
+)
+async def get_learning_status(
+    datasource_id: str,
+    service: Service = Depends(get_service),
+) -> Result[Optional[LearningTaskResponse]]:
+    """Get the current learning task status for a datasource."""
+    result = service.get_learning_status(datasource_id)
+    if result:
+        return Result.succ(LearningTaskResponse(**result))
+    return Result.succ(None)
+
+
+@router.get(
+    "/datasources/{datasource_id}/spec",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[Optional[DbSpecResponse]],
+)
+async def get_db_spec(
+    datasource_id: str,
+    service: Service = Depends(get_service),
+) -> Result[Optional[DbSpecResponse]]:
+    """Get the database-level spec document for a datasource."""
+    result = service.get_db_spec(datasource_id)
+    if result:
+        return Result.succ(DbSpecResponse(**result))
+    return Result.succ(None)
+
+
+@router.get(
+    "/datasources/{datasource_id}/tables",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[TableSpecSummaryPageResponse],
+)
+async def get_table_specs(
+    datasource_id: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=200, description="Page size"),
+    keyword: Optional[str] = Query(None, description="Filter by table name or comment"),
+    service: Service = Depends(get_service),
+) -> Result[TableSpecSummaryPageResponse]:
+    """Get paginated table spec summaries for a datasource."""
+    result = service.get_table_specs_page(
+        datasource_id,
+        keyword=keyword,
+        page=page,
+        page_size=page_size,
+    )
+    summaries = [
+        TableSpecSummaryResponse(**item) for item in result["items"]
+    ]
+    return Result.succ(
+        TableSpecSummaryPageResponse(items=summaries, total=result["total"])
+    )
+
+
+@router.get(
+    "/datasources/{datasource_id}/tables/{table_name}",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[Optional[TableSpecDetailResponse]],
+)
+async def get_table_spec_detail(
+    datasource_id: str,
+    table_name: str,
+    service: Service = Depends(get_service),
+) -> Result[Optional[TableSpecDetailResponse]]:
+    """Get detailed table spec for a specific table."""
+    result = service.get_table_spec(datasource_id, table_name)
+    if result:
+        return Result.succ(TableSpecDetailResponse(**result))
+    return Result.succ(None)
+
+
+@router.post(
+    "/datasources/{datasource_id}/tables/batch",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[List[TableSpecDetailResponse]],
+)
+async def get_table_specs_batch(
+    datasource_id: str,
+    request: BatchTableRequest,
+    service: Service = Depends(get_service),
+) -> Result[List[TableSpecDetailResponse]]:
+    """Get multiple table specs at once."""
+    results = service.get_table_specs_batch(datasource_id, request.table_names)
+    return Result.succ([TableSpecDetailResponse(**r) for r in results])
+
+
+@router.get(
+    "/datasources/{datasource_id}/tables/{table_name}/data",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[TableDataPreviewResponse],
+)
+async def preview_table_data(
+    datasource_id: str,
+    table_name: str,
+    service: Service = Depends(get_service),
+) -> Result[TableDataPreviewResponse]:
+    """Preview table  first 5 rows + last 5 rows."""
+    result = await blocking_func_to_async(
+        global_system_app,
+        service.preview_table_data,
+        datasource_id,
+        table_name,
+    )
+    return Result.succ(TableDataPreviewResponse(**result))
+
+
+@router.post(
+    "/datasources/{datasource_id}/tables/{table_name}/refresh-sample",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[TableSpecDetailResponse],
+)
+async def refresh_table_sample_data(
+    datasource_id: str,
+    table_name: str,
+    service: Service = Depends(get_service),
+) -> Result[TableSpecDetailResponse]:
+    """Refresh sample data for a single table.
+
+    Re-collects sample rows (first 2 + last 2) from the database
+    and updates the table spec. Use this when:
+    - Data has changed significantly
+    - Want to ensure sample data reflects current state
+    """
+    result = await blocking_func_to_async(
+        global_system_app,
+        service.refresh_table_sample_data,
+        datasource_id,
+        table_name,
+    )
+    return Result.succ(TableSpecDetailResponse(**result))
+
+
+@router.put(
+    "/datasources/{datasource_id}/tables/{table_name}",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[Optional[TableSpecDetailResponse]],
+)
+async def update_table_spec(
+    datasource_id: str,
+    table_name: str,
+    request: TableSpecUpdateRequest,
+    service: Service = Depends(get_service),
+) -> Result[Optional[TableSpecDetailResponse]]:
+    """Edit a single table spec's learned content.
+
+    Updates editable fields: table comment, group name, and per-column
+    comment/type/nullable/default/pk (matched by column name). Columns
+    are not added or removed. The database-level spec summary is
+    regenerated to stay in sync.
+    """
+    result = await blocking_func_to_async(
+        global_system_app,
+        service.update_table_spec,
+        datasource_id,
+        table_name,
+        request.model_dump(exclude_none=True),
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="table spec not found")
+    return Result.succ(TableSpecDetailResponse(**result))
+
+
+@router.post(
+    "/datasources/{datasource_id}/tables/{table_name}/enrich",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[Optional[TableSpecDetailResponse]],
+)
+async def enrich_table_descriptions(
+    datasource_id: str,
+    table_name: str,
+    force: bool = Query(
+        False, description="Overwrite existing comments when true"
+    ),
+    service: Service = Depends(get_service),
+) -> Result[Optional[TableSpecDetailResponse]]:
+    """Generate or refresh LLM descriptions for a single table.
+
+    Asks the LLM for a table comment and per-column comments based on
+    the existing learned structure + sample data (does NOT re-fetch
+    structure from the database). When force is false, only empty
+    comments are filled; when true, all comments are overwritten.
+    """
+    result = await blocking_func_to_async(
+        global_system_app,
+        service.enrich_table_descriptions,
+        datasource_id,
+        table_name,
+        force,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="table spec not found")
+    return Result.succ(TableSpecDetailResponse(**result))
+
+
+# ==============================================================
+# Schema File Learning Endpoints
+# ==============================================================
+
+
+@router.get(
+    "/schema-files/types",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[List[SupportedFileType]],
+)
+async def get_supported_file_types(
+    service: Service = Depends(get_service),
+) -> Result[List[SupportedFileType]]:
+    """Get list of supported schema file types."""
+    from gyra_serve.datasource.file_learning import get_supported_types
+    types = get_supported_types()
+    return Result.succ([SupportedFileType(**t) for t in types])
+
+
+@router.post(
+    "/schema-files/upload",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[SchemaFileUploadResponse],
+)
+async def upload_schema_file(
+    file: UploadFile,
+    service: Service = Depends(get_service),
+) -> Result[SchemaFileUploadResponse]:
+    """Upload a schema design file (PDM, DDL, PDMan).
+
+    Returns file_id for subsequent learning operations.
+    """
+    content = await file.read()
+    result = service.file_learning.upload_schema_file(content, file.filename or "unknown")
+    return Result.succ(SchemaFileUploadResponse(**result))
+
+
+@router.post(
+    "/schema-files/{file_id}/preview",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[SchemaFilePreviewResponse],
+)
+async def preview_schema_file(
+    file_id: str,
+    service: Service = Depends(get_service),
+) -> Result[SchemaFilePreviewResponse]:
+    """Preview parsed tables from uploaded schema file.
+
+    Returns list of tables/views that will be learned.
+    """
+    file_path = service.file_learning.get_file_path(file_id)
+    if not file_path:
+        raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+
+    result = service.file_learning.preview_parsed_tables(file_path)
+    return Result.succ(SchemaFilePreviewResponse(**result))
+
+
+@router.post(
+    "/schema-files/{file_id}/learn",
+    dependencies=[Depends(check_api_key)],
+    response_model=Result[FileLearningResponse],
+)
+async def learn_from_schema_file(
+    file_id: str,
+    request: FileLearningRequest,
+    service: Service = Depends(get_service),
+) -> Result[FileLearningResponse]:
+    """Learn schema from uploaded file and link to datasource.
+
+    Creates table_specs with structure from file, and sample data
+    from the linked datasource.
+    """
+    file_path = service.file_learning.get_file_path(file_id)
+    if not file_path:
+        raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+
+    result = await blocking_func_to_async(
+        global_system_app,
+        service.file_learning.learn_from_file,
+        file_path,
+        request.datasource_id,
+        request.file_type,
+        request.options,
+    )
+    return Result.succ(FileLearningResponse(**result))
+
+
+def init_endpoints(system_app: SystemApp, config: ServeConfig) -> None:
+    """Initialize the endpoints"""
+    global global_system_app
+    system_app.register(Service, config=config)
+    global_system_app = system_app

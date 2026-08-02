@@ -1,0 +1,148 @@
+[project]
+name = "gyra-ext"
+version = "0.7.0"
+description = "Add your description here"
+authors = [
+    { name = "csunny", email = "cfqcsunny@gmail.com" }
+]
+license = "MIT"
+readme = "README.md"
+requires-python = ">= 3.10"
+
+dependencies = [
+    "gyra>=0.7.0",
+    "pymysql",
+    "allpairspy",
+    "httpx>=0.24.0",
+    "aiosqlite>=0.20.0",
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/gyra-ai/gyra"
+Documentation = "http://docs.gyra.ai/docs/overview"
+Repository = "https://github.com/gyra-ai/gyra.git"
+Issues = "https://github.com/gyra-ai/gyra/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+gyra_ext = "gyra_ext.mcp.run:main"
+
+
+[project.optional-dependencies]
+rag = [
+    "spacy==3.7",
+    "markdown",
+    "bs4",
+    "python-pptx",
+    "python-docx",
+    "pypdf",
+    "pdfplumber",
+    "sentence-transformers",
+]
+graph_rag = [
+    # For visualization in code
+    "networkx",
+    "dbgpt-tugraph-plugins>=0.1.1",
+    "neo4j"
+]
+datasource_mysql = [
+    # mysqlclient 2.2.x have pkg-config issue on 3.10+
+    # If you want to install psycopg2 and mysqlclient in ubuntu, you should install
+    # libpq-dev and libmysqlclient-dev first.
+    "mysqlclient==2.1.0",
+]
+datasource_postgres = [
+    # "psycopg2", # In production, you can install psycopg2 instead of psycopg2-binary
+    "psycopg2-binary",
+]
+datasource_oracle = [
+    # Pin <4: python-oracledb 4.x thick mode requires Oracle Client >= 19.1,
+    # which breaks deployments still using Instant Client 11.2 (needed for
+    # connecting to Oracle 11g and earlier database servers).
+    "oracledb>=1.4.0,<4",
+]
+
+datasource_duckdb = [
+    "duckdb",
+    "duckdb-engine==0.17.0",
+]
+# datasource_doris = ["pydoris>=1.0.2,<2.0.0"]
+storage_milvus = ["pymilvus"]
+storage_weaviate = ["weaviate-client"]
+storage_chromadb = [
+    "onnxruntime>=1.14.1,<=1.18.1",
+    "chromadb>=0.4.22"
+    ]
+storage_elasticsearch = ["elasticsearch"]
+storage_obvector = ["pyobvector"]
+storage_oss2 = ["oss2==2.18.4"]
+storage_mempalace = []  # removed: mempalace integration dropped, short-term memory uses SimpleSQLite
+
+knowledge_local = [
+    # LocalVaultFS recommended: vector store + filesystem watcher
+    "lancedb>=0.10.0",
+    "watchfiles>=0.21.0",
+]
+proxy_tongyi = [
+    # For tongyi proxy embedding model
+    "dashscope"
+]
+
+ext_base=[
+    "pycryptodome==3.20.0",
+    "py-spy>=0.4.0",
+    "json_repair>=0.40.0",
+    "ipython>= 8.37.0"
+#    "playwright==1.52.0",
+]
+
+prometheus = [
+    "prometheus_client>=0.20.0",
+]
+
+mcp_gateway=[
+    "flask>=3.1.0",
+    "flask-cors>=5.0.1",
+    "httpx<0.28",
+    "mcp>=1.1.3",
+    "pydantic>=2.0.0",
+    "readabilipy>=0.2.0",
+    "requests>=2.32.3",
+    "websockets>=15.0.1",
+    "werkzeug>=3.1.3",
+]
+
+channel_feishu=[
+    "lark-oapi>=1.0.0",
+]
+
+channel_dingtalk=[
+    "dingtalk-stream>=0.24.0",
+]
+
+channel_all=[
+    "lark-oapi>=1.0.0",
+    "dingtalk-stream>=0.24.0",
+]
+
+
+[tool.uv]
+managed = true
+dev-dependencies = [
+    "pytest>=8.3.4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gyra_ext"]
+exclude = [
+    "src/gyra_ext/**/tests",
+    "src/gyra_ext/**/tests/*",
+    "src/gyra_ext/tests",
+    "src/gyra_ext/tests/*",
+    "src/gyra_ext/**/examples",
+    "src/gyra_ext/**/examples/*"
+]

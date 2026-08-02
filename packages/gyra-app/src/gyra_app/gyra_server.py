@@ -1,0 +1,171 @@
+import logging
+import os
+import sys
+from pathlib import Path
+
+from gyra.util.logger import (
+    logging_str_to_uvicorn_level,
+)
+from gyra.util.parameter_utils import _get_dict_from_obj
+from gyra.util.system_utils import get_system_info
+from gyra.util.tracer import SpanType, SpanTypeRunName, root_tracer
+from gyra_app.app import CustomAppCreator, AppCreator
+
+logger = logging.getLogger(__name__)
+ROOT_PATH = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(ROOT_PATH)
+
+from gyra_core.config.home import get_gyra_home
+
+DEFAULT_JSON_CONFIG_PATH = get_gyra_home() / "gyra.json"
+
+
+def init_json_config_manager():
+    """Initialize the JSON config manager for UI configuration"""
+    try:
+        config_path = str(DEFAULT_JSON_CONFIG_PATH)
+        logger.info("=" * 80)
+        logger.info("[STARTUP] Loading configuration files...")
+        logger.info(f"[STARTUP] JSON config path: {config_path}")
+        logger.info(f"[STARTUP] JSON config exists: {DEFAULT_JSON_CONFIG_PATH.exists()}")
+
+        from gyra_core.config import ConfigManager
+
+        ConfigManager.init(config_path)
+        actual_path = ConfigManager.get_config_path()
+        logger.info(f"[STARTUP] JSON config loaded from: {actual_path}")
+        logger.info("=" * 80)
+    except Exception as e:
+        logger.error(
+            f"Failed to initialize JSON config manager: {e}", exc_info=True
+        )
+
+
+def run_uvicorn(creator: AppCreator):
+    import uvicorn
+
+    web_config = creator.config.service.web
+    # setup_http_service_logging()
+    log_level = "info"
+    if web_config.log:
+        log_level = logging_str_to_uvicorn_level(web_config.log.level)
+
+    loop = "auto"
+    try:
+        import uvloop
+
+        loop = "uvloop"
+    except ImportError:
+        pass
+
+    http = "auto"
+    try:
+        import httptools
+
+        http = "httptools"
+    except ImportError:
+        pass
+
+    uvicorn.run(
+        app=creator.app(),
+        factory=True,
+        host=web_config.host,
+        port=web_config.port,
+        log_level=log_level,
+        workers=creator.workers(),
+        loop=loop,
+        http=http,
+    )
+
+
+def run_webserver(config_file: str = None):
+    """启动 Web 服务器。
+
+    Args:
+        config_file: TOML 配置文件路径（可选）。如果不指定，使用零配置模式。
+
+    启动流程：
+    1. 初始化 JSON 配置管理器（~/.gyra/gyra.json）
+    2. 加载 TOML 配置（可选）
+    3. 启动 uvicorn 服务
+    """
+    init_json_config_manager()
+
+    # 记录 JSON 配置状态
+    try:
+        from gyra_core.config import ConfigManager
+        import os as _os
+
+        config_path = ConfigManager.get_config_path()
+        logger.info(f"[Startup] JSON config path: {config_path}")
+
+        if config_path and _os.path.exists(config_path):
+            cfg = ConfigManager.get()
+            if cfg:
+                agent_llm = getattr(cfg, "agent_llm", None)
+                if agent_llm:
+                    providers = (
+                        agent_llm.providers
+                        if hasattr(agent_llm, "providers")
+                        else []
+                    )
+                    models_count = 0
+                    for p in providers:
+                        if hasattr(p, "models"):
+                            models_count += len(p.models)
+                    logger.info(
+                        f"[Startup] agent_llm found: {len(providers)} providers, {models_count} models"
+                    )
+                else:
+                    logger.info("[Startup] No agent_llm in JSON config")
+            else:
+                logger.warning("[Startup] ConfigManager.get() returned None")
+        else:
+            logger.warning(f"[Startup] JSON config file not found: {config_path}")
+    except Exception as e:
+        logger.warning(f"[Startup] Failed to log config status: {e}")
+
+    if config_file is None:
+        creator = CustomAppCreator(config_file)
+    else:
+        creator = next(
+            (
+                creator
+                for creator in AppCreator.__subclasses__()
+                if creator.config_file and creator.config_file.endswith(config_file)
+            ),
+            CustomAppCreator,
+        )(config_file)
+
+    with root_tracer.start_span(
+        "run_webserver",
+        span_type=SpanType.RUN,
+        metadata={
+            "run_service": SpanTypeRunName.WEBSERVER,
+            "sys_infos": _get_dict_from_obj(get_system_info()),
+        },
+    ):
+        run_uvicorn(creator)
+
+
+def parse_args():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="GYRA Webserver")
+    parser.add_argument(
+        "-c",
+        "--config",
+        type=str,
+        default=None,
+        help=f"Path to the TOML configuration file for service infrastructure. "
+        f"Default: configs/gyra-proxy-aliyun.toml. "
+        f"Application settings (JSON) are stored in: {DEFAULT_JSON_CONFIG_PATH}",
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    # Parse command line arguments
+    _args = parse_args()
+    _config_file = _args.config
+    run_webserver(_config_file)

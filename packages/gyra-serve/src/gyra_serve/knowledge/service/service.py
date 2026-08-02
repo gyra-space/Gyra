@@ -1,0 +1,861 @@
+"""Knowledge Serve service — bridges HTTP API to VaultFS instances.
+
+A single service instance manages all knowledge spaces in this process.
+Spaces are loaded lazily on first access (per slug) and cached.
+
+Backend selection (RFC 002 distributed variant):
+- Local spaces (`backend="local"`): live under `<local_root>/<slug>/`,
+  discovered by filesystem scan. Per-space config persisted in the
+  space's own SQLite `spaces` row.
+- Distributed spaces (`backend="distributed"`): live on S3 + SQL +
+  pgvector. Tracked via a JSON registry file at `<local_root>/registry.json`
+  so they're discoverable on restart (no local directory per space).
+
+Per-space config (default_agent_id / llm_model / multimodal_model /
+embedder_model) is persisted in each local space's vault.sqlite `spaces`
+row. For distributed spaces, the config is stored in the relational DB's
+`spaces` table (managed by SQLAlchemyRelationalStore).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from gyra.component import BaseComponent, SystemApp
+from gyra.knowledge.types import Space, Visibility, new_space_id
+
+from gyra_ext.knowledge.extractors.registry_init import register_builtin_extractors
+from gyra_ext.knowledge.resource import set_vault_factory
+from gyra_ext.knowledge.vaultfs import DistributedVaultFS, LocalVaultFS
+
+from ..config import SERVE_SERVICE_COMPONENT_NAME, SUPPORTED_VECTOR_STORES, ServeConfig
+from ..ingest import IngestOrchestrator
+
+logger = logging.getLogger(__name__)
+
+
+# Sync → async driver translation map for SQLAlchemy URLs.
+# The app's [service.web.database] config uses sync drivers (pymysql,
+# psycopg2); distributed mode needs async (asyncmy, asyncpg) since
+# SQLAlchemyRelationalStore uses create_async_engine.
+_ASYNC_DRIVER_MAP = [
+    ("mysql+mysqldb://", "mysql+asyncmy://"),
+    ("mysql+pymysql://", "mysql+asyncmy://"),
+    ("postgresql+psycopg2://", "postgresql+asyncpg://"),
+    ("postgresql+psycopg://", "postgresql+asyncpg://"),
+    ("postgresql://", "postgresql+asyncpg://"),
+    ("sqlite:///", "sqlite+aiosqlite:///"),
+]
+
+
+def _translate_to_async_dsn(url: str) -> str:
+    """Translate a sync SQLAlchemy URL to its async-driver equivalent.
+
+    If the URL already uses an async driver or is unrecognized, returned
+    unchanged.
+    """
+    for sync_prefix, async_prefix in _ASYNC_DRIVER_MAP:
+        if url.startswith(sync_prefix):
+            return async_prefix + url[len(sync_prefix):]
+    return url
+
+
+class Service(BaseComponent):
+    """Knowledge serve service.
+
+    Manages a registry of VaultFS instances keyed by space slug, plus
+    per-space config persistence and the ingest orchestrator.
+    """
+
+    name = SERVE_SERVICE_COMPONENT_NAME
+
+    def __init__(self, system_app: SystemApp, serve_config: ServeConfig):
+        # Initialize flags before super().__init__ — BaseComponent calls
+        # init_app() during __init__, which references these attributes.
+        self._extractors_registered = False
+        super().__init__(system_app)
+        self._serve_config = serve_config
+        self._local_root = Path(serve_config.local_root or "~/.gyra/spaces").expanduser()
+        self._vaults: Dict[str, Any] = {}  # slug → VaultFS (Local or Distributed)
+        self._spaces: Dict[str, Space] = {}  # slug → Space config (cached)
+        self._orchestrator: Optional[IngestOrchestrator] = None
+
+    def init_app(self, system_app: SystemApp) -> None:
+        """Called on init_app — register the vault factory so tools can resolve."""
+        self._system_app = system_app
+        set_vault_factory(self.get_vault)
+        # Register built-in extractors once (idempotent).
+        if not self._extractors_registered:
+            try:
+                register_builtin_extractors()
+                self._extractors_registered = True
+            except Exception as e:
+                logger.warning("register_builtin_extractors failed: %s", e)
+
+    @property
+    def config(self) -> ServeConfig:
+        """The serve config (datasource Service convention — used by the
+        HTTP auth layer for api_keys)."""
+        return self._serve_config
+
+    @property
+    def orchestrator(self) -> IngestOrchestrator:
+        if self._orchestrator is None:
+            self._orchestrator = IngestOrchestrator(self._system_app)
+        return self._orchestrator
+
+    # ------------------------------------------------------------------
+    # Registry (JSON file for distributed spaces)
+    # ------------------------------------------------------------------
+    @property
+    def _registry_path(self) -> Path:
+        return self._local_root / "registry.json"
+
+    def _load_registry(self) -> Dict[str, dict]:
+        if not self._registry_path.exists():
+            return {}
+        try:
+            return json.loads(self._registry_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Failed to load registry %s: %s", self._registry_path, e)
+            return {}
+
+    def _save_registry(self, data: Dict[str, dict]) -> None:
+        self._local_root.mkdir(parents=True, exist_ok=True)
+        self._registry_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def _registry_lookup(self, slug: str) -> Optional[dict]:
+        return self._load_registry().get(slug)
+
+    def _registry_upsert(self, slug: str, entry: dict) -> None:
+        data = self._load_registry()
+        data[slug] = entry
+        self._save_registry(data)
+
+    # ------------------------------------------------------------------
+    # Vault construction
+    # ------------------------------------------------------------------
+    def _resolve_relational_dsn(self) -> str:
+        """Derive an async SQLAlchemy DSN from `[service.web.database]`.
+
+        Sync drivers are auto-translated to their async counterparts:
+        - `mysql+pymysql` / `mysql+mysqldb` → `mysql+asyncmy`
+        - `postgresql+psycopg2` / `postgresql` → `postgresql+asyncpg`
+        - `sqlite` → `sqlite+aiosqlite` (rejected later — distributed mode
+          needs a server DB)
+
+        Raises RuntimeError if the app DB config is missing or SQLite
+        (SQLite can't serve distributed mode: cross-process locks and
+        pgvector both require a server DB).
+        """
+        try:
+            from gyra_app.config import ApplicationConfig
+        except ImportError as e:
+            raise RuntimeError(
+                "Cannot resolve service.web.database — gyra_app not available: "
+                + str(e)
+            )
+        app_config = self._system_app.config.get_typed("app_config", ApplicationConfig)
+        db_params = app_config.service.web.database
+        if db_params is None:
+            raise RuntimeError(
+                "Distributed backend requires [service.web.database] to be "
+                "configured with MySQL or Postgres."
+            )
+
+        db_type = getattr(db_params, "__type__", "")
+        if db_type == "sqlite":
+            raise RuntimeError(
+                "Distributed backend does not support SQLite for "
+                "[service.web.database]. Configure MySQL or Postgres "
+                "(SQLite is local-only: no cross-process locks, no pgvector)."
+            )
+
+        sync_url = db_params.db_url()
+        return _translate_to_async_dsn(sync_url)
+
+    def _resolve_distributed_config(self) -> dict:
+        """Resolve effective DistributedVaultFS config with quick-start defaults.
+
+        - relational_dsn: from [service.web.database] (sync → async)
+        - vector_store_config: dict shaped per chosen vector_store_type
+          (pgvector / milvus / chroma / lance). pgvector defaults its dsn
+          to the relational_dsn (single-DB mode) when vector_dsn is empty.
+        - s3_bucket: from config, or reuse ServeConfig.uploads_bucket
+        - s3_storage_type: from config, or None (use FileStorageClient default)
+        """
+        dcfg = self._serve_config.distributed
+        if not dcfg.enabled:
+            raise RuntimeError(
+                "Distributed backend not enabled — set "
+                "[knowledge.distributed] enabled=true in config"
+            )
+
+        relational_dsn = self._resolve_relational_dsn()
+        vtype = dcfg.vector_store_type
+
+        if vtype == "pgvector":
+            dsn = dcfg.vector_dsn or relational_dsn
+            if not dsn.startswith(("postgresql+asyncpg://", "postgresql://")):
+                raise RuntimeError(
+                    "pgvector requires a Postgres DSN. Either set "
+                    "[service.web.database] type='postgresql', or provide "
+                    "[knowledge.distributed] vector_dsn explicitly."
+                )
+            vector_store_config = {"type": "pgvector", "dsn": dsn}
+        elif vtype == "milvus":
+            if not dcfg.milvus_uri:
+                raise RuntimeError(
+                    "milvus requires [knowledge.distributed] milvus_uri "
+                    "(e.g. localhost:19530)."
+                )
+            vector_store_config = {
+                "type": "milvus",
+                "uri": dcfg.milvus_uri,
+                "collection_prefix": dcfg.milvus_collection_prefix,
+            }
+        elif vtype == "chroma":
+            if not dcfg.chroma_uri:
+                raise RuntimeError(
+                    "chroma requires [knowledge.distributed] chroma_uri "
+                    "(e.g. http://localhost:8000). Embedded local mode is "
+                    "unsafe for distributed (multi-process races)."
+                )
+            vector_store_config = {"type": "chroma", "uri": dcfg.chroma_uri}
+        elif vtype == "lance":
+            if not dcfg.lance_s3_uri:
+                raise RuntimeError(
+                    "lance requires [knowledge.distributed] lance_s3_uri "
+                    "(e.g. s3://bucket/knowledge-vectors)."
+                )
+            vector_store_config = {"type": "lance", "s3_uri": dcfg.lance_s3_uri}
+        else:
+            raise RuntimeError(
+                f"Unknown vector_store_type: {vtype!r}. Supported: "
+                f"{SUPPORTED_VECTOR_STORES}"
+            )
+
+        s3_bucket = dcfg.s3_bucket or self._serve_config.uploads_bucket
+        if not s3_bucket:
+            raise RuntimeError(
+                "Distributed backend requires an S3 bucket. Set "
+                "[knowledge] uploads_bucket or [knowledge.distributed] s3_bucket."
+            )
+
+        return {
+            "relational_dsn": relational_dsn,
+            "vector_store_config": vector_store_config,
+            "s3_bucket": s3_bucket,
+            "s3_storage_type": dcfg.s3_storage_type,
+        }
+
+    def _make_vault(self, space: Space) -> Any:
+        """Build a VaultFS instance for the given space config.
+
+        Backend is chosen by `space.backend`:
+        - "distributed": DistributedVaultFS (S3 + SQL + pluggable vector store)
+        - anything else: LocalVaultFS (FS + SQLite + LanceDB)
+        """
+        if space.backend == "distributed":
+            cfg = self._resolve_distributed_config()
+            vault = DistributedVaultFS(
+                space_id=space.id,
+                relational_dsn=cfg["relational_dsn"],
+                vector_store_config=cfg["vector_store_config"],
+                s3_bucket=cfg["s3_bucket"],
+                s3_storage_type=cfg["s3_storage_type"],
+                system_app=self._system_app,
+            )
+            self._configure_embedder_hint(vault, space)
+            self._configure_reranker(vault, space)
+            return vault
+
+        # Local default
+        root = self._local_root / space.slug
+        vault = LocalVaultFS(space_id=space.id, root=root)
+        self._configure_embedder_hint(vault, space)
+        self._configure_reranker(vault, space)
+        return vault
+
+    def _configure_embedder_hint(self, vault: Any, space: Space) -> None:
+        """Provide the embedder model hint for lazy identity provisioning.
+
+        Priority: space.embedder_model → ServeConfig.default_embedder_model.
+        Vector ops gracefully degrade (skip) when both are empty.
+        Also propagates the space's embed_verbats flag (L0 embedding).
+        """
+        hint = space.embedder_model or self._serve_config.default_embedder_model
+        try:
+            vault.configure_embedder_hint(
+                hint,
+                system_app=self._system_app,
+                embed_verbats=bool(space.embed_verbats),
+            )
+        except Exception as e:
+            logger.warning(
+                "configure_embedder_hint failed for space %s: %s",
+                space.slug, e,
+            )
+
+    def _configure_reranker(self, vault: Any, space: Space) -> None:
+        """Mount an LLM reranker for hybrid doc search when the space sets
+        rerank_model (default off — no reranker mounted)."""
+        if not space.rerank_model:
+            return
+        try:
+            from gyra_ext.knowledge.reranker import LLMReranker
+
+            vault.configure_reranker(LLMReranker(space.rerank_model))
+        except Exception as e:
+            logger.warning(
+                "configure_reranker failed for space %s: %s", space.slug, e
+            )
+
+    async def get_vault(self, slug: str) -> Any:
+        """Resolve slug to a VaultFS instance, creating + initializing if needed.
+
+        For local spaces the canonical `space_id` is resolved from SQLite
+        *before* the vault is constructed, so the vault's `_space_id` always
+        matches the persisted id — no post-construction resync needed.
+        """
+        if slug in self._vaults:
+            return self._vaults[slug]
+
+        # Determine backend: check JSON registry for distributed, else local
+        reg = self._registry_lookup(slug)
+        if reg and reg.get("backend") == "distributed":
+            space = Space(
+                id=reg.get("id") or new_space_id(),
+                slug=slug,
+                name=reg.get("name") or slug,
+                description=reg.get("description") or "",
+                backend="distributed",
+                visibility=Visibility(reg.get("visibility") or "private"),
+                owner_id=reg.get("owner_id") or None,
+                default_agent_id=reg.get("default_agent_id"),
+                llm_model=reg.get("llm_model"),
+                multimodal_model=reg.get("multimodal_model"),
+                rerank_model=reg.get("rerank_model"),
+                embed_verbats=bool(reg.get("embed_verbats") or False),
+                space_type=reg.get("space_type") or "personal",
+            )
+        else:
+            # Resolve canonical id from the per-space SQLite before building
+            # the vault — avoids a generate-then-overwrite race that previously
+            # hid all pre-existing data after a restart.
+            space = await self._resolve_local_space(slug)
+
+        vault = self._make_vault(space)
+        await vault.initialize()
+        self._vaults[slug] = vault
+        self._spaces[slug] = space
+
+        # For local spaces, persist the resolved Space row back to SQLite so
+        # the same id is reused on the next restart. Distributed spaces have
+        # no per-space SQLite — their state lives in registry.json.
+        if space.backend != "distributed":
+            await self._ensure_space_row_persisted(slug, vault, space)
+
+        return vault
+
+    async def _resolve_local_space(self, slug: str) -> Space:
+        """Resolve the canonical Space (incl. id) for a local-backed slug.
+
+        Order of precedence:
+        1. Existing `spaces` row in the per-space SQLite — authoritative.
+        2. Inferred id from `verbats`/`documents`/`edges` rows (orphan case:
+           spaces row missing but data exists) — prevents generating a fresh
+           id that would hide the data.
+        3. Newly generated id, persisted below as a fresh seed.
+
+        The vault is constructed with whatever id we return here, so no
+        post-construction resync is required.
+        """
+        backend = self._serve_config.default_backend or "local"
+        db_path = self._local_root / slug / ".ks" / "index.db"
+        if not db_path.exists():
+            # Fresh space — no SQLite to consult yet. Vault.initialize() will
+            # create the file; we just generate the id and persist later.
+            return Space(id=new_space_id(), slug=slug, name=slug, backend=backend)
+
+        import aiosqlite
+        try:
+            async with aiosqlite.connect(str(db_path)) as conn:
+                conn.row_factory = aiosqlite.Row
+                rows = await conn.execute_fetchall(
+                    "SELECT * FROM spaces WHERE slug=? LIMIT 1", (slug,)
+                )
+                if rows:
+                    r = rows[0]
+                    return Space(
+                        id=r["id"],
+                        slug=r["slug"],
+                        name=r["name"] or slug,
+                        description=r["description"] or "",
+                        backend=r["backend"] or backend,
+                        embedder_model=r["embedder_model"],
+                        embedder_dimension=r["embedder_dimension"],
+                        default_agent_id=r["default_agent_id"],
+                        llm_model=r["llm_model"],
+                        multimodal_model=r["multimodal_model"],
+                        visibility=Visibility(r["visibility"] or "private"),
+                        owner_id=r["owner_id"] or None,
+                        rerank_model=(
+                            r["rerank_model"] if "rerank_model" in r.keys() else None
+                        ),
+                        embed_verbats=bool(
+                            r["embed_verbats"] if "embed_verbats" in r.keys() else 0
+                        ),
+                        space_type=(
+                            (r["space_type"] or "personal")
+                            if "space_type" in r.keys()
+                            else "personal"
+                        ),
+                    )
+                inferred = await conn.execute_fetchall(
+                    "SELECT space_id FROM verbats WHERE space_id IS NOT NULL "
+                    "UNION SELECT space_id FROM documents WHERE space_id IS NOT NULL "
+                    "UNION SELECT space_id FROM edges WHERE space_id IS NOT NULL "
+                    "LIMIT 1"
+                )
+                if inferred:
+                    inferred_id = inferred[0][0]
+                    logger.warning(
+                        "spaces row missing for %s, inferring id from existing data: %s",
+                        slug, inferred_id,
+                    )
+                    return Space(id=inferred_id, slug=slug, name=slug, backend=backend)
+        except Exception as e:
+            logger.warning(
+                "Resolve local space failed for %s (will seed fresh): %s", slug, e
+            )
+
+        return Space(id=new_space_id(), slug=slug, name=slug, backend=backend)
+
+    async def _ensure_space_row_persisted(
+        self, slug: str, vault: LocalVaultFS, space: Space
+    ) -> None:
+        """Make sure SQLite `spaces` row matches the resolved Space.
+
+        - If the row exists, no-op (id was loaded from it).
+        - If absent, insert with the resolved id (covers the fresh-seed and
+          inferred-id branches). Idempotent.
+        """
+        try:
+            rows = await vault._db.execute_fetchall(
+                "SELECT id FROM spaces WHERE slug=? LIMIT 1", (slug,)
+            )
+            if rows:
+                return
+            await self._persist_space_config(slug, vault, space, is_new=True)
+        except Exception as e:
+            logger.warning("Persist space config failed for %s: %s", slug, e)
+
+    async def _persist_space_config(
+        self,
+        slug: str,
+        vault: LocalVaultFS,
+        space: Space,
+        is_new: bool = False,
+    ) -> None:
+        """Insert or update the `spaces` row for this space."""
+        now = datetime.utcnow().isoformat()
+        visibility = (
+            space.visibility.value
+            if isinstance(space.visibility, Visibility)
+            else (space.visibility or "private")
+        )
+        try:
+            if is_new:
+                await vault._db.execute(
+                    """
+                    INSERT INTO spaces
+                      (id, slug, name, description, backend, embedder_model,
+                       embedder_dimension, embedder_state, visibility, owner_id,
+                       created_at, updated_at, default_agent_id, llm_model,
+                       multimodal_model, rerank_model, embed_verbats, space_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        space.id,
+                        space.slug,
+                        space.name,
+                        space.description,
+                        space.backend,
+                        space.embedder_model,
+                        space.embedder_dimension,
+                        visibility,
+                        space.owner_id or "",
+                        now,
+                        now,
+                        space.default_agent_id,
+                        space.llm_model,
+                        space.multimodal_model,
+                        space.rerank_model,
+                        1 if space.embed_verbats else 0,
+                        space.space_type or "personal",
+                    ),
+                )
+            else:
+                await vault._db.execute(
+                    """
+                    UPDATE spaces SET
+                      name=?, description=?, embedder_model=?, embedder_dimension=?,
+                      default_agent_id=?, llm_model=?, multimodal_model=?,
+                      rerank_model=?, embed_verbats=?, space_type=?, updated_at=?
+                    WHERE slug=?
+                    """,
+                    (
+                        space.name,
+                        space.description,
+                        space.embedder_model,
+                        space.embedder_dimension,
+                        space.default_agent_id,
+                        space.llm_model,
+                        space.multimodal_model,
+                        space.rerank_model,
+                        1 if space.embed_verbats else 0,
+                        space.space_type or "personal",
+                        now,
+                        slug,
+                    ),
+                )
+            await vault._db.commit()
+        except Exception as e:
+            logger.warning("Persist space config failed for %s: %s", slug, e)
+
+    async def _persist_space_access(
+        self, slug: str, vault: LocalVaultFS, space: Space
+    ) -> None:
+        """Persist owner_id + visibility for this space (set at create time
+        from the authenticated caller)."""
+        visibility = (
+            space.visibility.value
+            if isinstance(space.visibility, Visibility)
+            else (space.visibility or "private")
+        )
+        try:
+            if space.backend == "distributed":
+                entry = self._registry_lookup(slug) or {}
+                entry["owner_id"] = space.owner_id
+                entry["visibility"] = visibility
+                self._registry_upsert(slug, entry)
+                return
+            await vault._db.execute(
+                "UPDATE spaces SET owner_id=?, visibility=?, updated_at=? WHERE slug=?",
+                (
+                    space.owner_id or "",
+                    visibility,
+                    datetime.utcnow().isoformat(),
+                    slug,
+                ),
+            )
+            await vault._db.commit()
+        except Exception as e:
+            logger.warning("Persist space access failed for %s: %s", slug, e)
+
+    async def get_space_config(self, slug: str) -> Space:
+        """Return the cached Space config, loading it if needed."""
+        if slug not in self._spaces:
+            await self.get_vault(slug)  # resolves + caches Space
+        return self._spaces[slug]
+
+    async def update_space_config(
+        self,
+        slug: str,
+        *,
+        default_agent_id: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        multimodal_model: Optional[str] = None,
+        embedder_model: Optional[str] = None,
+        rerank_model: Optional[str] = None,
+        embed_verbats: Optional[bool] = None,
+    ) -> Space:
+        """Update non-None fields of the space config and persist."""
+        space = await self.get_space_config(slug)
+        if default_agent_id is not None:
+            space.default_agent_id = default_agent_id or None
+        if llm_model is not None:
+            space.llm_model = llm_model or None
+        if multimodal_model is not None:
+            space.multimodal_model = multimodal_model or None
+        if embedder_model is not None:
+            space.embedder_model = embedder_model or None
+        if rerank_model is not None:
+            space.rerank_model = rerank_model or None
+            self._configure_reranker(self._vaults[slug], space)
+        if embed_verbats is not None:
+            space.embed_verbats = embed_verbats
+            self._configure_embedder_hint(self._vaults[slug], space)
+        vault = self._vaults[slug]
+        if space.backend == "distributed":
+            entry = self._registry_lookup(slug) or {}
+            entry.update(
+                {
+                    "default_agent_id": space.default_agent_id,
+                    "llm_model": space.llm_model,
+                    "multimodal_model": space.multimodal_model,
+                    "embedder_model": space.embedder_model,
+                    "rerank_model": space.rerank_model,
+                    "embed_verbats": space.embed_verbats,
+                }
+            )
+            self._registry_upsert(slug, entry)
+        else:
+            await self._persist_space_config(slug, vault, space, is_new=False)
+        return space
+
+    async def delete_space(self, slug: str) -> None:
+        """Delete a space and its local/distributed resources."""
+        # Ensure the space config is loaded first; this also validates it exists.
+        await self.get_space_config(slug)
+
+        backend = self._spaces.get(slug)
+        if backend and backend.backend:
+            backend_name = backend.backend
+        else:
+            backend_name = "local"
+
+        # Close and drop cached vault.
+        vault = self._vaults.pop(slug, None)
+        if vault is not None:
+            try:
+                await vault.close()
+            except Exception as e:
+                logger.warning("close vault for %s failed: %s", slug, e)
+
+        if backend_name == "distributed":
+            # Remove from registry.
+            registry = self._load_registry()
+            if slug in registry:
+                del registry[slug]
+                self._save_registry(registry)
+        else:
+            # Remove local directory.
+            local_path = self._local_root / slug
+            if local_path.exists():
+                try:
+                    await asyncio.to_thread(shutil.rmtree, local_path)
+                except Exception as e:
+                    logger.warning("remove local space %s failed: %s", slug, e)
+
+        # Drop cached config.
+        self._spaces.pop(slug, None)
+
+    async def list_spaces(self) -> List[Dict[str, Any]]:
+        """List all known spaces (local directories + distributed registry)."""
+        out: List[Dict[str, Any]] = []
+
+        # Local spaces: scan filesystem
+        if self._local_root.exists():
+            for child in sorted(self._local_root.iterdir()):
+                if not child.is_dir():
+                    continue
+                # Heuristic: a knowledge space has a schema.md or .ks/ dir
+                if (child / "schema.md").exists() or (child / ".ks").exists():
+                    try:
+                        space = await self.get_space_config(child.name)
+                        out.append(
+                            {
+                                "slug": child.name,
+                                "backend": "local",
+                                "root": str(child),
+                                "space_type": getattr(space, "space_type", "personal"),
+                                "default_agent_id": space.default_agent_id,
+                                "llm_model": space.llm_model,
+                                "multimodal_model": space.multimodal_model,
+                                "embedder_model": space.embedder_model,
+                                "visibility": (
+                                    space.visibility.value
+                                    if isinstance(space.visibility, Visibility)
+                                    else space.visibility
+                                ),
+                                "owner_id": space.owner_id,
+                                "rerank_model": space.rerank_model,
+                                "embed_verbats": space.embed_verbats,
+                            }
+                        )
+                    except Exception as e:
+                        logger.warning("list_spaces: load config for %s failed: %s", child.name, e)
+                        out.append({"slug": child.name, "backend": "local", "root": str(child)})
+
+        # Distributed spaces: from JSON registry
+        for slug, entry in self._load_registry().items():
+            if entry.get("backend") != "distributed":
+                continue
+            out.append(
+                {
+                    "slug": slug,
+                    "backend": "distributed",
+                    "root": f"s3://{self._serve_config.distributed.s3_bucket}/{slug}",
+                    "space_type": entry.get("space_type") or "personal",
+                    "default_agent_id": entry.get("default_agent_id"),
+                    "llm_model": entry.get("llm_model"),
+                    "multimodal_model": entry.get("multimodal_model"),
+                    "embedder_model": entry.get("embedder_model"),
+                    "visibility": entry.get("visibility") or "private",
+                    "owner_id": entry.get("owner_id"),
+                    "rerank_model": entry.get("rerank_model"),
+                    "embed_verbats": bool(entry.get("embed_verbats") or False),
+                }
+            )
+
+        return out
+
+    async def create_space(
+        self,
+        slug: str,
+        *,
+        backend: Optional[str] = None,
+        default_agent_id: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        multimodal_model: Optional[str] = None,
+        embedder_model: Optional[str] = None,
+        rerank_model: Optional[str] = None,
+        embed_verbats: Optional[bool] = None,
+        owner_id: Optional[str] = None,
+        visibility: Optional[str] = None,
+        space_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a new space (local or distributed).
+
+        `owner_id` / `visibility` come from the authenticated caller (HTTP
+        layer); both are optional — single-machine mode leaves owner empty
+        (legacy behavior: no read filtering).
+
+        `space_type` (RFC-005): "personal" (default) | "agent_memory".
+        Agent-memory spaces get the memory schema (merged-into/supersedes/
+        about/relates-to) written into schema.md at creation.
+        """
+        slug = slug.strip()
+        if not slug or "/" in slug or slug.startswith("."):
+            raise ValueError(f"invalid slug: {slug!r}")
+        if visibility is not None:
+            visibility = Visibility(visibility).value  # validates the value
+        if space_type is not None and space_type not in ("personal", "agent_memory"):
+            raise ValueError(f"invalid space_type: {space_type!r}")
+
+        backend = backend or self._serve_config.default_backend or "local"
+
+        # Pre-create the registry entry for distributed so _make_vault finds it
+        if backend == "distributed":
+            # Validate config eagerly so the user gets a clear error before
+            # we touch the registry.
+            self._resolve_distributed_config()
+            self._registry_upsert(
+                slug,
+                {
+                    "id": new_space_id(),
+                    "backend": "distributed",
+                    "name": slug,
+                    "description": "",
+                    "default_agent_id": default_agent_id,
+                    "llm_model": llm_model,
+                    "multimodal_model": multimodal_model,
+                    "embedder_model": embedder_model,
+                    "rerank_model": rerank_model,
+                    "embed_verbats": bool(embed_verbats) if embed_verbats else False,
+                    "owner_id": owner_id,
+                    "visibility": visibility or "private",
+                    "space_type": space_type or "personal",
+                },
+            )
+
+        vault = await self.get_vault(slug)
+
+        # RFC-005 Phase 1: apply space_type + type-specific schema.md.
+        space = self._spaces[slug]
+        if space_type is not None and space.space_type != space_type:
+            space.space_type = space_type
+            if backend == "distributed":
+                entry = self._registry_lookup(slug) or {}
+                entry["space_type"] = space_type
+                self._registry_upsert(slug, entry)
+            else:
+                await self._persist_space_config(slug, vault, space, is_new=False)
+        if space.space_type == "agent_memory":
+            await self._ensure_memory_schema(vault, space)
+
+        # Apply any initial config (local spaces persist to SQLite)
+        if backend != "distributed" and (
+            default_agent_id or llm_model or multimodal_model or embedder_model
+            or rerank_model or embed_verbats is not None
+        ):
+            await self.update_space_config(
+                slug,
+                default_agent_id=default_agent_id,
+                llm_model=llm_model,
+                multimodal_model=multimodal_model,
+                embedder_model=embedder_model,
+                rerank_model=rerank_model,
+                embed_verbats=embed_verbats,
+            )
+
+        # Persist the caller's ownership / visibility (real owner from the
+        # auth layer instead of the legacy empty string).
+        space = self._spaces[slug]
+        if owner_id is not None or visibility is not None:
+            if owner_id is not None:
+                space.owner_id = owner_id
+            if visibility is not None:
+                space.visibility = Visibility(visibility)
+            await self._persist_space_access(slug, vault, space)
+
+        return {
+            "slug": slug,
+            "backend": backend,
+            "root": str(vault.root),
+            "space_type": space.space_type,
+            "default_agent_id": space.default_agent_id,
+            "llm_model": space.llm_model,
+            "multimodal_model": space.multimodal_model,
+            "embedder_model": space.embedder_model,
+            "visibility": (
+                space.visibility.value
+                if isinstance(space.visibility, Visibility)
+                else space.visibility
+            ),
+            "owner_id": space.owner_id,
+            "rerank_model": space.rerank_model,
+            "embed_verbats": space.embed_verbats,
+        }
+
+    async def _ensure_memory_schema(self, vault: Any, space: Space) -> None:
+        """Write the agent-memory schema.md when the space doesn't already
+        declare the memory predicates (idempotent; never clobbers a schema
+        that already has them, e.g. user-edited)."""
+        try:
+            from gyra.knowledge.schema import (
+                default_memory_schema_md,
+                parse_schema,
+                validate_predicate,
+            )
+
+            current = parse_schema(await vault.read_schema_md())
+            if validate_predicate(current, "supersedes") and validate_predicate(
+                current, "merged-into"
+            ):
+                return
+            await vault.write_schema_md(default_memory_schema_md(space.name or space.slug))
+        except Exception as e:
+            logger.warning("ensure memory schema failed for %s: %s", space.slug, e)
+
+    async def close_all(self) -> None:
+        for v in list(self._vaults.values()):
+            try:
+                await v.close()
+            except Exception as e:
+                logger.warning(f"close vault failed: {e}")
+        self._vaults.clear()
+        self._spaces.clear()
+
+
+__all__ = ["Service"]

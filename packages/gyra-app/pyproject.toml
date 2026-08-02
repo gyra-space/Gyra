@@ -1,0 +1,70 @@
+[project]
+name = "gyra-app"
+version = "0.7.0"
+description = "Add your description here"
+authors = [
+    { name = "csunny", email = "cfqcsunny@gmail.com" }
+]
+license = "MIT"
+readme = "README.md"
+requires-python = ">= 3.10"
+
+dependencies = [
+#    "gyra-acc-auto",
+    # gyra-app is the runnable webserver application; it requires the full
+    # runtime stack (fastapi/uvicorn/jinja2/psutil/agent/framework/code) to
+    # start. These were previously gated behind the optional `base` extra,
+    # which caused `gyra quickstart` to crash with ModuleNotFoundError when
+    # installed without extras. Fold them into hard dependencies so a bare
+    # `uv sync --all-packages --frozen` produces a working server.
+    "gyra[client,cli,agent,simple_framework,framework,code]",
+    "gyra-ext",
+    "gyra-serve",
+    "gyra-client",
+    "aiofiles",
+    "pyparsing",
+    "aiosqlite",
+    "bcrypt>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/gyra-ai/gyra"
+Documentation = "http://docs.gyra.ai/docs/overview"
+Repository = "https://github.com/gyra-ai/gyra.git"
+Issues = "https://github.com/gyra-ai/gyra/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.optional-dependencies]
+cache = [
+    "rocksdict",
+]
+
+observability = [
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
+]
+gyras = [
+    # For build gyras apps, we will be removed in the future.
+    "build",
+    "poetry"
+]
+
+[tool.uv]
+managed = true
+dev-dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gyra_app"]
+exclude = [
+    "src/gyra_app/**/tests",
+    "src/gyra_app/**/tests/*",
+    "src/gyra_app/tests",
+    "src/gyra_app/tests/*",
+    "src/gyra_app/**/examples",
+    "src/gyra_app/**/examples/*"
+]
+

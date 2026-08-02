@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gyra-mono"
+dynamic = ["version"]
+description = """
+    Building AI-Native Risk Intelligent Systems,
+    Our vision is to provide every production system with a 7 * 24H AI teammate in the future,
+    constantly safeguarding your system's stability and security,
+    freeing you from tedious operations and risk management tasks.
+"""
+authors = [
+    { name = "HongjunYang", email = "yhjun1026@gmail.com" }
+]
+dependencies = [
+    "allpairspy>=2.5.1",
+
+]
+readme = "README.md"
+requires-python = ">= 3.10"
+
+[tool.uv.sources]
+gyra = { workspace = true }
+gyra-client = { workspace = true }
+gyra-ext = { workspace = true }
+gyra-serve = { workspace = true }
+gyra-app = { workspace = true }
+
+[tool.uv.workspace]
+members = [
+    "packages/gyra-app",
+    "packages/gyra-client",
+    "packages/gyra-core",
+    "packages/gyra-ext",
+    "packages/gyra-serve",
+]
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+publish-url = "https://test.pypi.org/legacy/"
+explicit = true
+
+[tool.uv]
+managed = true
+dev-dependencies = [
+    "pip",
+    "tomli>=2.0.2",
+    "tomli-w>=1.1.0",
+    "pytest>=7.0.0",
+    "pytest_asyncio",
+    "twine",
+    "ruff>=0.9.1",
+    "pytest-mock>=3.14.0",
+    "asynctest>=0.13.0",
+    "pytest-integration>=0.2.3",
+    "pytest-recording>=0.13.2",
+    "pytest-cov>=6.0.0",
+    "mypy>=1.15.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["packages", "."]
+addopts = ["--import-mode=importlib", ]
+python_files = ["test_*.py", "*_test.py"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.format]
+# Format docstrings
+docstring-code-format = true
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.ruff.lint]
+# Enable: eror check, import order
+select = ["E", "F", "I"]
+
+[tool.ruff.isort]
+# Specify the local modules (first-party)
+known-first-party = ["gyra", "gyra_client", "gyra_ext", "gyra_serve", "gyra_app"]
+
+[tool.hatch.version]
+path = "packages/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["packages"]

@@ -1,0 +1,58 @@
+import { AxiosError } from 'axios';
+import { ApiResponse, FailedTuple, ResponseType, SuccessTuple } from '../';
+import type { NotificationInstance } from 'antd/es/notification/interface';
+
+/**
+ * Response processing
+ *
+ * @param promise request
+ * @param ignoreCodes ignore error codes
+ * @returns
+ */
+export const apiInterceptors = <T = any, D = any>(
+  promise: Promise<ApiResponse<T, D>>,
+  notification?: NotificationInstance,
+  ignoreCodes?: '*' | (number | string)[],
+) => {
+  return promise
+    .then<SuccessTuple<T, D>>(response => {
+      const { data } = response;
+      if (!data) {
+        throw new Error('Network Error!');
+      }
+      if (!data.success) {
+        if (ignoreCodes === '*' || (data.err_code && ignoreCodes && ignoreCodes.includes(data.err_code))) {
+          return [null, data.data, data, response];
+        } else {
+          notification && notification.error({
+            message: `Request error`,
+            description: data?.err_msg ?? 'The interface is abnormal. Please try again later',
+          });
+          return [{ message: data?.err_msg || 'Request failed' } as Error, null, data, response];
+        }
+      }
+      return [null, data.data, data, response];
+    })
+    .catch<FailedTuple<T, D>>((err: Error | AxiosError<T, D>) => {
+      let errMessage = err.message;
+      if (err instanceof AxiosError) {
+        try {
+          const { err_msg } = JSON.parse(err.request.response) as ResponseType<null>;
+          err_msg && (errMessage = err_msg);
+        } catch {
+          /* empty */
+        }
+        const status = err.response?.status;
+        if (status === 401) {
+          errMessage = '登录状态已失效，请重新登录 (401)';
+        } else if (status === 403) {
+          errMessage = '没有访问该资源的权限 (403)';
+        }
+      }
+      notification && notification.error({
+        message: `Request error`,
+        description: errMessage,
+      });
+      return [err, null, null, null];
+    });
+};
