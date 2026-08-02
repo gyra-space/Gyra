@@ -1,6 +1,6 @@
-"""File Input/Output Module for OpenGyra
+"""File Input/Output Module for Gyra
 
-This module provides comprehensive file handling capabilities for OpenGyra:
+This module provides comprehensive file handling capabilities for Gyra:
 
 1. File Type Configuration (file_type_config.py)
    - Determines how files should be processed (MODEL_DIRECT vs SANDBOX_TOOL)

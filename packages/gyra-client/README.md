@@ -1,14 +1,14 @@
 # gyra-client
 
-Python client library for OpenGyra.
+Python client library for Gyra.
 
 ## Overview
 
-`gyra-client` provides a Python SDK for interacting with OpenGyra services. It allows developers to integrate OpenGyra's AI-SRE capabilities into their own applications.
+`gyra-client` provides a Python SDK for interacting with Gyra services. It allows developers to integrate Gyra's AI-SRE capabilities into their own applications.
 
 ## Features
 
-- **REST API Client**: Easy-to-use Python client for OpenGyra services
+- **REST API Client**: Easy-to-use Python client for Gyra services
 - **Async Support**: Full async/await support
 - **Type Hints**: Comprehensive type annotations for IDE support
 

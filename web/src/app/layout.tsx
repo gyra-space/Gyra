@@ -223,12 +223,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning data-theme="light" className="light">
-      <Head>
+      <head>
         <title>Gyra</title>
         <meta name="description" content="Gyra — The Team-Native AI Flywheel. AI-Native Multi-Agent development and runtime framework." />
         <link rel="icon" href="/gyra-logo.svg" type="image/svg+xml" />
         <link rel="apple-touch-icon" href="/gyra-logo.jpg" />
-      </Head>
+      </head>
       <body suppressHydrationWarning={true} className="bg-surface-page dark:bg-[#111]">
         <Suspense fallback={
           <App className="w-screen h-screen flex items-center justify-center">

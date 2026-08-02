@@ -1,10 +1,10 @@
 # gyra-serve
 
-Backend service package for OpenGyra.
+Backend service package for Gyra.
 
 ## Overview
 
-`gyra-serve` provides the backend API services for OpenGyra, including:
+`gyra-serve` provides the backend API services for Gyra, including:
 
 - **Agent Services**: Multi-agent collaboration and management
 - **Conversation Management**: Chat session handling

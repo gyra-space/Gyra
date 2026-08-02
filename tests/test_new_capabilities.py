@@ -403,7 +403,7 @@ class TestConfigSystem:
         
         config = ConfigLoader._load_defaults()
         
-        assert config.name == "OpenGyra"
+        assert config.name == "Gyra"
     
     def test_config_save_and_load(self):
         from gyra_core.config import ConfigLoader, AppConfig

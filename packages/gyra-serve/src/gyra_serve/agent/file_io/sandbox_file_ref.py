@@ -1,4 +1,4 @@
-"""Sandbox File Reference and File Input Processing for OpenGyra
+"""Sandbox File Reference and File Input Processing for Gyra
 
 Handles file routing between model direct consumption and sandbox tool processing.
 """

@@ -1,4 +1,4 @@
-"""File Type Configuration for OpenGyra
+"""File Type Configuration for Gyra
 
 Supports dynamic configuration of file processing modes:
 - MODEL_DIRECT: Direct model consumption (multimodal messages)

@@ -161,7 +161,7 @@ class SummarySkill(SkillBase):
             name="summary",
             version="1.0.0",
             description="生成文本摘要",
-            author="OpenGyra",
+            author="Gyra",
             tags=["nlp", "text"],
             requires=[],
         )
@@ -186,7 +186,7 @@ class CodeAnalysisSkill(SkillBase):
             name="code_analysis",
             version="1.0.0",
             description="分析代码质量",
-            author="OpenGyra",
+            author="Gyra",
             tags=["code", "analysis"],
             requires=["read", "bash"],
         )

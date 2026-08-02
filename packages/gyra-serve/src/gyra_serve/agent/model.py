@@ -112,7 +112,7 @@ class MyPluginFilter(BaseModel):
 class PluginHubParam(BaseModel):
     channel: Optional[str] = Field("git", description="Plugin storage channel")
     url: Optional[str] = Field(
-        "https://github.com/eosphoros-ai/GYRA-Plugins.git",
+        "https://github.com/gyra-ai/gyra-plugins.git",
         description="Plugin storage url",
     )
     branch: Optional[str] = Field(

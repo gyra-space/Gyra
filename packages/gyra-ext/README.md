@@ -1,10 +1,10 @@
 # gyra-ext
 
-Extension package for OpenGyra with additional tools and integrations.
+Extension package for Gyra with additional tools and integrations.
 
 ## Overview
 
-`gyra-ext` provides extended functionality for OpenGyra, including:
+`gyra-ext` provides extended functionality for Gyra, including:
 
 - **Sandbox**: Secure code execution environment with isolation
 - **RAG**: Retrieval-Augmented Generation support

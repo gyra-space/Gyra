@@ -1,4 +1,4 @@
-"""D-Attach Component Utilities for OpenGyra
+"""D-Attach Component Utilities for Gyra
 
 Provides convenient methods to convert file URLs to d-attach component format.
 Supports outputting files during Agent execution or in conclusions, with frontend preview and download functionality.

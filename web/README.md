@@ -1,6 +1,6 @@
 # Gyra Web
 
-Web UI for OpenGyra AI-Native Risk Intelligence System.
+Web UI for Gyra AI-Native Risk Intelligence System.
 
 ## Introduction
 

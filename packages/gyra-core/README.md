@@ -1,10 +1,10 @@
 # gyra-core
 
-Core package for OpenGyra AI-Native Risk Intelligence System.
+Core package for Gyra AI-Native Risk Intelligence System.
 
 ## Overview
 
-`gyra-core` is the foundational package that contains core modules and utilities used across all OpenGyra packages and services. It provides the fundamental infrastructure for building AI-driven SRE (Site Reliability Engineering) applications.
+`gyra-core` is the foundational package that contains core modules and utilities used across all Gyra packages and services. It provides the fundamental infrastructure for building AI-driven SRE (Site Reliability Engineering) applications.
 
 ## Features
 

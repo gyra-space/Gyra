@@ -428,7 +428,7 @@ class MediaGenDefaults(BaseModel):
 
 
 class AppConfig(BaseModel):
-    name: str = "OpenGyra"
+    name: str = "Gyra"
     version: str = "0.1.0"
 
     system: SystemConfig = Field(default_factory=SystemConfig)

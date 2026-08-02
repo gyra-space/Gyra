@@ -1526,7 +1526,7 @@ const [recommendedMcps, setRecommendedMcps] = useState<any[]>([]);
             <span className="text-[#4f46e5] ml-2">Defend.</span>
           </h1>
           <p className="text-[#8a92a6] dark:text-gray-400 text-[15px]">
-            OpenGyra—AI原生风险智能系统，为每个应用系统提供一个7*24H的AI系统数字管家
+            Gyra—AI原生风险智能系统，为每个应用系统提供一个7*24H的AI系统数字管家
           </p>
         </div>
 
