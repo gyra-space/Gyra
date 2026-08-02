@@ -1,18 +1,18 @@
 # gyra-core
 
-Core package for Gyra AI-Native Risk Intelligence System.
+Core package for Gyra, the AI-Native Multi-Agent development and runtime framework.
 
 ## Overview
 
-`gyra-core` is the foundational package that contains core modules and utilities used across all Gyra packages and services. It provides the fundamental infrastructure for building AI-driven SRE (Site Reliability Engineering) applications.
+`gyra-core` is the foundational package that contains core modules and utilities used across all Gyra packages and services. It provides the fundamental infrastructure for building, debugging, and running collaborating AI agents.
 
 ## Features
 
-- **Multi-Agent Architecture**: Framework for building collaborative AI agents (SRE-Agent, Code-Agent, ReportAgent, Vis-Agent, Data-Agent)
+- **Multi-Agent Architecture**: Framework for building collaborative AI agents
 - **ReAct Master Agent**: Advanced reasoning agent with doom loop detection, session compaction, and output truncation
 - **Model Proxy**: Support for multiple LLM providers (OpenAI, Anthropic, Azure, etc.)
 - **AWEL Operators**: Rich set of operators for building AI workflows
-- **Data Processing**: Tools for processing logs, traces, and metrics
+- **Tools & Permissions**: Tool abstraction with risk levels and permission rulesets
 
 ## Installation
 
@@ -41,7 +41,7 @@ Optional dependencies:
 ```python
 from gyra import ...
 
-# Build your AI-SRE application
+# Build your Multi-Agent application
 ```
 
 ## Documentation

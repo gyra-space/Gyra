@@ -1,6 +1,6 @@
 # Gyra Web
 
-Web UI for Gyra AI-Native Risk Intelligence System.
+Web UI for Gyra, the AI-Native Multi-Agent development and runtime framework.
 
 ## Introduction
 

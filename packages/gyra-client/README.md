@@ -4,7 +4,7 @@ Python client library for Gyra.
 
 ## Overview
 
-`gyra-client` provides a Python SDK for interacting with Gyra services. It allows developers to integrate Gyra's AI-SRE capabilities into their own applications.
+`gyra-client` provides a Python SDK for interacting with Gyra services. It allows developers to integrate Gyra's Multi-Agent capabilities into their own applications.
 
 ## Features
 

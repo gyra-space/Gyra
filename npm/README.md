@@ -1,6 +1,6 @@
 # Gyra NPM Package
 
-NPM wrapper for Gyra AI-Native Risk Intelligence Systems.
+NPM wrapper for Gyra, the AI-Native Multi-Agent development and runtime framework.
 
 ## Installation
 
@@ -39,11 +39,10 @@ gyra --update
 
 ## What is Gyra?
 
-Gyra is an AI-Native Risk Intelligence System that provides:
+Gyra is an AI-Native Multi-Agent development and runtime framework. It lets you build, debug, and run collaborating agents that turn a single query into a delivered result — with the full achievement path visible to humans.
 
-- **DeepResearch RCA**: Quickly locate root causes through analysis of logs, traces, and code
-- **Visualized Evidence Chain**: Full visualization of diagnostic processes
-- **Multi-Agent Collaboration**: SRE-Agent, Code-Agent, ReportAgent, Vis-Agent, and Data-Agent
+- **Multi-Agent Collaboration**: Build and orchestrate collaborating agents
+- **Team-Native AI Flywheel**: Compounding intelligence with every task
 - **Open Architecture**: Completely open-source framework
 
 ## Documentation

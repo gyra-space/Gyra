@@ -4,7 +4,7 @@ Main application package for Gyra.
 
 ## Overview
 
-`gyra-app` is the main application package that provides the Gyra server and web interface. It integrates all the core components and extensions to provide a complete AI-SRE solution.
+`gyra-app` is the main application package that provides the Gyra server and web interface. It integrates all the core components and extensions to provide a complete Multi-Agent development and runtime platform.
 
 ## Features
 
