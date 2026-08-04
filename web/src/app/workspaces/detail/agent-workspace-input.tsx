@@ -36,6 +36,8 @@ interface AgentWorkspaceInputProps {
   convUid?: string;
   onSend: (payload: { text: string; resources?: ResourceItem[]; model?: string; playbookCommand?: PlaybookCommand }) => void;
   loading?: boolean;
+  /** 运行中且无新内容时,按钮转为"进行中·可停止"状态,点击终止当前生成 */
+  onStop?: () => void;
   disabled?: boolean;
   lastInput?: { text: string } | null;
   onRetry?: () => void;
@@ -46,7 +48,7 @@ interface AgentWorkspaceInputProps {
 }
 
 export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWorkspaceInputProps>(
-  function AgentWorkspaceInput({ convUid, onSend, loading, disabled, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext }, ref) {
+  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext }, ref) {
     const [text, setText] = useState('');
     const [resources, setResources] = useState<ResourceItem[]>([]);
     const [uploading, setUploading] = useState<UploadingFile[]>([]);
@@ -142,6 +144,9 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     };
 
     const canSend = canSendSceneTask(text, resources.length > 0, playbookCommand);
+    // 运行中且无可发送的新内容:提交按钮转为"进行中·可停止"状态;
+    // 运行中继续输入了内容则恢复为可提交(发送新消息会先中止当前生成)
+    const showStop = !!loading && !canSend;
 
     const handleSend = () => {
       if (!canSend) return;
@@ -349,7 +354,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   placeholder="输入指令给 Agent…(输入 / 选择剧本)"
                   className="!text-base !bg-transparent !border-0 !resize-none placeholder:!text-gray-400 !text-gray-800 dark:!text-gray-200 !shadow-none !p-0 !min-h-[60px]"
                   autoSize={{ minRows: 2, maxRows: 8 }}
-                  disabled={disabled || loading}
+                  disabled={disabled}
                 />
               </div>
             </Popover>
@@ -447,17 +452,17 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
               <button
                 className={classNames(
                   'w-9 h-9 flex items-center justify-center transition-all !border-0 flex-shrink-0 rounded-full',
-                  hasContent
+                  showStop || hasContent
                     ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 shadow-md hover:shadow-lg text-white'
                     : 'bg-gray-200 text-gray-400 cursor-not-allowed'
                 )}
-                onClick={handleSend}
-                disabled={!hasContent || disabled || loading || !canSend}
-                title="发送"
+                onClick={showStop ? onStop : handleSend}
+                disabled={showStop ? (!onStop || disabled) : (!hasContent || disabled || !canSend)}
+                title={showStop ? '停止生成' : '发送'}
               >
-                {loading
-                  // 不用 antd Spin 包裹:额外 span 层会让旋转中心偏移,转动轨迹不是正圆
-                  ? <LoadingOutlined className="text-white text-base" spin />
+                {showStop
+                  // 进行中·可停止:实心方形停止符(按钮常亮表达进行中,方形表达可终止)
+                  ? <span className="block w-3 h-3 bg-current rounded-[2px]" />
                   : <ArrowUpOutlined className="text-base" />}
               </button>
             </div>

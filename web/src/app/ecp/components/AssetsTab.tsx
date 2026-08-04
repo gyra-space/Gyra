@@ -99,7 +99,7 @@ function AssetCard({
   asset,
   onGenerate,
   onDelete,
-  generating,
+  disabled,
   deleting,
   index,
   dbList,
@@ -108,7 +108,7 @@ function AssetCard({
   asset: EcpAssetRef;
   onGenerate: (a: EcpAssetRef) => void;
   onDelete: (a: EcpAssetRef) => void;
-  generating: boolean;
+  disabled?: boolean;
   deleting: boolean;
   index: number;
   dbList?: any[];
@@ -198,7 +198,7 @@ function AssetCard({
             type="primary"
             ghost
             icon={<ExperimentOutlined />}
-            loading={generating}
+            disabled={disabled}
             onClick={() => onGenerate(asset)}
           >
             生成提案
@@ -218,6 +218,8 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
   const [genAsset, setGenAsset] = useState<EcpAssetRef | null>(null);
   const [domainHint, setDomainHint] = useState<string>();
   const [genReadiness, setGenReadiness] = useState<EcpReadiness | null>(null);
+  // 页面级生成进度条:生成提案耗时长,不在卡片/弹窗里原地转圈,改为页面顶部进度条展示
+  const [genTask, setGenTask] = useState<{ label: string } | null>(null);
   // 资源闭环:登记 Modal 内内联创建(数据库/知识空间)
   const [addDbOpen, setAddDbOpen] = useState(false);
   const [newSpaceSlug, setNewSpaceSlug] = useState('');
@@ -326,16 +328,23 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
     { manual: true },
   );
 
-  const { run: doGenerate, loading: generating } = useRequest(
+  const { run: doGenerate } = useRequest(
     async () => {
-      if (!genAsset) return;
+      const asset = genAsset;
+      if (!asset) return;
+      const hint = domainHint;
+      // 立即关闭弹窗,不再让卡片/弹窗原地转圈等待,改为页面顶部进度条展示进展
+      setGenAsset(null);
+      setDomainHint(undefined);
+      setGenTask({ label: `正在为数据源 ${asset.ref_id} 生成语义提案…` });
       const [err, res] = await apiInterceptors(
         generateEcpProposals({
-          datasource_id: Number(genAsset.ref_id),
+          datasource_id: Number(asset.ref_id),
           workspace_id: workspaceId,
-          domain_hint: domainHint || undefined,
+          domain_hint: hint || undefined,
         }),
       );
+      setGenTask(null);
       if (err) {
         message.error(`生成提案失败：${err.message || err}`);
         return;
@@ -343,8 +352,6 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
       message.success(
         `提案完成：处理 ${res?.tables_processed ?? 0} 张表，生成 ${res?.proposals_created ?? 0} 条提案，请到收件箱确认`,
       );
-      setGenAsset(null);
-      setDomainHint(undefined);
     },
     { manual: true },
   );
@@ -352,14 +359,18 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
   // Workspace-level proposal generation: runs the configured proposal Agent over
   // ALL registered assets when proposal_agent_id is set; otherwise the backend
   // iterates all registered DB assets with the batch proposer automatically.
-  const { run: doGenerateAll, loading: generatingAll } = useRequest(
+  const { run: doGenerateAll } = useRequest(
     async () => {
+      const hint = domainHint;
+      setDomainHint(undefined);
+      setGenTask({ label: '正在为所有资产生成语义提案…' });
       const [err, res] = await apiInterceptors(
         generateEcpProposals({
           workspace_id: workspaceId,
-          domain_hint: domainHint || undefined,
+          domain_hint: hint || undefined,
         }),
       );
+      setGenTask(null);
       if (err) {
         message.error(`生成提案失败：${err.message || err}`);
         return;
@@ -371,7 +382,6 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
       message.success(
         `工作空间级提案完成：生成 ${res?.proposals_created ?? 0} 条提案，请到收件箱确认`,
       );
-      setDomainHint(undefined);
     },
     { manual: true },
   );
@@ -415,7 +425,7 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
             size="small"
             type="primary"
             icon={<ExperimentOutlined />}
-            loading={generatingAll}
+            disabled={!!genTask}
             onClick={() => doGenerateAll()}
           >
             为所有资产生成提案
@@ -426,6 +436,21 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
           </Button>
         </div>
       </div>
+
+      {genTask && (
+        <div className="ecp-gen-progress">
+          <div className="ecp-gen-progress__label">
+            <span className="ecp-gen-progress__spinner" />
+            {genTask.label}
+          </div>
+          <div className="ecp-gen-progress__bar">
+            <div className="ecp-gen-progress__fill" />
+          </div>
+          <div className="ecp-gen-progress__hint">
+            处理中，通常需数十秒到数分钟；完成后提案进入收件箱，确认前不影响任何查询。
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <Spin style={{ display: 'block', margin: '64px auto' }} />
@@ -446,7 +471,7 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
               key={a.id}
               asset={a}
               index={i}
-              generating={checking}
+              disabled={!!genTask}
               onGenerate={asset => openGenerate(asset)}
               onDelete={asset => doDelete(asset)}
               deleting={deleting}
@@ -595,7 +620,6 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
         title={`生成语义提案（${genAsset?.ref_id ?? ''}）`}
         open={!!genAsset}
         onOk={() => doGenerate()}
-        confirmLoading={generating}
         onCancel={() => setGenAsset(null)}
         okText="开始生成"
         okButtonProps={{ disabled: genReadiness ? !genReadiness.ready : false }}

@@ -10,10 +10,21 @@
   position: relative;
 }
 
-.ws-scene-shell__rail,
 .ws-scene-shell__space,
 .ws-scene-shell__agent {
   background: var(--ws-surface);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: var(--ws-radius);
+  box-shadow: var(--ws-shadow-sm);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 左侧任务栏使用页面背景,与右侧内容区形成层次 */
+.ws-scene-shell__rail {
+  background: var(--ws-bg);
   border: 1px solid var(--ws-border-subtle);
   border-radius: var(--ws-radius);
   box-shadow: var(--ws-shadow-sm);
@@ -140,6 +151,17 @@
 .ws-agent-workspace__input {
   padding: 12px;
   flex-shrink: 0;
+}
+
+/* 当中间空间折叠、Agent 区变宽时,限制内容宽度并居中,避免铺满过宽 */
+.ws-agent-workspace__content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
 }
 
 .ws-agent-chat-input {
@@ -1349,7 +1371,7 @@
   padding: 4px 9px; border-radius: 999px; white-space: nowrap; cursor: pointer;
   border: 1px solid transparent; transition: all .15s; flex-shrink: 0;
 }
-.ws-rail-tab:hover { background: var(--ws-bg); color: var(--ws-ink); }
+.ws-rail-tab:hover { background: var(--ws-surface); color: var(--ws-ink); }
 .ws-rail-tab--on { background: var(--ws-accent-light); color: var(--ws-accent); border-color: rgba(var(--ws-accent-rgb), .22); font-weight: 600; }
 .ws-rail-bd {
   font-size: 10px; font-weight: 600; min-width: 16px; text-align: center;
@@ -1369,7 +1391,7 @@
 
 .ws-rail-card {
   position: relative;
-  background: var(--ws-bg); border: 1px solid transparent;
+  background: var(--ws-surface); border: 1px solid transparent;
   border-radius: 10px; margin-bottom: 8px; cursor: pointer; transition: all .18s;
 }
 .ws-rail-card:hover { background: var(--ws-accent-light); }
@@ -1443,7 +1465,7 @@
   padding: 3px 7px; border-radius: 999px; flex-shrink: 0;
 }
 .ws-rail-conv-kind--play { color: var(--ws-accent); background: var(--ws-accent-light); }
-.ws-rail-conv-kind--lobby { color: var(--ws-ink-2); background: var(--ws-bg); border: 1px solid var(--ws-border-subtle); }
+.ws-rail-conv-kind--lobby { color: var(--ws-ink-2); background: var(--ws-surface); border: 1px solid var(--ws-border-subtle); }
 .ws-rail-conv-cur {
   margin-left: auto; font-size: 10px; font-weight: 600;
   color: var(--ws-accent); flex-shrink: 0;
@@ -1601,14 +1623,15 @@
   gap: 9px;
   padding: 8px 10px;
   border-radius: 10px;
-  border: 1px solid var(--ws-border-subtle);
-  background: var(--ws-surface);
+  border: 1px solid transparent;
+  background: transparent;
   cursor: pointer;
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease, background 0.16s ease;
 }
 
 .ws-step:hover {
   border-color: rgba(var(--ws-accent-rgb), 0.45);
+  background: var(--ws-surface);
   box-shadow: var(--ws-shadow-sm);
   transform: translateY(-1px);
 }
@@ -1617,8 +1640,12 @@
 .ws-step--running {
   position: relative;
   overflow: hidden;
-  border-color: rgba(var(--ws-accent-rgb), 0.4);
+  border-color: transparent;
   background: linear-gradient(90deg, rgba(var(--ws-accent-rgb), 0.06), rgba(var(--ws-accent-rgb), 0.02));
+}
+
+.ws-step--running:hover {
+  border-color: rgba(var(--ws-accent-rgb), 0.4);
 }
 
 .ws-step--running::after {
@@ -1637,8 +1664,12 @@
 }
 
 .ws-step--failed {
-  border-color: rgba(239, 68, 68, 0.35);
+  border-color: transparent;
   background: rgba(239, 68, 68, 0.03);
+}
+
+.ws-step--failed:hover {
+  border-color: rgba(239, 68, 68, 0.35);
 }
 
 .ws-step__badge {
@@ -1646,13 +1677,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
-  font-size: 12px;
-  color: var(--ws-accent);
-  background: rgba(var(--ws-accent-rgb), 0.09);
-  border: 1px solid rgba(var(--ws-accent-rgb), 0.16);
+  width: 22px;
+  height: 22px;
+  font-size: 15px;
 }
 
 .ws-step__title {
@@ -1670,10 +1697,13 @@
   flex-shrink: 0;
   font-size: 10px;
   color: var(--ws-ink-3);
-  transition: transform 0.16s ease, color 0.16s ease;
+  opacity: 0;
+  transition: opacity 0.16s ease, transform 0.16s ease, color 0.16s ease;
 }
 
-.ws-step:hover .ws-step__chevron {
+.ws-step:hover .ws-step__chevron,
+.ws-step:focus-visible .ws-step__chevron {
+  opacity: 1;
   transform: translateX(2px);
   color: var(--ws-accent);
 }

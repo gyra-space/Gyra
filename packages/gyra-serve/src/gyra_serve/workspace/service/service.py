@@ -440,7 +440,43 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
         self, workspace_id: int, user_id: Optional[int] = None, limit: int = 100,
     ) -> List[Dict[str, Any]]:
         rows = self._conv_link_dao.list_by_workspace(workspace_id, user_id, limit)
-        return [self._conv_link_dao.to_response(r) for r in rows]
+        result = []
+        for r in rows:
+            resp = self._conv_link_dao.to_response(r)
+            # 空闲标题兜底:自动生成标题的机制(首条输入 / LLM 摘要)对历史会话可能缺失,
+            # 这里用会话首条用户提问作为兜底标题,避免列表显示无意义的「会话 xxxx」。
+            if not (resp.get("title") or "").strip():
+                resp["title"] = self._derive_title_from_first_message(resp.get("conv_uid"))
+            result.append(resp)
+        return result
+
+    def _derive_title_from_first_message(self, conv_uid: Optional[str]) -> Optional[str]:
+        """从会话首条用户消息抽取纯文本作为兜底标题;无则返回 None。"""
+        if not conv_uid:
+            return None
+        try:
+            from gyra.storage.chat_history.chat_history_db import ChatHistoryMessageDao
+            items = ChatHistoryMessageDao().get_messages_by_conv_uid(conv_uid)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[conv_title] fallback derive failed: {e}")
+            return None
+        for item in items:
+            detail = item.message_detail or {}
+            if detail.get("type") not in ("human", "user"):
+                continue
+            content = (detail.get("data") or {}).get("content", "")
+            if isinstance(content, str):
+                text = content.strip()
+            elif isinstance(content, list):
+                text = " ".join(
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ).strip()
+            else:
+                text = ""
+            if text:
+                return text[:60]
+        return None
 
     def get_conversation_workspace(self, conv_uid: str) -> Optional[Dict[str, Any]]:
         row = self._conv_link_dao.get_by_conv(conv_uid)

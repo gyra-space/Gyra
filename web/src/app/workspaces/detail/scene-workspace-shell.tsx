@@ -443,6 +443,7 @@ export function SceneWorkspaceShell({
             setMobilePane('agent');
           }}
           onWorkspaceEvent={handleWorkspaceEvent}
+          onConversationStart={() => setSpaceCollapsed(true)}
           inputRef={agentInputRef}
           switchingTask={switchingTask}
           convLoadError={convLoadError}

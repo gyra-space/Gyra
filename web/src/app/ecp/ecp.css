@@ -164,6 +164,71 @@
   padding: 20px;
 }
 
+/* --------------------------------------------------- 生成提案进度条 */
+.ecp-gen-progress {
+  margin-bottom: 16px;
+  padding: 16px 18px;
+  border-radius: var(--r-md);
+  background: var(--bg-elev);
+  box-shadow: var(--sh-card);
+}
+
+.ecp-gen-progress__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-900);
+  margin-bottom: 12px;
+}
+
+.ecp-gen-progress__spinner {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid var(--line-soft);
+  border-top-color: var(--brand);
+  animation: ecp-spin 0.8s linear infinite;
+}
+
+@keyframes ecp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ecp-gen-progress__bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-fill);
+  overflow: hidden;
+}
+
+.ecp-gen-progress__fill {
+  height: 100%;
+  width: 40%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--brand), #6ea8fe);
+  animation: ecp-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes ecp-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+.ecp-gen-progress__hint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--ink-400);
+}
+
 /* 纵向堆叠场景（如巡检分组）用相邻间距；grid 场景由 gap 负责，见下方覆盖 */
 .ecp-card + .ecp-card {
   margin-top: 16px;

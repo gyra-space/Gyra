@@ -6,6 +6,7 @@ import { CheckOutlined, CommentOutlined, LinkOutlined, MoreOutlined, SearchOutli
 import dayjs from 'dayjs';
 import { apiInterceptors, createAsset, resolveAndExecuteIntervention, abortIntervention, terminateTask, deleteTask, reassignTask } from '@/client/api';
 import { listInbox, updateInboxStatus, listMembers, type InboxItem } from '@/client/api/workspace';
+import { confirmEcpObject } from '@/client/api/ecp';
 import { getUserId } from '@/utils';
 
 export type TaskTabKey = 'all' | 'running' | 'awaiting' | 'done' | 'failed';
@@ -207,12 +208,58 @@ export function SceneTaskRail({
     }
   };
 
+  /**
+   * 快速标记协议:每种来源类型声明自己的"一键真处理"能力。
+   *  - 声明了 action:UI 显示对号,点击执行 run() 真实处理源端(而非仅标记待办)。
+   *  - 未声明(null):UI 不显示对号,引导用户点击进入待办内操作。
+   * 支持的来源:manual(自含待办,直接完成)、ecp_proposal(源端确认生效)。
+   * 不支持的来源:task(转交任务需进入处理)、intervention(介入需决策+沉淀,不能一键完成)。
+   */
+  const quickResolveMap: Record<
+    string,
+    { title: string; doneMsg: string; run: (item: InboxItem) => Promise<{ ok: boolean; msg?: string }> } | null
+  > = {
+    manual: {
+      title: '标记完成',
+      doneMsg: '已标记完成',
+      run: async (item) => {
+        if (!workspaceId) return { ok: false, msg: '缺少工作区' };
+        const [err] = await apiInterceptors(updateInboxStatus(workspaceId, item.id, 'done'));
+        if (err) return { ok: false, msg: err.message };
+        return { ok: true };
+      },
+    },
+    ecp_proposal: {
+      title: '确认生效',
+      doneMsg: '已确认生效',
+      run: async (item) => {
+        // 直接确认源端提案生效,而非仅标记待办 done。否则提案仍为 proposed,
+        // 对账会一直保留/重建,刷新后待办重现,等于从未真正确认。
+        const parsed = parseEcpProposalSource(item.source_id);
+        if (!parsed) return { ok: false, msg: '提案来源无法解析,请打开提案详情处理' };
+        const userId = String(getUserId() ?? 'unknown');
+        const [err] = await apiInterceptors(
+          confirmEcpObject(parsed.objId, parsed.version, {
+            user_id: userId,
+            workspace_id: parsed.workspaceId,
+          }),
+        );
+        if (err) return { ok: false, msg: err.message };
+        return { ok: true };
+      },
+    },
+    task: null,
+    intervention: null,
+  };
+
   const handleInboxDone = async (item: InboxItem, e: any) => {
     e?.stopPropagation?.();
     if (!workspaceId) return;
-    const [err] = await apiInterceptors(updateInboxStatus(workspaceId, item.id, 'done'));
-    if (err) { message.error(err.message); return; }
-    message.success('已标记完成');
+    const action = quickResolveMap[item.source_type];
+    if (!action) return; // 该来源不支持快速处理,UI 已隐藏对号
+    const { ok, msg } = await action.run(item);
+    if (!ok) { message.error(msg || '处理失败'); return; }
+    message.success(action.doneMsg);
     refreshInbox();
   };
 
@@ -543,10 +590,10 @@ export function SceneTaskRail({
               <div className="ws-rail-foot">
                 <span className="ws-rail-tm">{dayjs(item.gmt_modified).format('MM-DD HH:mm')}</span>
                 <div className="ws-rail-card-actions">
-                  {item.inbox_status !== 'done' && (
+                  {item.inbox_status !== 'done' && quickResolveMap[item.source_type] && (
                     <span
                       className="ws-rail-card-act"
-                      title="标记完成"
+                      title={quickResolveMap[item.source_type]?.title}
                       role="button"
                       tabIndex={0}
                       onClick={(e) => handleInboxDone(item, e)}

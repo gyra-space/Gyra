@@ -1040,11 +1040,15 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         }
 
     def _build_steps_from_messages_stateless(
-        self, messages: List["GptsMessage"]
+        self, messages: List["GptsMessage"], lazy: bool = False
     ) -> Tuple[Dict[str, Dict[str, Any]], Optional[ManusActiveStepInfo], List[ManusExecutionOutput]]:
         """从 messages 无状态构建 steps_map、active_step_info 和 outputs。
 
         不依赖 self._steps 等单例状态，避免并发冲突和数据泄漏。
+
+        Args:
+            lazy: 为 True 时 steps_map 只保留步骤元信息（active_step，不含 outputs），
+                前后端走「按需加载」流程，显著降低流式推送数据量。
         """
         local_steps: Dict[str, ManusExecutionStep] = {}
         local_uid_map: Dict[str, str] = {}
@@ -1120,17 +1124,20 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             if step:
                 step_data = {
                     "active_step": _step_to_info(step).to_dict(),
-                    "outputs": self._outputs_to_dict_list(local_outputs.get(sid, [])),
                 }
+                if not lazy:
+                    step_data["outputs"] = self._outputs_to_dict_list(local_outputs.get(sid, []))
                 steps_map[uid] = step_data
                 if sid not in steps_map:
                     steps_map[sid] = step_data
         for sid, step in local_steps.items():
             if sid not in steps_map:
-                steps_map[sid] = {
+                step_data = {
                     "active_step": _step_to_info(step).to_dict(),
-                    "outputs": self._outputs_to_dict_list(local_outputs.get(sid, [])),
                 }
+                if not lazy:
+                    step_data["outputs"] = self._outputs_to_dict_list(local_outputs.get(sid, []))
+                steps_map[sid] = step_data
 
         total_step_count = len(local_steps)
         if len(steps_map) > self.MAX_STEPS_IN_MAP:
@@ -1285,8 +1292,11 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                         logger.warning(f"[ManusConverter] Failed to load messages from gpts_memory: {e}")
 
             # 无状态构建：从 messages 构建 steps_map 和 active_step，叠加当前消息
+            # 流式推送阶段（is_working=True）开启 lazy 模式：steps_map 只带元信息、不带 outputs，
+            # 由前端在点击步骤时按需调用 /vis/step_detail 拉取，显著降低每个 chunk 的推送量。
+            lazy_mode = is_working
             steps_map, active_step_info, current_outputs = self._build_steps_from_messages_stateless(
-                messages
+                messages, lazy=lazy_mode
             )
 
             # 叠加当前消息的步骤（gpt_msg 或 stream_msg 优先）
@@ -1309,6 +1319,11 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                 is_running=is_working,
                 steps_map=steps_map,
                 agent_name=self._agent_name,
+                lazy_loading=lazy_mode,
+                meta={
+                    "total_steps": len(self._steps) if self._steps else len(steps_map),
+                    "default_step_id": active_step_info.id if active_step_info else None,
+                } if lazy_mode else None,
             )
 
             # 收集任务文件和交付文件
@@ -1939,7 +1954,9 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                             content=observation,
                         )]
 
-        # 构建 steps_map（局部数据）— lazy mode: 包含 outputs 以便前端切换
+        # 构建 steps_map（局部数据）— lazy mode: 只存步骤元信息，不带 outputs。
+        # 全量历史同样按需加载，避免把每个步骤的完整输出落盘，控制存储体积。
+        # 前端在点击步骤时通过 /vis/step_detail API 按需拉取该步骤的 outputs。
         steps_map: Dict[str, Dict[str, Any]] = {}
         def _step_to_info(step):
             return ManusActiveStepInfo(
@@ -1954,7 +1971,6 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             if step:
                 step_meta = {
                     "active_step": _step_to_info(step).to_dict(),
-                    "outputs": self._outputs_to_dict_list(local_outputs.get(sid, [])),
                 }
                 steps_map[uid] = step_meta
                 if sid not in steps_map:
@@ -1963,7 +1979,6 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             if sid not in steps_map:
                 steps_map[sid] = {
                     "active_step": _step_to_info(step).to_dict(),
-                    "outputs": self._outputs_to_dict_list(local_outputs.get(sid, [])),
                 }
 
         total_step_count = len(local_steps)

@@ -770,7 +770,7 @@ ${html}
    Main component
    ═══════════════════════════════════════════════════════════════ */
 
-type ActiveTab = 'execution' | 'task_files' | 'summary' | `deliverable_${string}`;
+type ActiveTab = 'execution' | 'task_files' | 'summary' | 'deliverables';
 
 const VisManusRightPanel: FC<IProps> = ({ data }) => {
   const {
@@ -791,13 +791,15 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   // Track user-selected step via CLICK_FOLDER event
   const [selectedStep, setSelectedStep] = useState<ManusStepData | null>(null);
+  // Track selected deliverable within the single 「交付文件」 tab
+  const [selectedDeliverable, setSelectedDeliverable] = useState<ManusDeliverableFile | null>(null);
 
   const hasSummary = !!summary_content;
   const hasTaskFiles = task_files.length > 0;
   const hasDeliverables = deliverable_files.length > 0;
 
-  // Whether to show PDF export (only on summary / deliverable tabs)
-  const showPdfExport = activeTab === 'summary' || (typeof activeTab === 'string' && activeTab.startsWith('deliverable_'));
+  // Whether to show PDF export (only on summary / deliverables tabs)
+  const showPdfExport = activeTab === 'summary' || (activeTab === 'deliverables' && !!selectedDeliverable);
 
   // When backend active_step changes (new step), clear user selection to follow live
   const activeStepIdRef = useRef(active_step?.id);
@@ -836,14 +838,24 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
   // Listen for SWITCH_TAB events from left panel links
   useEffect(() => {
     const handler = (payload: { tab?: string }) => {
-      if (payload?.tab) {
-        setActiveTab(payload.tab as ActiveTab);
-        setSelectedStep(null);
+      if (!payload?.tab) return;
+      // Left panel deliverable card emits `deliverable_${fileId}` → route to the single
+      // 「交付文件」 tab and select that file.
+      if (payload.tab.startsWith('deliverable_')) {
+        const fileId = payload.tab.replace('deliverable_', '');
+        const file = deliverable_files.find((f) => f.file_id === fileId);
+        if (file) {
+          setSelectedDeliverable(file);
+          setActiveTab('deliverables');
+          return;
+        }
       }
+      setActiveTab(payload.tab as ActiveTab);
+      setSelectedStep(null);
     };
     ee.on(EVENTS.SWITCH_TAB, handler);
     return () => { ee.off(EVENTS.SWITCH_TAB, handler); };
-  }, []);
+  }, [deliverable_files]);
 
   // Determine which step to display: user-selected or backend-active
   const displayStep = selectedStep?.active_step ?? active_step;
@@ -868,22 +880,17 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
     ee.emit(EVENTS.CLICK_FOLDER, { uid: stepKeys[next], conv_id: convId });
   };
 
-  // Auto-switch to deliverable or summary tab when task completes
+  // Auto-switch to deliverables or summary tab when task completes
   useEffect(() => {
     if (panel_view === 'deliverable' && hasDeliverables) {
-      setActiveTab(`deliverable_${deliverable_files[0].file_id}`);
+      setSelectedDeliverable((cur) => cur && deliverable_files.some((f) => f.file_id === cur.file_id) ? cur : deliverable_files[0] || null);
+      setActiveTab('deliverables');
     } else if (panel_view === 'summary' && hasSummary) {
       setActiveTab('summary');
     }
   }, [panel_view, hasSummary, hasDeliverables, deliverable_files]);
 
-  const matchedDeliverable = useMemo(() => {
-    if (typeof activeTab === 'string' && activeTab.startsWith('deliverable_')) {
-      const fileId = activeTab.replace('deliverable_', '');
-      return deliverable_files.find((f) => f.file_id === fileId);
-    }
-    return undefined;
-  }, [activeTab, deliverable_files]);
+  const matchedDeliverable = selectedDeliverable;
 
   /* ── PDF export handlers ── */
   const handleExportPDF = useCallback(async () => {
@@ -1152,28 +1159,32 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
               label={`任务文件 ${task_files.length}`}
             />
           )}
-          {/* 3. 摘要 */}
+          {/* 3. 最终结论 */}
           {hasSummary && (
             <TabItem
               active={activeTab === 'summary'}
               onClick={() => setActiveTab('summary')}
               icon={<ProfileOutlined />}
-              label="摘要"
+              label="最终结论"
             />
           )}
-          {/* 4. Dynamic deliverable file tabs */}
-          {deliverable_files.map((file) => (
+          {/* 4. 交付文件 — 单个 tab，选中后内容选文件显示 */}
+          {hasDeliverables && (
             <TabItem
-              key={file.file_id}
-              active={activeTab === `deliverable_${file.file_id}`}
-              onClick={() => setActiveTab(`deliverable_${file.file_id}`)}
+              active={activeTab === 'deliverables'}
+              onClick={() => {
+                setActiveTab('deliverables');
+                if (!selectedDeliverable && deliverable_files.length > 0) {
+                  setSelectedDeliverable(deliverable_files[0]);
+                }
+              }}
               icon={<FileOutlined />}
-              label={file.file_name}
+              label={`交付文件 ${deliverable_files.length}`}
             />
-          ))}
+          )}
         </div>
 
-        {/* PDF export — only on summary / deliverable tabs */}
+        {/* PDF export — only on summary / deliverables tabs */}
         {showPdfExport && (
           <div className="flex items-center pr-3 flex-shrink-0">
             <Dropdown menu={{ items: pdfMenuItems }} placement="bottomRight">
@@ -1200,13 +1211,12 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
           <TaskFilesView files={task_files} />
         ) : activeTab === 'summary' && hasSummary ? (
           <SummaryView content={summary_content!} />
-        ) : matchedDeliverable ? (
+        ) : activeTab === 'deliverables' && matchedDeliverable ? (
           <DeliverableContentView file={matchedDeliverable} />
         ) : (
           /* Execution tab */
           displayStep ? (
             <div className="flex flex-col h-full">
-              {/* Compact step info bar */}
               <div
                 className="flex items-center justify-between px-4 py-2 border-b border-gray-100 cursor-pointer select-none hover:bg-gray-50/50 transition-colors flex-shrink-0"
                 onClick={() => setInputCollapsed(prev => !prev)}

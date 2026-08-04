@@ -694,6 +694,30 @@ class ReActMasterAgent(ConversableAgent):
                 parts.append(n)
         return "\n\n".join(parts) if parts else None
 
+    async def _collect_supplemental_user_input(self, session_id: str) -> Optional[str]:
+        """收集运行中用户提交的补充输入(来自 InteractionGateway 队列)。
+
+        每轮 think 前调用,清空式消费队列,把所有待处理输入拼成文本返回。
+        无补充输入返回 None。session_id 为 conv_session_id(前端 convUid)。
+        """
+        try:
+            from gyra.agent.interaction.interaction_gateway import (
+                get_interaction_gateway,
+            )
+            gateway = get_interaction_gateway()
+            inputs = await gateway.get_pending_user_inputs(session_id, clear=True)
+        except Exception as e:
+            logger.warning(
+                f"[ReActMasterAgent] collect supplemental user input failed: {e}"
+            )
+            return None
+        if not inputs:
+            return None
+        lines = [f"- {item.content}" for item in inputs if getattr(item, "content", None)]
+        if not lines:
+            return None
+        return "[用户补充输入]\n" + "\n".join(lines)
+
     async def load_resource(self, question: str, is_retry_chat: bool = False):
         """Load agent bind resource."""
         self.function_calling_context = await self.function_calling_params()
@@ -2135,6 +2159,13 @@ class ReActMasterAgent(ConversableAgent):
                 tool_msgs.append(notification_msg)
                 kwargs["tool_messages"] = tool_msgs
 
+            # 用户补充输入注入(运行中主动输入)
+            supplemental_input = await self._collect_supplemental_user_input(session_id)
+            if supplemental_input:
+                tool_msgs = kwargs.get("tool_messages") or []
+                tool_msgs.append({"role": "user", "content": supplemental_input})
+                kwargs["tool_messages"] = tool_msgs
+
             if self._system_event_manager:
                 self._system_event_manager.add_event(
                     event_type=SystemEventType.LLM_THINKING,
@@ -2185,6 +2216,14 @@ class ReActMasterAgent(ConversableAgent):
                 {"role": "user", "content": async_notification}
             )
             logger.info("[ReActMasterAgent] 注入异步任务完成通知到消息列表")
+
+        # ========== 用户补充输入注入（运行中主动输入）==========
+        supplemental_input = await self._collect_supplemental_user_input(session_id)
+        if supplemental_input:
+            all_conversation_messages.append(
+                {"role": "user", "content": supplemental_input}
+            )
+            logger.info("[ReActMasterAgent] 注入用户补充输入到消息列表")
 
         # ========== 构建最终 LLM 消息列表 ==========
         llm_messages = []

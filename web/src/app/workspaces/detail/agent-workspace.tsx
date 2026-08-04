@@ -9,6 +9,7 @@ import { AgentWorkspaceInput } from './agent-workspace-input';
 import { AgentWorkspaceRenderer } from './agent-workspace-renderer';
 import type { AgentWorkspaceInputHandle, WorkspaceDeliverableFile } from './agent-workspace-types';
 import { useSceneAgentChat } from './use-scene-agent-chat';
+import { useUserInput } from '@/hooks/use-user-input';
 
 export interface AgentWorkspaceProps {
   convUid?: string;
@@ -26,6 +27,8 @@ export interface AgentWorkspaceProps {
   /** 点击对话记录中的任务卡片:进入任务对话 */
   onTaskClick?: (taskId: number) => void;
   onWorkspaceEvent?: (event: WorkspaceEvent) => void;
+  /** 用户在 Agent 空间提交任务、开始对话时触发(外层据此折叠中间内容区) */
+  onConversationStart?: () => void;
   inputRef?: React.Ref<AgentWorkspaceInputHandle>;
   switchingTask?: boolean;
   convLoadError?: string | null;
@@ -46,6 +49,7 @@ export function AgentWorkspace({
   onDeliverableClick,
   onTaskClick,
   onWorkspaceEvent,
+  onConversationStart,
   inputRef: inputRefProp,
   switchingTask,
   convLoadError,
@@ -54,13 +58,14 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps) {
   const inputRefInner = useRef<AgentWorkspaceInputHandle>(null);
   const inputRef = inputRefProp ?? inputRefInner;
-  const { steps, workspaceView, loading, error, lastInput, convState, send, clearSteps, clearWorkspaceView } = useSceneAgentChat({
+  const { steps, workspaceView, loading, error, lastInput, convState, send, abort, clearSteps, clearWorkspaceView } = useSceneAgentChat({
     convUid,
     appCode,
     workspaceId,
     taskId,
     focusArtifactId: focus?.id,
     onWorkspaceEvent,
+    onConversationStart,
   });
 
   useEffect(() => {
@@ -70,6 +75,8 @@ export function AgentWorkspace({
 
   // loading(SSE 进行中) 或后端会话仍 RUNNING(关闭页面后重开,轮询恢复中)均视为运行中
   const running = loading || convState === 'RUNNING';
+  // 运行中提交作为"补充输入"投递到后端队列(不开新 SSE 流,不中止当前生成)
+  const { submitUserInput } = useUserInput(convUid);
 
   return (
     <div className="ws-agent-workspace">
@@ -97,64 +104,67 @@ export function AgentWorkspace({
           </button>
         )}
       </div>
-      <div className="ws-agent-workspace__process">
-        {error && <Alert message={error} type="error" showIcon className="ws-agent-workspace__error" />}
-        {switchingTask ? (
-          <div className="ws-agent-workspace__loading">
-            <Spin tip="切换任务对话中..." />
-          </div>
-        ) : convLoadError && !convUid ? (
-          <div className="ws-agent-workspace__error-card">
-            <Alert
-              message="会话加载失败"
-              description={convLoadError}
-              type="error"
-              showIcon
-              action={
-                retryLoadConv ? (
-                  <Button size="small" icon={<ReloadOutlined />} onClick={retryLoadConv}>重试</Button>
-                ) : undefined
-              }
+      <div className="ws-agent-workspace__content">
+        <div className="ws-agent-workspace__process">
+          {error && <Alert message={error} type="error" showIcon className="ws-agent-workspace__error" />}
+          {switchingTask ? (
+            <div className="ws-agent-workspace__loading">
+              <Spin tip="切换任务对话中..." />
+            </div>
+          ) : convLoadError && !convUid ? (
+            <div className="ws-agent-workspace__error-card">
+              <Alert
+                message="会话加载失败"
+                description={convLoadError}
+                type="error"
+                showIcon
+                action={
+                  retryLoadConv ? (
+                    <Button size="small" icon={<ReloadOutlined />} onClick={retryLoadConv}>重试</Button>
+                  ) : undefined
+                }
+              />
+            </div>
+          ) : !convUid ? (
+            <div className="ws-agent-workspace__loading"><Spin /></div>
+          ) : (
+            <AgentWorkspaceRenderer
+              view={workspaceView}
+              onStepClick={onStepClick ? (s) => onStepClick({
+                id: s.id,
+                type: s.type === 'thinking' ? 'llm' : 'tool_call',
+                title: s.title,
+                status: s.status === 'running' ? 'running' : s.status === 'failed' ? 'failed' : 'done',
+                timestamp: Date.now(),
+                payload: {
+                  action: s.action,
+                  action_input: s.action_input,
+                  output: s.output,
+                  step_type: s.type,
+                  exhibit: s.exhibit || undefined,
+                },
+              }) : undefined}
+              onDeliverableClick={onDeliverableClick}
+              onTaskClick={onTaskClick}
             />
-          </div>
-        ) : !convUid ? (
-          <div className="ws-agent-workspace__loading"><Spin /></div>
-        ) : (
-          <AgentWorkspaceRenderer
-            view={workspaceView}
-            onStepClick={onStepClick ? (s) => onStepClick({
-              id: s.id,
-              type: s.type === 'thinking' ? 'llm' : 'tool_call',
-              title: s.title,
-              status: s.status === 'running' ? 'running' : s.status === 'failed' ? 'failed' : 'done',
-              timestamp: Date.now(),
-              payload: {
-                action: s.action,
-                action_input: s.action_input,
-                output: s.output,
-                step_type: s.type,
-                exhibit: s.exhibit || undefined,
-              },
-            }) : undefined}
-            onDeliverableClick={onDeliverableClick}
-            onTaskClick={onTaskClick}
+          )}
+        </div>
+        <div className="ws-agent-workspace__input">
+          <AgentWorkspaceInput
+            ref={inputRef}
+            convUid={convUid}
+            onSend={(p) => (running ? submitUserInput(p.text) : send(p))}
+            loading={loading}
+            onStop={abort}
+            disabled={!convUid || switchingTask}
+            lastInput={lastInput ? { text: typeof lastInput.text === 'string' ? lastInput.text : '' } : null}
+            onRetry={lastInput ? () => send(lastInput) : undefined}
+            playbooks={playbooks}
+            focus={focus}
+            onClearFocus={onClearFocus}
+            onClearContext={onClearContext}
           />
-        )}
-      </div>
-      <div className="ws-agent-workspace__input">
-        <AgentWorkspaceInput
-          ref={inputRef}
-          convUid={convUid}
-          onSend={(p) => send(p)}
-          loading={loading}
-          disabled={!convUid || switchingTask}
-          lastInput={lastInput ? { text: typeof lastInput.text === 'string' ? lastInput.text : '' } : null}
-          onRetry={lastInput ? () => send(lastInput) : undefined}
-          playbooks={playbooks}
-          focus={focus}
-          onClearFocus={onClearFocus}
-          onClearContext={onClearContext}
-        />
+        </div>
       </div>
     </div>
   );

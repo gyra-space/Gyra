@@ -247,6 +247,9 @@
   padding: 13px 16px 14px;
   min-width: 0;
   overflow: hidden;
+  /* 下方宫格有数据撑高时,本卡不可被压缩(overflow:hidden 会把内容裁掉),
+     超高统一由 .ws-lobby__scroll 滚动 */
+  flex-shrink: 0;
   animation: rise-in 0.5s var(--ease-expo, cubic-bezier(0.16, 1, 0.3, 1)) 60ms both;
 }
 
@@ -369,6 +372,12 @@
   position: relative;
   display: inline-block;
   flex-shrink: 0;
+}
+
+/* SVG 默认 overflow:hidden 会把圆弧的 drop-shadow 辉光在边缘裁断,放开可见 */
+.ws-growth__ring svg {
+  display: block;
+  overflow: visible;
 }
 
 .ws-growth__ring-arc {
@@ -503,6 +512,8 @@
   background: var(--ws-surface);
   overflow: hidden;
   min-width: 0;
+  /* 同 .ws-growth:不可被下方内容压缩 */
+  flex-shrink: 0;
   animation: rise-in 0.5s var(--ease-expo, cubic-bezier(0.16, 1, 0.3, 1)) both;
 }
 

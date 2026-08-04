@@ -8,10 +8,16 @@ import {
   CloseCircleFilled,
   RightOutlined,
   DownOutlined,
-  ToolOutlined,
   BulbOutlined,
   DesktopOutlined,
   FileOutlined,
+  FileTextOutlined,
+  FileSearchOutlined,
+  EditOutlined,
+  ConsoleSqlOutlined,
+  SearchOutlined,
+  CodeOutlined,
+  PlayCircleOutlined,
   FolderOpenOutlined,
   DownloadOutlined,
   RocketOutlined,
@@ -51,6 +57,39 @@ function StatusChip({ status }: { status: WorkspaceExecutionStep['status'] }) {
       <CheckCircleFilled />
     </span>
   );
+}
+
+/** 根据工具 action / title 匹配专属图标,参考 vis_manus 的 type-icon 映射 */
+function getToolStepIcon(action?: string | null, title?: string) {
+  const key = `${action || ''} ${title || ''}`.toLowerCase();
+  if (/\b(read|file_search|file_read)\b|读取|搜索文件/.test(key)) {
+    return <FileSearchOutlined className="text-emerald-500" />;
+  }
+  if (/\b(edit|write|modify|update)\b|编辑|写入|修改/.test(key)) {
+    return <EditOutlined className="text-amber-500" />;
+  }
+  if (/\b(bash|shell|sh|terminal)\b|终端|命令行/.test(key)) {
+    return <ConsoleSqlOutlined className="text-purple-500" />;
+  }
+  if (/\b(grep|glob|search|find)\b|搜索|查找/.test(key)) {
+    return <SearchOutlined className="text-cyan-500" />;
+  }
+  if (/\b(python|py)\b|python/.test(key)) {
+    return <CodeOutlined className="text-blue-500" />;
+  }
+  if (/\b(html|htm|web)\b|html/.test(key)) {
+    return <CodeOutlined className="text-orange-500" />;
+  }
+  if (/\b(sql|query|db|database)\b|sql|数据库/.test(key)) {
+    return <ConsoleSqlOutlined className="text-emerald-600" />;
+  }
+  if (/\b(task|todo|job)\b|任务/.test(key)) {
+    return <PlayCircleOutlined className="text-indigo-500" />;
+  }
+  if (/\b(skill|plugin)\b|技能|插件/.test(key)) {
+    return <CodeOutlined className="text-violet-500" />;
+  }
+  return <FileTextOutlined className="text-gray-400" />;
 }
 
 /** 用户消息气泡(manus left panel 风格) */
@@ -96,8 +135,8 @@ function ToolStepRow({
         }
       }}
     >
-      <span className="ws-step__badge ws-step__badge--tool">
-        <ToolOutlined />
+      <span className="ws-step__badge">
+        {getToolStepIcon(step.action, step.title)}
       </span>
       <span className="ws-step__title">{step.title}</span>
       <StatusChip status={step.status} />

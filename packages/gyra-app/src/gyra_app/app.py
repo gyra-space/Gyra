@@ -294,9 +294,11 @@ def mount_routers(app: FastAPI, param: Optional[ApplicationConfig] = None):
     from gyra_app.openapi.api_v1.feedback.api_fb_v1 import router as api_fb_v1
     from gyra_app.openapi.api_v2.api_v2 import router as api_v2
     from gyra_app.openapi.api_v2.model_api import router as model_api_router
+    from gyra_app.openapi.api_v2.input_api import router as input_api_router
 
     app.include_router(api_v1, prefix="/api", tags=["Chat"])
     app.include_router(api_v2, prefix="/api", tags=["ChatV2"])
+    app.include_router(input_api_router, prefix="/api", tags=["UserInput"])
     app.include_router(api_fb_v1, prefix="/api", tags=["FeedBack"])
     if knowledge_router is not None:
         app.include_router(knowledge_router, tags=["Knowledge"])

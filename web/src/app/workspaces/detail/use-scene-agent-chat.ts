@@ -22,6 +22,8 @@ interface UseSceneAgentChatOptions {
   taskId?: number | string;
   focusArtifactId?: number | string;
   onWorkspaceEvent?: (event: WorkspaceEvent) => void;
+  /** 用户在 Agent 空间提交任务、开始一轮对话时触发(用于折叠中间内容区) */
+  onConversationStart?: () => void;
 }
 
 interface UseSceneAgentChatResult {
@@ -57,6 +59,7 @@ export function useSceneAgentChat({
   taskId,
   focusArtifactId,
   onWorkspaceEvent,
+  onConversationStart,
 }: UseSceneAgentChatOptions): UseSceneAgentChatResult {
   const [steps, setSteps] = useState<AgentStep[]>([]);
   const [loading, setLoading] = useState(false);
@@ -159,6 +162,8 @@ export function useSceneAgentChat({
       setLoading(true);
       setLastInput(payload);
       setError(null);
+      // 提交任务、开始对话 → 通知外层(如自动折叠中间内容区)
+      onConversationStart?.();
 
       // 乐观上屏:不等 SSE 首帧,先把用户消息插入视图;服务端回显同文本
       // user 步骤时在 routeObject 里去重(服务端 output 会截断,用前缀匹配)
@@ -270,7 +275,7 @@ export function useSceneAgentChat({
         onWorkspaceEvent: handleWorkspaceEventInternal,
       });
     },
-    [convUid, workspaceId, taskId, focusArtifactId, chat, appendStep, handleWorkspaceEventInternal],
+    [convUid, workspaceId, taskId, focusArtifactId, chat, appendStep, handleWorkspaceEventInternal, onConversationStart],
   );
 
   const abort = useCallback(() => {
