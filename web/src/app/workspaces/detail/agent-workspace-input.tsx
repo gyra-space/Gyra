@@ -330,28 +330,43 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
           )}
 
           {/* SECTION 2 — textarea (borderless, card is the only border) */}
-          <Popover
-            open={showPlaybook}
-            content={playbookPopover}
-            placement="topLeft"
-            trigger={[]}
-            overlayClassName={popoverOverlay}
-          >
-            <div className="p-4">
-              <Input.TextArea
-                ref={textareaRef}
-                value={text}
-                onChange={handleChange}
-                onFocus={() => setIsFocus(true)}
-                onBlur={() => setIsFocus(false)}
-                onKeyDown={handleKeyDown}
-                placeholder="输入指令给 Agent…(输入 / 选择剧本)"
-                className="!text-base !bg-transparent !border-0 !resize-none placeholder:!text-gray-400 !text-gray-800 dark:!text-gray-200 !shadow-none !p-0 !min-h-[60px]"
-                autoSize={{ minRows: 2, maxRows: 8 }}
-                disabled={disabled || loading}
-              />
-            </div>
-          </Popover>
+          <div className="relative">
+            <Popover
+              open={showPlaybook}
+              content={playbookPopover}
+              placement="topLeft"
+              trigger={[]}
+              overlayClassName={popoverOverlay}
+            >
+              <div className={classNames('p-4', onClearContext && 'pr-12')}>
+                <Input.TextArea
+                  ref={textareaRef}
+                  value={text}
+                  onChange={handleChange}
+                  onFocus={() => setIsFocus(true)}
+                  onBlur={() => setIsFocus(false)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="输入指令给 Agent…(输入 / 选择剧本)"
+                  className="!text-base !bg-transparent !border-0 !resize-none placeholder:!text-gray-400 !text-gray-800 dark:!text-gray-200 !shadow-none !p-0 !min-h-[60px]"
+                  autoSize={{ minRows: 2, maxRows: 8 }}
+                  disabled={disabled || loading}
+                />
+              </div>
+            </Popover>
+
+            {/* 清理上下文:浮动在输入区右上角,半透明毛玻璃圆形按钮,hover 点亮 */}
+            {onClearContext && (
+              <button
+                type="button"
+                className="absolute top-2 right-2 z-10 h-7 w-7 rounded-full flex items-center justify-center border border-gray-200/70 dark:border-gray-600/60 bg-white/70 dark:bg-[#232734]/70 backdrop-blur-sm text-gray-300 dark:text-gray-500 shadow-sm hover:text-red-500 hover:border-red-200 dark:hover:border-red-700 hover:bg-red-50/90 dark:hover:bg-red-900/30 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                onClick={onClearContext}
+                disabled={!convUid || disabled || loading}
+                title="清理上下文(新开会话)"
+              >
+                <ClearOutlined className="text-xs" />
+              </button>
+            )}
+          </div>
 
           {/* SECTION 3 — footer toolbar: left tools / right send */}
           <div className="flex items-center justify-between gap-2 px-3 pb-3 min-w-0">
@@ -372,18 +387,6 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                 style={{ display: 'none' }}
                 onChange={(e) => { for (const f of Array.from(e.target.files || [])) handleFileUpload(f); e.target.value = ''; }}
               />
-
-              {/* clear context (new conversation) */}
-              {onClearContext && (
-                <button
-                  className="h-8 w-8 rounded-full flex items-center justify-center border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:text-red-500 hover:border-red-300 dark:hover:border-red-600 transition-all hover:bg-red-50 dark:hover:bg-red-900/20 flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
-                  onClick={onClearContext}
-                  disabled={!convUid || disabled || loading}
-                  title="清空上下文(新开会话)"
-                >
-                  <ClearOutlined className="text-sm" />
-                </button>
-              )}
 
               {/* retry (only when retryable) */}
               {lastInput && onRetry && !loading && (

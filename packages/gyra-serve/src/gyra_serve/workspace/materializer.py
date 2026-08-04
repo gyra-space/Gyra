@@ -161,6 +161,39 @@ def _declaration_item_to_ref_config(
     return physical_ref, config
 
 
+def _materialize_declared_skill(skill_item: Any) -> Optional["AgentResource"]:
+    """物化单个声明技能项 -> AgentResource 或 None。
+
+    复用 ``_MATERIALIZE_DISPATCH`` 分派;``app`` 类型跳过(它产出 extra_agents
+    而非 AgentResource)。供顶层 skills 与 roles 块角色技能共用。
+    """
+    if isinstance(skill_item, str):
+        skill_type = "skill"
+    elif isinstance(skill_item, dict):
+        skill_type = skill_item.get("type") or "skill"
+    else:
+        return None
+    if skill_type == "app":
+        return None
+    handler_name = _MATERIALIZE_DISPATCH.get(skill_type) or _MATERIALIZE_DISPATCH.get("skill")
+    if handler_name is None:
+        return None
+    # 通过 globals 解析,便于单元测试 patch 模块级 handler
+    handler = globals().get(handler_name)
+    if handler is None:
+        return None
+    physical_ref, config = _declaration_item_to_ref_config(skill_item, skill_type)
+    if physical_ref is None:
+        return None
+    try:
+        return handler(physical_ref, config)
+    except Exception as e:
+        logger.warning(
+            f"materializer skill fail type={skill_type} name={physical_ref}: {e}"
+        )
+        return None
+
+
 def materialize_playbook_declaration(
     system_app, declaration_dsl_json: Optional[Dict[str, Any]]
 ) -> List["AgentResource"]:
@@ -229,7 +262,62 @@ def materialize_playbook_declaration(
             )
             continue
 
+    # P2 任务10: 物化 roles 块中各角色声明的技能(按角色装配不同 skill 集)
+    # 无 roles 块时此处为空操作,行为与原实现完全一致(向后兼容)。
+    roles_block = declaration_dsl_json.get("roles") or {}
+    if isinstance(roles_block, dict):
+        for _role_key, role_decl in roles_block.items():
+            if not isinstance(role_decl, dict):
+                continue
+            for skill in role_decl.get("skills") or []:
+                materialized = _materialize_declared_skill(skill)
+                if materialized is not None:
+                    resources.append(materialized)
+
     return resources
+
+
+def materialize_playbook_roles(
+    system_app, declaration_dsl_json: Optional[Dict[str, Any]], workspace_id: int
+) -> List[Dict[str, Any]]:
+    """按 Playbook declaration 的 roles 块装配职能角色团队。
+
+    P2 任务10: 把"裸 app_code"的多 Agent 协作抽象为职能角色团队。
+    调用 ``AgentRoleService.assemble_team`` 产出角色蓝图(role/skills/
+    maturity_min/prompt),并为每个角色物化其技能成 ``AgentResource`` 列表,
+    供运行时按角色装配不同 skill 集与 prompt。
+
+    无 roles 块时返回 [](向后兼容)。
+    """
+    if not declaration_dsl_json:
+        return []
+    roles_block = declaration_dsl_json.get("roles")
+    if not isinstance(roles_block, dict) or not roles_block:
+        return []
+
+    try:
+        from .agent_roles import AgentRoleService
+
+        role_service = AgentRoleService(system_app=system_app, config=ServeConfig())
+        try:
+            role_service.init_app(system_app)
+        except Exception:
+            # assemble_team 不依赖 DAO,init_app 失败不阻断团队装配
+            pass
+        team = role_service.assemble_team(declaration_dsl_json, workspace_id)
+    except Exception as e:
+        logger.warning(f"materialize_playbook_roles assemble_team failed: {e}")
+        return []
+
+    # 为每个角色物化其技能 -> AgentResource(不同 skill 集)
+    for entry in team:
+        role_resources: List["AgentResource"] = []
+        for skill in entry.get("skills") or []:
+            materialized = _materialize_declared_skill(skill)
+            if materialized is not None:
+                role_resources.append(materialized)
+        entry["resources"] = role_resources
+    return team
 
 
 def materialize_resources(system_app, workspace_id: int) -> MaterializedResources:

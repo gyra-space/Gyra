@@ -2,11 +2,7 @@
 
 import { Tag } from 'antd';
 import { useRequest } from 'ahooks';
-import {
-  CloudServerOutlined,
-  SendOutlined,
-  DeploymentUnitOutlined,
-} from '@ant-design/icons';
+import { CloudServerOutlined, SendOutlined, DeploymentUnitOutlined } from '@ant-design/icons';
 import {
   apiInterceptors,
   listArtifacts,
@@ -23,6 +19,9 @@ export interface LobbyProps {
   // 预留钩子:内容区域(大厅)开任务入口,待办卡片移除后待后续接 UI。
   onSelectTask?: (taskId: number) => void;
   onSelectArtifact?: (artifact: any) => void;
+  onSelectDelivery?: (delivery: any) => void;
+  /** 进入飞轮工作台 */
+  onEnterFlywheel?: () => void;
 }
 
 function SectionHead({
@@ -55,10 +54,19 @@ function EmptyState({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
+function fmtSize(bytes: number): string {
+  if (!bytes) return '';
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
 export function Lobby({
   workspaceId,
   workspaceCode,
   onSelectArtifact,
+  onSelectDelivery,
+  onEnterFlywheel,
 }: LobbyProps) {
   const { data: deliveriesRes } = useRequest(
     async () => apiInterceptors(listDeliveries({ workspace_id: workspaceId })),
@@ -97,8 +105,12 @@ export function Lobby({
         {/* 空间导览(新人第一小时:有什么/会什么/怎么干) */}
         <SpaceGuideCard workspaceId={workspaceId} workspaceCode={workspaceCode} />
 
-        {/* 空间成长概览(横向紧凑条) */}
-        <GrowthCard workspaceId={workspaceId} workspaceCode={workspaceCode} />
+        {/* 空间成长概览(含飞轮工作台入口) */}
+        <GrowthCard
+          workspaceId={workspaceId}
+          workspaceCode={workspaceCode}
+          onEnterFlywheel={onEnterFlywheel}
+        />
 
         <div className="ws-lobby__grid">
           {/* 最近产出 */}
@@ -119,6 +131,9 @@ export function Lobby({
                 >
                   <span className="ws-lobby__hosted-title">{a.title || `artifact_${a.id}`}</span>
                   <Tag color="blue">{a.type}</Tag>
+                  {a.provenance?.file_size ? (
+                    <span className="ws-lobby__hosted-size">{fmtSize(a.provenance.file_size)}</span>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -132,7 +147,14 @@ export function Lobby({
                 <EmptyState title="暂无交付记录" hint="交付物发送后会记录在这里" />
               )}
               {recentDeliveries.map((d: any) => (
-                <div key={d.id} className="ws-lobby__delivery-item">
+                <div
+                  key={d.id}
+                  className="ws-lobby__delivery-item ws-lobby__delivery-item--clickable"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onSelectDelivery?.(d)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') onSelectDelivery?.(d); }}
+                >
                   <Tag>{d.category}</Tag>
                   <span className="ws-lobby__delivery-channel">{d.channel}</span>
                   <span className="ws-lobby__delivery-status">{d.status}</span>

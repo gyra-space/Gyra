@@ -650,6 +650,37 @@ class Service(BaseComponent):
         # Drop cached config.
         self._spaces.pop(slug, None)
 
+        # Cascade: drop ECP asset refs pointing at this space so the ECP asset
+        # list doesn't keep showing a deleted space. ECP owns only the
+        # reference; we sweep all workspaces since the knowledge module
+        # doesn't know which ECP workspaces referenced this slug. Covers both
+        # kind="space" (ref_id=slug) and kind="document" (ref_id=slug:verbat_id).
+        try:
+            from gyra_serve.ecp.models.models import AssetRefDao
+
+            dao = AssetRefDao()
+            dao.delete_by_ref_all_workspaces(kind="space", ref_id=slug)
+            # Document refs use "{slug}:..." as ref_id; sweep by prefix match.
+            with dao.session() as session:
+                from gyra_serve.ecp.models.models import EcpAssetRefEntity
+
+                rows = (
+                    session.query(EcpAssetRefEntity)
+                    .filter(
+                        EcpAssetRefEntity.kind == "document",
+                        EcpAssetRefEntity.ref_id.like(f"{slug}:%"),
+                    )
+                    .all()
+                )
+                for r in rows:
+                    session.delete(r)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "cascade delete ECP asset refs for space %s failed",
+                slug,
+                exc_info=True,
+            )
+
     async def list_spaces(self) -> List[Dict[str, Any]]:
         """List all known spaces (local directories + distributed registry)."""
         out: List[Dict[str, Any]] = []

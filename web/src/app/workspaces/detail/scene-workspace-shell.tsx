@@ -57,6 +57,21 @@ export function SceneWorkspaceShell({
   // rail 抽屉(中屏)与单列 tab(小屏)状态
   const [railOpen, setRailOpen] = useState(true);
   const [mobilePane, setMobilePane] = useState<'rail' | 'space' | 'agent'>('space');
+  // 大厅容器折叠:折叠后 Agent 空间占满主区,专注执行进展;
+  // 点击步骤/文件卡片等主动查看动作会自动展开;折叠期间被动到达的新内容点亮角标。
+  const [spaceCollapsed, setSpaceCollapsed] = useState(false);
+  const [spaceHasNew, setSpaceHasNew] = useState(false);
+  // 用户主动查看内容 → 展开大厅;被动事件 → 仅折叠时点亮角标
+  const expandSpace = () => {
+    setSpaceCollapsed(false);
+    setSpaceHasNew(false);
+  };
+  const notifySpaceContent = () => {
+    setSpaceCollapsed((collapsed) => {
+      if (collapsed) setSpaceHasNew(true);
+      return collapsed;
+    });
+  };
   // 隐式上下文:用户点 × 取消带入当前关注的交付物
   const [focusDismissed, setFocusDismissed] = useState(false);
   // 收件箱刷新信号:中间区域确认/否决 ECP 提案后 bump,通知左侧 rail 重新拉待办。
@@ -84,17 +99,17 @@ export function SceneWorkspaceShell({
     setMobilePane('agent');
   };
 
-  // 一键清空上下文(新开会话):复用 ConversationSwitcher.handleNew 逻辑--
+  // 「新会话」(header 入口)与「清理上下文」(输入框浮动入口)共用的实现:
   // 新 conv_uid 在 gpts_messages/gpts_conversations/chat_history_message 三表无行,
-  // agent 上下文天然干净;旧会话保留在会话列表可回溯。
-  const handleClearContext = async () => {
+  // agent 上下文天然干净;旧会话保留在左侧任务列表的会话记录里可回溯。
+  const handleNewConversation = async (tip: string) => {
     if (!workspaceId) return;
     const [, newConv] = await apiInterceptors(createConversation({ workspace_id: workspaceId }));
     if (!newConv?.conv_uid) return;
     await apiInterceptors(linkConversation({ workspace_id: workspaceId, conv_uid: newConv.conv_uid, user_id: undefined }));
     await apiInterceptors(setCurrentConversation(workspaceId, newConv.conv_uid));
     onConvChanged?.(newConv.conv_uid);
-    message.success('已清空上下文');
+    message.success(tip);
   };
 
   // 中屏(900–1279px)默认收起左 rail 为抽屉;小屏默认展示场景空间
@@ -171,6 +186,7 @@ export function SceneWorkspaceShell({
     if (kind === 'task') setDetailContext('task-detail');
     else if (kind === 'ecp_proposal') setDetailContext('ecp-proposal');
     else setDetailContext('entity-card');
+    expandSpace();
   };
 
   const handleEnterConversation = (taskId: number) => {
@@ -199,6 +215,15 @@ export function SceneWorkspaceShell({
   const handleBackToDashboard = () => {
     setDetailContext('dashboard');
     setPreviewItem(null);
+    expandSpace();
+  };
+
+  // 大厅入口:进入飞轮工作台(中间区域切换,小屏定位到空间面板)
+  const handleEnterFlywheel = () => {
+    setDetailContext('flywheel');
+    setPreviewItem(null);
+    expandSpace();
+    setMobilePane('space');
   };
 
   // 从「会话」视图进入对应对话:剧本任务会话(有 task_id)进任务对话,
@@ -217,6 +242,14 @@ export function SceneWorkspaceShell({
 
   const handleStepClick = (step: AgentStep) => {
     setFocusDismissed(false);
+    expandSpace();
+    // 步骤携带大厅入驻内容:直接以通用 Exhibit 渲染(图片/视频/表格/PPT 等)
+    if (step.payload?.exhibit) {
+      setPreviewItem({ payload: { exhibit: step.payload.exhibit } });
+      setDetailContext('exhibit');
+      setMobilePane('space');
+      return;
+    }
     if (step.type === 'tool_call' || step.type === 'llm') {
       setPreviewItem(step);
       setDetailContext('tool-result');
@@ -240,6 +273,8 @@ export function SceneWorkspaceShell({
           setPreviewItem(event);
           setDetailContext(event.payload?.file_id ? 'file-preview' : 'entity-card');
           setFocusDismissed(false);
+          // 被动到达:不强行拉开大厅,折叠时点亮角标提示有新内容
+          notifySpaceContent();
         }
         break;
       case 'task_created':
@@ -280,7 +315,7 @@ export function SceneWorkspaceShell({
 
   return (
     <div
-      className={`ws-scene-shell${railOpen ? '' : ' ws-scene-shell--rail-closed'}`}
+      className={`ws-scene-shell${railOpen ? '' : ' ws-scene-shell--rail-closed'}${spaceCollapsed ? ' ws-scene-shell--space-collapsed' : ''}`}
       data-pane={mobilePane}
     >
       <div className="ws-scene-shell__mobile-tabs" role="tablist">
@@ -303,6 +338,23 @@ export function SceneWorkspaceShell({
         onClick={() => setRailOpen((v) => !v)}
       >
         {railOpen ? '‹' : '›'}
+      </button>
+      {/* 大厅容器折叠开关:折叠后 Agent 空间占满主区专注执行;有新内容时亮角标 */}
+      <button
+        type="button"
+        className={`ws-scene-shell__space-toggle${spaceHasNew ? ' ws-scene-shell__space-toggle--new' : ''}`}
+        aria-label={spaceCollapsed ? '展开大厅' : '折叠大厅'}
+        title={spaceCollapsed ? '展开大厅' : '折叠大厅,专注执行进展'}
+        onClick={() => {
+          if (spaceCollapsed) {
+            expandSpace();
+          } else {
+            setSpaceCollapsed(true);
+            setSpaceHasNew(false);
+          }
+        }}
+      >
+        {spaceCollapsed ? '›' : '‹'}
       </button>
       <div className="ws-scene-shell__rail">
         <SceneTaskRail
@@ -343,6 +395,7 @@ export function SceneWorkspaceShell({
           playbooks={playbooks}
           onBack={handleBackToDashboard}
           onProposalResolved={bumpInbox}
+          onEnterFlywheel={handleEnterFlywheel}
           onSelectTask={(taskId) => {
             const task = tasks.find((t) => t.id === taskId);
             if (task) handlePreview(task, 'task');
@@ -351,6 +404,13 @@ export function SceneWorkspaceShell({
             setPreviewItem({ payload: { artifact_id: artifact.id, title: artifact.title, type: artifact.type } });
             setDetailContext('entity-card');
             setFocusDismissed(false);
+            expandSpace();
+          }}
+          onSelectDelivery={(delivery) => {
+            setPreviewItem({ payload: { delivery_id: delivery.id, title: delivery.title } });
+            setDetailContext('delivery-detail');
+            setFocusDismissed(false);
+            expandSpace();
           }}
         />
       </div>
@@ -368,10 +428,21 @@ export function SceneWorkspaceShell({
           taskId={rightTaskId}
           focus={focus}
           onClearFocus={() => setFocusDismissed(true)}
-          onClearContext={activeTaskId ? undefined : handleClearContext}
+          onClearContext={activeTaskId ? undefined : () => handleNewConversation('已清空上下文')}
+          onNewSession={activeTaskId ? undefined : () => handleNewConversation('已开启新会话')}
           onStepClick={handleStepClick}
+          onDeliverableClick={(file) => {
+            setPreviewItem({ payload: { deliverable_file: file } });
+            setDetailContext('file-preview');
+            setFocusDismissed(false);
+            expandSpace();
+            setMobilePane('space');
+          }}
+          onTaskClick={(taskId) => {
+            handleEnterConversation(taskId);
+            setMobilePane('agent');
+          }}
           onWorkspaceEvent={handleWorkspaceEvent}
-          onConvChanged={onConvChanged}
           inputRef={agentInputRef}
           switchingTask={switchingTask}
           convLoadError={convLoadError}

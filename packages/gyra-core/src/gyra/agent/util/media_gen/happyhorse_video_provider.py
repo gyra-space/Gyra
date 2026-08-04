@@ -20,10 +20,16 @@ from typing import Any, List, Optional
 
 from gyra.agent.util.media_gen._dashscope_common import (
     build_headers,
+    normalize_base_url,
     poll_dashscope_task,
-    raise_for_error,
+    raise_for_response,
 )
-from gyra.agent.util.media_gen.base import MediaGenProvider, MediaGenResult
+from gyra.agent.util.media_gen.base import (
+    MediaGenProvider,
+    MediaGenResult,
+    MediaSubmission,
+    download_media_with_retry,
+)
 from gyra.agent.util.media_gen.provider_registry import MediaGenProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -35,7 +41,7 @@ logger = logging.getLogger(__name__)
 # Default API endpoints (DashScope generic domain; workspace-specific maas
 # domain can be supplied via base_url for better performance/stability)
 _DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com"
-_CREATE_TASK_ENDPOINT = "/api/v1/services/aigc/video-generation/video-synthesis"
+_CREATE_TASK_ENDPOINT = "/services/aigc/video-generation/video-synthesis"
 
 # Supported resolutions (HappyHorse uses uppercase, no 4k)
 _SUPPORTED_RESOLUTIONS = {"480P", "720P", "1080P"}
@@ -121,6 +127,21 @@ class HappyHorseVideoProvider(MediaGenProvider):
                   refer to them.
                 - timeout: Max wait time in seconds (default 600).
         """
+        submission = await self.submit_video(prompt, model, **kwargs)
+        return await submission.complete()
+
+    async def submit_video(
+        self,
+        prompt: str,
+        model: str = "happyhorse-1.1-t2v",
+        **kwargs: Any,
+    ) -> MediaSubmission:
+        """Submit a HappyHorse video task; return a resumable MediaSubmission.
+
+        The HTTP submit runs synchronously so immediate errors (auth, bad
+        params) surface now. Polling + download is deferred to
+        ``submission.complete()`` for background execution via MediaJobRegistry.
+        """
         try:
             import httpx
         except ImportError:
@@ -137,7 +158,7 @@ class HappyHorseVideoProvider(MediaGenProvider):
             )
 
         timeout = kwargs.get("timeout", 600)
-        base_url = self.base_url or _DEFAULT_BASE_URL
+        base_url = normalize_base_url(self.base_url or _DEFAULT_BASE_URL)
 
         duration = kwargs.get("duration", 5)
         resolution = self._normalize_resolution(kwargs.get("resolution", "1080p"))
@@ -189,38 +210,35 @@ class HappyHorseVideoProvider(MediaGenProvider):
             f"media_count={len(media) if media else 0}"
         )
 
+        # Submit (short-lived client; poll/download use their own).
         async with httpx.AsyncClient(timeout=timeout) as client:
-            # Step 1: Submit generation task
             create_url = f"{base_url}{_CREATE_TASK_ENDPOINT}"
             submit_resp = await client.post(create_url, headers=headers, json=body)
-            submit_resp.raise_for_status()
-            result = submit_resp.json()
+            result = raise_for_response(submit_resp, provider="happyhorse")
 
-            # Error response: top-level code/message
-            raise_for_error(result, provider="happyhorse")
+        task_id = result.get("output", {}).get("task_id")
+        if not task_id:
+            raise ValueError(f"HappyHorse API returned no task_id: {result}")
 
-            task_id = result.get("output", {}).get("task_id")
-            if not task_id:
-                raise ValueError(
-                    f"HappyHorse API returned no task_id: {result}"
+        logger.info(f"[HappyHorseVideoProvider] Task created: {task_id}")
+
+        async def _complete() -> MediaGenResult:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                # Poll until complete
+                video_url = await poll_dashscope_task(
+                    client, base_url, task_id, self.api_key, timeout,
+                    extract_url=_extract_video_url,
+                    poll_interval=15,
+                    provider="happyhorse",
                 )
-
-            logger.info(f"[HappyHorseVideoProvider] Task created: {task_id}")
-
-            # Step 2: Poll until complete
-            video_url = await poll_dashscope_task(
-                client, base_url, task_id, self.api_key, timeout,
-                extract_url=_extract_video_url,
-                poll_interval=15,
-                provider="happyhorse",
-            )
-
-            # Step 3: Download video
-            logger.info(
-                f"[HappyHorseVideoProvider] Downloading video from {video_url}"
-            )
-            dl_resp = await client.get(video_url)
-            dl_resp.raise_for_status()
+                # Download (validated: OSS may transiently return an XML
+                # error body right after task completion)
+                logger.info(
+                    f"[HappyHorseVideoProvider] Downloading video from {video_url}"
+                )
+                video_data = await download_media_with_retry(
+                    client, video_url, kind="video", provider="happyhorse"
+                )
 
             metadata: dict[str, Any] = {
                 "model": model,
@@ -241,12 +259,20 @@ class HappyHorseVideoProvider(MediaGenProvider):
                 metadata["reference_image_count"] = len(media)
 
             return MediaGenResult(
-                data=dl_resp.content,
+                data=video_data,
                 format="mp4",
                 mime_type="video/mp4",
                 duration_seconds=float(duration),
                 metadata=metadata,
             )
+
+        return MediaSubmission(
+            task_id=task_id,
+            provider="happyhorse",
+            model=model,
+            complete=_complete,
+            metadata={"task_id": task_id, "scenario": scenario, "model": model},
+        )
 
     def _build_media(
         self,

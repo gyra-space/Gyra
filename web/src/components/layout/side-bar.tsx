@@ -412,8 +412,15 @@ function SideBar() {
   );
 
   const navSections = useMemo(() => {
-    // ── 核心入口:智能体空间(场景空间为主业,不再单独入口) ──
+    // ── 核心入口:场景空间 / 智能体空间 ──
     const mainItems: RouteItem[] = [
+      {
+        key: 'workspaces',
+        name: t('workspaces'),
+        isActive: pathname.startsWith('/workspaces'),
+        icon: navIcon(<TeamOutlined />),
+        path: '/workspaces',
+      },
       ...(hasResourceRead('agent') ? [{
         key: 'explore',
         name: t('agent_space'),
@@ -815,7 +822,7 @@ function SideBar() {
       <div className='flex flex-col w-full px-4 shrink-0'>
         {/* LOGO */}
         <Link href='/' className='flex flex-row justify-between items-center mb-4 pl-1'>
-          <Image src={isMenuExpand ? logo : '/LOGO_SMALL.png'} alt='DB-GPT' width={120} height={30} className="object-contain" />
+          <Image src={isMenuExpand ? logo : '/LOGO_SMALL.png'} alt='Gyra' width={120} height={30} className="object-contain" />
         </Link>
 
         </div>

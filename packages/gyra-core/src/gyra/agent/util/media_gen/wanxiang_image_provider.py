@@ -15,28 +15,34 @@ from typing import Any, List, Optional
 
 from gyra.agent.util.media_gen._dashscope_common import (
     build_headers,
+    normalize_base_url,
     poll_dashscope_task,
-    raise_for_error,
+    raise_for_response,
 )
-from gyra.agent.util.media_gen.base import MediaGenProvider, MediaGenResult
+from gyra.agent.util.media_gen.base import (
+    MediaGenProvider,
+    MediaGenResult,
+    download_media_with_retry,
+)
 from gyra.agent.util.media_gen.provider_registry import MediaGenProviderRegistry
 
 logger = logging.getLogger(__name__)
 
 # Model names are free-form (protocol-based routing). The image API shape is
-# selected by model-name prefix (stable families, so new versions need no code
-# change):
-#   qwen-image* -> sync multimodal-generation (qwen-image-3.0-pro, future qwen-image-*)
-#   wan2.*      -> async image-generation (wan2.6-t2i, future wan2.*)
-#   else        -> legacy async text2image (wanx*)
+# selected by model-name pattern (stable families, so new versions need no
+# code change):
+#   qwen-image* / wan2.x-image* -> sync multimodal-generation
+#       (qwen-image-3.0-pro, wan2.7-image-pro, ...; same endpoint & body)
+#   wan2.x-t2i*                 -> async image-generation (task polling)
+#   wanx*                       -> legacy async text2image
 
 # Default base URLs
 _DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com"
 
 # API endpoints
-_QWEN_SYNC_ENDPOINT = "/api/v1/services/aigc/multimodal-generation/generation"
-_ASYNC_CREATE_ENDPOINT = "/api/v1/services/aigc/image-generation/generation"
-_LEGACY_ASYNC_ENDPOINT = "/api/v1/services/aigc/text2image/image-synthesis"
+_QWEN_SYNC_ENDPOINT = "/services/aigc/multimodal-generation/generation"
+_ASYNC_CREATE_ENDPOINT = "/services/aigc/image-generation/generation"
+_LEGACY_ASYNC_ENDPOINT = "/services/aigc/text2image/image-synthesis"
 
 # Style mappings for legacy models (wanx-v1)
 _STYLE_MAP = {
@@ -88,10 +94,11 @@ def _extract_legacy_image(data: dict) -> str:
 class WanxiangImageProvider(MediaGenProvider):
     """Alibaba Cloud Wanxiang / Qwen-Image (通义万相 / 千问图像) provider.
 
-    Routes by model-name prefix (free-form model names):
-    - qwen-image* -> sync multimodal-generation endpoint (T2I + I2I 1-3 imgs)
-    - wan2.*      -> async image-generation endpoint (task polling)
-    - else        -> legacy async text2image endpoint (task polling)
+    Routes by model-name pattern (free-form model names):
+    - qwen-image* / wan2.x-image* -> sync multimodal-generation endpoint
+      (T2I + I2I 1-3 imgs; shared by qwen-image-3.0-pro, wan2.7-image-pro, ...)
+    - wan2.x-t2i*                 -> async image-generation endpoint (polling)
+    - wanx*                       -> legacy async text2image endpoint (polling)
     """
 
     def supported_image_models(self) -> List[str]:
@@ -129,10 +136,14 @@ class WanxiangImageProvider(MediaGenProvider):
             )
 
         timeout = kwargs.get("timeout", 180)
-        base_url = self.base_url or _DEFAULT_BASE_URL
+        base_url = normalize_base_url(self.base_url or _DEFAULT_BASE_URL)
 
-        # Route to appropriate API based on model-name prefix (free-form)
-        if model.startswith("qwen-image"):
+        # Route to appropriate API based on model-name pattern (free-form).
+        # qwen-image* and wan2.x-image* share the sync multimodal-generation
+        # endpoint; wan2.x-t2i* uses async image-generation; wanx* is legacy.
+        if model.startswith("qwen-image") or (
+            model.startswith("wan2.") and "image" in model
+        ):
             return await self._generate_via_qwen_sync(
                 httpx, prompt, model, base_url, timeout, **kwargs
             )
@@ -159,7 +170,11 @@ class WanxiangImageProvider(MediaGenProvider):
         Supports both sync (single request) and async (submit -> poll) modes.
         For wan2.6, sync mode is preferred as it's simpler and faster.
         """
-        headers = self._build_headers(sync_mode=False)
+        # image-generation/generation needs X-DashScope-Async: enable to
+        # return a task_id (async mode). Without it the call is treated as
+        # synchronous, which some plans reject with 403
+        # "current user api does not support synchronous calls".
+        headers = self._build_headers(sync_mode=True)
 
         size = self._normalize_size(kwargs.get("size", "1280*1280"))
         n = kwargs.get("n", 1)
@@ -200,8 +215,7 @@ class WanxiangImageProvider(MediaGenProvider):
             # Step 1: Create task
             create_url = f"{base_url}{_ASYNC_CREATE_ENDPOINT}"
             resp = await client.post(create_url, headers=headers, json=body)
-            resp.raise_for_status()
-            result = resp.json()
+            result = raise_for_response(resp, provider="wanxiang")
 
             task_id = result.get("output", {}).get("task_id")
             if not task_id:
@@ -217,15 +231,17 @@ class WanxiangImageProvider(MediaGenProvider):
                 provider="wanxiang",
             )
 
-            # Step 3: Download image
+            # Step 3: Download image (validated: OSS may transiently return
+            # an XML error body right after task completion)
             logger.info(f"[WanxiangImageProvider] Downloading image from {image_url}")
-            dl_resp = await client.get(image_url)
-            dl_resp.raise_for_status()
+            image_data = await download_media_with_retry(
+                client, image_url, kind="image", provider="wanxiang"
+            )
 
             width, height = self._parse_dimensions(size)
 
             return MediaGenResult(
-                data=dl_resp.content,
+                data=image_data,
                 format="png",
                 mime_type="image/png",
                 width=width,
@@ -296,8 +312,7 @@ class WanxiangImageProvider(MediaGenProvider):
             # Step 1: Create task
             create_url = f"{base_url}{_LEGACY_ASYNC_ENDPOINT}"
             resp = await client.post(create_url, headers=headers, json=body)
-            resp.raise_for_status()
-            result = resp.json()
+            result = raise_for_response(resp, provider="wanxiang")
 
             task_id = result.get("output", {}).get("task_id")
             if not task_id:
@@ -313,10 +328,11 @@ class WanxiangImageProvider(MediaGenProvider):
                 provider="wanxiang",
             )
 
-            # Step 3: Download image
+            # Step 3: Download image (validated)
             logger.info(f"[WanxiangImageProvider] Downloading image from {image_url}")
-            dl_resp = await client.get(image_url)
-            dl_resp.raise_for_status()
+            image_data = await download_media_with_retry(
+                client, image_url, kind="image", provider="wanxiang"
+            )
 
             width, height = self._parse_dimensions(size)
 
@@ -332,7 +348,7 @@ class WanxiangImageProvider(MediaGenProvider):
                 metadata["style"] = style
 
             return MediaGenResult(
-                data=dl_resp.content,
+                data=image_data,
                 format="png",
                 mime_type="image/png",
                 width=width,
@@ -351,7 +367,9 @@ class WanxiangImageProvider(MediaGenProvider):
     ) -> MediaGenResult:
         """Generate image via the sync multimodal-generation endpoint.
 
-        Used by qwen-image-3.0-pro. Supports:
+        Used by qwen-image-* and wan2.x-image-* (e.g. qwen-image-3.0-pro,
+        wan2.7-image-pro). Both model families share this endpoint and body
+        shape. Supports:
         - T2I (text only)
         - I2I / image editing (1-3 reference images + text)
 
@@ -415,11 +433,7 @@ class WanxiangImageProvider(MediaGenProvider):
         async with httpx_module.AsyncClient(timeout=timeout) as client:
             create_url = f"{base_url}{_QWEN_SYNC_ENDPOINT}"
             resp = await client.post(create_url, headers=headers, json=body)
-            resp.raise_for_status()
-            result = resp.json()
-
-            # Top-level error (code/message)
-            raise_for_error(result, provider="qwen-image")
+            result = raise_for_response(resp, provider="qwen-image")
 
             # Sync response: output.choices[*].message.content[*].image
             image_url_out = None
@@ -435,18 +449,19 @@ class WanxiangImageProvider(MediaGenProvider):
                     f"qwen-image sync response has no image: {result}"
                 )
 
-            # Download image
+            # Download image (validated)
             logger.info(
                 f"[WanxiangImageProvider] Downloading image from {image_url_out}"
             )
-            dl_resp = await client.get(image_url_out)
-            dl_resp.raise_for_status()
+            image_data = await download_media_with_retry(
+                client, image_url_out, kind="image", provider="qwen-image"
+            )
 
             width, height = self._parse_dimensions(parameters.get("size") or "")
             usage = result.get("usage", {})
 
             return MediaGenResult(
-                data=dl_resp.content,
+                data=image_data,
                 format="png",
                 mime_type="image/png",
                 width=width or usage.get("width"),
@@ -465,8 +480,9 @@ class WanxiangImageProvider(MediaGenProvider):
     def _build_headers(self, sync_mode: bool = False) -> dict[str, str]:
         """Build HTTP headers for DashScope API.
 
-        sync_mode=True adds X-DashScope-Async (required by the legacy
-        text2image/image-synthesis endpoint).
+        sync_mode=True adds X-DashScope-Async: enable, required by the
+        async task-based endpoints (text2image/image-synthesis and
+        image-generation/generation) to return a task_id.
         """
         return build_headers(self.api_key, async_mode=sync_mode)
 

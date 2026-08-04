@@ -27,4 +27,7 @@ export type DetailContext =
   | 'file-preview'
   | 'tool-result'
   | 'entity-card'
-  | 'ecp-proposal';
+  | 'delivery-detail'
+  | 'ecp-proposal'
+  | 'exhibit'
+  | 'flywheel';

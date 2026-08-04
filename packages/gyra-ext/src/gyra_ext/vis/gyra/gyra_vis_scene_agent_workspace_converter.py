@@ -1,6 +1,6 @@
 """场景空间 AgentWorkspace 可视化转换器。
 
-产出结构化 vis 产物 {render_name, planning, execution[], summary},前端 AgentWorkspaceRenderer 消费。
+产出结构化 vis 产物 {render_name, planning, execution[], summary, deliverable_files[], task_files[], panel_view},前端 AgentWorkspaceRenderer 消费。
 注册靠子类扫描(render_name = scene_agent_workspace)。
 
 数据契约(与运行时核实):
@@ -9,14 +9,22 @@
 - gpt_msg: GptsMessage,.content 为 assistant 文本,.action_report 为 List[dict](DB 序列化形态)
 - messages: List[GptsMessage] 全量历史(每次调用都传入,用于幂等重建)
 - plans_map: Dict[str, GptsPlan] 计划(可能为空)
+
+交付文件展示(类似 vis manus):
+- deliverable_files: Agent 运行期间通过 deliver_file / create_file 标记的交付文件
+- task_files: 所有任务文件(含交付文件)
+- panel_view: 任务结束时自动切换到交付文件视图(deliverable)或摘要视图(summary)
 """
 import json
+import logging
 import uuid
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from gyra_ext.vis.gyra.gyra_vis_manus_converter import (
     GyraIncrVisManusConverter,
 )
+
+logger = logging.getLogger(__name__)
 
 # 单步输出截断上限,避免超大工具结果撑爆 SSE / 前端渲染
 _MAX_OUTPUT_CHARS = 4000
@@ -26,6 +34,22 @@ _RUNNING_PLACEHOLDERS = {"执行中", "执行中..", "执行中..."}
 _HUMAN_ROLES = {"Human", "user", "human", "UserProxy"}
 # 最终回答的占位 action,不作为工具步骤展示(其内容即 summary)
 _SKIP_TOOL_NAMES = {"blank"}
+
+# 文件 render_type → 大厅 Exhibit kind 映射(与前端 RENDER_TYPE_TO_KIND 对齐)
+_RENDER_TYPE_TO_KIND = {
+    "iframe": "html",
+    "image": "image",
+    "video": "video",
+    "audio": "audio",
+    "pdf": "pdf",
+    "markdown": "markdown",
+    "code": "code",
+    "text": "text",
+    "table": "table",
+    "slides": "slides",
+    "chart": "chart",
+    "archive": "file",
+}
 
 
 class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
@@ -49,6 +73,12 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         self._scene_items: Dict[str, Tuple[Dict[str, Any], str]] = {}
         # message_id -> (assistant 文本, ts_str);最新一条进 summary,其余凝固为步骤
         self._scene_narrations: Dict[str, Tuple[str, str]] = {}
+        # 交付文件 / 任务文件(类似 vis manus,任务结束时从 gpts_memory 或 messages 收集)
+        self._deliverable_files: List[Dict[str, Any]] = []
+        self._task_files: List[Dict[str, Any]] = []
+        self._panel_view: str = "execution"
+        # 大厅入驻内容(通用 Exhibit 协议):交付文件 + 工具产出文件按 exhibit_id 幂等入驻
+        self._lobby_exhibits: List[Dict[str, Any]] = []
 
     @property
     def reuse_name(self):
@@ -115,6 +145,95 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         except (IndexError, ValueError, TypeError):
             return None
 
+    @staticmethod
+    def _determine_render_type(file_name: str, mime_type: Optional[str] = None) -> str:
+        """扩展父类推定:补音频/表格/幻灯片类型(仅场景空间协议认识,不影响 vis manus)。"""
+        name_lower = (file_name or "").lower()
+        mime_lower = (mime_type or "").lower()
+        # Audio
+        if any(name_lower.endswith(ext) for ext in (".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac")):
+            return "audio"
+        if mime_lower.startswith("audio/"):
+            return "audio"
+        # Table(csv 可前端解析;xlsx 等二进制表格前端引导下载/新窗口)
+        if any(name_lower.endswith(ext) for ext in (".csv", ".xlsx", ".xls", ".numbers")):
+            return "table"
+        if "text/csv" in mime_lower or "spreadsheet" in mime_lower:
+            return "table"
+        # Slides(pptx 引导下载;单文件 HTML 幻灯片走父类 iframe)
+        if any(name_lower.endswith(ext) for ext in (".pptx", ".ppt", ".key")):
+            return "slides"
+        if "presentation" in mime_lower:
+            return "slides"
+        # staticmethod 内零参 super() 无实例可用,显式调用父类静态方法
+        return GyraIncrVisManusConverter._determine_render_type(file_name, mime_type)
+
+    # ------------------------------------------------------------------
+    # 大厅入驻内容(Exhibit)构建
+    # ------------------------------------------------------------------
+    def _upsert_lobby_exhibit(self, exhibit: Dict[str, Any]) -> None:
+        """按 exhibit_id 幂等入驻(同 ID 覆盖,保证可重复推送)。"""
+        eid = exhibit.get("exhibit_id")
+        if not eid:
+            return
+        for i, existing in enumerate(self._lobby_exhibits):
+            if existing.get("exhibit_id") == eid:
+                self._lobby_exhibits[i] = exhibit
+                return
+        self._lobby_exhibits.append(exhibit)
+
+    def _file_info_to_exhibit(
+        self, file_info: Dict[str, Any], step_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """工具产出文件(output_files 项)→ 大厅 Exhibit 描述符。"""
+        file_id = file_info.get("file_id", "")
+        if not file_id:
+            return None
+        file_name = file_info.get("file_name", "") or f"file_{file_id}"
+        mime_type = file_info.get("mime_type")
+        oss_url = file_info.get("oss_url")
+        preview_url = file_info.get("preview_url")
+        if oss_url and str(oss_url).startswith("gyra-fs://"):
+            url = oss_url
+        else:
+            url = preview_url or oss_url or file_info.get("download_url")
+        render_type = self._determine_render_type(file_name, mime_type)
+        kind = _RENDER_TYPE_TO_KIND.get(render_type, "file")
+        provenance: Dict[str, Any] = {}
+        if step_id:
+            provenance["step_id"] = step_id
+        return {
+            "exhibit_id": f"file_{file_id}",
+            "kind": kind,
+            "title": file_name,
+            "source": {
+                "url": url,
+                "mime_type": mime_type,
+                "file_size": file_info.get("file_size", 0),
+            },
+            "provenance": provenance or None,
+            "actions": ["preview", "download"],
+        }
+
+    def _deliverable_dict_to_exhibit(self, f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """交付文件 dict → 大厅 Exhibit 描述符(与步骤产出共用 file_<id> 命名,天然去重)。"""
+        file_id = f.get("file_id", "")
+        if not file_id:
+            return None
+        kind = _RENDER_TYPE_TO_KIND.get(str(f.get("render_type") or ""), "file")
+        return {
+            "exhibit_id": f"file_{file_id}",
+            "kind": kind,
+            "title": f.get("file_name") or f"file_{file_id}",
+            "source": {
+                "url": f.get("content_url") or f.get("download_url"),
+                "mime_type": f.get("mime_type"),
+                "file_size": f.get("file_size", 0),
+            },
+            "provenance": None,
+            "actions": ["preview", "download"],
+        }
+
     def _upsert_tool_step(self, report: Any) -> None:
         action_id = self._report_get(report, "action_id")
         if not action_id:
@@ -159,6 +278,7 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             "output": None,
             "artifact": None,
             "vis": None,
+            "exhibit": None,
         }
         step["title"] = str(tool)
         step["action"] = str(tool)
@@ -167,6 +287,18 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             step["action_input"] = action_input
         if output is not None:
             step["output"] = output
+        # 工具产出文件 → 大厅 Exhibit:首个挂到步骤上(点击步骤大厅打开),全部入驻大厅
+        output_files = self._report_get(report, "output_files")
+        if isinstance(output_files, (list, tuple)):
+            for file_info in output_files:
+                if not isinstance(file_info, dict):
+                    continue
+                exhibit = self._file_info_to_exhibit(file_info, step_id=str(action_id))
+                if exhibit is None:
+                    continue
+                if step.get("exhibit") is None:
+                    step["exhibit"] = exhibit
+                self._upsert_lobby_exhibit(exhibit)
         ts = self._ts_str(self._report_get(report, "start_time")) or (existing[1] if existing else "")
         self._scene_items[key] = (step, ts)
 
@@ -337,11 +469,115 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             "planning": self._build_planning(plans_map, messages),
             "execution": ordered_steps,
             "summary": summary,
+            "deliverable_files": self._deliverable_files,
+            "task_files": self._task_files,
+            "panel_view": self._panel_view,
+            "lobby_exhibits": self._lobby_exhibits,
         }
 
     def _render(self, plans_map: Optional[Dict[str, Any]], messages: List[Any]) -> str:
         body = json.dumps(self._build_view(plans_map, messages), ensure_ascii=False)
         return f"```{self.SCENE_TAG}\n{body}\n```"
+
+    # ------------------------------------------------------------------
+    # 交付文件收集(复用父类 manus converter 的文件收集能力)
+    # ------------------------------------------------------------------
+    async def _collect_scene_files(
+        self,
+        messages: List[Any],
+        senders_map: Optional[Dict[str, Any]] = None,
+        main_agent_name: Optional[str] = None,
+        conv_id: Optional[str] = None,
+        is_working: bool = True,
+    ) -> None:
+        """收集交付文件和任务文件,更新 self._deliverable_files / self._task_files。
+
+        策略(与 manus converter 一致):
+        - 任务结束(is_working=False):优先从 gpts_memory 获取完整文件列表
+        - 增量推送(is_working=True)或 gpts_memory 兜底:从 messages 收集
+        """
+        task_files: List[Any] = []
+        deliverable_files: List[Any] = []
+
+        # 任务结束时优先从 gpts_memory 获取完整文件列表
+        if not is_working and conv_id and senders_map and main_agent_name:
+            try:
+                task_files, deliverable_files = await self._collect_files_from_gpts_memory(
+                    conv_id, senders_map, main_agent_name
+                )
+                logger.info(
+                    f"[SceneWorkspace] collected {len(deliverable_files)} deliverable files from gpts_memory"
+                )
+            except Exception as e:
+                logger.warning(f"[SceneWorkspace] gpts_memory collection failed: {e}")
+
+        # 兜底 / 增量:从 messages 收集
+        if not deliverable_files and messages:
+            try:
+                task_files, deliverable_files = self._collect_files_from_messages(messages)
+                logger.info(
+                    f"[SceneWorkspace] collected {len(deliverable_files)} deliverable files from messages"
+                )
+            except Exception as e:
+                logger.warning(f"[SceneWorkspace] message fallback collection failed: {e}")
+
+        self._task_files = [self._task_file_to_dict(f) for f in task_files]
+        self._deliverable_files = [self._deliverable_file_to_dict(f) for f in deliverable_files]
+
+        # 交付文件入驻大厅(与步骤产出共用 file_<id>,幂等去重)
+        for f in self._deliverable_files:
+            exhibit = self._deliverable_dict_to_exhibit(f)
+            if exhibit is not None:
+                self._upsert_lobby_exhibit(exhibit)
+
+        # 确定 panel_view:交付文件优先 > 摘要 > 执行
+        if self._deliverable_files:
+            self._panel_view = "deliverable"
+        elif self._scene_narrations:
+            self._panel_view = "summary"
+        else:
+            self._panel_view = "execution"
+
+    @staticmethod
+    def _task_file_to_dict(f: Any) -> Dict[str, Any]:
+        """ManusTaskFileItem(pydantic) → dict。"""
+        if isinstance(f, dict):
+            return f
+        to_dict = getattr(f, "to_dict", None)
+        if callable(to_dict):
+            return to_dict()
+        return {
+            "file_id": getattr(f, "file_id", ""),
+            "file_name": getattr(f, "file_name", ""),
+            "file_type": getattr(f, "file_type", ""),
+            "file_size": getattr(f, "file_size", 0),
+            "mime_type": getattr(f, "mime_type", None),
+            "oss_url": getattr(f, "oss_url", None),
+            "preview_url": getattr(f, "preview_url", None),
+            "download_url": getattr(f, "download_url", None),
+            "description": getattr(f, "description", None),
+            "created_at": getattr(f, "created_at", None),
+            "object_path": getattr(f, "object_path", None),
+        }
+
+    @staticmethod
+    def _deliverable_file_to_dict(f: Any) -> Dict[str, Any]:
+        """ManusDeliverableFile(pydantic) → dict。"""
+        if isinstance(f, dict):
+            return f
+        to_dict = getattr(f, "to_dict", None)
+        if callable(to_dict):
+            return to_dict()
+        return {
+            "file_id": getattr(f, "file_id", ""),
+            "file_name": getattr(f, "file_name", ""),
+            "mime_type": getattr(f, "mime_type", None),
+            "file_size": getattr(f, "file_size", 0),
+            "content_url": getattr(f, "content_url", None),
+            "download_url": getattr(f, "download_url", None),
+            "object_path": getattr(f, "object_path", None),
+            "render_type": getattr(f, "render_type", "iframe"),
+        }
 
     # ------------------------------------------------------------------
     # 入口:运行期增量推送 + 历史最终视图
@@ -367,6 +603,20 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             self._ingest_message(gpt_msg)
         if stream_msg:
             self._ingest_stream_msg(stream_msg)
+
+        # 收集交付文件(类似 vis manus)
+        conv_id = kwargs.get("conv_id") or kwargs.get("cache")
+        if conv_id and hasattr(conv_id, "conv_id"):
+            conv_id = conv_id.conv_id
+        is_working = await self._detect_running(senders_map)
+        await self._collect_scene_files(
+            messages=messages or [],
+            senders_map=senders_map,
+            main_agent_name=main_agent_name,
+            conv_id=conv_id,
+            is_working=is_working,
+        )
+
         return self._render(plans_map, messages or [])
 
     async def final_view(
@@ -379,6 +629,39 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         """历史查询路径(query_chat → vis_final):从持久化消息重建完整视图。"""
         self._scene_items = {}
         self._scene_narrations = {}
+        self._deliverable_files = []
+        self._task_files = []
+        self._lobby_exhibits = []
+        self._panel_view = "execution"
         for msg in messages or []:
             self._ingest_message(msg)
+
+        # 收集交付文件:final_view 是历史重建,视为任务已结束
+        main_agent_name = kwargs.get("main_agent_name")
+        conv_id = kwargs.get("conv_id") or kwargs.get("cache")
+        if conv_id and hasattr(conv_id, "conv_id"):
+            conv_id = conv_id.conv_id
+        await self._collect_scene_files(
+            messages=messages or [],
+            senders_map=senders_map,
+            main_agent_name=main_agent_name,
+            conv_id=conv_id,
+            is_working=False,
+        )
+
         return self._render(plans_map, messages or [])
+
+    @staticmethod
+    async def _detect_running(senders_map: Optional[Dict[str, Any]]) -> bool:
+        """检测是否有 agent 仍在运行。"""
+        if not senders_map:
+            return True  # 未知状态,保守视为运行中(走 messages 路径)
+        try:
+            from gyra.agent.core.schema import Status
+            for v in senders_map.values():
+                agent_state = await v.agent_state()
+                if agent_state == Status.RUNNING:
+                    return True
+            return False
+        except Exception:
+            return True  # 检测失败,保守视为运行中

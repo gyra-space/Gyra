@@ -578,6 +578,26 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
     ) -> List[AssetRefVO]:
         return self._asset_dao.list(self._ws(workspace_id), kind)
 
+    def remove_asset(
+        self,
+        asset_id: int,
+        workspace_id: Optional[str] = None,
+    ) -> bool:
+        """Unregister an asset reference from a workspace.
+
+        ECP owns only the reference, so this does NOT touch the original
+        asset (DB / space / document). Used by the ECP asset list "delete"
+        action. Returns True if a row was removed.
+        """
+        ws = self._ws(workspace_id)
+        removed = self._asset_dao.delete_in_workspace(asset_id, ws)
+        if removed is None:
+            return False
+        self._oplog_dao.append(
+            "asset_remove", ws, {"kind": removed.kind, "ref_id": removed.ref_id}
+        )
+        return True
+
     def readiness(
         self, datasource_id: int, workspace_id: Optional[str] = None
     ) -> ReadinessVO:

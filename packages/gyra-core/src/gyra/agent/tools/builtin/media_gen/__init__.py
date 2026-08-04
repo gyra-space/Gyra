@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 def register_media_gen_tools(registry: "ToolRegistry") -> None:
     """Register media generation tools."""
     from .media_gen_tools import (
+        CheckMediaJobTool,
         GenerateImageTool,
         GenerateVideoTool,
         ListMediaModelsTool,
@@ -22,3 +23,4 @@ def register_media_gen_tools(registry: "ToolRegistry") -> None:
     registry.register(GenerateImageTool())
     registry.register(GenerateVideoTool())
     registry.register(ListMediaModelsTool())
+    registry.register(CheckMediaJobTool())

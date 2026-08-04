@@ -213,8 +213,16 @@ export const listBuiltinTools = () => {
 
 /**
  * 将ToolResource转换为resource_tool格式
+ *
+ * @param tool 工具信息
+ * @param opts.unbound 为 true 时生成 tombstone 记录（显式解绑标记），
+ *        用于区分"用户显式解绑默认工具"和"清单中缺失该工具"，
+ *        后端解析到 unbound: true 时保持未绑定，缺失则回落默认绑定规则
  */
-export const toResourceToolFormat = (tool: ToolResource) => {
+export const toResourceToolFormat = (
+  tool: ToolResource,
+  opts?: { unbound?: boolean }
+) => {
   return {
     type: `tool(${tool.source})`,
     name: tool.display_name || tool.name,
@@ -226,6 +234,7 @@ export const toResourceToolFormat = (tool: ToolResource) => {
       category: tool.category,
       source: tool.source,
       tool_id: tool.tool_id,
+      ...(opts?.unbound ? { unbound: true } : {}),
     }),
   };
 };

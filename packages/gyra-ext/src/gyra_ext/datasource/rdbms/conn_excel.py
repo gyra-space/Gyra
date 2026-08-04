@@ -59,6 +59,35 @@ class DuckDbNativeReflection:
         """File datasets carry no secondary indexes."""
         return []
 
+    def get_foreign_keys(self, table_name: str) -> List[Dict]:
+        """File datasets carry no foreign keys.
+
+        Excel/CSV files have no relational constraints, so return empty list.
+        This avoids SQLAlchemy inspector queries that fail on DuckDB 1.2.x
+        (e.g., pg_collation system table references).
+        """
+        return []
+
+    def get_table_comment(self, table_name: str) -> Dict:
+        """Get table comment for specified table.
+
+        Excel/CSV files have no table comments, so return empty text.
+        This avoids SQLAlchemy inspector queries that fail on DuckDB 1.2.x.
+        """
+        return {"text": ""}
+
+    def get_show_create_table(self, table_name: str) -> str:
+        """Get SHOW CREATE TABLE output using DuckDB-native command.
+
+        DuckDB supports SHOW CREATE TABLE natively, avoiding SQLAlchemy
+        inspector dependencies on PostgreSQL system tables.
+        """
+        with self.session_scope() as session:
+            rows = session.execute(
+                text(f'SHOW CREATE TABLE "{table_name}"')
+            ).fetchall()
+            return rows[0][1] if rows else ""
+
     def quote_identifier(self, identifier: str) -> str:
         """DuckDB quotes identifiers with double quotes, not backticks."""
         return f'"{identifier}"'

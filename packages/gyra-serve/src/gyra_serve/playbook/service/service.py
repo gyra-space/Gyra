@@ -114,6 +114,44 @@ class PlaybookService(BaseService[PlaybookEntity, PlaybookRequest, PlaybookRespo
                     if not isinstance(val, str):
                         errors.append(f"text_content.{key} must be string")
 
+        # NEW: Validate roles (P2 任务10 Agent 职能角色声明)
+        # 结构: {fetcher: {skills: [...], maturity_min: novice}, ...}
+        if "roles" in declaration:
+            roles_block = declaration["roles"]
+            if not isinstance(roles_block, dict):
+                errors.append("roles must be a dict")
+            else:
+                # 延迟导入避免 playbook <-> workspace 循环依赖
+                try:
+                    from gyra_serve.workspace.agent_roles import AgentRole
+                    valid_role_keys = {r.value for r in AgentRole}
+                except Exception:
+                    valid_role_keys = {
+                        "fetcher", "analyzer", "reporter",
+                        "coordinator", "reviewer",
+                    }
+                for role_key, role_decl in roles_block.items():
+                    if role_key not in valid_role_keys:
+                        errors.append(
+                            f"roles has unknown role: {role_key} "
+                            f"(valid: {sorted(valid_role_keys)})"
+                        )
+                    if role_decl is None:
+                        continue
+                    if not isinstance(role_decl, dict):
+                        errors.append(f"roles.{role_key} must be a dict")
+                        continue
+                    if "skills" in role_decl and not isinstance(
+                        role_decl["skills"], list
+                    ):
+                        errors.append(f"roles.{role_key}.skills must be a list")
+                    if "maturity_min" in role_decl and not isinstance(
+                        role_decl["maturity_min"], str
+                    ):
+                        errors.append(
+                            f"roles.{role_key}.maturity_min must be a string"
+                        )
+
         return {"valid": len(errors) == 0, "errors": errors}
 
     def create(self, request: PlaybookRequest) -> PlaybookResponse:
@@ -222,5 +260,6 @@ class PlaybookService(BaseService[PlaybookEntity, PlaybookRequest, PlaybookRespo
             "context": declaration.get("context", {}),
             "deliverables": declaration.get("deliverables", []),
             "distill": declaration.get("distill", {}),
+            "roles": declaration.get("roles", {}),
             "task_input": task_input or {},
         }

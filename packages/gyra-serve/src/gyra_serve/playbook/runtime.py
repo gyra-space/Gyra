@@ -64,6 +64,12 @@ async def run_task(
     from gyra_serve.artifact.api.schemas import ArtifactRequest
     from gyra_serve.delivery.api.schemas import DeliveryRequest
     from gyra_serve.intervention.api.schemas import InterventionRequest
+    # 执行轨迹采集相关导入
+    from gyra.distributed import (
+        GateTriggerRecord, SkillCallRecord, TraceContext, get_shared_event_bus,
+    )
+    from gyra_serve.playbook.trace.collector import BufferedTraceCollector
+    from gyra_serve.playbook.trace.sink import DBTraceSink
 
     task_service: TaskService = system_app.get_component(
         TASK_SERVICE_COMPONENT_NAME, TaskService,
@@ -99,226 +105,337 @@ async def run_task(
     declaration = playbook.declaration or {}
     app_code = workspace.default_agent_app_code or "chat_normal"
 
-    # Build the initial user query from playbook + task
-    user_query = _build_user_query(playbook, task, workspace, declaration)
-
-    # Ensure task is running (idempotent when caller already transitioned it)
-    if task.status != "running":
-        try:
-            task_service.start(task_id)
-        except Exception as e:
-            logger.warning(f"task start skipped or failed: {e}")
-
-    # Assemble scene resources for the workbench path. Unlike the HTTP
-    # chat_completions endpoint (which wires SceneResourceAssembler in its
-    # pre-processing layer), run_task calls app_chat_v3 directly, so it must
-    # assemble here and forward via ext_info["dynamic_resources"]. The
-    # forwarding path: app_chat_v3(**ext_info) -> async_chat.chat(**ext_info)
-    # -> aggregation_chat(**ext_info), where ext_info["dynamic_resources"] is
-    # consumed by AgentChat (preserved/extended, never overwritten).
-    scene_resources = SceneResourceAssembler.assemble(
-        system_app=system_app,
-        workspace_id=task.workspace_id,
-        task_id=task.id,
-        conv_uid=task.conv_session_id,
-    )
-
-    # Launch agent in the task's conversation session
-    logger.info(
-        f"[playbook runtime] starting task={task_id} conv={task.conv_session_id} "
-        f"app={app_code} playbook={playbook.id}"
-    )
-    _, agent_conv_id = await multi_agents.app_chat_v3(
-        conv_uid=task.conv_session_id,
-        gpts_name=app_code,
-        user_query=HumanMessage(content=user_query),
-        background_tasks=BackgroundTasks(),
-        user_code=user_code or str(task.created_by_user_id or "system"),
-        sys_code=sys_code,
-        workspace_id=task.workspace_id,
-        task_id=task.id,
-        dynamic_resources=scene_resources,
-    )
-
-    if not agent_conv_id:
-        task_service.transition(task_id, "failed")
-        return {"task_id": task_id, "status": "failed", "error": "agent did not return conv id"}
-
-    # Poll until the agent run finishes
-    final_state = await _poll_chat_completion(agent_conv_id)
-    logger.info(f"[playbook runtime] task={task_id} final_state={final_state}")
-
-    # 任务可能在运行期间被用户终止(terminate → closed):跳过状态流转与交付物物化
-    current = task_service.get_by_id(task_id)
-    if not current or current.status != "running":
-        logger.info(
-            f"[playbook runtime] task={task_id} no longer running "
-            f"(status={getattr(current, 'status', None)}), skip finalize"
-        )
-        return {"task_id": task_id, "status": getattr(current, "status", "deleted")}
-
-    if final_state.get("state") == "FAILED":
-        task_service.transition(task_id, "failed")
-        return {"task_id": task_id, "status": "failed"}
-
-    vis_final = final_state.get("vis_final") or ""
-    # 交付物/通知内容是给人看的最终答复文本;vis_final 是场景空间 VIS 渲染协议帧,
-    # 只用于 SSE 推送,不应作为交付物内容持久化(否则前端只能展示协议 JSON)。
-    deliverable_content = final_state.get("user_answer") or vis_final
-
-    # 产出(Output) = 最终答复文本(final_message) + 运行期间 Agent 标记的交付
-    # 文件(file);交付(Delivery)是纯代码后处理,只由 playbook 声明驱动。
-    from gyra_serve.workspace.event_bus import emit_workspace_event
-
-    deliverable_files = await _collect_deliverable_files(
-        agent_conv_id, task.conv_session_id
-    )
-
-    artifact_ids: List[int] = []
-
-    def _create_artifact(**kwargs) -> int:
-        artifact = artifact_service.create(ArtifactRequest(
+    # 创建执行轨迹采集器——采集失败仅 log warning,不阻断主流程
+    trace_collector = None
+    try:
+        trace_context = TraceContext(
+            playbook_id=playbook.id,
+            playbook_version_id=getattr(playbook, "current_version", None) or 0,
             task_id=task.id,
             workspace_id=task.workspace_id,
-            created_by_agent=app_code,
-            **kwargs,
-        ))
-        artifact_ids.append(artifact.id)
-        emit_workspace_event(task.workspace_id, "artifact_produced", {
-            "artifact_id": artifact.id,
-            "title": kwargs.get("title"),
-            "type": kwargs.get("type"),
-            "task_id": task.id,
-            "workspace_id": task.workspace_id,
-        })
-        return artifact.id
+            agent_id=app_code,
+        )
+        # 飞轮联动: 接入共享事件总线, finalize 时发布 TRACE_FINALIZED
+        # 触发 TraceToEvolutionHandler 累积分析 + AgentMaturityHandler 重算执行统计
+        shared_bus = get_shared_event_bus(system_app)
+        trace_collector = BufferedTraceCollector(
+            trace_context, DBTraceSink(), event_bus=shared_bus,
+        )
+    except Exception as e:
+        logger.warning(f"[playbook runtime] trace collector init failed: {e}")
 
-    # 1) 最终答复:最终发送给 Human 的 message 内容
-    final_message_artifact_id: Optional[int] = None
-    if deliverable_content:
-        final_message_artifact_id = _create_artifact(
-            type="final_message",
-            title=f"{playbook.name} — 最终答复",
-            content_text=str(deliverable_content)[:16000],
-            provenance={
-                "playbook_id": playbook.id,
-                "playbook_name": playbook.name,
-                "agent_conv_id": agent_conv_id,
-            },
+    # 轨迹最终状态——try/finally 中据此 finalize(默认 failed 覆盖意外异常)
+    _trace_status = "failed"
+    _trace_failure_reason = ""
+    _skill_call_order = 0
+
+    async def _safe_record_skill(skill_name, success, summary=""):
+        """记录 skill 调用——失败仅 log,不阻断主流程。"""
+        nonlocal _skill_call_order
+        if trace_collector is None:
+            return
+        try:
+            _skill_call_order += 1
+            await trace_collector.record_skill(SkillCallRecord(
+                skill_name=skill_name,
+                call_order=_skill_call_order,
+                success=success,
+                duration_ms=0,
+                result_summary=summary,
+            ))
+        except Exception as e:
+            logger.warning(f"[playbook runtime] record_skill failed: {e}")
+
+    async def _safe_record_gate(
+        gate_name, intervention_type="review", resolution="pending",
+    ):
+        """记录 gate 触发——失败仅 log,不阻断主流程。"""
+        if trace_collector is None:
+            return
+        try:
+            await trace_collector.record_gate(GateTriggerRecord(
+                gate_name=gate_name,
+                intervention_type=intervention_type,
+                resolved_by="",
+                resolution=resolution,
+            ))
+        except Exception as e:
+            logger.warning(f"[playbook runtime] record_gate failed: {e}")
+
+    try:
+        # Build the initial user query from playbook + task
+        user_query = _build_user_query(playbook, task, workspace, declaration)
+
+        # Ensure task is running (idempotent when caller already transitioned it)
+        if task.status != "running":
+            try:
+                task_service.start(task_id)
+            except Exception as e:
+                logger.warning(f"task start skipped or failed: {e}")
+
+        # Assemble scene resources for the workbench path. Unlike the HTTP
+        # chat_completions endpoint (which wires SceneResourceAssembler in its
+        # pre-processing layer), run_task calls app_chat_v3 directly, so it must
+        # assemble here and forward via ext_info["dynamic_resources"]. The
+        # forwarding path: app_chat_v3(**ext_info) -> async_chat.chat(**ext_info)
+        # -> aggregation_chat(**ext_info), where ext_info["dynamic_resources"] is
+        # consumed by AgentChat (preserved/extended, never overwritten).
+        scene_resources = SceneResourceAssembler.assemble(
+            system_app=system_app,
+            workspace_id=task.workspace_id,
+            task_id=task.id,
+            conv_uid=task.conv_session_id,
         )
 
-    # 2) 交付文件:Agent 运行期间通过 deliver_file / create_file 标记的文件,
-    # 只存文件引用 URL,不拷贝内容
-    for f in deliverable_files:
-        file_url = f.get("download_url") or f.get("preview_url") or f.get("oss_url")
-        _create_artifact(
-            type="file",
-            title=f.get("file_name") or "unnamed",
-            content_ref=file_url,
-            provenance={
-                "playbook_id": playbook.id,
-                "playbook_name": playbook.name,
-                "agent_conv_id": agent_conv_id,
-                "source": "deliverable_file",
-                "file_id": f.get("file_id"),
-                "mime_type": f.get("mime_type"),
-                "file_size": f.get("file_size"),
-                "object_path": f.get("object_path"),
-                "description": f.get("description"),
-            },
+        # 飞轮体系: 按 Playbook declaration 的 roles 块装配职能角色团队。
+        # 产出角色蓝图(role/skills/maturity_min/prompt/resources),供运行时
+        # 按角色装配不同 skill 集与 prompt。装配失败仅 log,不阻断主流程。
+        try:
+            from gyra_serve.workspace.materializer import materialize_playbook_roles
+            role_team = materialize_playbook_roles(
+                system_app, declaration, task.workspace_id
+            )
+            if role_team:
+                logger.info(
+                    f"[playbook runtime] task={task_id} assembled "
+                    f"{len(role_team)} roles: "
+                    f"{[r.get('role') for r in role_team]}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"[playbook runtime] materialize_playbook_roles failed: {e}"
+            )
+
+        # Launch agent in the task's conversation session
+        logger.info(
+            f"[playbook runtime] starting task={task_id} conv={task.conv_session_id} "
+            f"app={app_code} playbook={playbook.id}"
+        )
+        _, agent_conv_id = await multi_agents.app_chat_v3(
+            conv_uid=task.conv_session_id,
+            gpts_name=app_code,
+            user_query=HumanMessage(content=user_query),
+            background_tasks=BackgroundTasks(),
+            user_code=user_code or str(task.created_by_user_id or "system"),
+            sys_code=sys_code,
+            workspace_id=task.workspace_id,
+            task_id=task.id,
+            dynamic_resources=scene_resources,
         )
 
-    # 投递消息 = 最终答复文本 + 交付文件链接(邮件/IM 里可直接打开)
-    delivery_message = str(deliverable_content)[:8000]
-    file_links = [
-        (f.get("file_name") or "file", f.get("download_url") or f.get("preview_url"))
-        for f in deliverable_files
-    ]
-    file_links = [(n, u) for n, u in file_links if u]
-    if file_links:
-        links_md = "\n".join(f"- [{n}]({u})" for n, u in file_links)
-        delivery_message = f"{delivery_message}\n\n交付文件:\n{links_md}"
+        if not agent_conv_id:
+            task_service.transition(task_id, "failed")
+            _trace_failure_reason = "agent did not return conv id"
+            return {"task_id": task_id, "status": "failed", "error": "agent did not return conv id"}
 
-    # Create deliveries from deliverable declarations
-    delivery_ids: List[int] = []
-    deliverables = declaration.get("deliverables") or []
-    for d in deliverables:
-        for delivery_decl in d.get("delivery") or []:
-            if delivery_decl.get("category") != "notify":
-                continue
-            delivery = delivery_service.create(DeliveryRequest(
-                artifact_id=final_message_artifact_id,
+        # Poll until the agent run finishes
+        final_state = await _poll_chat_completion(agent_conv_id)
+        logger.info(f"[playbook runtime] task={task_id} final_state={final_state}")
+
+        # 任务可能在运行期间被用户终止(terminate → closed):跳过状态流转与交付物物化
+        current = task_service.get_by_id(task_id)
+        if not current or current.status != "running":
+            logger.info(
+                f"[playbook runtime] task={task_id} no longer running "
+                f"(status={getattr(current, 'status', None)}), skip finalize"
+            )
+            _trace_status = "aborted"
+            return {"task_id": task_id, "status": getattr(current, "status", "deleted")}
+
+        if final_state.get("state") == "FAILED":
+            task_service.transition(task_id, "failed")
+            _trace_failure_reason = final_state.get("error") or "agent run failed"
+            return {"task_id": task_id, "status": "failed"}
+
+        vis_final = final_state.get("vis_final") or ""
+        # 交付物/通知内容是给人看的最终答复文本;vis_final 是场景空间 VIS 渲染协议帧,
+        # 只用于 SSE 推送,不应作为交付物内容持久化(否则前端只能展示协议 JSON)。
+        deliverable_content = final_state.get("user_answer") or vis_final
+
+        # 产出(Output) = 最终答复文本(final_message) + 运行期间 Agent 标记的交付
+        # 文件(file);交付(Delivery)是纯代码后处理,只由 playbook 声明驱动。
+        from gyra_serve.workspace.event_bus import emit_workspace_event
+
+        deliverable_files = await _collect_deliverable_files(
+            agent_conv_id, task.conv_session_id
+        )
+
+        artifact_ids: List[int] = []
+
+        async def _create_artifact(**kwargs) -> int:
+            artifact = artifact_service.create(ArtifactRequest(
                 task_id=task.id,
                 workspace_id=task.workspace_id,
-                category="notify",
-                channel=delivery_decl.get("channel", "in_app"),
-                target=delivery_decl.get("target", ""),
-                title=f"[{playbook.name}] {d.get('type', 'report')} delivered",
-                message=delivery_message,
-                format=delivery_decl.get("format", "message_card"),
-                require_intervention=delivery_decl.get("require_intervention", "none"),
+                created_by_agent=app_code,
+                **kwargs,
             ))
-            delivery_ids.append(delivery.id)
-            # Attempt immediate send; failures are recorded on the record
-            try:
-                await delivery_service.send(delivery.id)
-            except Exception as e:
-                logger.warning(f"delivery send failed for {delivery.id}: {e}")
-            emit_workspace_event(task.workspace_id, "delivery_sent", {
-                "delivery_id": delivery.id,
-                "artifact_id": delivery.artifact_id,
+            artifact_ids.append(artifact.id)
+            # 记录 artifact 创建轨迹
+            await _safe_record_skill(
+                "create_artifact", True,
+                f"artifact_id={artifact.id} type={kwargs.get('type')}",
+            )
+            emit_workspace_event(task.workspace_id, "artifact_produced", {
+                "artifact_id": artifact.id,
+                "title": kwargs.get("title"),
+                "type": kwargs.get("type"),
                 "task_id": task.id,
                 "workspace_id": task.workspace_id,
-                "channel": delivery_decl.get("channel", "in_app"),
             })
+            return artifact.id
 
-    # If any delivery requires review, raise an intervention and stop at awaiting_human
-    requires_review = any(
-        d.get("require_intervention") == "review"
-        for dlv in deliverables
-        for d in dlv.get("delivery") or []
-    )
-    if requires_review:
-        try:
-            intervention = intervention_service.create(InterventionRequest(
-                task_id=task.id,
-                workspace_id=task.workspace_id,
-                type="review",
-                requested_by="system",
-                question={
+        # 1) 最终答复:最终发送给 Human 的 message 内容
+        final_message_artifact_id: Optional[int] = None
+        if deliverable_content:
+            final_message_artifact_id = await _create_artifact(
+                type="final_message",
+                title=f"{playbook.name} — 最终答复",
+                content_text=str(deliverable_content)[:16000],
+                provenance={
                     "playbook_id": playbook.id,
                     "playbook_name": playbook.name,
-                    "reason": "delivery requires human review before close",
+                    "agent_conv_id": agent_conv_id,
                 },
-                context={"agent_conv_id": agent_conv_id, "artifact_ids": artifact_ids},
-            ))
-            emit_workspace_event(task.workspace_id, "intervention_triggered", {
-                "intervention_id": intervention.id,
-                "task_id": task.id,
-                "workspace_id": task.workspace_id,
-                "tool": "delivery_review",
-                "requested_by": "system",
-            })
-        except Exception as e:
-            logger.warning(f"failed to create review intervention: {e}")
-        task_service.transition(task_id, "awaiting_human")
+            )
+
+        # 2) 交付文件:Agent 运行期间通过 deliver_file / create_file 标记的文件,
+        # 只存文件引用 URL,不拷贝内容
+        for f in deliverable_files:
+            file_url = f.get("download_url") or f.get("preview_url") or f.get("oss_url")
+            await _create_artifact(
+                type="file",
+                title=f.get("file_name") or "unnamed",
+                content_ref=file_url,
+                provenance={
+                    "playbook_id": playbook.id,
+                    "playbook_name": playbook.name,
+                    "agent_conv_id": agent_conv_id,
+                    "source": "deliverable_file",
+                    "file_id": f.get("file_id"),
+                    "mime_type": f.get("mime_type"),
+                    "file_size": f.get("file_size"),
+                    "object_path": f.get("object_path"),
+                    "description": f.get("description"),
+                },
+            )
+
+        # 投递消息 = 最终答复文本 + 交付文件链接(邮件/IM 里可直接打开)
+        delivery_message = str(deliverable_content)[:8000]
+        file_links = [
+            (f.get("file_name") or "file", f.get("download_url") or f.get("preview_url"))
+            for f in deliverable_files
+        ]
+        file_links = [(n, u) for n, u in file_links if u]
+        if file_links:
+            links_md = "\n".join(f"- [{n}]({u})" for n, u in file_links)
+            delivery_message = f"{delivery_message}\n\n交付文件:\n{links_md}"
+
+        # Create deliveries from deliverable declarations
+        delivery_ids: List[int] = []
+        deliverables = declaration.get("deliverables") or []
+        for d in deliverables:
+            for delivery_decl in d.get("delivery") or []:
+                if delivery_decl.get("category") != "notify":
+                    continue
+                delivery = delivery_service.create(DeliveryRequest(
+                    artifact_id=final_message_artifact_id,
+                    task_id=task.id,
+                    workspace_id=task.workspace_id,
+                    category="notify",
+                    channel=delivery_decl.get("channel", "in_app"),
+                    target=delivery_decl.get("target", ""),
+                    title=f"[{playbook.name}] {d.get('type', 'report')} delivered",
+                    message=delivery_message,
+                    format=delivery_decl.get("format", "message_card"),
+                    require_intervention=delivery_decl.get("require_intervention", "none"),
+                ))
+                delivery_ids.append(delivery.id)
+                # 记录 delivery 创建轨迹
+                await _safe_record_skill(
+                    "create_delivery", True,
+                    f"delivery_id={delivery.id}",
+                )
+                # Attempt immediate send; failures are recorded on the record
+                try:
+                    await delivery_service.send(delivery.id)
+                except Exception as e:
+                    logger.warning(f"delivery send failed for {delivery.id}: {e}")
+                    # 记录投递发送失败轨迹
+                    await _safe_record_skill(
+                        "create_delivery", False,
+                        f"delivery_id={delivery.id} send failed: {e}",
+                    )
+                emit_workspace_event(task.workspace_id, "delivery_sent", {
+                    "delivery_id": delivery.id,
+                    "artifact_id": delivery.artifact_id,
+                    "task_id": task.id,
+                    "workspace_id": task.workspace_id,
+                    "channel": delivery_decl.get("channel", "in_app"),
+                })
+
+        # If any delivery requires review, raise an intervention and stop at awaiting_human
+        requires_review = any(
+            d.get("require_intervention") == "review"
+            for dlv in deliverables
+            for d in dlv.get("delivery") or []
+        )
+        if requires_review:
+            try:
+                intervention = intervention_service.create(InterventionRequest(
+                    task_id=task.id,
+                    workspace_id=task.workspace_id,
+                    type="review",
+                    requested_by="system",
+                    question={
+                        "playbook_id": playbook.id,
+                        "playbook_name": playbook.name,
+                        "reason": "delivery requires human review before close",
+                    },
+                    context={"agent_conv_id": agent_conv_id, "artifact_ids": artifact_ids},
+                ))
+                emit_workspace_event(task.workspace_id, "intervention_triggered", {
+                    "intervention_id": intervention.id,
+                    "task_id": task.id,
+                    "workspace_id": task.workspace_id,
+                    "tool": "delivery_review",
+                    "requested_by": "system",
+                })
+                # 记录 review gate 触发轨迹(待人工解决)
+                await _safe_record_gate(
+                    "delivery_review", intervention_type="review", resolution="pending",
+                )
+            except Exception as e:
+                logger.warning(f"failed to create review intervention: {e}")
+            task_service.transition(task_id, "awaiting_human")
+            _trace_status = "partial"
+            return {
+                "task_id": task_id,
+                "status": "awaiting_human",
+                "agent_conv_id": agent_conv_id,
+                "artifact_ids": artifact_ids,
+                "delivery_ids": delivery_ids,
+            }
+
+        # Normal path: mark delivered
+        task_service.transition(task_id, "delivered")
+        _trace_status = "success"
         return {
             "task_id": task_id,
-            "status": "awaiting_human",
+            "status": "delivered",
             "agent_conv_id": agent_conv_id,
             "artifact_ids": artifact_ids,
             "delivery_ids": delivery_ids,
         }
-
-    # Normal path: mark delivered
-    task_service.transition(task_id, "delivered")
-    return {
-        "task_id": task_id,
-        "status": "delivered",
-        "agent_conv_id": agent_conv_id,
-        "artifact_ids": artifact_ids,
-        "delivery_ids": delivery_ids,
-    }
+    finally:
+        # 确保轨迹一定被 finalize——失败仅 log,不影响返回值/异常传播
+        if trace_collector is not None:
+            try:
+                await trace_collector.finalize(
+                    status=_trace_status,
+                    failure_reason=_trace_failure_reason,
+                )
+            except Exception as e:
+                logger.warning(f"[playbook runtime] trace finalize failed: {e}")
 
 
 async def _collect_deliverable_files(

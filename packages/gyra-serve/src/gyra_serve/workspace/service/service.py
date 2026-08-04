@@ -160,7 +160,7 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
         if not existing:
             raise ValueError(f"workspace '{request.workspace_code}' not found")
         update_dict: Dict[str, Any] = {}
-        for k in ["name", "description", "type", "scenario_type",
+        for k in ["name", "description", "type", "scenario_type", "scene_mode",
                   "default_agent_app_code", "is_archived"]:
             v = getattr(request, k, None)
             if v is not None:
@@ -428,10 +428,11 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
     def link_conversation(
         self, workspace_id: int, conv_uid: str,
         task_id: Optional[int] = None, user_id: Optional[int] = None,
+        title: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = self._conv_link_dao.link(
             workspace_id=workspace_id, conv_uid=conv_uid,
-            task_id=task_id, user_id=user_id,
+            task_id=task_id, user_id=user_id, title=title,
         )
         return self._conv_link_dao.to_response(entity)
 
@@ -485,3 +486,123 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
         self._conv_link_dao.rename(conv_uid=conv_uid, title=title)
         entity = self._conv_link_dao.get_by_conv(conv_uid)
         return self._conv_link_dao.to_response(entity) if entity else None
+
+    # ---------------- Conversation title (A: first input / B: LLM summary) ----
+    def get_conversation_title(self, conv_uid: str) -> Optional[str]:
+        """Return current conv_link title (None if not linked / no title)."""
+        entity = self._conv_link_dao.get_by_conv(conv_uid)
+        return entity.title if entity else None
+
+    def set_initial_title_if_empty(
+        self, conv_uid: str, user_input: str,
+    ) -> Optional[str]:
+        """A: 用用户首条输入截断作为初始标题(仅在 title 为空时设置)。
+
+        - 已有标题(用户手动重命名 / B 已生成)则保留,不覆盖。
+        - 截断到 60 字符避免超长;首尾空白裁剪;空输入不写。
+        """
+        text = (user_input or "").strip()
+        if not text:
+            return None
+        title = text[:60]
+        existing = self._conv_link_dao.get_by_conv(conv_uid)
+        if existing and (existing.title or "").strip():
+            return existing.title
+        self._conv_link_dao.rename(conv_uid=conv_uid, title=title)
+        return title
+
+    async def generate_title_from_llm(
+        self, conv_uid: str, user_input: str, ai_reply: str,
+        previous_title: Optional[str] = None,
+    ) -> Optional[str]:
+        """B: 调 LLM 生成简短摘要标题并 rename。
+
+        - 仅在当前 title 为空 或 等于 previous_title(A 设的初始标题)时覆盖,
+          避免覆盖用户手动重命名。
+        - LLM 失败 / 无配置 / 无模型时静默返回 None,不阻塞对话链路。
+        """
+        config = self._get_llm_config()
+        if not config:
+            return None
+        import httpx
+
+        system_prompt = (
+            "你是会话标题生成器。根据用户提问与助手回答,生成一个简洁的中文标题,"
+            "不超过 20 个字,不加引号、不加标点结尾,直接输出标题文本。"
+        )
+        user_prompt = (
+            f"用户提问:{(user_input or '').strip()[:500]}\n"
+            f"助手回答:{(ai_reply or '').strip()[:500]}\n"
+            "生成标题:"
+        )
+        payload = {
+            "model": config["model"],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 60,
+        }
+        headers = {"Content-Type": "application/json"}
+        if config["api_key"]:
+            headers["Authorization"] = f"Bearer {config['api_key']}"
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{config['base_url']}/chat/completions",
+                    json=payload, headers=headers,
+                )
+                resp.raise_for_status()
+                choices = resp.json().get("choices", [])
+                if not choices:
+                    return None
+                raw = choices[0].get("message", {}).get("content", "")
+                title = (raw or "").strip().strip('"\'').strip()
+                if not title:
+                    return None
+                title = title[:60]
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[conv_title] LLM title generation failed: {e}")
+            return None
+
+        existing = self._conv_link_dao.get_by_conv(conv_uid)
+        if not existing:
+            return None
+        current = (existing.title or "").strip()
+        if current and previous_title and current != previous_title:
+            # 用户在 A 之后手动重命名过,B 不覆盖
+            return None
+        self._conv_link_dao.rename(conv_uid=conv_uid, title=title)
+        return title
+
+    _llm_config_cache: Optional[Dict[str, str]] = None
+
+    def _get_llm_config(self) -> Optional[Dict[str, str]]:
+        """Lazy-init LLM API config from ModelConfigCache (复用 ecp propose 模式)."""
+        if self._llm_config_cache is not None:
+            return self._llm_config_cache or None
+        try:
+            from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+            all_models = ModelConfigCache.get_all_models()
+            if not all_models:
+                self._llm_config_cache = {}
+                return None
+            config = ModelConfigCache.get_config(all_models[0]) or {}
+            base_url = (config.get("base_url") or config.get("api_base") or "").rstrip("/")
+            if not base_url:
+                self._llm_config_cache = {}
+                return None
+            if "/v1" not in base_url:
+                base_url += "/v1"
+            self._llm_config_cache = {
+                "base_url": base_url,
+                "api_key": config.get("api_key", ""),
+                "model": config.get("model") or all_models[0],
+            }
+            return self._llm_config_cache
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[conv_title] LLM config init failed: {e}")
+            self._llm_config_cache = {}
+            return None

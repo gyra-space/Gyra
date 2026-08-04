@@ -10,7 +10,16 @@ class TaskRequest(BaseModel):
     id: Optional[int] = None
     workspace_id: int
     parent_task_id: Optional[int] = None
-    type: str = Field("adhoc", description="routine/pipeline/incident/adhoc")
+    type: str = Field(
+        "adhoc",
+        description=(
+            "routine/pipeline/incident/adhoc "
+            "(routine:标准Playbook,auto多; "
+            "pipeline:串行多阶段,每阶段有gate; "
+            "incident:高优先级,跳过部分review,事后强制postmortem; "
+            "adhoc:无Playbook,agent自由编排,产出强制review)"
+        ),
+    )
     title: str
     description: Optional[str] = None
     status: str = Field("draft", description="draft/pending_trigger/running/awaiting_human/blocked/delivered/closed/archived/failed")

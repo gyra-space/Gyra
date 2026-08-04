@@ -222,6 +222,12 @@ export const registerEcpAsset = (data: {
 export const listEcpAssets = (params?: { workspace_id?: string; kind?: string }) =>
   GET<typeof params, EcpAssetRef[]>(`${API_PREFIX}/assets`, params);
 
+export const deleteEcpAsset = (asset_id: number, workspace_id?: string) =>
+  DELETE<{ workspace_id?: string }, boolean>(
+    `${API_PREFIX}/assets/${asset_id}`,
+    { workspace_id },
+  );
+
 export const getEcpReadiness = (datasource_id: number, workspace_id?: string) =>
   GET<{ datasource_id: number; workspace_id?: string }, EcpReadiness>(
     `${API_PREFIX}/readiness`,

@@ -1,3 +1,5 @@
+# DEPRECATED: 此模块已被 workspace/scene_resource.py 取代,保留仅用于历史参考
+# 新代码请使用 workspace 场景空间
 """
 场景管理 API 路由
 提供场景定义的 CRUD 操作和场景管理功能

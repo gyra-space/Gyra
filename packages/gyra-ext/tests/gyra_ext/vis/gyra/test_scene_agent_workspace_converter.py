@@ -167,3 +167,147 @@ async def test_blank_action_is_skipped():
     msg = _make_gpt_msg(content="最终回答", action_report=[report], message_id="m8")
     payload = _extract_payload(await conv.visualization(messages=[msg]))
     assert [s for s in payload["execution"] if s["type"] == "tool_call"] == []
+
+
+# ------------------------------------------------------------------
+# 大厅 Exhibit 协议(lobby_exhibits)
+# ------------------------------------------------------------------
+
+def _make_output_file(**overrides):
+    """构造工具产出文件 dict(action_report[].output_files 项)。"""
+    base = {
+        "file_id": "f1",
+        "file_name": "report.csv",
+        "file_type": "output",
+        "file_size": 1024,
+        "mime_type": "text/csv",
+        "oss_url": "gyra-fs://conv/f1/report.csv",
+        "preview_url": "http://oss/preview/report.csv",
+        "download_url": "http://oss/download/report.csv",
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_render_type_extended_audio_table_slides():
+    """场景空间扩展 render_type 推定:音频/表格/幻灯片(其余回落父类)。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    assert conv._determine_render_type("a.mp3") == "audio"
+    assert conv._determine_render_type("a.bin", "audio/wav") == "audio"
+    assert conv._determine_render_type("data.csv") == "table"
+    assert conv._determine_render_type("data.xlsx") == "table"
+    assert conv._determine_render_type("deck.pptx") == "slides"
+    # 父类既有类型不受影响
+    assert conv._determine_render_type("pic.png") == "image"
+    assert conv._determine_render_type("doc.pdf") == "pdf"
+    assert conv._determine_render_type("page.html") == "iframe"
+
+
+@pytest.mark.asyncio
+async def test_tool_output_files_become_lobby_exhibits():
+    """工具产出文件(output_files)→ lobby_exhibits 入驻 + 首个挂到步骤 exhibit。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    ao = _make_action_output(state="complete", content="已生成")
+    ao.output_files = [
+        _make_output_file(file_id="f1", file_name="report.csv", mime_type="text/csv"),
+        _make_output_file(file_id="f2", file_name="chart.png", mime_type="image/png"),
+    ]
+    stream_msg = {"type": "all", "message_id": "m1", "action_report": [ao]}
+    payload = _extract_payload(await conv.visualization(messages=[], stream_msg=stream_msg))
+
+    exhibits = payload["lobby_exhibits"]
+    assert [e["exhibit_id"] for e in exhibits] == ["file_f1", "file_f2"]
+    assert exhibits[0]["kind"] == "table"  # csv → table
+    assert exhibits[1]["kind"] == "image"  # png → image
+    # gyra-fs:// oss_url 优先作为 url
+    assert exhibits[0]["source"]["url"] == "gyra-fs://conv/f1/report.csv"
+    # 首个产出挂到步骤上(点击步骤 → 大厅打开对应内容)
+    step = payload["execution"][0]
+    assert step["exhibit"]["exhibit_id"] == "file_f1"
+    assert step["exhibit"]["provenance"]["step_id"] == step["id"]
+
+
+@pytest.mark.asyncio
+async def test_lobby_exhibit_upsert_idempotent():
+    """同一 file_id 重复推送(running→complete)→ 大厅仅保留一条(幂等覆盖)。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    for state in ("running", "complete"):
+        ao = _make_action_output(state=state, content="ok" if state == "complete" else "执行中")
+        ao.output_files = [_make_output_file()]
+        await conv.visualization(
+            messages=[], stream_msg={"type": "all", "message_id": "m1", "action_report": [ao]}
+        )
+    payload = _extract_payload(
+        await conv.visualization(messages=[], stream_msg={"type": "all", "message_id": "m1"})
+    )
+    assert len(payload["lobby_exhibits"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_gyra_fs_prefers_preview_url():
+    """非 gyra-fs oss_url → url 取 preview_url(回退 oss/download)。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    ao = _make_action_output(state="complete", content="done")
+    ao.output_files = [_make_output_file(oss_url="http://oss/raw/report.csv")]
+    payload = _extract_payload(
+        await conv.visualization(messages=[], stream_msg={"type": "all", "message_id": "m1", "action_report": [ao]})
+    )
+    assert payload["lobby_exhibits"][0]["source"]["url"] == "http://oss/preview/report.csv"
+
+
+@pytest.mark.asyncio
+async def test_deliverable_files_move_into_lobby():
+    """交付文件(file_type=deliverable)→ deliverable_files + 入驻大厅(与步骤产出按 file_id 去重)。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    report = {
+        "action_id": "tool-d",
+        "action": "deliver_file",
+        "state": "complete",
+        "is_exe_success": True,
+        "content": "已交付",
+        "output_files": [
+            _make_output_file(
+                file_id="f9",
+                file_name="deck.pptx",
+                mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                file_type="deliverable",
+            ),
+        ],
+    }
+    msg = _make_gpt_msg(content="完成", action_report=[report], message_id="m9")
+    payload = _extract_payload(await conv.visualization(messages=[msg], gpt_msg=msg))
+
+    assert payload["deliverable_files"][0]["file_id"] == "f9"
+    exhibit = [e for e in payload["lobby_exhibits"] if e["exhibit_id"] == "file_f9"]
+    assert len(exhibit) == 1  # 步骤产出与交付文件按 file_<id> 幂等去重
+    assert exhibit[0]["kind"] == "slides"
+    assert payload["panel_view"] == "deliverable"
+
+
+@pytest.mark.asyncio
+async def test_deliverable_render_type_to_kind_mapping():
+    """deliverable render_type → exhibit kind 映射(与前端 RENDER_TYPE_TO_KIND 对齐)。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    cases = {
+        "iframe": "html", "image": "image", "video": "video", "audio": "audio",
+        "pdf": "pdf", "markdown": "markdown", "code": "code", "table": "table",
+        "slides": "slides", "archive": "file", "unknown": "file",
+    }
+    for rt, kind in cases.items():
+        ex = conv._deliverable_dict_to_exhibit({"file_id": "x", "file_name": "f", "render_type": rt})
+        assert ex["kind"] == kind
+
+
+@pytest.mark.asyncio
+async def test_final_view_resets_lobby_exhibits():
+    """final_view(历史重建)重置大厅:只含本次消息产生的入驻内容。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    ao = _make_action_output(state="complete", content="done")
+    ao.output_files = [_make_output_file(file_id="fold", file_name="old.png", mime_type="image/png")]
+    await conv.visualization(messages=[], stream_msg={"type": "all", "message_id": "m1", "action_report": [ao]})
+
+    msg = _make_gpt_msg(content="历史回答", message_id="h1")
+    payload = _extract_payload(await conv.final_view(messages=[msg]))
+    assert payload["lobby_exhibits"] == []
+    assert payload["summary"] == "历史回答"

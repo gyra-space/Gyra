@@ -41,6 +41,11 @@ class TaskEntity(Model):
     id = Column(Integer, primary_key=True, autoincrement=True)
     workspace_id = Column(Integer, nullable=False, index=True)
     parent_task_id = Column(Integer, nullable=True, index=True)
+    # 任务类型(标签字段,差异化策略由编排层按 type 分派):
+    # - routine:   走标准 Playbook,auto 路径多
+    # - pipeline:  串行多阶段,每阶段有 gate
+    # - incident:  高优先级,跳过部分 review,事后强制 postmortem
+    # - adhoc:     无 Playbook,agent 自由编排,产出强制 review
     type = Column(String(32), nullable=False, default="adhoc")
     title = Column(String(256), nullable=False)
     description = Column(Text, nullable=True)

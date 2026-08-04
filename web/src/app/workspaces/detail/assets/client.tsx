@@ -17,19 +17,28 @@ import { DeliveryPanel } from './delivery-panel';
 import { CapabilityTab } from './capability-tab';
 import { EcpConsole } from '@/app/ecp/components/ecp-console';
 
-const TAB_KEYS = ['data', 'delivery', 'capability', 'semantic'] as const;
+const TAB_KEYS = ['semantic', 'support', 'delivery'] as const;
 type TabKey = typeof TAB_KEYS[number];
 
-/** 资产页:数据资产(能碰什么) / 交付沉淀(干出了什么) / 能力(会干什么)。 */
+// 兼容旧 tab 参数:data/capability 合并到 support
+const LEGACY_TAB_MAP: Record<string, TabKey> = { data: 'support', capability: 'support' };
+const resolveTab = (raw: string | null | undefined): TabKey => {
+  if (raw && (TAB_KEYS as readonly string[]).includes(raw)) return raw as TabKey;
+  if (raw && LEGACY_TAB_MAP[raw]) return LEGACY_TAB_MAP[raw];
+  return 'semantic';
+};
+
+/**
+ * 资产页:ECP 语义资产为核心(默认第一 tab),支撑资源(数据/能力)为降级补充,交付沉淀为任务产出。
+ * 设计动线:进空间 → ECP 直接可用 → 语义层覆盖不到时在「支撑资源」补数据/能力。
+ */
 export default function AssetsPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
   const workspaceCode = searchParams?.get('id') || '';
   const tabParam = searchParams?.get('tab');
-  const activeTab: TabKey = (TAB_KEYS as readonly string[]).includes(tabParam || '')
-    ? (tabParam as TabKey)
-    : 'data';
+  const activeTab = resolveTab(tabParam);
   const { t } = useTranslation();
 
   const { data: ws, loading: wsLoading } = useRequest(async () => {
@@ -60,14 +69,55 @@ export default function AssetsPage() {
 
   const tabs = [
     {
-      key: 'data',
+      key: 'semantic',
+      label: (
+        <span>
+          <DeploymentUnitOutlined style={{ marginRight: 6 }} />
+          {t('assets.tab_semantic') || '语义资产'}
+          <span className="ws-tab-tag-core">核心</span>
+        </span>
+      ),
+      // 直接复用 ECP 控制台内容组件(无 hero/空间选择器/全局外壳),
+      // 语义空间固定为本空间派生的 ecp_<code>
+      children: <EcpConsole workspaceId={`ecp_${workspaceCode}`} />,
+    },
+    {
+      key: 'support',
       label: (
         <span>
           <DatabaseOutlined style={{ marginRight: 6 }} />
-          {t('assets.tab_data') || '数据资产'}
+          {t('assets.tab_support') || '支撑资源'}
         </span>
       ),
-      children: <DataAssetsTab workspaceId={ws.id} workspaceCode={ws.workspace_code} />,
+      // 数据 + 能力聚合:ECP 语义层覆盖不到时,降级关联的原始资源。
+      children: (
+        <div className="ws-support-wrap">
+          <section className="ws-support-section">
+            <header className="ws-support-section__head">
+              <span className="ws-support-section__icon"><DatabaseOutlined /></span>
+              <div>
+                <div className="ws-support-section__title">{t('assets.support_data') || '数据资源'}</div>
+                <div className="ws-support-section__desc">
+                  {t('assets.support_data_desc') || 'ECP 覆盖不到时降级关联:数据库 / 数据集 / 知识库 / 文档。'}
+                </div>
+              </div>
+            </header>
+            <DataAssetsTab workspaceId={ws.id} workspaceCode={ws.workspace_code} />
+          </section>
+          <section className="ws-support-section">
+            <header className="ws-support-section__head">
+              <span className="ws-support-section__icon"><ToolOutlined /></span>
+              <div>
+                <div className="ws-support-section__title">{t('assets.support_capability') || '能力资源'}</div>
+                <div className="ws-support-section__desc">
+                  {t('assets.support_capability_desc') || 'Agent 执行所需的技能 / MCP / 模型 / ECP 语义层注入。'}
+                </div>
+              </div>
+            </header>
+            <CapabilityTab workspaceId={ws.id} />
+          </section>
+        </div>
+      ),
     },
     {
       key: 'delivery',
@@ -78,28 +128,6 @@ export default function AssetsPage() {
         </span>
       ),
       children: <DeliveryPanel workspaceId={ws.id} />,
-    },
-    {
-      key: 'capability',
-      label: (
-        <span>
-          <ToolOutlined style={{ marginRight: 6 }} />
-          {t('assets.tab_capability') || '能力'}
-        </span>
-      ),
-      children: <CapabilityTab workspaceId={ws.id} />,
-    },
-    {
-      key: 'semantic',
-      label: (
-        <span>
-          <DeploymentUnitOutlined style={{ marginRight: 6 }} />
-          {t('assets.tab_semantic') || '语义资产'}
-        </span>
-      ),
-      // 直接复用 ECP 控制台内容组件(无 hero/空间选择器/全局外壳),
-      // 语义空间固定为本空间派生的 ecp_<code>
-      children: <EcpConsole workspaceId={`ecp_${workspaceCode}`} />,
     },
   ];
 
@@ -119,7 +147,7 @@ export default function AssetsPage() {
               </p>
               <h1 className="ws-page-title">{t('assets.title_page') || '资产'}</h1>
               <p className="ws-page-subtitle">
-                {t('assets.subtitle') || '空间的数据资产、能力,与任务交付沉淀 —— 大家共同维护的公共环境。'}
+                {t('assets.subtitle') || '以 ECP 语义资产为核心,支撑资源(数据/能力)按需降级关联,交付沉淀为任务产出。'}
               </p>
             </div>
           </div>

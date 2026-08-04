@@ -36,7 +36,7 @@ export const TAB_LABELS: Record<TabKey, string> = {
   semantics: '硬语义',
   wiki: '软知识',
   graph: '血缘图',
-  miss: 'miss',
+  miss: '未命中',
   lint: '巡检',
   settings: '设置',
 };

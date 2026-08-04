@@ -41,7 +41,7 @@ interface UseSceneAgentChatResult {
 // Re-export so callers can import the payload/data types from the hook module.
 export type { SceneAgentSendPayload } from './scene-agent-send-data';
 
-const EMPTY_WORKSPACE_VIEW: WorkspaceView = { planning: null, execution: [], summary: null };
+const EMPTY_WORKSPACE_VIEW: WorkspaceView = { planning: null, execution: [], summary: null, deliverable_files: [], task_files: [], panel_view: 'execution' };
 
 const MAX_RECENT_STEPS = 8;
 
@@ -67,6 +67,42 @@ export function useSceneAgentChat({
   // 乐观插入的用户消息:发送即上屏,服务端回显同文本 user 步骤后移除,避免重复
   const optimisticUserRef = useRef<{ id: string; text: string } | null>(null);
   const { chat } = useChat({ app_code: appCode || '' });
+
+  // 拦截 task_created workspace 事件:把任务卡片注入对话执行记录,
+  // 用户可在对话中直接看到任务已创建并点击进入任务对话。
+  // 仍调用原始 onWorkspaceEvent 让 shell 刷新任务列表。
+  const handleWorkspaceEventInternal = useCallback(
+    (event: WorkspaceEvent) => {
+      if (event.type === 'task_created' && event.payload?.task_id) {
+        const p = event.payload;
+        const stepId = `task-created-${p.task_id}`;
+        setWorkspaceView((prev) => {
+          // 去重:同 task_id 的卡片已存在则不重复注入
+          if (prev.execution.some((s) => s.id === stepId)) return prev;
+          return {
+            ...prev,
+            execution: [
+              ...prev.execution,
+              {
+                id: stepId,
+                type: 'task_created' as const,
+                title: p.title || `任务 #${p.task_id}`,
+                status: 'running' as const,
+                ts: new Date().toISOString(),
+                task_id: p.task_id,
+                task_title: p.title,
+                task_status: p.status,
+                playbook_name: p.playbook_name,
+                triggered_by: p.triggered_by,
+              },
+            ],
+          };
+        });
+      }
+      onWorkspaceEvent?.(event);
+    },
+    [onWorkspaceEvent],
+  );
 
   const appendStep = useCallback((step: AgentStep) => {
     setSteps((prev) => {
@@ -231,10 +267,10 @@ export function useSceneAgentChat({
           });
           setLoading(false);
         },
-        onWorkspaceEvent,
+        onWorkspaceEvent: handleWorkspaceEventInternal,
       });
     },
-    [convUid, workspaceId, taskId, focusArtifactId, chat, appendStep, onWorkspaceEvent],
+    [convUid, workspaceId, taskId, focusArtifactId, chat, appendStep, handleWorkspaceEventInternal],
   );
 
   const abort = useCallback(() => {

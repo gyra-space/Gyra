@@ -15,6 +15,10 @@ class WorkspaceRequest(BaseModel):
     description: Optional[str] = Field(None, description="workspace description")
     type: str = Field("scenario", description="scenario / team")
     scenario_type: Optional[str] = Field(None, description="sre / data_ops / ...")
+    scene_mode: Optional[str] = Field(
+        "task_execution",
+        description="task_execution/decision_discussion/knowledge_curation/continuous_monitoring",
+    )
     owner_user_id: Optional[int] = Field(None, description="owner user id")
     default_agent_app_code: Optional[str] = Field(
         None, description="default agent app code"
@@ -36,6 +40,7 @@ class WorkspaceResponse(BaseModel):
     description: Optional[str] = None
     type: str
     scenario_type: Optional[str] = None
+    scene_mode: str = "task_execution"
     owner_user_id: int
     default_agent_app_code: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
@@ -135,3 +140,34 @@ class SetCurrentConversationRequest(BaseModel):
 
 class RenameConversationRequest(BaseModel):
     title: str
+
+
+# ------------------------ Scene Mode (场景空间模式) ------------------------
+class SceneModeSetRequest(BaseModel):
+    """设置 workspace 场景空间模式请求"""
+
+    mode: str = Field(
+        ...,
+        description="task_execution/decision_discussion/knowledge_curation/continuous_monitoring",
+    )
+
+
+class SceneModeConfigResponse(BaseModel):
+    """场景模式配置"""
+
+    mode: str
+    name: str
+    description: str
+    agent_tools: List[str] = Field(default_factory=list)
+    output_asset_types: List[str] = Field(default_factory=list)
+    lobby_component: str
+    requires_playbook: bool
+    allows_inline: bool
+
+
+class SceneModeResponse(BaseModel):
+    """workspace 场景模式响应"""
+
+    workspace_id: int
+    mode: str
+    config: SceneModeConfigResponse

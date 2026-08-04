@@ -75,6 +75,11 @@ def build_write_tools(
                 cron=kwargs.get("cron"),
                 trigger_config=kwargs.get("trigger_config"),
             )
+        # 大厅模式(task_id 为空)且立即执行:内联模式——任务绑定到当前会话,
+        # 主 agent 直接根据剧本声明在当前对话中执行,不创建分离任务会话。
+        # 这样 agent 的思考 + 执行在同一段对话中,不会因切换丢失上下文。
+        # 任务模式(task_id 非空)下仍走分离模式(可能创建子任务)。
+        inline = not task_id and bool(conv_uid)
         result = create_task_from_tool(
             system_app,
             workspace_id=workspace_id,
@@ -82,6 +87,7 @@ def build_write_tools(
             playbook_id=playbook_id,
             title=title,
             description=description,
+            inline_conv_uid=conv_uid if inline else None,
         )
         if on_event:
             on_event("task_created", {

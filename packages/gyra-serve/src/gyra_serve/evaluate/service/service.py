@@ -133,4 +133,46 @@ class Service(BaseService[ServeEntity, EvaluateServeRequest, EvaluateServeRespon
             results = await evaluator.evaluate(
                 dataset=datasets, metrics=metrics, parallel_num=parallel_num
             )
+        # 飞轮联动: 评测完成后发布事件, 触发 EvaluationToMaturityHandler
+        # 将评测分数写入 AgentMaturityService 评分维度; 低分触发 coach 负样本
+        try:
+            from ..service.maturity_link import publish_evaluation_completed
+            from gyra.distributed import get_shared_event_bus
+
+            ctx = context or {}
+            workspace_id = ctx.get("workspace_id") or 0
+            try:
+                workspace_id = int(workspace_id)
+            except (TypeError, ValueError):
+                workspace_id = 0
+
+            # 计算平均分(跨 metric × dataset)
+            scores = []
+            for row in results or []:
+                for r in row or []:
+                    s = getattr(r, "score", None)
+                    if s is not None:
+                        try:
+                            scores.append(float(s))
+                        except (TypeError, ValueError):
+                            pass
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+
+            if workspace_id and scene_value:
+                publish_evaluation_completed(
+                    event_bus=get_shared_event_bus(self._system_app),
+                    agent_id=str(scene_value),
+                    workspace_id=workspace_id,
+                    score=avg_score,
+                    evaluation_type=str(scene_key or "app"),
+                    evaluator=str(ctx.get("user_id") or "system"),
+                    details={
+                        "metric_count": len(scores),
+                        "datasets": len(datasets) if datasets else 0,
+                    },
+                )
+        except Exception as e:
+            logger.warning(
+                f"[evaluate] publish_evaluation_completed failed: {e}"
+            )
         return results

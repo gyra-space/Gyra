@@ -44,15 +44,25 @@ class Serve(BaseServe):
         self._app_has_initiated = True
 
     def on_init(self):
-        from .models.models import AssetEntity, AssetVersionEntity, TaskAssetLinkEntity  # noqa: F401
+        from .models.models import (
+            AssetEntity, AssetVersionEntity, TaskAssetLinkEntity,
+            AssetMaturityLogEntity,
+        )  # noqa: F401
+        from .service.index_service import AssetIndexEntity  # noqa: F401
         _ = [
             AssetEntity.__tablename__,
             AssetVersionEntity.__tablename__,
             TaskAssetLinkEntity.__tablename__,
+            AssetMaturityLogEntity.__tablename__,
+            AssetIndexEntity.__tablename__,
         ]
 
     def before_start(self):
-        from .models.models import AssetEntity, AssetVersionEntity, TaskAssetLinkEntity  # noqa: F401
+        from .models.models import (
+            AssetEntity, AssetVersionEntity, TaskAssetLinkEntity,
+            AssetMaturityLogEntity,
+        )  # noqa: F401
+        from .service.index_service import AssetIndexEntity  # noqa: F401
         db_manager_factory = self._system_app.get_component(
             "unified_metadata_db_manager_factory",
             UnifiedDBManagerFactory, default_component=None,

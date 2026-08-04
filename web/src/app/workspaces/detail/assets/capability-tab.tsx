@@ -9,7 +9,7 @@ import {
   getSkillList,
 } from '@/client/api';
 import {
-  App, Button, Empty, Input, Modal, Select, Spin, Switch, Tag,
+  Alert, App, Button, Empty, Input, Modal, Select, Space, Spin, Switch, Tag,
 } from 'antd';
 import {
   ToolOutlined,
@@ -18,10 +18,13 @@ import {
   CloudServerOutlined,
   PlusOutlined,
   DeploymentUnitOutlined,
+  ExportOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useMemo, useState } from 'react';
 import dayjs from 'dayjs';
+import Link from 'next/link';
 import './assets.css';
 
 const TYPE_META: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
@@ -59,7 +62,7 @@ export function CapabilityTab({ workspaceId }: { workspaceId: number }) {
     return err ? [] : res || [];
   }, { refreshDeps: [workspaceId] });
 
-  const { data: skillData } = useRequest(
+  const { data: skillData, refresh: refreshSkills } = useRequest(
     async () => await apiInterceptors(getSkillList({ filter: '' }, { page: 1, page_size: 200 })),
   );
   const allSkills = useMemo(() => {
@@ -257,6 +260,37 @@ export function CapabilityTab({ workspaceId }: { workspaceId: number }) {
             ]}
           />
         </div>
+        {addType === 'skill' && (
+          <Alert
+            type="info"
+            showIcon
+            className="mb-3"
+            message="没有想要的技能?"
+            description={
+              <Space>
+                <Link href="/agent-skills" target="_blank">
+                  去技能模块创建编排 <ExportOutlined />
+                </Link>
+                <Button type="link" size="small" icon={<ReloadOutlined />} onClick={refreshSkills}>
+                  刷新列表
+                </Button>
+              </Space>
+            }
+          />
+        )}
+        {addType === 'mcp' && (
+          <Alert
+            type="info"
+            showIcon
+            className="mb-3"
+            message="MCP 服务需在独立模块配置"
+            description={
+              <Link href="/mcp" target="_blank">
+                去 MCP 模块配置 <ExportOutlined />
+              </Link>
+            }
+          />
+        )}
         {addType === 'skill' ? (
           <div>
             <div className="text-sm text-gray-500 mb-2">选择技能</div>

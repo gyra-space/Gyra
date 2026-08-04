@@ -18,10 +18,32 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com"
-TASK_QUERY_PATH = "/api/v1/tasks/{task_id}"
+TASK_QUERY_PATH = "/tasks/{task_id}"
 
 # Terminal failure statuses returned by /api/v1/tasks/{task_id}
 _FAILED_STATUSES = ("FAILED", "CANCELED", "UNKNOWN")
+
+
+def normalize_base_url(base_url: str) -> str:
+    """Normalize a DashScope base URL to end with exactly one ``/api/v1``.
+
+    The per-endpoint constants are version-relative (``/services/aigc/...``,
+    ``/tasks/{task_id}``), so the base URL must carry the ``/api/v1`` version
+    prefix -- i.e. it is configured down to the ``v1`` layer, matching how the
+    Alibaba Cloud console exposes a workspace endpoint
+    (``https://llm-xxx.cn-beijing.maas.aliyuncs.com/api/v1``).
+
+    Accept the base URL with or without the suffix and normalize to a single
+    trailing ``/api/v1``: keep it if present, append it if missing, and never
+    duplicate it. This avoids the ``/api/v1/api/v1/...`` 404 that happens when
+    a versioned base URL meets a versioned endpoint constant.
+    """
+    if not base_url:
+        return base_url
+    url = base_url.rstrip("/")
+    while url.endswith("/api/v1"):
+        url = url[: -len("/api/v1")]
+    return f"{url}/api/v1"
 
 
 def build_headers(api_key: str, *, async_mode: bool = False) -> dict[str, str]:
@@ -30,10 +52,11 @@ def build_headers(api_key: str, *, async_mode: bool = False) -> dict[str, str]:
     Args:
         api_key: DashScope API key.
         async_mode: If True, add ``X-DashScope-Async: enable``. Required by
-            some async endpoints (text2image/image-synthesis,
-            video-generation/video-synthesis). The newer image-generation and
-            multimodal-generation endpoints are async-by-default / sync and
-            do not need this header.
+            the async task-based endpoints (text2image/image-synthesis,
+            image-generation/generation, video-generation/video-synthesis)
+            to return a task_id instead of blocking. The
+            multimodal-generation/generation endpoint is synchronous and
+            does not need this header.
     """
     headers = {
         "Content-Type": "application/json",
@@ -56,6 +79,27 @@ def raise_for_error(result: dict, provider: str = "dashscope") -> None:
         raise RuntimeError(
             f"{provider} request failed ({code}): {result.get('message', '')}"
         )
+
+
+def raise_for_response(resp: Any, provider: str = "dashscope") -> dict:
+    """Parse a DashScope HTTP response and raise on error.
+
+    DashScope signals errors with a top-level ``code``/``message`` pair even
+    for HTTP 4xx (e.g. ``{"code":"AccessDenied","message":"..."}``), which
+    httpx's ``raise_for_status`` would mask behind a generic status line.
+    Parse the body first and surface DashScope's message; fall back to
+    ``raise_for_status`` for non-JSON / gateway-level errors.
+
+    Returns the parsed JSON body (``{}`` if unparseable) on success.
+    """
+    try:
+        result = resp.json()
+    except ValueError:
+        result = None
+    if isinstance(result, dict):
+        raise_for_error(result, provider=provider)
+    resp.raise_for_status()
+    return result or {}
 
 
 async def poll_dashscope_task(

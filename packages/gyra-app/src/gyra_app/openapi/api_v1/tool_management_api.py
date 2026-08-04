@@ -16,6 +16,8 @@ from gyra.agent.tools.tool_manager import (
     ToolBindingType,
     ToolBindingConfig,
     AgentToolConfiguration,
+    PersistedToolBindings,
+    parse_resource_tool_bindings,
 )
 from gyra.agent.tools.registry import tool_registry, register_builtin_tools
 from gyra_serve.utils.auth import UserRequest
@@ -53,52 +55,26 @@ def ensure_tools_initialized():
 
 def _parse_resource_tool_ids(resource_tool_raw) -> Optional[List[str]]:
     """
-    解析 resource_tool 字段中的工具ID列表
+    解析 resource_tool 字段中的已绑定工具ID列表
 
-    Args:
-        resource_tool_raw: resource_tool 字段的原始值（JSON字符串或列表）
+    已废弃的内部兼容包装：新逻辑请直接使用 gyra-core 的
+    parse_resource_tool_bindings（支持 tombstone 解绑记录）。
 
     Returns:
-        工具ID列表，或 None
+        已绑定工具ID列表，或 None
     """
-    if not resource_tool_raw:
-        return None
-
-    resource_tool = resource_tool_raw
-    if isinstance(resource_tool, str):
-        try:
-            resource_tool = json.loads(resource_tool)
-        except json.JSONDecodeError:
-            return None
-
-    if not isinstance(resource_tool, list) or len(resource_tool) == 0:
-        return None
-
-    tool_ids = []
-    for item in resource_tool:
-        try:
-            value = item.get("value", "{}")
-            if isinstance(value, str):
-                parsed = json.loads(value)
-            else:
-                parsed = value
-            tool_id = parsed.get("tool_id") or parsed.get("key")
-            if tool_id:
-                tool_ids.append(tool_id)
-        except (json.JSONDecodeError, AttributeError):
-            continue
-
-    return tool_ids if tool_ids else None
+    bindings = parse_resource_tool_bindings(resource_tool_raw)
+    return bindings.bound_ids if bindings else None
 
 
 def _load_tool_bindings_from_resource_tool(
     app_id: str, agent_name: str
-) -> Optional[List[str]]:
+) -> Optional[PersistedToolBindings]:
     """
-    从数据库 ServeEntity.resource_tool 字段加载持久化的工具绑定列表
+    从数据库 ServeEntity.resource_tool 字段加载持久化的工具绑定清单
 
     Returns:
-        已绑定的工具ID列表，或 None 表示无持久化数据
+        PersistedToolBindings（含 tombstone 解绑记录），或 None 表示无持久化数据
     """
     try:
         from gyra_serve.building.config.models.models import ServeEntity
@@ -147,15 +123,16 @@ def _load_tool_bindings_from_resource_tool(
                 logger.info(
                     f"[ToolMgmt] _load_tool_bindings: raw resource_tool length={len(entity.resource_tool)}"
                 )
-                tool_ids = _parse_resource_tool_ids(entity.resource_tool)
-                if tool_ids:
+                bindings = parse_resource_tool_bindings(entity.resource_tool)
+                if bindings:
                     logger.info(
-                        f"[ToolMgmt] Loaded tools from temp config for {app_id}: {tool_ids}"
+                        f"[ToolMgmt] Loaded tools from temp config for {app_id}: "
+                        f"bound={bindings.bound_ids}, unbound={bindings.unbound_ids}"
                     )
-                    return tool_ids
+                    return bindings
                 else:
                     logger.warning(
-                        f"[ToolMgmt] _parse_resource_tool_ids returned None for temp config"
+                        f"[ToolMgmt] parse_resource_tool_bindings returned None for temp config"
                     )
 
             # 2. 查最新的 published 配置
@@ -177,12 +154,13 @@ def _load_tool_bindings_from_resource_tool(
                 logger.info(
                     f"[ToolMgmt] _load_tool_bindings: published resource_tool length={len(entity.resource_tool)}"
                 )
-                tool_ids = _parse_resource_tool_ids(entity.resource_tool)
-                if tool_ids:
+                bindings = parse_resource_tool_bindings(entity.resource_tool)
+                if bindings:
                     logger.info(
-                        f"[ToolMgmt] Loaded tools from published config for {app_id}: {tool_ids}"
+                        f"[ToolMgmt] Loaded tools from published config for {app_id}: "
+                        f"bound={bindings.bound_ids}, unbound={bindings.unbound_ids}"
                     )
-                    return tool_ids
+                    return bindings
 
         return None
     except Exception as e:

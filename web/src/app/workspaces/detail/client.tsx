@@ -172,7 +172,7 @@ export default function WorkspaceDetailPage() {
             <Link href={`/workspaces/detail/playbooks?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('playbooks')}`}>
               <BookOutlined />{t('workspaces.playbooks') || '剧本'}
             </Link>
-            <Link href={`/workspaces/detail/assets?id=${workspaceCode}&tab=data`} className={`ws-console-nav-link${navActive('assets')}`}>
+            <Link href={`/workspaces/detail/assets?id=${workspaceCode}&tab=semantic`} className={`ws-console-nav-link${navActive('assets')}`}>
               <DatabaseOutlined />{t('workspaces.assets') || '资产'}
             </Link>
             <Link href={`/workspaces/detail/settings?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('settings')}`}>

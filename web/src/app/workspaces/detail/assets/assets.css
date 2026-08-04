@@ -215,3 +215,59 @@
 .ws-feed-more:hover {
   text-decoration: underline;
 }
+
+/* === 资产页 tab「核心」标记 === */
+.ws-tab-tag-core {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 8px;
+  color: #fff;
+  background: var(--ws-brand, #4f46e5);
+  vertical-align: middle;
+}
+
+/* === 支撑资源聚合 tab:数据 + 能力分区 === */
+.ws-support-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ws-support-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ws-support-section__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--ws-radius, 12px);
+  background: var(--ws-hover, rgba(79, 70, 229, 0.04));
+  border-left: 3px solid var(--ws-brand, #4f46e5);
+}
+
+.ws-support-section__icon {
+  flex-shrink: 0;
+  color: var(--ws-brand, #4f46e5);
+  font-size: 16px;
+  margin-top: 2px;
+}
+
+.ws-support-section__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ws-ink);
+}
+
+.ws-support-section__desc {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ws-ink-2);
+  line-height: 1.5;
+}

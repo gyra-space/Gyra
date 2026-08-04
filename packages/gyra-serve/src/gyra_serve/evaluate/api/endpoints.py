@@ -132,7 +132,30 @@ async def evaluation(
 
 
 def init_endpoints(system_app: SystemApp, config: ServeConfig) -> None:
-    """Initialize the endpoints"""
+    """Initialize the endpoints.
+
+    飞轮联动: 注册 EvaluationToMaturityHandler, 订阅评测完成事件,
+    评测分数 → AgentMaturityService 评分维度; 低分触发 coach 负样本。
+    """
     global global_system_app
     system_app.register(Service, config=config)
     global_system_app = system_app
+
+    try:
+        from gyra.distributed import AssetEventType, get_shared_event_bus
+        from ..service.maturity_link import EvaluationToMaturityHandler
+
+        shared_bus = get_shared_event_bus(system_app)
+        handler = EvaluationToMaturityHandler(system_app)
+        shared_bus.subscribe(
+            AssetEventType.ASSET_REVIEWED,
+            handler,
+            handler.consumer_group,
+        )
+        logger.info(
+            "[evaluate-api] EvaluationToMaturityHandler subscribed to ASSET_REVIEWED"
+        )
+    except Exception as e:
+        logger.warning(
+            f"[evaluate-api] register EvaluationToMaturityHandler failed: {e}"
+        )

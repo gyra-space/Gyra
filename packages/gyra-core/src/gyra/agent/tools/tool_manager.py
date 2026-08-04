@@ -10,10 +10,11 @@ ToolManager - 统一工具分组管理服务
 支持 Agent 级别的工具绑定配置，包括反向解绑功能。
 """
 
-from typing import Dict, Any, Optional, List, Set, Callable
+from typing import Dict, Any, Optional, List, Set, Callable, Union
 from enum import Enum
 from pydantic import BaseModel, Field
 from datetime import datetime
+import json
 import logging
 
 from .base import ToolBase, ToolCategory, ToolSource, ToolRiskLevel
@@ -30,6 +31,79 @@ class ToolBindingType(str, Enum):
     BUILTIN_OPTIONAL = "builtin_optional"  # 内置可选绑定
     CUSTOM = "custom"  # 自定义工具
     EXTERNAL = "external"  # 外部工具（MCP/API）
+
+
+class PersistedToolBindings(BaseModel):
+    """
+    从 resource_tool 持久化字段解析出的绑定清单
+
+    - bound_ids: 显式绑定的工具ID（resource_tool 中的普通条目）
+    - unbound_ids: 显式解绑的工具ID（tombstone 条目，value JSON 中带 "unbound": true）
+
+    tombstone 机制用于区分两种"不在绑定清单中"的情况：
+    1. 用户显式解绑了某个默认工具 → 有 tombstone → 保持未绑定
+    2. 清单写入时该工具还不存在 / 清单不完整（旧数据）→ 无 tombstone → 按默认规则处理
+    """
+
+    bound_ids: List[str] = Field(default_factory=list, description="显式绑定的工具ID")
+    unbound_ids: List[str] = Field(
+        default_factory=list, description="显式解绑的工具ID（tombstone）"
+    )
+
+
+def parse_resource_tool_bindings(
+    resource_tool_raw,
+) -> Optional[PersistedToolBindings]:
+    """
+    解析 resource_tool 字段中的工具绑定清单（含 tombstone）
+
+    resource_tool 条目结构: {"type": "tool(...)", "name": ..., "value": "<json string>"}
+    value JSON 中:
+    - tool_id / key: 工具ID
+    - unbound: true 表示该条目是"显式解绑"的 tombstone 记录
+
+    Args:
+        resource_tool_raw: resource_tool 字段的原始值（JSON字符串或列表）
+
+    Returns:
+        PersistedToolBindings，或 None 表示无任何有效数据
+    """
+    if not resource_tool_raw:
+        return None
+
+    resource_tool = resource_tool_raw
+    if isinstance(resource_tool, str):
+        try:
+            resource_tool = json.loads(resource_tool)
+        except json.JSONDecodeError:
+            return None
+
+    if not isinstance(resource_tool, list) or len(resource_tool) == 0:
+        return None
+
+    bound_ids: List[str] = []
+    unbound_ids: List[str] = []
+    for item in resource_tool:
+        try:
+            value = item.get("value", "{}")
+            if isinstance(value, str):
+                parsed = json.loads(value)
+            else:
+                parsed = value
+            tool_id = parsed.get("tool_id") or parsed.get("key")
+            if not tool_id:
+                continue
+            if parsed.get("unbound"):
+                unbound_ids.append(tool_id)
+            else:
+                bound_ids.append(tool_id)
+        except (json.JSONDecodeError, AttributeError):
+            continue
+
+    if not bound_ids and not unbound_ids:
+        return None
+
+    return PersistedToolBindings(bound_ids=bound_ids, unbound_ids=unbound_ids)
 
 
 class ToolBindingConfig(BaseModel):
@@ -234,18 +308,27 @@ class ToolManager:
         self._persist_callback: Optional[Callable[[AgentToolConfiguration], bool]] = (
             None
         )
-        self._load_callback: Optional[Callable[[str, str], Optional[List[str]]]] = None
+        self._load_callback: Optional[
+            Callable[[str, str], Optional[Union[List[str], PersistedToolBindings]]]
+        ] = None
 
     def set_persist_callback(self, callback: Callable[[AgentToolConfiguration], bool]):
         """设置配置持久化回调函数"""
         self._persist_callback = callback
 
-    def set_load_callback(self, callback: Callable[[str, str], Optional[List[str]]]):
+    def set_load_callback(
+        self,
+        callback: Callable[
+            [str, str], Optional[Union[List[str], PersistedToolBindings]]
+        ],
+    ):
         """
         设置配置加载回调函数
 
-        回调签名: (app_id, agent_name) -> Optional[List[str]]
-        返回持久化的已绑定工具ID列表，或 None 表示无持久化数据
+        回调签名: (app_id, agent_name) -> Optional[List[str] | PersistedToolBindings]
+        - 返回 PersistedToolBindings: 完整的持久化清单（含 tombstone 解绑记录），推荐
+        - 返回 List[str]（向后兼容）: 仅已绑定工具ID列表，无 tombstone 信息
+        - 返回 None: 无持久化数据，将使用默认配置
         """
         self._load_callback = callback
 
@@ -616,15 +699,26 @@ class ToolManager:
         # 从数据库加载配置（通过回调）
         if self._load_callback:
             try:
-                persisted_tool_ids = self._load_callback(app_id, agent_name)
-                if persisted_tool_ids is not None:
+                persisted = self._load_callback(app_id, agent_name)
+                if persisted is not None:
+                    # 向后兼容：回调可能只返回已绑定ID列表（无 tombstone 信息）
+                    if isinstance(persisted, PersistedToolBindings):
+                        bindings_data = persisted
+                    else:
+                        bindings_data = PersistedToolBindings(
+                            bound_ids=list(persisted), unbound_ids=[]
+                        )
                     config = self._create_config_from_persisted(
-                        app_id, agent_name, persisted_tool_ids, sandbox_enabled
+                        app_id,
+                        agent_name,
+                        bindings_data.bound_ids,
+                        sandbox_enabled,
+                        unbound_tool_ids=bindings_data.unbound_ids,
                     )
                     self._config_cache[cache_key] = config
                     logger.info(
                         f"[ToolManager] Loaded persisted config for {app_id}:{agent_name}, "
-                        f"tools={persisted_tool_ids}"
+                        f"bound={bindings_data.bound_ids}, unbound={bindings_data.unbound_ids}"
                     )
                     return config
             except Exception as e:
@@ -693,28 +787,43 @@ class ToolManager:
         agent_name: str,
         persisted_tool_ids: List[str],
         sandbox_enabled: bool = False,
+        unbound_tool_ids: Optional[List[str]] = None,
     ) -> AgentToolConfiguration:
         """
-        从持久化的工具ID列表创建配置
+        从持久化的工具清单创建配置
 
-        resource_tool 是工具绑定的完整清单（全量数据源）：
-        - 在 resource_tool 中的工具 → 已绑定 (is_bound=True)
-        - 不在 resource_tool 中的工具 → 未绑定 (is_bound=False，包括默认工具)
+        绑定状态判定（三级优先级）：
+        1. 在 persisted_tool_ids（绑定清单）中 → is_bound=True
+        2. 在 unbound_tool_ids（tombstone 解绑记录）中 → is_bound=False（用户显式解绑，优先于默认规则）
+        3. 两者都不在 → 按默认规则：BUILTIN_REQUIRED 工具默认绑定，其余默认不绑定
 
-        resource_tool 有数据时完全以它为准，不再叠加默认工具。
-        这样默认工具的反向解绑才能被持久化。
+        为什么需要 tombstone：旧逻辑中"不在清单里 = 未绑定"，无法区分
+        "用户显式解绑了默认工具"和"清单写入时该工具不存在/清单不完整（旧数据）"，
+        导致存量 Agent 的默认工具全部显示未绑定。现在显式解绑会以 tombstone
+        条目（value JSON 带 "unbound": true）写入 resource_tool，缺失则回落默认规则。
 
         Args:
             app_id: 应用ID
             agent_name: Agent名称
-            persisted_tool_ids: 持久化的已绑定工具ID列表（完整清单）
+            persisted_tool_ids: 持久化的已绑定工具ID列表
             sandbox_enabled: 是否启用沙箱环境
+            unbound_tool_ids: 持久化的显式解绑工具ID列表（tombstone）
         """
         bindings: Dict[str, ToolBindingConfig] = {}
         persisted_set = set(persisted_tool_ids)
+        unbound_set = set(unbound_tool_ids or [])
 
         # 默认工具集合（用于标记 is_default）
         default_tool_ids = set(self.BUILTIN_CORE_TOOLS) | set(self.BASIC_TOOLS)
+
+        def _resolve_bound(tool_id: str, is_default_required: bool) -> bool:
+            if tool_id in persisted_set:
+                return True
+            if tool_id in unbound_set:
+                # 显式解绑（tombstone），优先于默认规则
+                return False
+            # 清单中没有任何记录 → 回落默认规则
+            return is_default_required
 
         # 1. 处理所有已注册的工具
         all_tools = tool_registry.list_all()
@@ -723,10 +832,7 @@ class ToolManager:
             group_type = self._determine_tool_group(tool, tool_id)
 
             is_default_required = group_type == ToolBindingType.BUILTIN_REQUIRED
-
-            # 完全按 persisted_set 判断是否绑定
-            # resource_tool 是完整绑定清单，用户解绑的默认工具不在列表中 → is_bound=False
-            is_bound = tool_id in persisted_set
+            is_bound = _resolve_bound(tool_id, is_default_required)
 
             bindings[tool_id] = ToolBindingConfig(
                 tool_id=tool_id,
@@ -736,12 +842,15 @@ class ToolManager:
                 can_unbind=True,
                 disabled_at_runtime=False,
                 bound_at=datetime.now() if is_bound else None,
+                unbound_at=datetime.now()
+                if (not is_bound and tool_id in unbound_set)
+                else None,
             )
 
         # 2. 处理动态工具（可能不在 registry 中）
         for tool_id in self.SYSTEM_DYNAMIC_TOOLS:
             if tool_id not in bindings:
-                is_bound = tool_id in persisted_set
+                is_bound = _resolve_bound(tool_id, False)
                 bindings[tool_id] = ToolBindingConfig(
                     tool_id=tool_id,
                     binding_type=ToolBindingType.BUILTIN_OPTIONAL,

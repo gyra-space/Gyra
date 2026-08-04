@@ -1,20 +1,24 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Button, Spin, Tag } from 'antd';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import { Button, Spin, Tag, Tooltip } from 'antd';
+import { ArrowLeftOutlined, DownloadOutlined, ExportOutlined, FileOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { GPTVis } from '@antv/gpt-vis';
 import dayjs from 'dayjs';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
-import { apiInterceptors, getArtifactInfo, listArtifacts, listDeliveries, listUsageCalls } from '@/client/api';
+import { apiInterceptors, getArtifactInfo, getDeliveryInfo, listArtifacts, listDeliveries, listUsageCalls } from '@/client/api';
+import { transformFileUrl } from '@/utils';
 import { Lobby } from './lobby';
+import { FlywheelWorkspace } from './flywheel';
 import { AgentWorkspaceRenderer } from './agent-workspace-renderer';
-import { parseWorkspaceView } from './parse-workspace-view';
+import { parseWorkspaceView, deliverableFileToExhibit } from './parse-workspace-view';
 import { parseSceneAgentWorkspaceString } from './parse-scene-agent-workspace-string';
+import { ExhibitHost } from './lobby-exhibit';
 import { statusLabel, triggerLabel } from './scene-task-rail';
 import { EcpProposalDetail } from './ecp-proposal-detail';
 import type { WorkspaceView } from './agent-workspace-types';
+import type { WorkspaceDeliverableFile } from './agent-workspace-types';
 import type { DetailContext } from './agent-types';
 
 export interface SceneSpaceProps {
@@ -27,7 +31,10 @@ export interface SceneSpaceProps {
   onBack: () => void;
   onSelectTask?: (taskId: number) => void;
   onSelectArtifact?: (artifact: any) => void;
+  onSelectDelivery?: (delivery: any) => void;
   onProposalResolved?: () => void;
+  /** 进入飞轮工作台 */
+  onEnterFlywheel?: () => void;
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -282,6 +289,34 @@ function PayloadFields({ payload }: { payload: Record<string, any> }) {
   );
 }
 
+/** 解析 artifact content_ref 为可访问 URL(支持 gyra-fs:// / 相对路径) */
+function resolveArtifactFileUrl(raw: string): string {
+  if (!raw) return '';
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+  if (raw.startsWith('gyra-fs://')) {
+    return `${apiBaseUrl}/api/v2/serve/file/files/preview?uri=${encodeURIComponent(raw)}`;
+  }
+  if (raw.startsWith('/')) return `${apiBaseUrl}${raw}`;
+  return transformFileUrl(raw);
+}
+
+/** 触发文件下载(动态创建 a 标签) */
+function downloadFile(url: string, fileName: string) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName || 'download';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+/** 判断 content_ref 是否为可在浏览器预览的类型(html/pdf/image) */
+function isPreviewableFile(contentRef: string): boolean {
+  const ext = contentRef.split('.').pop()?.toLowerCase() || '';
+  return ['html', 'htm', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext);
+}
+
 /** artifact_produced 等只带 id 的事件:拉取 artifact 详情后渲染内容 */
 function ArtifactPreview({ artifactId, title, type }: { artifactId: number; title?: string; type?: string }) {
   const { data: res, loading } = useRequest(
@@ -293,12 +328,36 @@ function ArtifactPreview({ artifactId, title, type }: { artifactId: number; titl
   if (!artifact) return <div className="ws-preview__empty">交付物不存在或已删除</div>;
   const content = artifact.content_text || '';
   const fileUrl = artifact.content_ref || '';
+  const resolvedUrl = fileUrl ? resolveArtifactFileUrl(fileUrl) : '';
+  const fileSize = artifact.provenance?.file_size;
+  const previewable = fileUrl ? isPreviewableFile(fileUrl) : false;
   return (
     <div className="ws-preview">
       <div className="ws-preview__head">
         <span className="ws-preview__title">{artifact.title || title || `artifact_${artifactId}`}</span>
         {(artifact.type || type) && <Tag color="blue">{artifact.type || type}</Tag>}
         {artifact.current_version != null && <Tag>v{artifact.current_version}</Tag>}
+        {fileUrl && (
+          <span className="ws-preview__head-tools">
+            {previewable && (
+              <Tooltip title="新窗口打开">
+                <button type="button" className="ws-exhibit__tool" aria-label="新窗口打开" onClick={() => window.open(resolvedUrl, '_blank')}>
+                  <ExportOutlined />
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip title="下载">
+              <button
+                type="button"
+                className="ws-exhibit__tool"
+                aria-label="下载"
+                onClick={() => downloadFile(resolvedUrl, artifact.title || `artifact_${artifactId}`)}
+              >
+                <DownloadOutlined />
+              </button>
+            </Tooltip>
+          </span>
+        )}
       </div>
       {content ? (
         <section className="ws-preview__section">
@@ -311,15 +370,69 @@ function ArtifactPreview({ artifactId, title, type }: { artifactId: number; titl
           {artifact.provenance?.description && (
             <div className="ws-preview__markdown" style={{ marginBottom: 8 }}>{artifact.provenance.description}</div>
           )}
-          <Button type="primary" onClick={() => window.open(fileUrl, '_blank')}>
-            打开 / 下载文件
-          </Button>
+          {/* 文件元信息 */}
+          <div className="ws-preview__file-meta">
+            <FileOutlined />
+            <span className="ws-preview__file-name">{artifact.title || `artifact_${artifactId}`}</span>
+            {fileSize ? <span className="ws-preview__file-size">{fmtSize(fileSize)}</span> : null}
+          </div>
         </section>
       ) : (
         <PayloadFields payload={artifact} />
       )}
     </div>
   );
+}
+
+/** 交付详情:拉取 delivery 详情,展示基本信息 + 关联 artifact 内容/文件下载 */
+function DeliveryPreview({ deliveryId, title }: { deliveryId: number; title?: string }) {
+  const { data: res, loading } = useRequest(
+    async () => apiInterceptors(getDeliveryInfo(deliveryId)),
+    { refreshDeps: [deliveryId] },
+  );
+  const delivery = res?.[1];
+  if (loading) return <Spin />;
+  if (!delivery) return <div className="ws-preview__empty">交付记录不存在或已删除</div>;
+
+  // 关联 artifact:delivery 通常引用一个 artifact_id,拉取其内容/文件
+  const artifactId = delivery.artifact_id;
+  return (
+    <div className="ws-preview">
+      <div className="ws-preview__head">
+        <span className="ws-preview__title">{delivery.title || title || `delivery_${deliveryId}`}</span>
+        <Tag color={DELIVERY_STATUS_COLOR[delivery.status] || 'default'}>{delivery.status}</Tag>
+      </div>
+      <section className="ws-preview__section">
+        <div className="ws-preview__section-title">基本信息</div>
+        <div>
+          <KV k="分类" v={delivery.category || '—'} />
+          <KV k="渠道" v={delivery.channel || '—'} />
+          <KV k="目标" v={delivery.target || '—'} />
+          <KV k="状态" v={delivery.status || '—'} />
+          <KV k="发送时间" v={fmtTime(delivery.sent_at || delivery.gmt_created)} />
+          {delivery.gmt_modified && <KV k="更新时间" v={fmtTime(delivery.gmt_modified)} />}
+        </div>
+      </section>
+      {delivery.message && (
+        <section className="ws-preview__section">
+          <div className="ws-preview__section-title">投递消息</div>
+          <div className="ws-preview__markdown">{delivery.message}</div>
+        </section>
+      )}
+      {artifactId && (
+        <section className="ws-preview__section">
+          <div className="ws-preview__section-title">关联交付物</div>
+          <ArtifactPreview artifactId={artifactId} />
+        </section>
+      )}
+    </div>
+  );
+}
+
+/** 交付文件预览:适配为大厅通用 Exhibit,由 ExhibitHost 按 kind 渲染
+ * (图片/视频/音频/表格/幻灯片/HTML/PDF/Markdown/Code 等统一入口) */
+function DeliverableFilePreview({ file }: { file: WorkspaceDeliverableFile }) {
+  return <ExhibitHost exhibit={deliverableFileToExhibit(file)} />;
 }
 
 /** Agent 步骤(工具调用/思考)富预览 */
@@ -363,7 +476,9 @@ export function SceneSpace({
   onBack,
   onSelectTask,
   onSelectArtifact,
+  onSelectDelivery,
   onProposalResolved,
+  onEnterFlywheel,
 }: SceneSpaceProps) {
   const taskId = context === 'task-detail' && previewItem?.id ? previewItem.id : undefined;
   // 点击任务卡片走 handlePreview(不进任务对话),activeTask 不会被填充;
@@ -410,6 +525,8 @@ export function SceneSpace({
           workspaceCode={workspaceCode}
           onSelectTask={onSelectTask || (() => {})}
           onSelectArtifact={onSelectArtifact}
+          onSelectDelivery={onSelectDelivery}
+          onEnterFlywheel={onEnterFlywheel}
         />
       </div>
     );
@@ -420,7 +537,10 @@ export function SceneSpace({
     'file-preview': '文件预览',
     'tool-result': '步骤详情',
     'entity-card': '实体信息',
+    'delivery-detail': '交付详情',
     'ecp-proposal': '提案确认',
+    'exhibit': '内容预览',
+    'flywheel': '飞轮工作台',
   };
 
   return (
@@ -431,6 +551,9 @@ export function SceneSpace({
         </Button>
         <span className="ws-scene-space__header-title">{CONTEXT_TITLE[context] || ''}</span>
       </div>
+      {context === 'flywheel' && (
+        <FlywheelWorkspace workspaceId={workspaceId} workspaceCode={workspaceCode} />
+      )}
       {context === 'task-detail' && (
         <div className="ws-scene-space__body">
           {!task && <Spin />}
@@ -458,9 +581,20 @@ export function SceneSpace({
           <StepPreview step={previewItem} />
         </div>
       )}
+      {context === 'exhibit' && (
+        <div className="ws-scene-space__body">
+          {previewItem?.payload?.exhibit ? (
+            <ExhibitHost exhibit={previewItem.payload.exhibit} />
+          ) : (
+            <div className="ws-preview__empty">暂无入驻内容</div>
+          )}
+        </div>
+      )}
       {context === 'file-preview' && (
         <div className="ws-scene-space__body">
-          {previewItem?.payload?.artifact_id ? (
+          {previewItem?.payload?.deliverable_file ? (
+            <DeliverableFilePreview file={previewItem.payload.deliverable_file} />
+          ) : previewItem?.payload?.artifact_id ? (
             <ArtifactPreview
               artifactId={previewItem.payload.artifact_id}
               title={previewItem.payload.title}
@@ -490,6 +624,23 @@ export function SceneSpace({
             <div className="ws-preview">
               <div className="ws-preview__head">
                 <span className="ws-preview__title">实体信息</span>
+              </div>
+              <PayloadFields payload={previewItem?.payload || previewItem || {}} />
+            </div>
+          )}
+        </div>
+      )}
+      {context === 'delivery-detail' && (
+        <div className="ws-scene-space__body">
+          {previewItem?.payload?.delivery_id ? (
+            <DeliveryPreview
+              deliveryId={previewItem.payload.delivery_id}
+              title={previewItem.payload.title}
+            />
+          ) : (
+            <div className="ws-preview">
+              <div className="ws-preview__head">
+                <span className="ws-preview__title">交付详情</span>
               </div>
               <PayloadFields payload={previewItem?.payload || previewItem || {}} />
             </div>

@@ -14,6 +14,7 @@ from .schemas import (
 )
 from ..config import ServeConfig
 from ..service.service import PLAYBOOK_SERVICE_COMPONENT_NAME, PlaybookService as Service
+from gyra_serve.workspace.rbac import Permission, require_permission
 
 router = APIRouter()
 global_system_app: Optional[SystemApp] = None
@@ -42,7 +43,8 @@ async def check_api_key(
 
 
 @router.post("/playbooks/create", response_model=Result[PlaybookResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_permission(Permission.CREATE_PLAYBOOK))])
 async def create_playbook(
     request: PlaybookRequest, service: Service = Depends(get_service),
 ) -> Result[PlaybookResponse]:

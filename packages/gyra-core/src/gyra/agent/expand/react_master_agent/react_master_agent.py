@@ -653,6 +653,47 @@ class ReActMasterAgent(ConversableAgent):
             logger.warning(f"[ReActMasterAgent] 收集异步任务通知失败: {e}")
             return None
 
+    async def _collect_media_job_notifications(self) -> Optional[str]:
+        """收集已完成的异步媒体生成任务通知 (generate_video 异步模式)。
+
+        在 thinking() 中调用,将后台完成的媒体生成结果注入到 LLM 上下文。
+        """
+        try:
+            from gyra.agent.util.media_gen.media_job_registry import MediaJobRegistry
+
+            mgr = MediaJobRegistry.instance()
+            conv_id = (
+                getattr(self.agent_context, "conv_id", "")
+                if self.agent_context
+                else ""
+            )
+            completed = mgr.get_completed(conv_id=conv_id, consume=True)
+            if not completed:
+                return None
+            notification = mgr.format_notifications(completed)
+            return notification if notification else None
+        except Exception as e:
+            logger.warning(f"[ReActMasterAgent] 收集媒体任务通知失败: {e}")
+            return None
+
+    async def _collect_background_notifications(self) -> Optional[str]:
+        """合并收集异步子 Agent 任务 + 异步媒体生成任务的通知。"""
+        parts = []
+        for getter in (
+            self._collect_async_task_notifications,
+            self._collect_media_job_notifications,
+        ):
+            try:
+                n = await getter()
+            except Exception as e:
+                logger.warning(
+                    f"[ReActMasterAgent] collect background notifications failed: {e}"
+                )
+                n = None
+            if n:
+                parts.append(n)
+        return "\n\n".join(parts) if parts else None
+
     async def load_resource(self, question: str, is_retry_chat: bool = False):
         """Load agent bind resource."""
         self.function_calling_context = await self.function_calling_params()
@@ -2087,7 +2128,7 @@ class ReActMasterAgent(ConversableAgent):
             logger.info("[Fallback] HistoryMessageBuilder unavailable, using base tool_messages")
 
             # 异步任务完成通知注入
-            async_notification = await self._collect_async_task_notifications()
+            async_notification = await self._collect_background_notifications()
             if async_notification:
                 notification_msg = {"role": "user", "content": async_notification}
                 tool_msgs = kwargs.get("tool_messages") or []
@@ -2138,7 +2179,7 @@ class ReActMasterAgent(ConversableAgent):
                     break
 
         # ========== 异步任务通知注入 ==========
-        async_notification = await self._collect_async_task_notifications()
+        async_notification = await self._collect_background_notifications()
         if async_notification:
             all_conversation_messages.append(
                 {"role": "user", "content": async_notification}

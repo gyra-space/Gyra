@@ -15,6 +15,7 @@ from ..config import ServeConfig
 from ..service.service import TASK_SERVICE_COMPONENT_NAME, TaskService as Service
 from gyra_serve.agent.agents.controller import multi_agents
 from gyra_serve.playbook import runtime as playbook_runtime
+from gyra_serve.workspace.rbac import Permission, require_permission
 
 router = APIRouter()
 global_system_app: Optional[SystemApp] = None
@@ -94,7 +95,8 @@ async def update_task(
 
 
 @router.post("/tasks/{task_id}/start", response_model=Result[TaskResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_permission(Permission.START_TASK))])
 async def start_task(
     task_id: int,
     background_tasks: BackgroundTasks,

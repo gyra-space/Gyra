@@ -79,4 +79,135 @@ describe('parseWorkspaceView', () => {
     const view = parseWorkspaceView(chunk, prev);
     expect(view.execution.map(e => e.id)).toEqual(['user1', 'tool1', 'user2-opt']);
   });
+
+  test('task_created 步骤被正确解析并保留 task 字段', () => {
+    const chunk = {
+      render_name: 'scene_agent_workspace',
+      planning: null,
+      execution: [{
+        id: 'task-created-42',
+        type: 'task_created',
+        title: '营收分析任务',
+        status: 'running',
+        task_id: 42,
+        task_title: '营收分析任务',
+        task_status: 'running',
+        playbook_name: '营收分析',
+        triggered_by: 'manual',
+      }],
+      summary: null,
+    };
+    const view = parseWorkspaceView(chunk, null);
+    expect(view.execution).toHaveLength(1);
+    expect(view.execution[0].type).toBe('task_created');
+    expect(view.execution[0].task_id).toBe(42);
+    expect(view.execution[0].playbook_name).toBe('营收分析');
+    expect(view.execution[0].triggered_by).toBe('manual');
+  });
+
+  test('客户端注入的 task_created 步骤在 vis_final 轮询合并后保留', () => {
+    // 模拟:客户端从 task_created 事件注入了 task-created-42 步骤,
+    // 随后 vis_final 轮询返回了不含该步骤的 execution 列表。
+    // 步骤应被保留(作为 leftover prev step)。
+    const prev: WorkspaceView = {
+      planning: null,
+      execution: [
+        { id: 'user1', type: 'user', title: '我', status: 'done', output: '帮我分析营收' },
+        { id: 'task-created-42', type: 'task_created', title: '营收分析', status: 'running', task_id: 42, task_status: 'running', playbook_name: '营收分析', triggered_by: 'manual' },
+      ],
+      summary: null,
+    };
+    // vis_final 只返回 user 步骤,不包含 task_created 步骤
+    const chunk = {
+      render_name: 'scene_agent_workspace',
+      planning: null,
+      execution: [
+        { id: 'user1', type: 'user', title: '我', status: 'done', output: '帮我分析营收' },
+      ],
+      summary: null,
+    };
+    const view = parseWorkspaceView(chunk, prev);
+    const taskStep = view.execution.find(e => e.id === 'task-created-42');
+    expect(taskStep).toBeDefined();
+    expect(taskStep?.type).toBe('task_created');
+    expect(taskStep?.task_id).toBe(42);
+  });
+});
+
+describe('lobby_exhibits(大厅通用内容协议)', () => {
+  const baseChunk = { render_name: 'scene_agent_workspace', planning: null, execution: [], summary: null };
+
+  test('lobby_exhibits 解析与规范化', () => {
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      lobby_exhibits: [{
+        exhibit_id: 'file_f1',
+        kind: 'table',
+        title: 'report.csv',
+        source: { url: 'gyra-fs://x/report.csv', mime_type: 'text/csv', file_size: 1024 },
+        provenance: { step_id: 'tool-1' },
+        actions: ['preview', 'download'],
+      }],
+    }, null);
+    expect(view.lobby_exhibits).toHaveLength(1);
+    const ex = view.lobby_exhibits![0];
+    expect(ex.kind).toBe('table');
+    expect(ex.source.url).toBe('gyra-fs://x/report.csv');
+    expect(ex.provenance?.step_id).toBe('tool-1');
+  });
+
+  test('未知 kind 回落 file;缺 exhibit_id/title 的条目被丢弃', () => {
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      lobby_exhibits: [
+        { exhibit_id: 'a', kind: 'hologram', title: 'X' },
+        { kind: 'image', title: 'no id' },
+        { exhibit_id: 'b' },
+      ],
+    }, null);
+    expect(view.lobby_exhibits).toHaveLength(1);
+    expect(view.lobby_exhibits![0].kind).toBe('file');
+  });
+
+  test('跨 chunk 按 exhibit_id 幂等合并(同 ID 覆盖,旧条目保留)', () => {
+    const prev = parseWorkspaceView({
+      ...baseChunk,
+      lobby_exhibits: [
+        { exhibit_id: 'f1', kind: 'table', title: 'a.csv' },
+        { exhibit_id: 'f2', kind: 'image', title: 'b.png' },
+      ],
+    }, null);
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      lobby_exhibits: [{ exhibit_id: 'f1', kind: 'table', title: 'a-v2.csv' }],
+    }, prev);
+    expect(view.lobby_exhibits).toHaveLength(2);
+    expect(view.lobby_exhibits!.find(e => e.exhibit_id === 'f1')?.title).toBe('a-v2.csv');
+    expect(view.lobby_exhibits!.some(e => e.exhibit_id === 'f2')).toBe(true);
+  });
+
+  test('chunk 未携带 lobby_exhibits 时保留 prev', () => {
+    const prev = parseWorkspaceView({
+      ...baseChunk,
+      lobby_exhibits: [{ exhibit_id: 'f1', kind: 'pdf', title: 'doc.pdf' }],
+    }, null);
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      execution: [{ id: 's1', type: 'tool_call', title: 'A', status: 'done' }],
+    }, prev);
+    expect(view.lobby_exhibits).toHaveLength(1);
+    expect(view.lobby_exhibits![0].kind).toBe('pdf');
+  });
+
+  test('execution 步骤携带 exhibit 被规范化(点击步骤 → 大厅展示对应内容)', () => {
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      execution: [{
+        id: 's1', type: 'tool_call', title: '生成报表', status: 'done',
+        exhibit: { exhibit_id: 'file_f1', kind: 'slides', title: 'deck.pptx', source: { url: 'u' } },
+      }],
+    }, null);
+    expect(view.execution[0].exhibit?.exhibit_id).toBe('file_f1');
+    expect(view.execution[0].exhibit?.kind).toBe('slides');
+  });
 });

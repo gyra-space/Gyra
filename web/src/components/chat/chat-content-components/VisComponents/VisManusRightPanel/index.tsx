@@ -393,6 +393,57 @@ const resolveFileUrl = (file: ManusDeliverableFile): string | null => {
   return transformFileUrl(raw);
 };
 
+/** 媒体加载失败兜底(图片/视频):避免破图只显示 alt 文本 */
+const MediaErrorFallback: FC<{ fileName: string; icon: string; url: string | null }> = ({ fileName, icon, url }) => (
+  <div className="flex flex-col items-center justify-center h-48 gap-3 text-gray-400">
+    <span className="text-4xl">{icon}</span>
+    <span className="text-sm">媒体文件加载失败: {fileName}</span>
+    {url && (
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+      >
+        在新窗口打开
+      </a>
+    )}
+  </div>
+);
+
+/** 图片渲染,加载失败(如文件内容损坏)时展示兜底面板而非破图 */
+const ImageWithFallback: FC<{ url: string; fileName: string }> = ({ url, fileName }) => {
+  const [failed, setFailed] = useState(false);
+  if (!url || failed) return <MediaErrorFallback fileName={fileName} icon="🖼️" url={url || null} />;
+  return (
+    <div className="flex items-center justify-center p-6">
+      <img
+        src={url}
+        alt={fileName}
+        className="max-w-full max-h-[600px] rounded-lg shadow-sm"
+        onError={() => setFailed(true)}
+      />
+    </div>
+  );
+};
+
+/** 视频渲染,加载失败时展示兜底面板;不带 autoPlay(浏览器会拦截未静音自动播放) */
+const VideoWithFallback: FC<{ url: string; fileName: string }> = ({ url, fileName }) => {
+  const [failed, setFailed] = useState(false);
+  if (!url || failed) return <MediaErrorFallback fileName={fileName} icon="🎬" url={url || null} />;
+  return (
+    <div style={{ width: '100%' }}>
+      <video
+        src={url}
+        controls
+        preload="metadata"
+        style={{ width: '100%', borderRadius: '8px' }}
+        onError={() => setFailed(true)}
+      />
+    </div>
+  );
+};
+
 /** Deliverable content view — fetches remote content and renders inline */
 const DeliverableContentView: FC<{ file: ManusDeliverableFile }> = ({ file }) => {
   const { render_type, content, file_name, download_url } = file;
@@ -478,11 +529,7 @@ const DeliverableContentView: FC<{ file: ManusDeliverableFile }> = ({ file }) =>
         </div>
       );
     case 'image':
-      return (
-        <div className="flex items-center justify-center p-6">
-          <img src={resolvedUrl || content || ''} alt={file_name} className="max-w-full max-h-[600px] rounded-lg shadow-sm" />
-        </div>
-      );
+      return <ImageWithFallback url={resolvedUrl || content || ''} fileName={file_name} />;
     case 'pdf':
       return (
         <div className="h-full flex flex-col">
@@ -526,16 +573,7 @@ const DeliverableContentView: FC<{ file: ManusDeliverableFile }> = ({ file }) =>
         </div>
       );
     case 'video':
-      return (
-        <div style={{ width: '100%' }}>
-          <video
-            src={resolvedUrl || undefined}
-            controls
-            autoPlay
-            style={{ width: '100%', borderRadius: '8px' }}
-          />
-        </div>
-      );
+      return <VideoWithFallback url={resolvedUrl || ''} fileName={file_name} />;
     default:
       return (
         <div className="flex items-center justify-center h-48 text-gray-400 text-sm">

@@ -7,6 +7,14 @@ from gyra.component import SystemApp
 from gyra.storage.metadata import DatabaseManager, Model, UnifiedDBManagerFactory, db
 from gyra_serve.core import BaseServe
 
+from .agent_maturity.api import (
+    init_endpoints as init_agent_maturity_endpoints,
+)
+from .agent_maturity.api import router as agent_maturity_router
+from .agent_roles_api import (
+    init_endpoints as init_agent_roles_endpoints,
+)
+from .agent_roles_api import router as agent_roles_router
 from .api.endpoints import init_endpoints, router
 from .config import (
     APP_NAME,
@@ -53,14 +61,32 @@ class Serve(BaseServe):
         self._system_app.app.include_router(
             router, prefix=self._api_prefix, tags=self._api_tags
         )
+        # Agent 成长模型路由
+        self._system_app.app.include_router(
+            agent_maturity_router,
+            prefix=self._api_prefix,
+            tags=[*self._api_tags, "AgentMaturity"],
+        )
+        # Agent 职能角色路由
+        self._system_app.app.include_router(
+            agent_roles_router,
+            prefix=self._api_prefix,
+            tags=[*self._api_tags, "AgentRole"],
+        )
         self._config = self._config or ServeConfig.from_app_config(
             system_app.config, SERVE_CONFIG_KEY_PREFIX
         )
         init_endpoints(self._system_app, self._config)
+        # 注册 AgentMaturityService(设置其 api global_system_app)
+        init_agent_maturity_endpoints(self._system_app, self._config)
+        # 注册 AgentRoleService(职能角色分配/查询/团队装配)
+        init_agent_roles_endpoints(self._system_app, self._config)
         self._app_has_initiated = True
 
     def on_init(self):
         """Import models so SQLAlchemy registers them."""
+        from .agent_maturity.models import AgentMaturityEntity  # noqa: F401
+        from .agent_roles import WorkspaceAgentRoleEntity  # noqa: F401
         from .inbox.models import InboxItemEntity  # noqa: F401
         from .models.models import (  # noqa: F401
             WorkspaceEntity,
@@ -74,10 +100,14 @@ class Serve(BaseServe):
             WorkspaceResourceEntity.__tablename__,
             WorkspaceConversationLinkEntity.__tablename__,
             InboxItemEntity.__tablename__,
+            AgentMaturityEntity.__tablename__,
+            WorkspaceAgentRoleEntity.__tablename__,
         ]))
 
     def before_start(self):
         """Create tables on startup."""
+        from .agent_maturity.models import AgentMaturityEntity  # noqa: F401
+        from .agent_roles import WorkspaceAgentRoleEntity  # noqa: F401
         from .inbox.models import InboxItemEntity  # noqa: F401
         from .models.models import (  # noqa: F401
             WorkspaceEntity,

@@ -8,7 +8,11 @@ import asyncio
 import logging
 from typing import Any, List, Optional
 
-from gyra.agent.util.media_gen.base import MediaGenProvider, MediaGenResult
+from gyra.agent.util.media_gen.base import (
+    MediaGenProvider,
+    MediaGenResult,
+    download_media_with_retry,
+)
 from gyra.agent.util.media_gen.provider_registry import MediaGenProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -114,13 +118,14 @@ class OpenAIVideoProvider(MediaGenProvider):
                     if not video_url:
                         raise ValueError(f"Job completed but no video URL: {status}")
 
-                    # Step 3: Download video
+                    # Step 3: Download video (validated)
                     logger.info(f"[OpenAIVideoProvider] Downloading video from {video_url}")
-                    dl_resp = await client.get(video_url)
-                    dl_resp.raise_for_status()
+                    video_data = await download_media_with_retry(
+                        client, video_url, kind="video", provider="openai_video"
+                    )
 
                     return MediaGenResult(
-                        data=dl_resp.content,
+                        data=video_data,
                         format="mp4",
                         mime_type="video/mp4",
                         duration_seconds=float(duration),

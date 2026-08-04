@@ -417,6 +417,120 @@ def _assemble_scene_resources(ext_info, conv_uid: str):
     )
 
 
+def _extract_user_text(user_input) -> str:
+    """从 user_input 抽取纯文本(支持 str / OpenAI 消息对象 / content blocks)。"""
+    if not user_input:
+        return ""
+    if isinstance(user_input, str):
+        return user_input
+    # OpenAI 消息对象: {"role": "user", "content": "..."} 或 content blocks 列表
+    content = user_input.get("content") if isinstance(user_input, dict) else None
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict) and p.get("type") == "text":
+                parts.append(p.get("text", ""))
+            elif isinstance(p, str):
+                parts.append(p)
+        return " ".join(parts)
+    return ""
+
+
+def _maybe_set_initial_title(
+    conv_uid: str, workspace_id, task_id, user_input,
+) -> Optional[str]:
+    """A: 大厅会话(workspace_id 有 / task_id 无)首条消息写入初始标题。
+
+    返回写入的 title(表示这是首条消息,B 应跟进),或 None(非大厅/已有标题/空输入)。
+    """
+    if not workspace_id or task_id is not None:
+        return None
+    text = _extract_user_text(user_input).strip()
+    if not text:
+        return None
+    try:
+        from gyra_serve.workspace.service.service import (
+            WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService,
+        )
+        ws_service = CFG.SYSTEM_APP.get_component(
+            WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService,
+        )
+        # 仅在 title 为空时写入;已有标题(手重命名/B 已生成)不覆盖
+        before = ws_service.get_conversation_title(conv_uid)
+        if (before or "").strip():
+            return None
+        return ws_service.set_initial_title_if_empty(conv_uid, text)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[conv_title] A set initial title failed: {e}")
+        return None
+
+
+async def _delayed_generate_llm_title(
+    conv_uid: str, user_text: str, previous_title: str,
+    max_attempts: int = 10, interval: float = 3.0,
+) -> None:
+    """B: 轮询等待首轮 AI 回复出现,再调 LLM 生成摘要标题覆盖 A 的初始标题。
+
+    - ASYNC 模式下 Agent 在后台运行,首条 AI 回复延迟写入 chat_history;
+      这里轻量轮询(最多 ~30s),拿到回复后生成标题,拿不到则保留 A 的初始标题。
+    - 调用 WorkspaceService.generate_title_from_llm,内部仅在 title 仍等于
+      previous_title 时覆盖,避免覆盖用户手动重命名。
+    """
+    from gyra.storage.chat_history.chat_history_db import ChatHistoryMessageDao
+    from gyra_serve.workspace.service.service import (
+        WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService,
+    )
+    try:
+        ws_service = CFG.SYSTEM_APP.get_component(
+            WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    dao = ChatHistoryMessageDao()
+    ai_reply = None
+    for _ in range(max_attempts):
+        await asyncio.sleep(interval)
+        try:
+            items = dao.get_messages_by_conv_uid(conv_uid)
+        except Exception:  # noqa: BLE001
+            items = None
+        if items:
+            # 优先取 "ai" 类型消息的文本;其次取 "view" 消息(VIS 内容)
+            for item in reversed(items):
+                detail = item.message_detail or {}
+                msg_type = detail.get("type")
+                if msg_type in ("ai", "assistant"):
+                    content = detail.get("data", {}).get("content", "")
+                    if content and isinstance(content, str):
+                        ai_reply = content
+                        break
+            if not ai_reply:
+                for item in reversed(items):
+                    detail = item.message_detail or {}
+                    if detail.get("type") == "view":
+                        content = detail.get("data", {}).get("content", "")
+                        if content and isinstance(content, str):
+                            ai_reply = content
+                            break
+            if ai_reply:
+                break
+    if not ai_reply:
+        return
+    try:
+        await ws_service.generate_title_from_llm(
+            conv_uid=conv_uid,
+            user_input=user_text,
+            ai_reply=ai_reply,
+            previous_title=previous_title,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[conv_title] B LLM title generation failed: {e}")
+
+
 def _format_stream_error_frame(err: Exception) -> str:
     """流式响应中途异常的兜底错误帧:保证前端收到 vis error 事件而非连接裸断,
     已流式内容得以保留,末尾展示错误原因。"""
@@ -492,6 +606,21 @@ async def chat_completions(
         in_message = HumanMessage.parse_chat_completion_message(
             dialogue.user_input, ignore_unknown_media=True
         )
+
+        # 方案 C - A: 大厅会话首条消息写入初始标题(用户输入截断);
+        # B: 若 A 写入了标题,后台延迟调 LLM 生成摘要标题覆盖。
+        _ws_id = dialogue.ext_info.get("workspace_id")
+        _task_id = dialogue.ext_info.get("task_id")
+        _initial_title = _maybe_set_initial_title(
+            dialogue.conv_uid, _ws_id, _task_id, dialogue.user_input,
+        )
+        if _initial_title:
+            _user_text = _extract_user_text(dialogue.user_input)
+            asyncio.create_task(_delayed_generate_llm_title(
+                conv_uid=dialogue.conv_uid,
+                user_text=_user_text,
+                previous_title=_initial_title,
+            ))
 
         # 处理文件输入：提取文件引用并增强消息
         sandbox_file_refs = []

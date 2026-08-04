@@ -370,7 +370,7 @@ export default function DatabaseAddModal({
       open={open}
       onCancel={handleClose}
       width={600}
-      destroyOnClose
+      destroyOnHidden
       className="db-modal"
       footer={
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

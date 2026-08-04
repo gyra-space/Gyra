@@ -1,26 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
-  <!-- Gyra Logo: 三同心圆 + 三缺口错位 = LLM/Agent/Biz 三层循环 -->
-  <!-- 配色: 午夜蓝 #0B1F3A / 香槟金 #C9A961 / 暖象牙白 #F8F4ED -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="60 60 880 880" width="1000" height="1000">
+  <!-- Gyra favicon: 三环设计, 透明背景 -->
+  <!-- 主色: indigo #4f46e5 -->
+  <!-- 几何(实测自 gyra_logo_3loop_oxblood.jpg): 外环圆心(500,473.4) r270.8 底部缺口51-129°; 中环圆心(500,520.8) r178.1 偏心整圆; 圆点(500,538.2) r64.6 -->
+  <!-- viewBox 裁剪至 60..940, 图标视觉占比更大 -->
 
-  <!-- 背景 -->
-  <rect width="1000" height="1000" fill="#F8F4ED"/>
+  <!-- 外环: 缺口在底部 51°-129°, dasharray 实现 (C=1701.5, 缺口368.7) -->
+  <circle cx="500" cy="473.4" r="270.8" fill="none" stroke="#4f46e5"
+          stroke-width="36.5" stroke-dasharray="1332.8 368.7" stroke-dashoffset="1091.8"/>
 
-  <!-- 外圈 (Biz Loop): 最粗, 缺口在顶部 270°, 跨度 24° -->
-  <!-- 起点 258° -> 终点 282°, 顺时针大弧 -->
-  <path d="M 420.99 128.30 A 380 380 0 1 1 579.01 128.30"
-        fill="none" stroke="#0B1F3A" stroke-width="26" stroke-linecap="round"/>
+  <!-- 中环: 偏心整圆 -->
+  <circle cx="500" cy="520.8" r="178.1" fill="none" stroke="#4f46e5" stroke-width="14.6"/>
 
-  <!-- 中圈 (Agent Loop): 中等, 缺口在左下 210°, 跨度 24° -->
-  <!-- 起点 198° -> 终点 222°, 顺时针大弧 -->
-  <path d="M 252.72 419.65 A 260 260 0 1 1 306.78 326.03"
-        fill="none" stroke="#0B1F3A" stroke-width="19" stroke-linecap="round"/>
-
-  <!-- 内圈 (LLM Loop): 最细, 缺口在右下 330°, 跨度 24° -->
-  <!-- 起点 318° -> 终点 342°, 顺时针大弧 -->
-  <path d="M 611.47 399.63 A 150 150 0 1 1 642.66 453.65"
-        fill="none" stroke="#0B1F3A" stroke-width="13" stroke-linecap="round"/>
-
-  <!-- 香槟金领先边: 外圈缺口后的旋转领先点 (282° -> 300°) -->
-  <path d="M 579.01 128.30 A 380 380 0 0 1 690 170.91"
-        fill="none" stroke="#C9A961" stroke-width="26" stroke-linecap="round"/>
+  <!-- 圆点 -->
+  <circle cx="500" cy="538.2" r="64.6" fill="#4f46e5"/>
 </svg>

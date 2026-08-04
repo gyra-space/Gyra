@@ -13,6 +13,7 @@ from ..dataset_service import WorkspaceDatasetService
 from .schemas import (
     HomeWorkspaceRequest,
     RenameConversationRequest,
+    SceneModeSetRequest,
     SetCurrentConversationRequest,
     WorkspaceListFilter,
     WorkspaceMemberListRequest,
@@ -33,6 +34,7 @@ from ..inbox import (
     InboxService,
 )
 from ..service.service import WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService as Service
+from ..rbac import Permission, require_permission
 
 router = APIRouter()
 
@@ -130,7 +132,8 @@ async def get_workspace(
 
 
 @router.post("/workspaces/update", response_model=Result[WorkspaceResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_permission(Permission.UPDATE_WORKSPACE))])
 async def update_workspace(
     request: WorkspaceRequest, service: Service = Depends(get_service),
 ) -> Result[WorkspaceResponse]:
@@ -280,6 +283,82 @@ async def get_workspace_growth(
         return Result.failed(str(e))
 
 
+# ----------------------- Scene Mode (场景空间模式) -----------------------
+def _scene_mode_config_to_dict(config) -> dict:
+    """SceneModeConfig -> 可序列化 dict。"""
+    return {
+        "mode": config.mode.value,
+        "name": config.name,
+        "description": config.description,
+        "agent_tools": list(config.agent_tools),
+        "output_asset_types": list(config.output_asset_types),
+        "lobby_component": config.lobby_component,
+        "requires_playbook": config.requires_playbook,
+        "allows_inline": config.allows_inline,
+    }
+
+
+@router.get("/scene_modes/list", response_model=Result,
+            dependencies=[Depends(check_api_key)])
+async def list_scene_modes() -> Result:
+    """列出所有可用场景空间模式及其配置。"""
+    try:
+        from ..scene_modes import SceneModeService
+
+        svc = SceneModeService()
+        return Result.succ([_scene_mode_config_to_dict(c) for c in svc.list_configs()])
+    except Exception as e:
+        logger.exception("scene mode list exception!")
+        return Result.failed(str(e))
+
+
+@router.get("/workspaces/{workspace_id}/scene_mode", response_model=Result,
+            dependencies=[Depends(check_api_key)])
+async def get_workspace_scene_mode(
+    workspace_id: int,
+    service: Service = Depends(get_service),
+) -> Result:
+    """查看 workspace 的场景空间模式及配置。"""
+    try:
+        from ..scene_modes import SceneModeService
+
+        svc = SceneModeService(dao=service.dao)
+        mode = svc.get_mode(workspace_id)
+        config = svc.get_config(mode)
+        return Result.succ({
+            "workspace_id": workspace_id,
+            "mode": mode.value,
+            "config": _scene_mode_config_to_dict(config),
+        })
+    except Exception as e:
+        logger.exception("scene mode get exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/workspaces/{workspace_id}/scene_mode", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def set_workspace_scene_mode(
+    workspace_id: int,
+    request: SceneModeSetRequest,
+    service: Service = Depends(get_service),
+) -> Result:
+    """设置 workspace 的场景空间模式。"""
+    try:
+        from ..scene_modes import SceneMode, SceneModeService
+
+        svc = SceneModeService(dao=service.dao)
+        mode = svc.set_mode(workspace_id, SceneMode(request.mode))
+        config = svc.get_config(mode)
+        return Result.succ({
+            "workspace_id": workspace_id,
+            "mode": mode.value,
+            "config": _scene_mode_config_to_dict(config),
+        })
+    except Exception as e:
+        logger.exception("scene mode set exception!")
+        return Result.failed(str(e))
+
+
 # ----------------------- Conversation Link -----------------------
 @router.post("/conversations/link", response_model=Result,
              dependencies=[Depends(check_api_key)])
@@ -292,6 +371,7 @@ async def link_conversation(
             conv_uid=request.get("conv_uid"),
             task_id=request.get("task_id"),
             user_id=request.get("user_id"),
+            title=request.get("title"),
         ))
     except Exception as e:
         logger.exception("conversation link exception!")

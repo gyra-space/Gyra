@@ -4,26 +4,31 @@ import { apiInterceptors } from '@/client/api';
 import {
   EcpAssetRef,
   EcpReadiness,
+  deleteEcpAsset,
   generateEcpProposals,
   getEcpReadiness,
   listEcpAssets,
   registerEcpAsset,
 } from '@/client/api/ecp';
-import { listSpaces } from '@/client/api/knowledge-vault';
-import { getDbList } from '@/client/api/request';
+import { createSpace, listSpaces } from '@/client/api/knowledge-vault';
+import { getDbList, getDbSupportType } from '@/client/api/request';
 import {
   ApiOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
   DatabaseOutlined,
+  DeleteOutlined,
   ExperimentOutlined,
+  ExportOutlined,
   FileTextOutlined,
   PlusOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { App, Button, Input, Modal, Select, Spin } from 'antd';
+import { Alert, App, Button, Input, Modal, Popconfirm, Select, Space, Spin } from 'antd';
 import { useState } from 'react';
+import Link from 'next/link';
+import DatabaseAddModal from '@/app/database/components/DatabaseAddModal';
 
 import { Dot, EcpEmpty } from './common';
 
@@ -93,14 +98,18 @@ function resolveAssetTitle(
 function AssetCard({
   asset,
   onGenerate,
+  onDelete,
   generating,
+  deleting,
   index,
   dbList,
   spaceList,
 }: {
   asset: EcpAssetRef;
   onGenerate: (a: EcpAssetRef) => void;
+  onDelete: (a: EcpAssetRef) => void;
   generating: boolean;
+  deleting: boolean;
   index: number;
   dbList?: any[];
   spaceList?: any[];
@@ -147,6 +156,22 @@ function AssetCard({
           <Dot kind={asset.status === 'active' ? 'ecp-dot--success' : 'ecp-dot--neutral'} />
           {asset.status}
         </span>
+        <Popconfirm
+          title="移除该资产引用？"
+          description="仅从 ECP 工作空间移除引用，不会删除原始数据源/空间。"
+          okText="移除"
+          cancelText="取消"
+          okButtonProps={{ danger: true, loading: deleting }}
+          onConfirm={() => onDelete(asset)}
+        >
+          <Button
+            size="small"
+            type="text"
+            danger
+            icon={<DeleteOutlined />}
+            loading={deleting}
+          />
+        </Popconfirm>
       </div>
 
       <div
@@ -193,6 +218,10 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
   const [genAsset, setGenAsset] = useState<EcpAssetRef | null>(null);
   const [domainHint, setDomainHint] = useState<string>();
   const [genReadiness, setGenReadiness] = useState<EcpReadiness | null>(null);
+  // 资源闭环:登记 Modal 内内联创建(数据库/知识空间)
+  const [addDbOpen, setAddDbOpen] = useState(false);
+  const [newSpaceSlug, setNewSpaceSlug] = useState('');
+  const [creatingSpace, setCreatingSpace] = useState(false);
 
   const { data: assets, loading, refresh } = useRequest(
     async () => {
@@ -205,12 +234,20 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
     { refreshDeps: [workspaceId] },
   );
 
-  const { data: dbList } = useRequest(async () => {
+  const { data: dbList, refresh: refreshDbList } = useRequest(async () => {
     const [err, res] = await apiInterceptors(getDbList());
     return err ? [] : res ?? [];
   });
 
-  const { data: spaceList } = useRequest(async () => {
+  // 数据库类型(内联创建数据源时按类型渲染表单)
+  const { data: supportTypes } = useRequest(async () => {
+    const [err, res] = await apiInterceptors(getDbSupportType());
+    if (err) return [];
+    const types = (res as any)?.types || res || [];
+    return Array.isArray(types) ? types : [];
+  });
+
+  const { data: spaceList, refresh: refreshSpaces } = useRequest(async () => {
     const [err, res] = await apiInterceptors(listSpaces());
     return err ? [] : (res as any[]) ?? [];
   });
@@ -251,6 +288,20 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
     { manual: true },
   );
 
+  // 内联创建知识空间:创建后自动选中为登记目标,一步登记引用。
+  const handleCreateSpace = async () => {
+    const slug = newSpaceSlug.trim();
+    if (!slug) { message.warning('请输入知识空间标识'); return; }
+    setCreatingSpace(true);
+    const [err] = await apiInterceptors(createSpace({ slug }));
+    setCreatingSpace(false);
+    if (err) { message.error(`创建失败:${err.message}`); return; }
+    message.success('知识空间已创建,已自动选中,点「登记」即可引用');
+    setNewSpaceSlug('');
+    refreshSpaces();
+    setRefId(slug);
+  };
+
   const { run: openGenerate, loading: checking } = useRequest(
     async (asset: EcpAssetRef) => {
       const [err, res] = await apiInterceptors(
@@ -259,6 +310,18 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
       if (err) throw err;
       setGenReadiness(res ?? null);
       setGenAsset(asset);
+    },
+    { manual: true },
+  );
+
+  const { run: doDelete, loading: deleting } = useRequest(
+    async (asset: EcpAssetRef) => {
+      const [err] = await apiInterceptors(
+        deleteEcpAsset(asset.id, asset.workspace_id),
+      );
+      if (err) throw err;
+      message.success('已从 ECP 工作空间移除资产引用');
+      refresh();
     },
     { manual: true },
   );
@@ -273,7 +336,10 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
           domain_hint: domainHint || undefined,
         }),
       );
-      if (err) throw err;
+      if (err) {
+        message.error(`生成提案失败：${err.message || err}`);
+        return;
+      }
       message.success(
         `提案完成：处理 ${res?.tables_processed ?? 0} 张表，生成 ${res?.proposals_created ?? 0} 条提案，请到收件箱确认`,
       );
@@ -284,9 +350,8 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
   );
 
   // Workspace-level proposal generation: runs the configured proposal Agent over
-  // ALL registered assets (assets passed as dynamic resources). Requires a
-  // proposal_agent_id configured in ECP settings; otherwise the backend falls
-  // back to per-datasource batch (which needs datasource_id, so this errors).
+  // ALL registered assets when proposal_agent_id is set; otherwise the backend
+  // iterates all registered DB assets with the batch proposer automatically.
   const { run: doGenerateAll, loading: generatingAll } = useRequest(
     async () => {
       const [err, res] = await apiInterceptors(
@@ -295,7 +360,10 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
           domain_hint: domainHint || undefined,
         }),
       );
-      if (err) throw err;
+      if (err) {
+        message.error(`生成提案失败：${err.message || err}`);
+        return;
+      }
       if ((res?.errors ?? []).length > 0 && !res?.proposals_created) {
         message.warning(`提案未生成：${res?.errors?.[0] ?? '未知原因'}`);
         return;
@@ -380,6 +448,8 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
               index={i}
               generating={checking}
               onGenerate={asset => openGenerate(asset)}
+              onDelete={asset => doDelete(asset)}
+              deleting={deleting}
               dbList={dbList}
               spaceList={spaceList}
             />
@@ -410,29 +480,116 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
             }))}
           />
           <span style={{ fontSize: 13 }}>引用目标：</span>
-          {kind === 'db' || kind === 'space' ? (
-            <Select
-              showSearch
-              style={{ width: '100%' }}
-              placeholder={kind === 'db' ? '选择数据源' : '选择知识空间'}
-              value={refId}
-              onChange={setRefId}
-              options={refOptions}
-            />
+          {kind === 'db' ? (
+            <>
+              <Space.Compact style={{ width: '100%' }}>
+                <Select
+                  showSearch
+                  style={{ flex: 1, minWidth: 0 }}
+                  placeholder="选择已有数据源"
+                  value={refId}
+                  onChange={setRefId}
+                  options={refOptions}
+                />
+                <Button icon={<PlusOutlined />} onClick={() => setAddDbOpen(true)}>
+                  新建
+                </Button>
+              </Space.Compact>
+              {(refOptions ?? []).length === 0 && (
+                <span style={{ fontSize: 12, color: 'var(--ink-400)' }}>
+                  还没有可选数据源,点「新建」创建一个。
+                </span>
+              )}
+            </>
+          ) : kind === 'space' ? (
+            <>
+              <Select
+                showSearch
+                style={{ width: '100%' }}
+                placeholder="选择知识空间"
+                value={refId}
+                onChange={setRefId}
+                options={refOptions}
+              />
+              <div style={{ borderTop: '1px solid var(--border-subtle, #f0f0f0)', paddingTop: 8 }}>
+                <div style={{ fontSize: 12, color: 'var(--ink-400)', marginBottom: 4 }}>
+                  没有合适的?新建一个
+                </div>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input
+                    placeholder="空间标识(slug),如 team-wiki"
+                    value={newSpaceSlug}
+                    onChange={e => setNewSpaceSlug(e.target.value)}
+                    onPressEnter={handleCreateSpace}
+                  />
+                  <Button type="primary" loading={creatingSpace} onClick={handleCreateSpace}>
+                    创建并选中
+                  </Button>
+                </Space.Compact>
+              </div>
+            </>
+          ) : kind === 'document' ? (
+            <>
+              <Input
+                placeholder="space_slug:verbat_id"
+                value={refId}
+                onChange={e => setRefId(e.target.value)}
+              />
+              <Alert
+                type="info"
+                showIcon
+                message={
+                  <span>
+                    文档引用需指定「知识空间:文档ID」。可在
+                    <Link href="/knowledge-vault" target="_blank">
+                      {' '}知识库模块{' '}
+                      <ExportOutlined />
+                    </Link>
+                    上传文档后复制 verbat_id。
+                  </span>
+                }
+              />
+            </>
           ) : (
-            <Input
-              placeholder={
-                kind === 'document' ? 'space_slug:verbat_id' : 'api_resource_id（P3 开放）'
-              }
-              value={refId}
-              onChange={e => setRefId(e.target.value)}
-            />
+            <>
+              <Input
+                placeholder="api_resource_id（P3 开放）"
+                value={refId}
+                onChange={e => setRefId(e.target.value)}
+              />
+              <Alert
+                type="info"
+                showIcon
+                message={
+                  <span>
+                    API 资源 ID 需在
+                    <Link href="/application/app" target="_blank">
+                      {' '}应用模块{' '}
+                      <ExportOutlined />
+                    </Link>
+                    注册后获取。
+                  </span>
+                }
+              />
+            </>
           )}
           <span style={{ fontSize: 12, color: 'var(--ink-400)' }}>
-            登记只建立引用，不复制任何数据。
+            登记只建立引用,不复制任何数据。
           </span>
         </div>
       </Modal>
+
+      {/* 内联创建数据库:复用数据库模块创建表单,创建后刷新列表 */}
+      <DatabaseAddModal
+        open={addDbOpen}
+        supportTypes={(supportTypes ?? []) as any}
+        onCancel={() => setAddDbOpen(false)}
+        onSuccess={() => {
+          setAddDbOpen(false);
+          refreshDbList();
+          message.success('数据库已创建,请在列表中选择并登记');
+        }}
+      />
 
       <Modal
         title={`生成语义提案（${genAsset?.ref_id ?? ''}）`}

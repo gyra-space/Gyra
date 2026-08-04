@@ -142,3 +142,56 @@ def test_run_task_detached_skips_run_task_when_no_playbook(monkeypatch):
 
     task_service.start.assert_called_once_with(entity.id)
     run_task_mock.assert_not_called()
+
+
+def test_inline_mode_skips_detached_run_and_returns_declaration(monkeypatch):
+    """内联模式(inline_conv_uid 非空):不启动 detached run_task,
+    直接调 task_service.start,返回 inline=True 和剧本声明。"""
+    from gyra_serve.workspace.agent_tools import _task_creator
+
+    entity = _make_task_entity(eid=7, title="营收分析", playbook_id=3)
+    playbook = MagicMock()
+    playbook.name = "营收分析"
+    playbook.declaration = {
+        "deliverables": [{"name": "report", "type": "markdown"}],
+        "instructions": "分析本周营收数据",
+    }
+    system_app, task_service = _make_system_app(entity, playbook=playbook)
+
+    created_tasks = []
+
+    def fake_create_task(coro):
+        created_tasks.append(coro)
+        return asyncio.ensure_future(coro)
+
+    monkeypatch.setattr(_task_creator.asyncio, "create_task", fake_create_task)
+    run_task_mock = MagicMock()
+    monkeypatch.setattr(_task_creator.playbook_runtime, "run_task", run_task_mock)
+
+    result = _task_creator.create_task_from_tool(
+        system_app=system_app,
+        workspace_id=10,
+        user_id="123",
+        playbook_id=3,
+        title="营收分析",
+        description=None,
+        model_name="test-provider/test-model",
+        inline_conv_uid="current-conv-uid",
+    )
+
+    # 内联模式:status=running,inline=True,declaration 已返回
+    assert result["task_id"] == 7
+    assert result["status"] == "running"
+    assert result["inline"] is True
+    assert result["playbook_name"] == "营收分析"
+    assert result["declaration"]["deliverables"][0]["name"] == "report"
+
+    # task_service.start 被直接调用(不是通过 detached _run_task_detached)
+    task_service.start.assert_called_once_with(entity.id)
+
+    # run_task 未被调用(没有 detached 启动)
+    run_task_mock.assert_not_called()
+
+    # 只有标题总结的 detached 任务被创建(不是 run_task)
+    # created_tasks 应该只有 1 个(title summarization),不是 2 个
+    assert len(created_tasks) == 1

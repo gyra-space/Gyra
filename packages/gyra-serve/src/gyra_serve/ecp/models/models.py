@@ -14,6 +14,7 @@ Five tables (docs/ECP.md 3.1 + v1.2 edge table):
 
 import logging
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import (
@@ -844,6 +845,89 @@ class AssetRefDao(BaseDao[EcpAssetRefEntity, Any, Any]):
             )
             if entity:
                 entity.last_checked_at = datetime.now()
+
+    def delete(self, ref_pk: int) -> bool:
+        """Delete an asset reference by its primary key.
+
+        ECP owns only the reference, so deletion here does NOT touch the
+        original asset (DB / space / document) — it just unregisters it
+        from the workspace. Returns True if a row was removed.
+        """
+        with self.session() as session:
+            count = (
+                session.query(EcpAssetRefEntity)
+                .filter(EcpAssetRefEntity.id == ref_pk)
+                .delete(synchronize_session=False)
+            )
+        return count > 0
+
+    def delete_in_workspace(
+        self, ref_pk: int, workspace_id: str
+    ) -> Optional[EcpAssetRefEntity]:
+        """Delete an asset reference scoped to a workspace.
+
+        Returns the removed entity (kind + ref_id for op-log) if a row was
+        removed, None otherwise. Scoping by workspace prevents one workspace
+        from dropping another workspace's ref by guessing its primary key.
+        """
+        with self.session() as session:
+            entity = (
+                session.query(EcpAssetRefEntity)
+                .filter(
+                    EcpAssetRefEntity.id == ref_pk,
+                    EcpAssetRefEntity.workspace_id == workspace_id,
+                )
+                .first()
+            )
+            if not entity:
+                return None
+            kind, ref_id = entity.kind, entity.ref_id
+            session.delete(entity)
+            return SimpleNamespace(kind=kind, ref_id=ref_id)
+
+    def delete_by_ref(
+        self,
+        kind: str,
+        ref_id: str,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> int:
+        """Delete all asset references matching (workspace_id, kind, ref_id).
+
+        Used by the cascade hooks when an original asset (DB / space) is
+        deleted in its owning module — ECP must drop the dangling reference
+        so it doesn't keep showing up in the asset list. Returns the number
+        of rows removed.
+        """
+        with self.session() as session:
+            count = (
+                session.query(EcpAssetRefEntity)
+                .filter(
+                    EcpAssetRefEntity.workspace_id == workspace_id,
+                    EcpAssetRefEntity.kind == kind,
+                    EcpAssetRefEntity.ref_id == ref_id,
+                )
+                .delete(synchronize_session=False)
+            )
+        return int(count)
+
+    def delete_by_ref_all_workspaces(self, kind: str, ref_id: str) -> int:
+        """Delete all asset references matching (kind, ref_id) across ALL workspaces.
+
+        Used by the cascade hooks when an original asset (DB / space) is
+        deleted in its owning module — the owning module doesn't know which
+        ECP workspaces referenced it, so we sweep all of them to avoid
+        dangling refs. Returns the number of rows removed.
+        """
+        with self.session() as session:
+            count = (
+                session.query(EcpAssetRefEntity)
+                .filter(
+                    EcpAssetRefEntity.kind == kind,
+                    EcpAssetRefEntity.ref_id == ref_id,
+                )
+                .delete(synchronize_session=False)
+            )
+        return int(count)
 
 
 def _to_asset_ref_vo(e: EcpAssetRefEntity) -> AssetRefVO:

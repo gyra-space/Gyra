@@ -2,13 +2,12 @@
 
 import { useEffect, useRef } from 'react';
 import { Alert, Button, Spin } from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
+import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { WorkspaceEvent } from '@/hooks/use-chat';
 import type { AgentStep } from './agent-types';
 import { AgentWorkspaceInput } from './agent-workspace-input';
 import { AgentWorkspaceRenderer } from './agent-workspace-renderer';
-import { ConversationSwitcher } from './conversation-switcher';
-import type { AgentWorkspaceInputHandle } from './agent-workspace-types';
+import type { AgentWorkspaceInputHandle, WorkspaceDeliverableFile } from './agent-workspace-types';
 import { useSceneAgentChat } from './use-scene-agent-chat';
 
 export interface AgentWorkspaceProps {
@@ -19,9 +18,14 @@ export interface AgentWorkspaceProps {
   focus?: { id: number; title: string } | null;
   onClearFocus?: () => void;
   onClearContext?: () => void;
+  /** header「新会话」入口:任务对话模式下不传(任务会话与任务绑定,不可另开) */
+  onNewSession?: () => void;
   onStepClick?: (step: AgentStep) => void;
+  /** 点击执行记录结尾的交付文件卡片:在中间容器渲染文件内容 */
+  onDeliverableClick?: (file: WorkspaceDeliverableFile) => void;
+  /** 点击对话记录中的任务卡片:进入任务对话 */
+  onTaskClick?: (taskId: number) => void;
   onWorkspaceEvent?: (event: WorkspaceEvent) => void;
-  onConvChanged?: (convUid: string, taskId?: number | null) => void;
   inputRef?: React.Ref<AgentWorkspaceInputHandle>;
   switchingTask?: boolean;
   convLoadError?: string | null;
@@ -37,9 +41,11 @@ export function AgentWorkspace({
   focus,
   onClearFocus,
   onClearContext,
+  onNewSession,
   onStepClick,
+  onDeliverableClick,
+  onTaskClick,
   onWorkspaceEvent,
-  onConvChanged,
   inputRef: inputRefProp,
   switchingTask,
   convLoadError,
@@ -76,16 +82,20 @@ export function AgentWorkspace({
         <span className="ws-agent-workspace__header-title">
           {taskId ? `任务 #${taskId} · Agent` : 'Agent 空间'}
         </span>
-        {onConvChanged && !taskId && workspaceId && convUid && (
-          <ConversationSwitcher
-            workspaceId={Number(workspaceId)}
-            currentConvUid={convUid}
-            onChanged={onConvChanged}
-          />
-        )}
         <span className="ws-agent-workspace__header-state">
           {running ? '运行中…' : error ? '出错了' : convState === 'FAILED' ? '已失败' : '就绪'}
         </span>
+        {onNewSession && !taskId && (
+          <button
+            type="button"
+            className="ws-agent-workspace__new-session"
+            onClick={onNewSession}
+            title="开启新会话(历史会话可在左侧任务列表中回溯)"
+          >
+            <PlusOutlined />
+            <span>新会话</span>
+          </button>
+        )}
       </div>
       <div className="ws-agent-workspace__process">
         {error && <Alert message={error} type="error" showIcon className="ws-agent-workspace__error" />}
@@ -123,8 +133,11 @@ export function AgentWorkspace({
                 action_input: s.action_input,
                 output: s.output,
                 step_type: s.type,
+                exhibit: s.exhibit || undefined,
               },
             }) : undefined}
+            onDeliverableClick={onDeliverableClick}
+            onTaskClick={onTaskClick}
           />
         )}
       </div>

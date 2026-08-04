@@ -66,6 +66,14 @@ class WorkspaceEntity(Model):
     description = Column(Text, nullable=True)
     type = Column(String(32), nullable=False, default="scenario", comment="scenario / team")
     scenario_type = Column(String(64), nullable=True, comment="sre / data_ops / ...")
+    # 场景空间模式:task_execution/decision_discussion/knowledge_curation/
+    # continuous_monitoring。NULL 视为默认 task_execution(兼容历史数据)。
+    scene_mode = Column(
+        String(32),
+        nullable=True,
+        default="task_execution",
+        comment="task_execution/decision_discussion/knowledge_curation/continuous_monitoring",
+    )
     owner_user_id = Column(Integer, nullable=False)
     default_agent_app_code = Column(String(255), nullable=True)
     settings_json = Column(Text, nullable=True)
@@ -367,6 +375,7 @@ class WorkspaceDao(BaseDao[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]
             description=entity.description,
             type=entity.type,
             scenario_type=entity.scenario_type,
+            scene_mode=entity.scene_mode,
             owner_user_id=entity.owner_user_id,
             default_agent_app_code=entity.default_agent_app_code,
             settings=_load_json(entity.settings_json),
@@ -381,6 +390,7 @@ class WorkspaceDao(BaseDao[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]
             description=entity.description,
             type=entity.type,
             scenario_type=entity.scenario_type,
+            scene_mode=entity.scene_mode or "task_execution",
             owner_user_id=entity.owner_user_id,
             default_agent_app_code=entity.default_agent_app_code,
             settings=_load_json(entity.settings_json),

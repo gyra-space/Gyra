@@ -84,8 +84,10 @@ async def generate_proposals(
     (assets passed as dynamic resources -> DBCapability injects db info + table
     list; Agent explores each via get_table_spec / sample_distinct_values /
     propose_semantic in its ReAct loop). Otherwise fall back to the batch
-    proposer (``DbSemanticsProposer``) for a single datasource. All proposals
-    land in ``proposed`` (confirmation gate unchanged).
+    proposer (``DbSemanticsProposer``): with a ``datasource_id`` it runs on a
+    single datasource; without one it iterates over **all registered DB assets**
+    of the workspace so the "generate for all assets" button works without an
+    agent. All proposals land in ``proposed`` (confirmation gate unchanged).
     """
     try:
         cfg = service.get_workspace_config(request.workspace_id)
@@ -104,24 +106,48 @@ async def generate_proposals(
         )
         return Result.succ(result)
 
-    # Batch fallback: requires a datasource_id (per-asset).
-    if not request.datasource_id:
-        return Result.failed(
-            msg="未配置提案 Agent 时需指定 datasource_id(单资产批处理);"
-            "或在 ECP 设置配置提案 Agent 后做工作空间级生成"
-        )
-
+    # Batch fallback: per-datasource proposer (DbSemanticsProposer).
     from ..service.propose import DbSemanticsProposer
 
     proposer = DbSemanticsProposer(service)
-    result = await proposer.generate(
-        datasource_id=request.datasource_id,
-        workspace_id=request.workspace_id,
-        table_names=request.table_names,
-        max_tables=request.max_tables,
-        domain_hint=request.domain_hint,
-    )
-    return Result.succ(result)
+
+    # Single datasource: run the proposer directly.
+    if request.datasource_id:
+        result = await proposer.generate(
+            datasource_id=request.datasource_id,
+            workspace_id=request.workspace_id,
+            table_names=request.table_names,
+            max_tables=request.max_tables,
+            domain_hint=request.domain_hint,
+        )
+        return Result.succ(result)
+
+    # No datasource_id and no agent: iterate over ALL registered DB assets
+    # in the workspace so the "为所有资产生成提案" button works out of the box.
+    assets = service.list_assets(workspace_id=request.workspace_id, kind="db")
+    if not assets:
+        return Result.failed(
+            msg="工作空间未登记 DB 资产,无法批量生成提案;"
+            "请先登记数据源,或在 ECP 设置配置提案 Agent"
+        )
+    aggregated = GenerateProposalsVO(datasource_id=0)
+    for asset in assets:
+        try:
+            ds_id = int(asset.ref_id)
+        except (TypeError, ValueError):
+            continue
+        sub = await proposer.generate(
+            datasource_id=ds_id,
+            workspace_id=request.workspace_id,
+            table_names=request.table_names,
+            max_tables=request.max_tables,
+            domain_hint=request.domain_hint,
+        )
+        aggregated.tables_processed += sub.tables_processed
+        aggregated.proposals_created += sub.proposals_created
+        aggregated.proposal_ids.extend(sub.proposal_ids)
+        aggregated.errors.extend(sub.errors)
+    return Result.succ(aggregated)
 
 
 # -------------------------------------------------------------------- inbox
@@ -424,6 +450,27 @@ async def list_assets(
     service: Service = Depends(get_service),
 ) -> Result[List[AssetRefVO]]:
     return Result.succ(service.list_assets(workspace_id=workspace_id, kind=kind))
+
+
+@router.delete("/assets/{asset_id}", response_model=Result[bool])
+async def remove_asset(
+    asset_id: int,
+    workspace_id: Optional[str] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[bool]:
+    """Unregister an asset reference from a workspace.
+
+    ECP owns only the reference, so this does NOT delete the original asset
+    (DB / space / document) — it just removes it from the workspace's asset
+    list. The original asset must be deleted in its owning module.
+    """
+    try:
+        ok = service.remove_asset(asset_id, workspace_id=workspace_id)
+        if not ok:
+            return Result.failed(msg=f"Asset ref {asset_id} not found in workspace")
+        return Result.succ(True)
+    except Exception as e:  # noqa: BLE001
+        return Result.failed(msg=str(e))
 
 
 @router.get("/readiness", response_model=Result[ReadinessVO])

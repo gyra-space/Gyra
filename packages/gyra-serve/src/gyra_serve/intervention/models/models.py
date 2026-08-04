@@ -43,7 +43,8 @@ class InterventionEntity(Model):
     task_id = Column(Integer, nullable=True, index=True)
     conv_uid = Column(String(255), nullable=True, index=True)
     workspace_id = Column(Integer, nullable=False, index=True)
-    type = Column(String(32), nullable=False, default="review")
+    type = Column(String(32), nullable=False, default="review",
+                  comment="介入类型: approve/review(阻塞阀门) | coach/escalate/reconcile/attest(扩展评委动作)")
     status = Column(String(32), nullable=False, default="requested")
     requested_by = Column(String(32), nullable=False, default="system")
     assignee_user_id = Column(Integer, nullable=True, index=True, comment="该谁来处理(事前),≠resolved_by_user_id(事后)")

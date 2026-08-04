@@ -113,6 +113,13 @@ def register_serve_apps(
             "gyra.app.global.encrypt_key", app_config.system.encrypt_key
         )
 
+    # ################################ Flywheel Shared Event Bus #####################
+    # 飞轮体系共享事件总线: 必须在所有飞轮服务(资产成熟度/Agent成长/Trace/演化/评测)
+    # 注册之前装配, 确保各服务 init_app 时能取到同一条 bus, 事件跨服务联动。
+    from gyra.distributed import SharedEventBusComponent
+
+    system_app.register(SharedEventBusComponent)
+
     # ################################ Prompt Serve Register Begin ####################
     from gyra_serve.prompt.serve import (
         Serve as PromptServe,

@@ -377,6 +377,40 @@
   color: var(--ws-ink-3);
 }
 
+/* ArtifactPreview 文件元信息 + 操作按钮 */
+.ws-preview__file-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--ws-bg);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: var(--ws-radius-sm, 8px);
+  margin-bottom: 10px;
+  font-size: 12.5px;
+  color: var(--ws-ink);
+}
+
+.ws-preview__file-meta .anticon {
+  color: var(--ws-ink-3);
+  font-size: 14px;
+}
+
+.ws-preview__file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-preview__file-size {
+  font-size: 11px;
+  color: var(--ws-ink-3);
+  font-family: var(--ws-mono);
+  flex-shrink: 0;
+}
+
 /* Agent 面板头部(状态条) */
 .ws-agent-workspace__header {
   display: flex;
@@ -422,6 +456,38 @@
   flex-shrink: 0;
 }
 
+/* header「新会话」入口:ghost pill,hover 时 accent 描边+浅底 */
+.ws-agent-workspace__new-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ws-ink-2);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all var(--ws-transition);
+}
+
+.ws-agent-workspace__new-session .anticon {
+  font-size: 11px;
+}
+
+.ws-agent-workspace__new-session:hover {
+  color: var(--ws-accent);
+  border-color: var(--ws-accent);
+  background: var(--ws-accent-light);
+}
+
+.ws-agent-workspace__new-session:active {
+  transform: scale(0.96);
+}
+
 /* === Agent workspace renderer (scene agent 右侧步骤/文本展示) === */
 .ws-agent-renderer {
   display: flex;
@@ -430,24 +496,503 @@
   min-width: 0;
 }
 
-.ws-agent-renderer__planning {
-  padding: 10px 12px;
-  border: 1px solid var(--ws-border-subtle);
-  border-radius: var(--ws-radius-sm);
-  background: var(--ws-accent-light);
+/* 执行记录结尾:交付文件卡片(类似 vis manus left panel 结尾) */
+.ws-agent-renderer__deliverables {
+  margin-top: 10px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--ws-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.ws-agent-renderer__goal {
+.ws-agent-renderer__deliverables-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 2px;
+  font-size: 11px;
+  color: var(--ws-ink-3);
+}
+
+.ws-agent-renderer__deliverables-badge {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--ws-success);
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+.ws-agent-renderer__deliverables-title {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ws-agent-renderer__deliverables-count {
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--ws-mono);
+  color: var(--ws-ink-3);
+  background: var(--ws-bg);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.ws-deliverable-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--ws-surface);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease, background 0.16s ease;
+}
+
+.ws-deliverable-card:hover {
+  border-color: rgba(var(--ws-accent-rgb), 0.35);
+  background: rgba(var(--ws-accent-rgb), 0.04);
+  box-shadow: var(--ws-shadow-sm);
+  transform: translateY(-1px);
+}
+
+.ws-deliverable-card__icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  background: var(--ws-bg);
+  border: 1px solid var(--ws-border-subtle);
+}
+
+.ws-deliverable-card__info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ws-deliverable-card__name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-deliverable-card__meta {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--ws-ink-3);
+}
+
+.ws-deliverable-card__type {
+  text-transform: uppercase;
+  font-family: var(--ws-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+/* hover 浮现的下载图标按钮(不触发卡片打开) */
+.ws-deliverable-card__download {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ws-ink-3);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s ease, color 0.16s ease, background 0.16s ease;
+}
+
+.ws-deliverable-card:hover .ws-deliverable-card__download {
+  opacity: 1;
+}
+
+.ws-deliverable-card__download:hover {
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.1);
+}
+
+.ws-deliverable-card__chevron {
+  color: var(--ws-ink-3);
+  font-size: 11px;
+  flex-shrink: 0;
+  transition: transform 0.16s ease, color 0.16s ease;
+}
+
+.ws-deliverable-card:hover .ws-deliverable-card__chevron {
+  transform: translateX(2px);
+  color: var(--ws-accent);
+}
+
+/* ═══ Task card (in-conversation task_created step) ═══ */
+.ws-task-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  background: var(--ws-surface);
+  border: 1px solid rgba(var(--ws-accent-rgb), 0.25);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease, background 0.16s ease;
+}
+
+.ws-task-card:hover {
+  border-color: rgba(var(--ws-accent-rgb), 0.5);
+  box-shadow: var(--ws-shadow-sm);
+  transform: translateY(-1px);
+}
+
+.ws-task-card--running {
+  border-color: rgba(var(--ws-accent-rgb), 0.45);
+  background: linear-gradient(120deg, rgba(var(--ws-accent-rgb), 0.06), transparent 65%);
+}
+
+.ws-task-card--failed {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.03);
+}
+
+.ws-task-card__status-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+}
+
+.ws-task-card__badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.09);
+  border: 1px solid rgba(var(--ws-accent-rgb), 0.18);
+}
+
+.ws-task-card__info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ws-task-card__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-task-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--ws-ink-3);
+  flex-wrap: wrap;
+}
+
+.ws-task-card__id {
+  font-family: var(--ws-mono);
+  color: var(--ws-ink-2);
+}
+
+.ws-task-card__playbook {
+  color: var(--ws-accent);
+  font-weight: 500;
+}
+
+.ws-task-card__trigger {
+  text-transform: uppercase;
+  font-family: var(--ws-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+.ws-task-card__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--ws-mono);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ws-task-card__status::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ws-task-card__status--running,
+.ws-task-card__status--pending_trigger {
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.1);
+}
+
+.ws-task-card__status--delivered,
+.ws-task-card__status--done,
+.ws-task-card__status--closed {
+  color: var(--ws-success);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.ws-task-card__status--failed {
+  color: var(--ws-danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.ws-task-card__status--awaiting_human {
+  color: #d97706;
+  background: rgba(217, 119, 6, 0.1);
+}
+
+.ws-task-card__chevron {
+  color: var(--ws-ink-3);
+  font-size: 11px;
+  flex-shrink: 0;
+  transition: transform 0.16s ease, color 0.16s ease;
+}
+
+.ws-task-card:hover .ws-task-card__chevron {
+  transform: translateX(2px);
+  color: var(--ws-accent);
+}
+
+/* === 任务计划卡片:目标 + 进度 + rail 步骤节点 === */
+.ws-plan {
+  padding: 12px 14px;
+  border: 1px solid rgba(var(--ws-accent-rgb), 0.18);
+  border-radius: 12px;
+  background: linear-gradient(160deg, rgba(var(--ws-accent-rgb), 0.05), rgba(var(--ws-accent-rgb), 0.015) 55%, transparent);
+}
+
+.ws-plan__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.ws-plan__badge {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.1);
+  border: 1px solid rgba(var(--ws-accent-rgb), 0.2);
+  margin-top: 1px;
+}
+
+.ws-plan__head-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ws-plan__label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ws-accent);
+  opacity: 0.85;
+}
+
+.ws-plan__goal {
   font-size: 13px;
   font-weight: 600;
   color: var(--ws-ink);
-  margin-bottom: 6px;
+  line-height: 1.45;
+  margin-top: 1px;
 }
 
-.ws-agent-renderer__plan-step {
-  font-size: 12px;
+.ws-plan__count {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: var(--ws-mono);
   color: var(--ws-ink-2);
-  line-height: 1.6;
+  background: var(--ws-surface);
+  border: 1px solid var(--ws-border-subtle);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.ws-plan__count--done {
+  color: var(--ws-success);
+  border-color: rgba(34, 197, 94, 0.3);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.ws-plan__bar {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(var(--ws-accent-rgb), 0.12);
+  margin: 10px 0 2px;
+  overflow: hidden;
+}
+
+.ws-plan__bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(var(--ws-accent-rgb), 0.7), var(--ws-accent));
+  transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ws-plan__bar-fill--done {
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.7), var(--ws-success));
+}
+
+.ws-plan__bar-fill--failed {
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.65), var(--ws-danger));
+}
+
+.ws-plan__steps {
+  margin-top: 8px;
+}
+
+.ws-plan-step {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+/* 节点间连接导轨 */
+.ws-plan-step:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 18px;
+  bottom: -5px;
+  width: 1.5px;
+  background: var(--ws-border-subtle);
+}
+
+.ws-plan-step__node {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  width: 13.5px;
+  height: 13.5px;
+  border-radius: 50%;
+  border: 2px solid var(--ws-border);
+  background: var(--ws-surface);
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.ws-plan-step--done .ws-plan-step__node {
+  border-color: var(--ws-success);
+  background: var(--ws-success);
+}
+
+/* 完成勾:纯 CSS 绘制 */
+.ws-plan-step--done .ws-plan-step__node::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0.5px;
+  width: 3.5px;
+  height: 6.5px;
+  border: solid #fff;
+  border-width: 0 1.6px 1.6px 0;
+  transform: rotate(45deg);
+}
+
+.ws-plan-step--running .ws-plan-step__node {
+  border-color: var(--ws-accent);
+  animation: ws-plan-node-pulse 1.6s ease-in-out infinite;
+}
+
+.ws-plan-step--running .ws-plan-step__node::after {
+  content: '';
+  position: absolute;
+  inset: 2.2px;
+  border-radius: 50%;
+  background: var(--ws-accent);
+}
+
+@keyframes ws-plan-node-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--ws-accent-rgb), 0.26); }
+  50% { box-shadow: 0 0 0 4px rgba(var(--ws-accent-rgb), 0.07); }
+}
+
+.ws-plan-step--failed .ws-plan-step__node {
+  border-color: var(--ws-danger);
+  background: var(--ws-danger);
+}
+
+/* 失败叉:两条 CSS 斜线 */
+.ws-plan-step--failed .ws-plan-step__node::before,
+.ws-plan-step--failed .ws-plan-step__node::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 1.6px;
+  border-radius: 1px;
+  background: #fff;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.ws-plan-step--failed .ws-plan-step__node::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.ws-plan-step__title {
+  font-size: 12.5px;
+  color: var(--ws-ink-2);
+  line-height: 1.5;
+}
+
+.ws-plan-step--running .ws-plan-step__title {
+  color: var(--ws-ink);
+  font-weight: 500;
+}
+
+.ws-plan-step--done .ws-plan-step__title {
+  color: var(--ws-ink-3);
 }
 
 .ws-agent-renderer__summary {
@@ -460,15 +1005,334 @@
   overflow-x: auto;
 }
 
-/* 空态引导 */
+/* 空态引导:图标 tile + 标题 + 提示 */
 .ws-agent-renderer__empty {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 48px 16px;
+  padding: 56px 20px;
+  text-align: center;
+}
+
+.ws-agent-renderer__empty-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.08);
+  border: 1px solid rgba(var(--ws-accent-rgb), 0.16);
+  box-shadow: 0 0 0 6px rgba(var(--ws-accent-rgb), 0.04);
+  margin-bottom: 14px;
+}
+
+.ws-agent-renderer__empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ws-ink-2);
+}
+
+.ws-agent-renderer__empty-hint {
+  font-size: 12px;
+  color: var(--ws-ink-3);
+  margin-top: 3px;
+}
+
+/* === AgentWorkspaceRenderer: 任务文件折叠条(单一 feed,默认收起零噪音) === */
+.ws-taskfiles {
+  margin-top: 2px;
+}
+
+.ws-taskfiles__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  margin-left: -8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ws-ink-3);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.ws-taskfiles__toggle:hover {
+  color: var(--ws-ink-2);
+  background: var(--ws-bg);
+}
+
+.ws-taskfiles__toggle-icon {
+  font-size: 12px;
+}
+
+.ws-taskfiles__count {
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--ws-mono);
+  color: var(--ws-ink-3);
+  background: var(--ws-border-subtle);
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 16px;
+}
+
+.ws-taskfiles__size {
+  font-family: var(--ws-mono);
+  font-size: 10.5px;
+  color: var(--ws-ink-3);
+}
+
+.ws-taskfiles__chevron {
+  font-size: 9px;
+  transition: transform 0.15s ease;
+}
+
+.ws-taskfiles__chevron--up {
+  transform: rotate(180deg);
+}
+
+.ws-taskfiles__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+/* 交付文件 iframe / image / video */
+.ws-renderer__deliverable-iframe {
+  width: 100%;
+  border: 0;
+  min-height: 500px;
+  height: calc(100vh - 200px);
+}
+
+.ws-renderer__deliverable-image-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.ws-renderer__deliverable-image {
+  max-width: 100%;
+  max-height: 600px;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.08);
+}
+
+.ws-renderer__deliverable-video-wrap {
+  padding: 16px;
+}
+
+.ws-renderer__deliverable-video {
+  width: 100%;
+  border-radius: 8px;
+}
+
+/* 空面板 */
+.ws-renderer__empty-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
   text-align: center;
   color: var(--ws-ink-3);
+  gap: 8px;
+}
+
+.ws-renderer__empty-hint {
+  font-size: 13px;
+  color: var(--ws-ink-3);
+}
+
+.ws-renderer__download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 14px;
+  background: var(--ws-surface);
+  color: var(--ws-ink-2);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: border-color .15s, color .15s, background .15s;
+}
+
+.ws-renderer__download-btn:hover {
+  color: var(--ws-accent);
+  border-color: rgba(var(--ws-accent-rgb), 0.4);
+  background: rgba(var(--ws-accent-rgb), 0.05);
+}
+
+/* 头部功能图标按钮(分享/打印/导出/下载):幽灵风格,hover 淡底色 */
+.ws-exhibit__tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ws-ink-3);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color .15s, background .15s;
+}
+
+.ws-exhibit__tool:hover:not(:disabled) {
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.08);
+}
+
+.ws-exhibit__tool:disabled {
+  cursor: default;
+  opacity: .6;
+}
+
+.ws-preview__head-tools {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* 任务文件列表行(折叠条展开后) */
+.ws-renderer__file-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  transition: background .15s;
+}
+
+.ws-renderer__file-item:hover { background: var(--ws-bg); }
+
+.ws-renderer__file-item--openable { cursor: pointer; }
+
+.ws-renderer__file-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.ws-renderer__file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.ws-renderer__file-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-renderer__file-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.ws-renderer__file-meta > span:first-child {
+  font-size: 11px;
+  color: var(--ws-ink-3);
+}
+
+.ws-renderer__file-type {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.ws-renderer__file-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity .15s;
+}
+
+.ws-renderer__file-item:hover .ws-renderer__file-actions { opacity: 1; }
+
+.ws-renderer__file-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--ws-ink-3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  font-size: 13px;
+  transition: all .15s;
+}
+
+.ws-renderer__file-action:hover {
+  color: var(--ws-accent);
+  background: var(--ws-accent-light);
+}
+
+/* 交付文件内容: code / text(markdown 摘要走 .ws-agent-renderer__summary) */
+.ws-renderer__code {
+  padding: 16px 20px;
+}
+
+.ws-renderer__code-header {
+  padding: 6px 12px;
+  background: #1e293b;
+  color: #94a3b8;
+  font-size: 12px;
+  border-radius: 8px 8px 0 0;
+}
+
+.ws-renderer__code-pre {
+  margin: 0;
+  padding: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 13px;
+  border-radius: 0 0 8px 8px;
+  overflow-x: auto;
+  max-height: 600px;
+  overflow-y: auto;
+  white-space: pre;
+}
+
+.ws-renderer__text {
+  padding: 16px 20px;
+}
+
+.ws-renderer__text-pre {
+  margin: 0;
+  padding: 16px;
+  background: var(--ws-bg);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--ws-ink);
+  overflow-x: auto;
+  max-height: 600px;
+  overflow-y: auto;
+  white-space: pre-wrap;
 }
 
 
@@ -684,11 +1548,12 @@
 }
 
 .ws-step-user__bubble {
-  max-width: 88%;
-  padding: 8px 12px;
-  border-radius: 12px 12px 4px 12px;
-  background: var(--ws-accent-light);
-  border: 1px solid rgba(var(--ws-accent-rgb), 0.22);
+  max-width: 86%;
+  padding: 9px 13px;
+  border-radius: 14px 14px 5px 14px;
+  background: linear-gradient(150deg, rgba(var(--ws-accent-rgb), 0.12), rgba(var(--ws-accent-rgb), 0.07));
+  border: 1px solid rgba(var(--ws-accent-rgb), 0.2);
+  box-shadow: 0 1px 2px rgba(var(--ws-accent-rgb), 0.06);
   color: var(--ws-ink);
   font-size: 13px;
   line-height: 1.55;
@@ -696,49 +1561,98 @@
   word-break: break-word;
 }
 
-/* 工具步骤行 */
+/* 状态圆点 chip:18px 柔色底 + 语义 glyph */
+.ws-status-chip {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+
+.ws-status-chip--running {
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.12);
+  animation: ws-status-halo 1.6s ease-in-out infinite;
+}
+
+@keyframes ws-status-halo {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--ws-accent-rgb), 0.22); }
+  50% { box-shadow: 0 0 0 4px rgba(var(--ws-accent-rgb), 0.06); }
+}
+
+.ws-status-chip--done {
+  color: var(--ws-success);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.ws-status-chip--failed {
+  color: var(--ws-danger);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+/* 工具步骤行:类型 tile + 标题 + 状态 chip + chevron */
 .ws-step {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   padding: 8px 10px;
-  border-radius: var(--ws-radius-sm);
+  border-radius: 10px;
   border: 1px solid var(--ws-border-subtle);
   background: var(--ws-surface);
   cursor: pointer;
-  transition: border-color var(--ws-transition), background var(--ws-transition);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease, background 0.16s ease;
 }
 
 .ws-step:hover {
-  border-color: var(--ws-accent);
+  border-color: rgba(var(--ws-accent-rgb), 0.45);
+  box-shadow: var(--ws-shadow-sm);
+  transform: translateY(-1px);
 }
 
+/* 运行中:accent 渐变底 + 微光扫过 */
 .ws-step--running {
-  border-color: rgba(var(--ws-accent-rgb), 0.5);
-  background: rgba(var(--ws-accent-rgb), 0.05);
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(var(--ws-accent-rgb), 0.4);
+  background: linear-gradient(90deg, rgba(var(--ws-accent-rgb), 0.06), rgba(var(--ws-accent-rgb), 0.02));
 }
 
-.ws-step__icon {
-  flex-shrink: 0;
-  font-size: 13px;
+.ws-step--running::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, rgba(var(--ws-accent-rgb), 0.07) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: ws-step-sweep 2.2s linear infinite;
+  pointer-events: none;
 }
 
-.ws-step__icon--running { color: var(--ws-accent); }
-.ws-step__icon--done { color: var(--ws-success); }
-.ws-step__icon--failed { color: var(--ws-danger); }
+@keyframes ws-step-sweep {
+  0% { background-position: 180% 0; }
+  100% { background-position: -80% 0; }
+}
+
+.ws-step--failed {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.03);
+}
 
 .ws-step__badge {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
-  font-size: 11px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  font-size: 12px;
   color: var(--ws-accent);
-  background: var(--ws-accent-light);
-  border: 1px solid rgba(var(--ws-accent-rgb), 0.22);
+  background: rgba(var(--ws-accent-rgb), 0.09);
+  border: 1px solid rgba(var(--ws-accent-rgb), 0.16);
 }
 
 .ws-step__title {
@@ -746,7 +1660,6 @@
   min-width: 0;
   font-size: 12.5px;
   font-weight: 500;
-  font-family: var(--ws-mono);
   color: var(--ws-ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -757,56 +1670,107 @@
   flex-shrink: 0;
   font-size: 10px;
   color: var(--ws-ink-3);
+  transition: transform 0.16s ease, color 0.16s ease;
 }
 
-/* 思考/阶段回复块 */
+.ws-step:hover .ws-step__chevron {
+  transform: translateX(2px);
+  color: var(--ws-accent);
+}
+
+/* 思考/阶段回复块:左侧渐变 hairline + amber tile */
 .ws-step-think {
-  padding: 6px 10px;
-  border-left: 2px solid var(--ws-border);
-  margin-left: 4px;
+  position: relative;
+  padding: 8px 10px 8px 12px;
+  margin-left: 5px;
+}
+
+.ws-step-think::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, rgba(var(--ws-attention-rgb), 0.45), rgba(var(--ws-attention-rgb), 0.1));
+}
+
+.ws-step-think--running::before {
+  background: linear-gradient(180deg, var(--ws-attention), rgba(var(--ws-attention-rgb), 0.12));
 }
 
 .ws-step-think__head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 2px;
+  gap: 7px;
+  margin-bottom: 3px;
 }
 
-.ws-step-think__icon {
-  font-size: 12px;
+.ws-step-think__badge {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
   color: var(--ws-attention);
+  background: var(--ws-attention-light);
+  border: 1px solid rgba(var(--ws-attention-rgb), 0.2);
 }
 
 .ws-step-think__label {
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
-  color: var(--ws-ink-3);
+  color: var(--ws-ink-2);
+  letter-spacing: 0.01em;
 }
 
 .ws-step-think__text {
   font-size: 12.5px;
   color: var(--ws-ink-2);
-  line-height: 1.6;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
+/* 折叠:3 行截断 + 底部渐隐,提示还有更多 */
 .ws-step-think__text--clamp {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, #000 58%, rgba(0, 0, 0, 0.22));
+  mask-image: linear-gradient(180deg, #000 58%, rgba(0, 0, 0, 0.22));
 }
 
 .ws-step-think__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 0;
+  border: none;
+  background: transparent;
   font-size: 11px;
+  font-weight: 500;
   color: var(--ws-accent);
   cursor: pointer;
 }
 
 .ws-step-think__toggle:hover {
   text-decoration: underline;
+}
+
+.ws-step-think__toggle-icon {
+  font-size: 9px;
+  transition: transform 0.18s ease;
+}
+
+.ws-step-think__toggle-icon--up {
+  transform: rotate(180deg);
 }
 
 
@@ -849,4 +1813,133 @@
 }
 .ws-rail-card--orphan {
   border-left: 3px solid #f59e0b;
+}
+
+/* === 大厅容器折叠:Agent 空间占满主区,专注执行进展 === */
+.ws-scene-shell__space-toggle {
+  display: inline-flex;
+  position: absolute;
+  z-index: 40;
+  top: 50%;
+  transform: translateY(-50%);
+  right: calc(var(--ws-agent-w) + 6px);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--ws-surface);
+  border: 1px solid var(--ws-border-subtle);
+  box-shadow: var(--ws-shadow-sm);
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--ws-ink-2);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  transition: right 0.25s ease, color var(--ws-transition), border-color var(--ws-transition);
+}
+.ws-scene-shell__space-toggle:hover {
+  color: var(--ws-accent);
+  border-color: var(--ws-accent);
+}
+/* 折叠后开关贴到右缘(agent 区占满) */
+.ws-scene-shell--space-collapsed .ws-scene-shell__space-toggle {
+  right: 8px;
+}
+/* 折叠期间新内容到达:角标提示 */
+.ws-scene-shell__space-toggle--new::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ws-accent);
+  box-shadow: 0 0 0 2px var(--ws-surface);
+  animation: ws-rail-pulse 1.6s ease-in-out infinite;
+}
+
+/* 宽屏(≥1280): rail | agent(1fr) */
+@media (min-width: 1280px) {
+  .ws-scene-shell--space-collapsed {
+    grid-template-columns: var(--ws-rail-w) minmax(0, 1fr);
+  }
+}
+/* 中屏(900–1279): rail 是抽屉不占列,折叠后仅 agent 一列 */
+@media (min-width: 900px) and (max-width: 1279px) {
+  .ws-scene-shell--space-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ws-scene-shell__space-toggle {
+    right: 366px;
+  }
+  .ws-scene-shell--space-collapsed .ws-scene-shell__space-toggle {
+    right: 8px;
+  }
+}
+@media (min-width: 900px) {
+  .ws-scene-shell--space-collapsed .ws-scene-shell__space {
+    display: none;
+  }
+}
+/* 小屏:顶部 tab 切换已覆盖布局,隐藏折叠开关 */
+@media (max-width: 899px) {
+  .ws-scene-shell__space-toggle {
+    display: none;
+  }
+}
+
+/* === 大厅通用 Exhibit 宿主 === */
+.ws-exhibit {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+}
+.ws-exhibit__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ws-exhibit__head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+.ws-exhibit__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ws-exhibit__body > * {
+  flex: 1;
+  min-height: 0;
+}
+.ws-exhibit__state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 16px;
+  color: var(--ws-ink-3);
+  font-size: 12.5px;
+  text-align: center;
+}
+.ws-exhibit__table {
+  padding: 4px 0;
+  overflow: auto;
+}
+.ws-exhibit__audio {
+  padding: 24px 16px;
+}
+.ws-exhibit__slides-images {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  align-items: center;
 }

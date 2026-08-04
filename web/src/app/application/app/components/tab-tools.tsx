@@ -321,8 +321,10 @@ export default function TabToolsManagement() {
           };
           updatedTools = [...filtered, toResourceToolFormat(toolResource as ToolResource)];
         } else {
-          // 解绑：从列表中移除
-          updatedTools = baseTools.filter((item: any) => {
+          // 解绑：默认工具写入 tombstone 记录（value 带 unbound: true），
+          // 用于区分"显式解绑"与"清单缺失"，防止默认绑定状态被旧数据覆盖；
+          // 非默认工具直接从列表中移除
+          const filtered = baseTools.filter((item: any) => {
             try {
               const parsed = JSON.parse(item.value || '{}');
               return (parsed.tool_id || parsed.key) !== toolId;
@@ -330,6 +332,22 @@ export default function TabToolsManagement() {
               return true;
             }
           });
+          if (tool.is_default) {
+            const toolResource: Partial<ToolResource> = {
+              tool_id: tool.tool_id,
+              name: tool.name,
+              display_name: tool.display_name,
+              description: tool.description,
+              category: tool.category || '',
+              source: tool.source || 'system',
+            };
+            updatedTools = [
+              ...filtered,
+              toResourceToolFormat(toolResource as ToolResource, { unbound: true }),
+            ];
+          } else {
+            updatedTools = filtered;
+          }
         }
 
         // 2. 先持久化到数据库
@@ -411,6 +429,23 @@ export default function TabToolsManagement() {
               source: tool.source || 'system',
             };
             updatedTools.push(toResourceToolFormat(toolResource as ToolResource));
+          }
+        } else {
+          // 批量解绑：默认工具写入 tombstone 记录（显式解绑标记），
+          // 非默认工具直接移除
+          for (const tool of group.tools) {
+            if (!tool.is_default) continue;
+            const toolResource: Partial<ToolResource> = {
+              tool_id: tool.tool_id,
+              name: tool.name,
+              display_name: tool.display_name,
+              description: tool.description,
+              category: tool.category || '',
+              source: tool.source || 'system',
+            };
+            updatedTools.push(
+              toResourceToolFormat(toolResource as ToolResource, { unbound: true })
+            );
           }
         }
 

@@ -804,9 +804,11 @@ class ConversableAgent(Role, Agent):
                     )
 
                     if entity and entity.resource_tool:
-                        tool_ids = self._parse_resource_tool_ids(entity.resource_tool)
-                        if tool_ids:
-                            return tool_ids
+                        bindings = self._parse_resource_tool_bindings(
+                            entity.resource_tool
+                        )
+                        if bindings:
+                            return bindings
 
                     # 查 published 配置
                     entity = (
@@ -820,7 +822,7 @@ class ConversableAgent(Role, Agent):
                     )
 
                     if entity and entity.resource_tool:
-                        return self._parse_resource_tool_ids(entity.resource_tool)
+                        return self._parse_resource_tool_bindings(entity.resource_tool)
 
                 return None
             except Exception as e:
@@ -829,38 +831,19 @@ class ConversableAgent(Role, Agent):
 
         tool_manager.set_load_callback(_load_tool_bindings_from_db)
 
+    def _parse_resource_tool_bindings(self, resource_tool_raw):
+        """解析 resource_tool 字段中的工具绑定清单（含 tombstone 解绑记录）"""
+        from gyra.agent.tools.tool_manager import parse_resource_tool_bindings
+
+        return parse_resource_tool_bindings(resource_tool_raw)
+
     def _parse_resource_tool_ids(self, resource_tool_raw) -> list:
-        """解析 resource_tool 字段中的工具ID列表"""
-        import json
+        """解析 resource_tool 字段中的工具ID列表
 
-        if not resource_tool_raw:
-            return None
-
-        resource_tool = resource_tool_raw
-        if isinstance(resource_tool, str):
-            try:
-                resource_tool = json.loads(resource_tool)
-            except json.JSONDecodeError:
-                return None
-
-        if not isinstance(resource_tool, list) or len(resource_tool) == 0:
-            return None
-
-        tool_ids = []
-        for item in resource_tool:
-            try:
-                value = item.get("value", "{}")
-                if isinstance(value, str):
-                    parsed = json.loads(value)
-                else:
-                    parsed = value
-                tool_id = parsed.get("tool_id") or parsed.get("key")
-                if tool_id:
-                    tool_ids.append(tool_id)
-            except (json.JSONDecodeError, AttributeError):
-                continue
-
-        return tool_ids if tool_ids else None
+        已废弃的兼容包装：请使用 _parse_resource_tool_bindings（支持 tombstone）。
+        """
+        bindings = self._parse_resource_tool_bindings(resource_tool_raw)
+        return bindings.bound_ids if bindings else None
 
     async def _inject_default_tools(self, sandbox_enabled: bool = False):
         """注入默认工具（当无绑定配置时）

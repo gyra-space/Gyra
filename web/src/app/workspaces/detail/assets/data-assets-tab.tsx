@@ -7,6 +7,7 @@ import {
   removeResource,
   updateResource,
   getDbList,
+  getDbSupportType,
 } from '@/client/api';
 import { listDatasets, uploadDataset } from '@/client/api/workspace';
 import { listEcpAssets } from '@/client/api/ecp';
@@ -17,7 +18,7 @@ import {
   uploadFile as uploadKnowledgeFile,
 } from '@/client/api/knowledge-vault';
 import {
-  App, Button, Empty, Input, Modal, Select, Spin, Switch, Tag, Upload,
+  App, Button, Empty, Input, Modal, Select, Space, Spin, Switch, Tag, Upload,
 } from 'antd';
 import {
   DatabaseOutlined,
@@ -27,10 +28,12 @@ import {
   BookOutlined,
   InboxOutlined,
   DeploymentUnitOutlined,
+  PlusOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useMemo, useState } from 'react';
 import dayjs from 'dayjs';
+import DatabaseAddModal from '@/app/database/components/DatabaseAddModal';
 import './assets.css';
 
 const DB_TYPE_COLOR: Record<string, string> = {
@@ -81,19 +84,31 @@ export function DataAssetsTab({
   const [uploadName, setUploadName] = useState('');
   const [fileOpen, setFileOpen] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  // 资源闭环:场景内内联创建(数据库/知识库)
+  const [addDbOpen, setAddDbOpen] = useState(false);
+  const [newSpaceSlug, setNewSpaceSlug] = useState('');
+  const [creatingSpace, setCreatingSpace] = useState(false);
 
   const { data: resources, loading, refresh } = useRequest(async () => {
     const [err, res] = await apiInterceptors(listResources({ workspace_id: workspaceId }));
     return err ? [] : res || [];
   }, { refreshDeps: [workspaceId] });
 
-  const { data: dbs } = useRequest(async () => {
+  const { data: dbs, refresh: refreshDbs } = useRequest(async () => {
     // 只列"本空间自持 + 全局"数据源(后端 owner_workspace_id 过滤)
     const [err, res] = await apiInterceptors(
       getDbList({ owner_workspace_id: workspaceId }),
     );
     return err ? [] : res || [];
   }, { refreshDeps: [workspaceId] });
+
+  // 数据库类型(内联创建数据源时按类型渲染表单)
+  const { data: supportTypes } = useRequest(async () => {
+    const [err, res] = await apiInterceptors(getDbSupportType());
+    if (err) return [];
+    const types = (res as any)?.types || res || [];
+    return Array.isArray(types) ? types : [];
+  });
 
   // 派生 ECP workspace 已入驻资产(语义层登记的数据源引用)
   const ecpWsId = workspaceCode ? `ecp_${workspaceCode}` : null;
@@ -353,6 +368,20 @@ export function DataAssetsTab({
     refreshAll();
   };
 
+  // 内联创建知识空间:创建后自动选中,点「挂载」即可一步绑定到空间。
+  const handleCreateSpace = async () => {
+    const slug = newSpaceSlug.trim();
+    if (!slug) { message.warning('请输入知识空间标识'); return; }
+    setCreatingSpace(true);
+    const [err] = await apiInterceptors(createSpace({ slug }));
+    setCreatingSpace(false);
+    if (err) { message.error(`创建失败:${err.message}`); return; }
+    message.success('知识空间已创建,已自动选中,点「挂载」即可绑定');
+    setNewSpaceSlug('');
+    refreshSpaces();
+    setSelectedSpace(slug);
+  };
+
   // ---------------- 启停 / 移除 ----------------
   const handleToggle = async (r: any, checked: boolean) => {
     const [err] = await apiInterceptors(updateResource({
@@ -530,21 +559,39 @@ export function DataAssetsTab({
         okText="接入空间"
       >
         <p className="text-sm text-gray-500 mb-3">
-          从全局数据源中选择一个接入本空间(引用,不复制数据)。新数据库请先在「数据库」模块创建。
+          从全局数据源中选择,或新建一个数据库 —— 全程在本空间内完成,无需跳转。
         </p>
-        <Select
-          style={{ width: '100%' }}
-          placeholder="选择数据源"
-          value={selectedDbId}
-          onChange={setSelectedDbId}
-          showSearch
-          optionFilterProp="label"
-          options={candidateDbs.map((d: any) => ({
-            value: String(d.id),
-            label: `${d.db_name} (${d.db_type}${d.db_host ? ` · ${d.db_host}` : ''})`,
-          }))}
-        />
+        <Space.Compact style={{ width: '100%' }}>
+          <Select
+            style={{ flex: 1, minWidth: 0 }}
+            placeholder="选择已有数据源"
+            value={selectedDbId}
+            onChange={setSelectedDbId}
+            showSearch
+            optionFilterProp="label"
+            options={candidateDbs.map((d: any) => ({
+              value: String(d.id),
+              label: `${d.db_name} (${d.db_type}${d.db_host ? ` · ${d.db_host}` : ''})`,
+            }))}
+          />
+          <Button icon={<PlusOutlined />} onClick={() => setAddDbOpen(true)}>新建</Button>
+        </Space.Compact>
+        {(candidateDbs || []).length === 0 && (
+          <p className="text-xs text-gray-400 mt-2">还没有可选数据源,点「新建」创建一个。</p>
+        )}
       </Modal>
+
+      {/* 内联创建数据库:复用数据库模块的创建表单,创建后刷新列表并提示选择 */}
+      <DatabaseAddModal
+        open={addDbOpen}
+        supportTypes={(supportTypes || []) as any}
+        onCancel={() => setAddDbOpen(false)}
+        onSuccess={() => {
+          setAddDbOpen(false);
+          refreshDbs();
+          message.success('数据库已创建,请在列表中选择并接入');
+        }}
+      />
 
       <Modal
         open={uploadOpen}
@@ -612,7 +659,7 @@ export function DataAssetsTab({
         okText="挂载"
       >
         <p className="text-sm text-gray-500 mb-3">
-          把知识空间挂载进来,Agent 即可检索其中的文档与经验。
+          把知识空间挂载进来,Agent 即可检索其中的文档与经验。没有合适的?在下方新建一个。
         </p>
         <Select
           style={{ width: '100%' }}
@@ -623,6 +670,22 @@ export function DataAssetsTab({
           optionFilterProp="label"
           options={candidateSpaces.map((s: any) => ({ value: s.slug, label: s.slug }))}
         />
+        <div className="mt-3 pt-3 border-t border-gray-100">
+          <div className="text-xs text-gray-500 mb-2">新建知识空间</div>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input
+              placeholder="输入空间标识(slug),如 team-wiki"
+              value={newSpaceSlug}
+              onChange={(e) => setNewSpaceSlug(e.target.value)}
+              onPressEnter={handleCreateSpace}
+            />
+            <Button
+              type="primary"
+              loading={creatingSpace}
+              onClick={handleCreateSpace}
+            >创建并选中</Button>
+          </Space.Compact>
+        </div>
       </Modal>
     </div>
   );

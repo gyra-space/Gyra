@@ -13,7 +13,12 @@ import asyncio
 import logging
 from typing import Any, List, Optional
 
-from gyra.agent.util.media_gen.base import MediaGenProvider, MediaGenResult
+from gyra.agent.util.media_gen.base import (
+    MediaGenProvider,
+    MediaGenResult,
+    MediaSubmission,
+    download_media_with_retry,
+)
 from gyra.agent.util.media_gen.provider_registry import MediaGenProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -81,6 +86,21 @@ class SeedanceVideoProvider(MediaGenProvider):
                 - image_url: First frame image URL for image-to-video generation.
                 - image_url_last: Last frame image URL for first-last-frame video generation.
                 - timeout: Max wait time in seconds (default 600).
+        """
+        submission = await self.submit_video(prompt, model, **kwargs)
+        return await submission.complete()
+
+    async def submit_video(
+        self,
+        prompt: str,
+        model: str = "doubao-seedance-1-0-pro-250428",
+        **kwargs: Any,
+    ) -> MediaSubmission:
+        """Submit a Seedance video task; return a resumable MediaSubmission.
+
+        The HTTP submit runs synchronously so immediate errors (auth, bad
+        params) surface now. Polling + download is deferred to
+        ``submission.complete()`` for background execution via MediaJobRegistry.
         """
         try:
             import httpx
@@ -156,30 +176,49 @@ class SeedanceVideoProvider(MediaGenProvider):
             f"image_to_video={'yes' if image_url else 'no'}"
         )
 
+        # Submit (short-lived client; poll/download use their own).
         async with httpx.AsyncClient(timeout=timeout) as client:
-            # Step 1: Submit generation task
             create_url = f"{base_url}{_CREATE_TASK_ENDPOINT}"
             submit_resp = await client.post(create_url, headers=headers, json=body)
-            submit_resp.raise_for_status()
+            if submit_resp.is_error:
+                # Surface Ark's error body (code/message) instead of the bare
+                # status line httpx would produce.
+                try:
+                    err = submit_resp.json()
+                except ValueError:
+                    err = {}
+                code = err.get("code", "")
+                msg = (
+                    err.get("message", "")
+                    or err.get("msg", "")
+                    or submit_resp.text[:200]
+                )
+                raise RuntimeError(
+                    f"Seedance request failed (HTTP {submit_resp.status_code}"
+                    f"{f' {code}' if code else ''}): {msg}"
+                )
             job = submit_resp.json()
 
-            task_id = job.get("id")
-            if not task_id:
-                raise ValueError(f"Seedance API returned no task ID: {job}")
+        task_id = job.get("id")
+        if not task_id:
+            raise ValueError(f"Seedance API returned no task ID: {job}")
 
-            logger.info(f"[SeedanceVideoProvider] Task created: {task_id}")
+        logger.info(f"[SeedanceVideoProvider] Task created: {task_id}")
 
-            # Step 2: Poll until complete
-            video_url = await self._poll_task(
-                client, base_url, task_id, timeout
-            )
-
-            # Step 3: Download video
-            logger.info(
-                f"[SeedanceVideoProvider] Downloading video from {video_url}"
-            )
-            dl_resp = await client.get(video_url)
-            dl_resp.raise_for_status()
+        async def _complete() -> MediaGenResult:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                # Poll until complete
+                video_url = await self._poll_task(
+                    client, base_url, task_id, timeout
+                )
+                # Download (validated: storage may transiently return an
+                # XML error body right after task completion)
+                logger.info(
+                    f"[SeedanceVideoProvider] Downloading video from {video_url}"
+                )
+                video_data = await download_media_with_retry(
+                    client, video_url, kind="video", provider="seedance"
+                )
 
             metadata: dict[str, Any] = {
                 "model": model,
@@ -196,12 +235,20 @@ class SeedanceVideoProvider(MediaGenProvider):
                 metadata["image_to_video"] = True
 
             return MediaGenResult(
-                data=dl_resp.content,
+                data=video_data,
                 format="mp4",
                 mime_type="video/mp4",
                 duration_seconds=float(duration),
                 metadata=metadata,
             )
+
+        return MediaSubmission(
+            task_id=task_id,
+            provider="seedance",
+            model=model,
+            complete=_complete,
+            metadata={"task_id": task_id, "model": model},
+        )
 
     async def _poll_task(
         self,

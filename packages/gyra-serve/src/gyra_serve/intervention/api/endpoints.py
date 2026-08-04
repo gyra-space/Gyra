@@ -9,11 +9,17 @@ from gyra.component import SystemApp
 from gyra_serve.core import Result
 
 from .schemas import (
-    InterventionListFilter, InterventionRequest, InterventionResolveRequest,
-    InterventionResponse,
+    AttestInterventionRequest, CoachInterventionRequest,
+    EscalateInterventionRequest, InterventionListFilter,
+    InterventionRequest, InterventionResolveRequest, InterventionResponse,
+    ReconcileInterventionRequest,
 )
 from ..config import ServeConfig
+from ..service.extended_modes import (
+    EXTENDED_INTERVENTION_SERVICE_COMPONENT_NAME, ExtendedInterventionService,
+)
 from ..service.service import INTERVENTION_SERVICE_COMPONENT_NAME, InterventionService
+from gyra_serve.workspace.rbac import Permission, require_permission
 
 router = APIRouter()
 global_system_app: Optional[SystemApp] = None
@@ -24,6 +30,14 @@ def get_service() -> InterventionService:
     if global_system_app is None:
         raise HTTPException(status_code=500, detail="System app not initialized")
     return global_system_app.get_component(INTERVENTION_SERVICE_COMPONENT_NAME, InterventionService)
+
+
+def get_extended_service() -> ExtendedInterventionService:
+    if global_system_app is None:
+        raise HTTPException(status_code=500, detail="System app not initialized")
+    return global_system_app.get_component(
+        EXTENDED_INTERVENTION_SERVICE_COMPONENT_NAME, ExtendedInterventionService
+    )
 
 
 get_bearer_token = HTTPBearer(auto_error=False)
@@ -83,7 +97,8 @@ async def get_intervention(
 
 @router.post("/interventions/{intervention_id}/resolve",
              response_model=Result[InterventionResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_permission(Permission.RESOLVE_INTERVENTION))])
 async def resolve_intervention(
     intervention_id: int, request: InterventionResolveRequest,
     service: InterventionService = Depends(get_service),
@@ -128,7 +143,71 @@ async def resolve_and_execute(
         return Result.failed(str(e))
 
 
+# --------------------------------------------------------------------------- #
+# 扩展介入模式(P1任务7): coach / escalate / reconcile / attest
+# --------------------------------------------------------------------------- #
+@router.post("/interventions/coach",
+             response_model=Result[InterventionResponse],
+             dependencies=[Depends(check_api_key)])
+async def create_coach_intervention(
+    request: CoachInterventionRequest,
+    extended_service: ExtendedInterventionService = Depends(get_extended_service),
+) -> Result[InterventionResponse]:
+    """创建coach纠偏介入(非阻塞,联动成熟度降级)。"""
+    try:
+        return Result.succ(await extended_service.create_coach(request))
+    except Exception as e:
+        logger.exception("intervention coach exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/interventions/escalate",
+             response_model=Result[InterventionResponse],
+             dependencies=[Depends(check_api_key)])
+async def create_escalate_intervention(
+    request: EscalateInterventionRequest,
+    extended_service: ExtendedInterventionService = Depends(get_extended_service),
+) -> Result[InterventionResponse]:
+    """创建escalate升级介入(可能阻塞,等待转交确认)。"""
+    try:
+        return Result.succ(await extended_service.create_escalate(request))
+    except Exception as e:
+        logger.exception("intervention escalate exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/interventions/reconcile",
+             response_model=Result[InterventionResponse],
+             dependencies=[Depends(check_api_key)])
+async def create_reconcile_intervention(
+    request: ReconcileInterventionRequest,
+    extended_service: ExtendedInterventionService = Depends(get_extended_service),
+) -> Result[InterventionResponse]:
+    """创建reconcile对账介入(可能阻塞,触发索引对账)。"""
+    try:
+        return Result.succ(await extended_service.create_reconcile(request))
+    except Exception as e:
+        logger.exception("intervention reconcile exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/interventions/attest",
+             response_model=Result[InterventionResponse],
+             dependencies=[Depends(check_api_key)])
+async def create_attest_intervention(
+    request: AttestInterventionRequest,
+    extended_service: ExtendedInterventionService = Depends(get_extended_service),
+) -> Result[InterventionResponse]:
+    """创建attest背书介入(非阻塞,联动成熟度晋升)。"""
+    try:
+        return Result.succ(await extended_service.create_attest(request))
+    except Exception as e:
+        logger.exception("intervention attest exception!")
+        return Result.failed(str(e))
+
+
 def init_endpoints(system_app: SystemApp, config: ServeConfig) -> None:
     global global_system_app
     system_app.register(InterventionService, config=config)
+    system_app.register(ExtendedInterventionService, config=config)
     global_system_app = system_app

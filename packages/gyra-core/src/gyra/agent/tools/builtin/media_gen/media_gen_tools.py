@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from gyra.agent.tools.base import ToolBase, ToolCategory, ToolRiskLevel, ToolSource
 from gyra.agent.tools.context import ToolContext
 from gyra.agent.tools.metadata import ToolMetadata
-from gyra.agent.tools.result import Artifact, ToolResult
+from gyra.agent.tools.result import Artifact, ResultStatus, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -670,6 +670,15 @@ class GenerateVideoTool(ToolBase):
                         "设为 false 生成无声视频"
                     ),
                 },
+                "wait": {
+                    "type": "boolean",
+                    "description": (
+                        "是否同步等待生成完成。默认 false(异步):提交后立即返回 job_id,"
+                        "后台生成,完成后自动通知(可用 check_media_job 主动查询)。"
+                        "设为 true:阻塞等待并在当次调用返回视频文件(向后兼容)。"
+                    ),
+                    "default": False,
+                },
                 "description": {
                     "type": "string",
                     "description": "交付文件描述 (可选)",
@@ -745,22 +754,86 @@ class GenerateVideoTool(ToolBase):
                 tool_name=self.name,
             )
 
-        # Generate video
+        # Collect all supported generation parameters
+        gen_kwargs = {}
+        for k in ("duration", "resolution", "aspect_ratio", "image_url",
+                  "image_url_last", "seed", "watermark", "camera_fixed",
+                  "generate_audio", "timeout"):
+            v = args.get(k)
+            if v is not None and v != "":
+                gen_kwargs[k] = v
+
+        # reference_images (list) — only pass when non-empty (HappyHorse r2v)
+        reference_images = args.get("reference_images")
+        if reference_images:
+            gen_kwargs["reference_images"] = reference_images
+
+        wait = bool(args.get("wait", False))
+
+        # Async path: provider supports submit_video and caller didn't request
+        # wait. Submit synchronously (immediate errors like 403 surface now),
+        # then poll+download in the background via MediaJobRegistry.
+        if not wait and hasattr(provider, "submit_video"):
+            try:
+                from gyra.agent.util.media_gen.media_job_registry import (
+                    MediaJobRegistry,
+                    MediaJobSpec,
+                )
+                submission = await provider.submit_video(prompt, model, **gen_kwargs)
+            except NotImplementedError:
+                return ToolResult.fail(
+                    error=f"模型 '{model}' (protocol={protocol}) 不支持视频生成",
+                    tool_name=self.name,
+                )
+            except Exception as e:
+                logger.error(f"[generate_video] Submit failed: {e}", exc_info=True)
+                return ToolResult.fail(
+                    error=f"视频生成提交失败: {e}",
+                    tool_name=self.name,
+                )
+
+            description = args.get("description", "").strip() or f"AI 生成视频: {prompt[:50]}"
+
+            async def _resume():
+                return await submission.complete()
+
+            async def _deliver(result):
+                fname = f"generated_video_{uuid.uuid4().hex[:8]}.{result.format}"
+                return await self._save_and_deliver(
+                    result, fname, description, context, prompt
+                )
+
+            conv_id = context.conversation_id if context else ""
+            job_id = MediaJobRegistry.instance().submit(
+                MediaJobSpec(
+                    conv_id=conv_id,
+                    kind="video",
+                    model=model,
+                    description=description,
+                    resume=_resume,
+                    deliver=_deliver,
+                    timeout=gen_kwargs.get("timeout", 600),
+                    poll_hint="~60-180s",
+                )
+            )
+            return ToolResult(
+                success=True,
+                status=ResultStatus.PENDING,
+                tool_name=self.name,
+                output=(
+                    f"⏳ 视频生成已提交到后台执行。\n"
+                    f"- job_id: {job_id}\n"
+                    f"- task_id: {submission.task_id}\n"
+                    f"- 模型: {model}\n"
+                    f"- 预计耗时: ~60-180s\n\n"
+                    f"生成完成后会自动通知。也可调用 "
+                    f'check_media_job(job_id="{job_id}") 主动查询。'
+                ),
+                metadata={"job_id": job_id, "task_id": submission.task_id, "model": model},
+            )
+
+        # Sync path (wait=True, or provider without submit_video e.g. Sora)
         try:
-            # Collect all supported generation parameters
-            gen_kwargs = {}
-            for k in ("duration", "resolution", "aspect_ratio", "image_url",
-                      "image_url_last", "seed", "watermark", "camera_fixed",
-                      "generate_audio", "timeout"):
-                v = args.get(k)
-                if v is not None and v != "":
-                    gen_kwargs[k] = v
-
-            # reference_images (list) — only pass when non-empty (HappyHorse r2v)
-            reference_images = args.get("reference_images")
-            if reference_images:
-                gen_kwargs["reference_images"] = reference_images
-
             result = await provider.generate_video(prompt, model, **gen_kwargs)
         except NotImplementedError:
             return ToolResult.fail(
@@ -1100,4 +1173,111 @@ class ListMediaModelsTool(ToolBase):
             tool_name=self.name,
             artifacts=[],
             metadata={"models": structured},
+        )
+
+
+_CHECK_MEDIA_JOB_PROMPT = """查询异步媒体生成任务的状态与结果。
+
+generate_video 默认异步执行:提交后立即返回 job_id,后台轮询生成。本工具用于:
+- 主动查询某个 job 的状态 (pending/running/completed/failed/timeout)。
+- 任务完成后取回生成的视频/图片交付物。
+- 不传 job_id 则返回当前会话所有媒体生成任务的摘要。
+
+注意:完成的任务会在下一轮推理自动通知,通常无需主动反复查询;仅在需要立即取
+结果或排查失败原因时使用。
+"""
+
+
+class CheckMediaJobTool(ToolBase):
+    """查询异步媒体生成任务状态 (generate_video 异步模式返回的 job_id)。"""
+
+    def _define_metadata(self) -> ToolMetadata:
+        return ToolMetadata(
+            name="check_media_job",
+            display_name="Check Media Job",
+            description=_CHECK_MEDIA_JOB_PROMPT,
+            category=ToolCategory.MEDIA_GEN,
+            risk_level=ToolRiskLevel.LOW,
+            source=ToolSource.SYSTEM,
+            requires_permission=False,
+            timeout=10,
+            tags=["media", "video", "job", "status", "async"],
+            author="opengyra",
+        )
+
+    def _define_parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": (
+                        "要查询的媒体生成 job_id (generate_video 异步返回)。"
+                        "不传则返回当前会话所有任务摘要。"
+                    ),
+                },
+            },
+            "required": [],
+        }
+
+    async def execute(
+        self, args: Dict[str, Any], context: Optional[ToolContext] = None
+    ) -> ToolResult:
+        from gyra.agent.util.media_gen.media_job_registry import (
+            MediaJobRegistry,
+            MediaJobStatus,
+        )
+
+        mgr = MediaJobRegistry.instance()
+        job_id = (args.get("job_id") or "").strip()
+        conv_id = context.conversation_id if context else ""
+
+        # 无 job_id: 返回本会话所有任务摘要
+        if not job_id:
+            return ToolResult.ok(
+                output=mgr.format_summary(conv_id),
+                tool_name=self.name,
+            )
+
+        state = mgr.get_status(job_id)
+        if not state:
+            return ToolResult.fail(
+                error=f"未找到 job_id '{job_id}'。",
+                tool_name=self.name,
+            )
+
+        # 仍在进行中
+        if not state.is_terminal():
+            return ToolResult.ok(
+                output=(
+                    f"任务 {job_id} 仍在进行中。\n"
+                    f"- 状态: {state.status.value}\n"
+                    f"- 已耗时: {state.elapsed_seconds():.1f}s\n"
+                    f"完成后会自动通知,无需反复查询。"
+                ),
+                tool_name=self.name,
+                metadata=state.to_summary(),
+            )
+
+        # 已终态: 返回结果 (read-only; 自动通知负责 consume 去重)
+        parts = [
+            f"任务 {job_id} 已结束。",
+            f"- 状态: {state.status.value}",
+            f"- 耗时: {state.elapsed_seconds():.1f}s",
+        ]
+        artifacts: List[Artifact] = []
+        if state.status == MediaJobStatus.COMPLETED and state.tool_result is not None:
+            out = getattr(state.tool_result, "output", None)
+            if out:
+                parts.append(f"\n{out}")
+            arts = getattr(state.tool_result, "artifacts", None) or []
+            artifacts = list(arts)
+        if state.error:
+            parts.append(f"- 错误: {state.error}")
+
+        return ToolResult.ok(
+            output="\n".join(parts),
+            tool_name=self.name,
+            artifacts=artifacts,
+            metadata=state.to_summary(),
         )
