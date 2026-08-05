@@ -7,6 +7,7 @@ import {
   removeResource,
   updateResource,
   getSkillList,
+  getMCPList,
 } from '@/client/api';
 import {
   Alert, App, Button, Empty, Input, Modal, Select, Space, Spin, Switch, Tag,
@@ -56,8 +57,7 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
   const [saving, setSaving] = useState(false);
   const [addType, setAddType] = useState<'skill' | 'mcp' | 'ecp'>('skill');
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
-  const [mcpName, setMcpName] = useState('');
-  const [mcpRef, setMcpRef] = useState('');
+  const [selectedMcp, setSelectedMcp] = useState<any>(null);
   const [ecpName, setEcpName] = useState('');
   const [ecpRef, setEcpRef] = useState('');
 
@@ -73,6 +73,17 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
     const [, res] = skillData || [];
     return res?.items || [];
   }, [skillData]);
+
+  // 从 MCP 模块查询可用服务，供绑定 MCP 能力时选择（physical_ref 取 mcp_code）
+  const { data: mcpData, refresh: refreshMcp } = useRequest(
+    async () => {
+      const [err, res] = await apiInterceptors(
+        getMCPList({ filter: '' }, { page: '1', page_size: '200' }),
+      );
+      return err ? [] : (res as any)?.items || [];
+    },
+  );
+  const allMcps = useMemo(() => mcpData || [], [mcpData]);
 
   const sections = useMemo(() => {
     const rows = (resources || []).filter((r: any) => TYPE_META[r.type]);
@@ -120,12 +131,12 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
         config: {},
       }));
     } else if (addType === 'mcp') {
-      if (!mcpName.trim()) { setSaving(false); message.warning('请填写 MCP 名称'); return; }
+      if (!selectedMcp?.mcp_code) { setSaving(false); message.warning('请选择 MCP 服务'); return; }
       [err] = await apiInterceptors(addResource({
         workspace_id: workspaceId,
         type: 'mcp',
-        name: mcpName.trim(),
-        physical_ref: mcpRef.trim() || undefined,
+        name: selectedMcp.name || selectedMcp.mcp_code,
+        physical_ref: selectedMcp.mcp_code,
         category: 'scenario_bound',
         access_mode: 'read',
         is_active: true,
@@ -149,8 +160,7 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
     message.success('能力已添加');
     setAddOpen(false);
     setSelectedSkill(null);
-    setMcpName('');
-    setMcpRef('');
+    setSelectedMcp(null);
     setEcpName('');
     setEcpRef('');
     refresh();
@@ -303,11 +313,16 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
             type="info"
             showIcon
             className="mb-3"
-            message="MCP 服务需在独立模块配置"
+            message="从 MCP 模块选择服务，physical_ref 自动取服务编码"
             description={
-              <Link href="/mcp" target="_blank">
-                去 MCP 模块配置 <ExportOutlined />
-              </Link>
+              <Space>
+                <Link href="/mcp" target="_blank">
+                  去 MCP 模块配置 <ExportOutlined />
+                </Link>
+                <Button type="link" size="small" icon={<ReloadOutlined />} onClick={refreshMcp}>
+                  刷新列表
+                </Button>
+              </Space>
             }
           />
         )}
@@ -329,18 +344,22 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
           </div>
         ) : addType === 'mcp' ? (
           <div>
-            <div className="text-sm text-gray-500 mb-2">MCP 名称</div>
-            <Input
-              className="mb-3"
-              placeholder="例如:gitlab-mcp"
-              value={mcpName}
-              onChange={(e) => setMcpName(e.target.value)}
-            />
-            <div className="text-sm text-gray-500 mb-2">服务标识(可选)</div>
-            <Input
-              placeholder="MCP server 编码 / 地址;若它包裹业务数据,注明数据来源"
-              value={mcpRef}
-              onChange={(e) => setMcpRef(e.target.value)}
+            <div className="text-sm text-gray-500 mb-2">选择 MCP 服务</div>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="从 MCP 模块选择"
+              value={selectedMcp?.mcp_code}
+              onChange={(code) => {
+                const m = allMcps.find((x: any) => x.mcp_code === code);
+                setSelectedMcp(m || null);
+              }}
+              showSearch
+              optionFilterProp="label"
+              notFoundContent={allMcps.length ? null : <Spin size="small" />}
+              options={allMcps.map((m: any) => ({
+                value: m.mcp_code,
+                label: `${m.name}${m.description ? ` — ${m.description}` : ''}`,
+              }))}
             />
           </div>
         ) : (

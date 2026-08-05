@@ -37,12 +37,18 @@ def normalize_base_url(base_url: str) -> str:
     trailing ``/api/v1``: keep it if present, append it if missing, and never
     duplicate it. This avoids the ``/api/v1/api/v1/...`` 404 that happens when
     a versioned base URL meets a versioned endpoint constant.
+
+    It also truncates any path past ``/api/v1`` — e.g. a base_url mistakenly
+    configured as a full endpoint (``.../api/v1/services/aigc/...``) is
+    reduced back to ``.../api/v1`` so the per-endpoint constant appended by
+    the provider isn't duplicated into a malformed URL.
     """
     if not base_url:
         return base_url
     url = base_url.rstrip("/")
-    while url.endswith("/api/v1"):
-        url = url[: -len("/api/v1")]
+    idx = url.rfind("/api/v1")
+    if idx != -1:
+        return url[: idx + len("/api/v1")]
     return f"{url}/api/v1"
 
 

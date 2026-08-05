@@ -163,21 +163,41 @@ def _get_agent_file_system(context: Optional[ToolContext]) -> Any:
             return sc.agent_file_system
         return None
 
-    # ToolContext object
-    afs = context.config.get("agent_file_system")
+    # context 可能是 ToolContext,也可能是 agent 本身
+    # (统一框架非沙箱 ToolBase 工具的约定: tool_action 中 tool_context = agent,
+    #  见 builtin read_file/todowrite 的 getattr(context, "agent", None) or context 取法)
+    agent = getattr(context, "agent", None) or context
+    afs = getattr(agent, "_agent_file_system", None)
     if afs:
         return afs
-    afs = context.get_resource("agent_file_system")
-    if afs:
-        return afs
-    # From sandbox_manager
-    sm = context.config.get("sandbox_manager")
-    if sm and hasattr(sm, "agent_file_system"):
-        return sm.agent_file_system
-    # From sandbox_client
-    sc = context.config.get("sandbox_client")
-    if sc and hasattr(sc, "agent_file_system"):
-        return sc.agent_file_system
+
+    # agent 挂载的 sandbox_manager -> sandbox_client
+    sm = getattr(agent, "sandbox_manager", None)
+    if sm:
+        if getattr(sm, "agent_file_system", None):
+            return sm.agent_file_system
+        sc = getattr(sm, "client", None)
+        if sc and getattr(sc, "agent_file_system", None):
+            return sc.agent_file_system
+
+    # ToolContext 形态: context.config dict
+    # (用 getattr 取值,agent 是 pydantic 模型时 .config 会抛 AttributeError)
+    config = getattr(context, "config", None)
+    if isinstance(config, dict):
+        afs = config.get("agent_file_system")
+        if afs:
+            return afs
+        get_resource = getattr(context, "get_resource", None)
+        if callable(get_resource):
+            afs = get_resource("agent_file_system")
+            if afs:
+                return afs
+        sm = config.get("sandbox_manager")
+        if sm and hasattr(sm, "agent_file_system"):
+            return sm.agent_file_system
+        sc = config.get("sandbox_client")
+        if sc and hasattr(sc, "agent_file_system"):
+            return sc.agent_file_system
     return None
 
 
@@ -215,6 +235,19 @@ def _resolve_media_model(
     api_key = cfg.get("api_key") or MediaGenProviderRegistry.get_env_api_key(protocol)
     base_url = cfg.get("base_url") or cfg.get("api_base")
     return protocol, api_key, base_url
+
+
+def _get_conversation_id(context: Optional[ToolContext]) -> str:
+    """从工具上下文安全地提取会话 ID。
+
+    context 可能是 ToolContext 对象、普通 dict，或某些执行路径下传入的
+    Agent 对象（如 ReActMasterAgent）——统一用 getattr 防御性取值。
+    """
+    if context is None:
+        return ""
+    if isinstance(context, dict):
+        return context.get("conversation_id") or ""
+    return getattr(context, "conversation_id", "") or ""
 
 
 class GenerateImageTool(ToolBase):
@@ -803,7 +836,7 @@ class GenerateVideoTool(ToolBase):
                     result, fname, description, context, prompt
                 )
 
-            conv_id = context.conversation_id if context else ""
+            conv_id = _get_conversation_id(context)
             job_id = MediaJobRegistry.instance().submit(
                 MediaJobSpec(
                     conv_id=conv_id,
@@ -1230,7 +1263,7 @@ class CheckMediaJobTool(ToolBase):
 
         mgr = MediaJobRegistry.instance()
         job_id = (args.get("job_id") or "").strip()
-        conv_id = context.conversation_id if context else ""
+        conv_id = _get_conversation_id(context)
 
         # 无 job_id: 返回本会话所有任务摘要
         if not job_id:

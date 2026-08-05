@@ -2675,10 +2675,10 @@ class AgentChat(BaseComponent, ABC):
                                     mcp_value = {
                                         "name": mcp_name or mcp_info.name or mcp_code,
                                         "mcp_code": mcp_code,
-                                        "mcp_servers": mcp_info.server_url or "",
-                                        "headers": mcp_info.headers or {},
-                                        "source": mcp_info.source or "faas",
-                                        "timeout": mcp_info.timeout or 120,
+                                        "mcp_servers": mcp_info.sse_url or "",
+                                        "headers": mcp_info.sse_headers or {},
+                                        "source": mcp_info.type or "faas",
+                                        "timeout": 120,
                                     }
                                     mcp_resource = AgentResource.from_dict(
                                         {

@@ -48,7 +48,10 @@ def _materialize_mcp(physical_ref: str, config: Dict[str, Any]) -> Optional[Agen
 
     mcp_info = get_mcp_info(physical_ref)
     if not mcp_info:
-        logger.warning(f"mcp not found: {physical_ref}")
+        logger.warning(
+            f"[materializer] mcp not found for physical_ref={physical_ref!r}: "
+            f"workspace 绑定的 MCP 资源 physical_ref 必须是 MCP 模块的精确 mcp_code。"
+        )
         return None
     return AgentResource.from_dict(
         {
