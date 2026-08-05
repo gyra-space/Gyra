@@ -96,6 +96,7 @@ class Serve(BaseServe):
             save_chunk_size=self._serve_config.save_chunk_size,
             transfer_chunk_size=self._serve_config.transfer_chunk_size,
             transfer_timeout=self._serve_config.transfer_timeout,
+            public_url_secret=self._serve_config.get_public_url_secret(),
         )
         storage_backends = {
             simple_distributed_storage.storage_type: simple_distributed_storage,

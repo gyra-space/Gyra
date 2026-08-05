@@ -1,8 +1,66 @@
+import contextvars
 import logging
 from typing import Dict, Any, Optional, List, Tuple
 from copy import deepcopy
 
 logger = logging.getLogger(__name__)
+
+# 当前请求/任务作用域内的空间级模型配置覆盖(ContextVar)。
+# 空间绑定 llm_model 资源时,空间级模型/token 优先于全局缓存,实现"空间专属 token"的管控。
+_space_model_config: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = (
+    contextvars.ContextVar("space_model_config", default=None)
+)
+
+
+def _normalize_space_model(config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """归一化空间级模型配置,补全 protocol/model 等派生字段。无效配置返回 None。
+
+    空间配置只存 api_key_ref(引用加密 secrets),不落明文 token;运行时经
+    ConfigReferenceResolver 解析。若显式给了 api_key 也透传(仍以 secrets 优先)。
+    """
+    if not config:
+        return None
+    model = (config.get("model") or "").strip()
+    if not model:
+        return None
+    provider = (config.get("provider") or "openai").strip()
+    protocol = (config.get("protocol") or "").strip() or infer_protocol(provider)
+    base_url = config.get("base_url") or config.get("api_base")
+    api_key_ref = (config.get("api_key_ref") or "").strip()
+    api_key = config.get("api_key")
+    # 空间配置只存 api_key_ref(引用加密 secrets)。运行时解析成 api_key,
+    # 使 get_config 返回的合并配置能被 llm_client 直接用作 provider 凭据。
+    if api_key_ref and not api_key:
+        try:
+            from gyra_core.config.encryption import ConfigReferenceResolver
+
+            resolved = ConfigReferenceResolver.resolve(api_key_ref)
+            if resolved and isinstance(resolved, str):
+                api_key = resolved
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"resolve space model api_key_ref failed: {e}"
+            )
+    return {
+        "provider": provider,
+        "model": model,
+        "protocol": protocol,
+        "base_url": base_url,
+        "api_key_ref": api_key_ref,
+        "api_key": api_key,
+        # 透传模型元数据:空间绑定模型未在全局注册时,仍能保留多模态/能力/类型,
+        # 使 is_multimodal / get_multimodal_models / select_llm_model 正确识别。
+        "model_type": config.get("model_type") or "llm",
+        "capabilities": config.get("capabilities") or ["text"],
+        "is_multimodal": bool(config.get("is_multimodal", config.get("supports_vision", False))),
+    }
+
+
+def _space_model_key(config: Optional[Dict[str, Any]]) -> Optional[str]:
+    """空间模型完整 key(provider/model);无配置返回 None。"""
+    if not config:
+        return None
+    return f"{config.get('provider')}/{config.get('model')}"
 
 # 媒体生成协议（= API 形状 = 一个 provider 类）。图/视频编码在后缀。
 # model_config_cache 用它过滤媒体模型（防聊天污染）；media_gen 用它路由+列可用模型。
@@ -76,6 +134,20 @@ class ModelConfigCache:
             logger.info(f"  {model}: {providers}")
 
     @classmethod
+    def set_space_model_config(cls, config: Optional[Dict[str, Any]]) -> None:
+        """设置当前作用域的空间级模型配置覆盖(ContextVar)。
+
+        空间绑定 llm_model 资源时调用;None 表示清除覆盖(回退全局)。配置只含
+        api_key_ref(引用 secrets),token 运行时解析,不落明文。
+        """
+        _space_model_config.set(_normalize_space_model(config))
+
+    @classmethod
+    def get_space_model_config(cls) -> Optional[Dict[str, Any]]:
+        """读取当前作用域的空间级模型配置覆盖;无则返回 None。"""
+        return _space_model_config.get()
+
+    @classmethod
     def get_config(cls, model_key: str) -> Optional[Dict[str, Any]]:
         """获取模型配置
 
@@ -84,7 +156,24 @@ class ModelConfigCache:
 
         Returns:
             模型配置，如果没找到返回 None
+
+        空间级优先级:当前作用域绑定了 llm_model 资源且请求的模型匹配空间模型时,
+        返回空间配置(以全局默认配置为底、空间配置覆盖),实现空间专属 token。
         """
+        space_cfg = cls.get_space_model_config()
+        if space_cfg:
+            space_model = space_cfg.get("model")
+            space_key = _space_model_key(space_cfg)
+            if model_key and (model_key == space_model or model_key == space_key):
+                merged = {}
+                global_cfg = cls._model_configs.get(model_key) or (
+                    cls._model_configs.get(space_key)
+                )
+                if global_cfg:
+                    merged.update(global_cfg)
+                merged.update(space_cfg)
+                return merged
+
         # 先尝试完整 key
         if model_key in cls._model_configs:
             return cls._model_configs[model_key]
@@ -100,6 +189,12 @@ class ModelConfigCache:
     @classmethod
     def has_model(cls, model_key: str) -> bool:
         """检查模型是否存在"""
+        space_cfg = cls.get_space_model_config()
+        if space_cfg:
+            space_model = space_cfg.get("model")
+            space_key = _space_model_key(space_cfg)
+            if model_key and (model_key == space_model or model_key == space_key):
+                return True
         if model_key in cls._model_configs:
             return True
         if model_key in cls._model_providers:
@@ -115,13 +210,26 @@ class ModelConfigCache:
                 默认 False，排除生成模型，避免聊天/embedding/rerank 的
                 ``all_models[0]`` 兜底误选到图像/视频生成模型。展示/同步类
                 调用方应传 True 以查看全量。
+
+        空间级优先级:当前作用域绑定了 llm_model 资源时,空间模型置顶(优先被
+        select_llm_model 选中)。空间模型为媒体生成模型时,按 include_media_gen 过滤。
         """
-        if include_media_gen:
-            return list(cls._model_providers.keys())
-        return [
-            m for m in cls._model_providers.keys()
-            if not cls._is_media_model(m)
-        ]
+        space_cfg = cls.get_space_model_config()
+        space_model = (space_cfg or {}).get("model")
+        base = (
+            list(cls._model_providers.keys())
+            if include_media_gen
+            else [
+                m for m in cls._model_providers.keys()
+                if not cls._is_media_model(m)
+            ]
+        )
+        if space_model:
+            if include_media_gen or not cls._is_media_model(space_model):
+                base = [space_model] + [m for m in base if m != space_model]
+            else:
+                base = [m for m in base if m != space_model]
+        return base
 
     @classmethod
     def _is_media_model(cls, model_key: str) -> bool:

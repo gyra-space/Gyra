@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import mimetypes
+import time
 from functools import cache
 from typing import List, Optional
 from urllib.parse import quote
@@ -157,6 +158,57 @@ async def download_file(
         response.headers["Content-Type"] = "image/svg+xml"
         response.headers["Content-Disposition"] = "inline"
 
+    return response
+
+
+@router.get("/public/files/{bucket}/{file_id}")
+async def public_file(
+    bucket: str,
+    file_id: str,
+    token: str = Query(..., description="Signed access token"),
+    expires: int = Query(..., description="Unix expiry timestamp"),
+    service: Service = Depends(get_service),
+):
+    """Serve a file through an expiring, signed public URL.
+
+    Unlike the authenticated endpoints, this route does NOT require an API key.
+    Access is gated solely by the HMAC-signed ``token`` and its ``expires``
+    timestamp, so it is safe to hand the URL to external consumers (e.g.
+    multimodal model providers) without exposing credentials. Normal pages keep
+    using the authenticated ``/files/{bucket}/{file_id}`` endpoint.
+    """
+    secret = service.config.get_public_url_secret()
+    if not secret:
+        raise HTTPException(
+            status_code=403,
+            detail="Public URL access is disabled (no API key configured)",
+        )
+    if int(time.time()) > expires:
+        raise HTTPException(status_code=410, detail="Link has expired")
+    from gyra.core.interface.file import verify_signed_public_token
+
+    if not verify_signed_public_token(secret, bucket, file_id, expires, token):
+        raise HTTPException(status_code=403, detail="Invalid or forged link")
+
+    file_data, file_metadata = await blocking_func_to_async(
+        global_system_app, service.download_file, bucket, file_id
+    )
+
+    mime_type, _ = mimetypes.guess_type(file_metadata.file_name)
+    if not mime_type:
+        mime_type = "application/octet-stream"
+
+    def public_file_iterator(raw_iter):
+        with raw_iter:
+            while chunk := raw_iter.read(service.config.download_chunk_size):
+                yield chunk
+
+    response = StreamingResponse(
+        public_file_iterator(file_data), media_type=mime_type
+    )
+    response.headers["Content-Disposition"] = (
+        f"inline; filename={quote(file_metadata.file_name)}"
+    )
     return response
 
 

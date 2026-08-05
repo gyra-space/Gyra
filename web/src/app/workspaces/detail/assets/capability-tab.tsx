@@ -45,7 +45,11 @@ function sortCaps(rows: any[]) {
 }
 
 /** 能力:空间里的 Agent 会"干"什么 —— skill / MCP / 模型 / 智能体。 */
-export function CapabilityTab({ workspaceId }: { workspaceId: number }) {
+export function CapabilityTab({ workspaceId, canManage = true }: {
+  workspaceId: number;
+  /** 是否空间管理员(owner/approver)。成员只看不改,仅可使用资源。 */
+  canManage?: boolean;
+}) {
   // 静态 Modal/message 在本应用(React 19 静态渲染路径)下会静默失效,必须用 App.useApp() 上下文实例
   const { modal, message } = App.useApp();
   const [addOpen, setAddOpen] = useState(false);
@@ -187,26 +191,36 @@ export function CapabilityTab({ workspaceId }: { workspaceId: number }) {
 
   const renderCard = (r: any) => {
     const meta = TYPE_META[r.type] || TYPE_META.skill;
+    const active = !!r.is_active;
     return (
-      <div key={r.id} className={`ws-asset-card${r.is_active ? '' : ' ws-asset-card--off'}`}>
-        <div className="ws-asset-card__top">
-          <span className="ws-asset-card__icon" style={{ color: 'var(--ws-brand, #4f46e5)' }}>{meta.icon}</span>
-          <span className="ws-asset-card__name" title={r.name}>{r.name}</span>
-          <Switch size="small" checked={!!r.is_active} onChange={(c) => handleToggle(r, c)} />
+      <div key={r.id} className={`ws-asset-card${active ? '' : ' ws-asset-card--off'}`}>
+        <div className="ws-asset-card__head">
+          <div className={`ws-asset-card__tile${active ? '' : ' ws-asset-card__tile--muted'}`}>{meta.icon}</div>
+          <div className="ws-asset-card__titles">
+            <div className="ws-asset-card__name" title={r.name}>{r.name}</div>
+            <div className="ws-asset-card__type">{meta.label}</div>
+          </div>
+          {canManage && (
+            <Switch size="small" checked={active} onChange={(c) => handleToggle(r, c)} />
+          )}
         </div>
-        <div className="ws-asset-card__tags">
-          <Tag color={meta.color}>{meta.label}</Tag>
-        </div>
-        <div className="ws-asset-card__source" title={r.physical_ref || ''}>
-          {r.physical_ref || '—'}
+        <div className="ws-asset-card__meta">
+          <div className="ws-asset-card__row">
+            <span className="ws-asset-card__row-key">标识</span>
+            <span className="ws-asset-card__row-val ws-asset-card__row-val--mono" title={r.physical_ref || ''}>
+              {r.physical_ref || '—'}
+            </span>
+          </div>
         </div>
         <div className="ws-asset-card__foot">
           <span className="ws-asset-card__time">
             {r.gmt_modified ? dayjs(r.gmt_modified).format('MM-DD HH:mm') : ''}
           </span>
-          <span className="ws-asset-card__ops">
-            <Button size="small" type="text" danger onClick={() => handleRemove(r)}>移除</Button>
-          </span>
+          {canManage && (
+            <span className="ws-asset-card__ops">
+              <Button size="small" type="text" danger onClick={() => handleRemove(r)}>移除</Button>
+            </span>
+          )}
         </div>
       </div>
     );
@@ -214,13 +228,19 @@ export function CapabilityTab({ workspaceId }: { workspaceId: number }) {
 
   return (
     <div>
-      <div className="flex justify-end mb-4">
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddOpen(true)}>添加能力</Button>
-      </div>
+      {canManage ? (
+        <div className="flex justify-end mb-4">
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddOpen(true)}>添加能力</Button>
+        </div>
+      ) : (
+        <div className="flex justify-end mb-4 text-xs text-gray-400">
+          <span>只读 · 管理员可维护资源</span>
+        </div>
+      )}
 
       {loading ? <div className="flex justify-center py-8"><Spin /></div> : totalCount === 0 ? (
         <Empty description="还没有能力" style={{ padding: '32px 0' }}>
-          <Button size="small" onClick={() => setAddOpen(true)}>添加第一个能力</Button>
+          {canManage && <Button size="small" onClick={() => setAddOpen(true)}>添加第一个能力</Button>}
         </Empty>
       ) : (
         sections.map((s) => (

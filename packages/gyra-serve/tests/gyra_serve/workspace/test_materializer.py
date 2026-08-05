@@ -122,3 +122,69 @@ def test_materialize_inactive_resource_skipped():
         result = materialize_resources(system_app, workspace_id=1)
     assert result.dynamic_resources == []
     assert result.extra_agents == []
+
+
+def test_materialize_llm_model_sets_space_config_and_injects_agentinfo():
+    """type=llm_model 资源:设置空间级模型配置(ContextVar)并注入 AgentInfo。"""
+    from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+    ModelConfigCache.set_space_model_config(None)  # 清空遗留覆盖
+    system_app = MagicMock()
+    llm_resource = MagicMock(
+        type="llm_model",
+        name="space_deepseek",
+        physical_ref="deepseek-chat",
+        config={
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "api_key_ref": "${secrets.space_deepseek_key}",
+        },
+        is_active=True,
+    )
+    with patch(
+        "gyra_serve.workspace.materializer.WorkspaceService"
+    ) as MockWsService:
+        MockWsService.return_value.list_resources.return_value = [llm_resource]
+        result = materialize_resources(system_app, workspace_id=1)
+
+    # AgentInfo 注入
+    assert len(result.dynamic_resources) == 1
+    ar = result.dynamic_resources[0]
+    assert ar.type == "llm_model"
+    assert ar.name == "deepseek-chat"
+    assert ar.value["protocol"] == "openai"
+    assert ar.value["provider"] == "deepseek"
+    assert ar.value["source"] == "space_bound"
+
+    # 空间级配置生效:has_model / get_config 命中空间模型
+    assert ModelConfigCache.has_model("deepseek-chat") is True
+    cfg = ModelConfigCache.get_config("deepseek-chat")
+    assert cfg is not None
+    assert cfg["provider"] == "deepseek"
+    assert cfg["model"] == "deepseek-chat"
+
+    ModelConfigCache.set_space_model_config(None)  # 清理,避免影响其他用例
+
+
+def test_materialize_llm_model_empty_model_returns_none():
+    """llm_model 无 model/physical_ref 时不注入、不设置空间配置。"""
+    from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+    ModelConfigCache.set_space_model_config(None)
+    system_app = MagicMock()
+    bad = MagicMock(
+        type="llm_model",
+        name="empty",
+        physical_ref=None,
+        config={},
+        is_active=True,
+    )
+    with patch(
+        "gyra_serve.workspace.materializer.WorkspaceService"
+    ) as MockWsService:
+        MockWsService.return_value.list_resources.return_value = [bad]
+        result = materialize_resources(system_app, workspace_id=1)
+    assert result.dynamic_resources == []
+    assert ModelConfigCache.get_space_model_config() is None
+
+    ModelConfigCache.set_space_model_config(None)

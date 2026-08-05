@@ -310,7 +310,9 @@ def build_read_tools(system_app, workspace_id: int) -> List[FunctionTool]:
         def make_tool(fn=fn, name=name, desc=desc, tool_args=tool_args):
             import inspect as _inspect
 
-            _fn_params = set(_inspect.signature(fn).parameters)
+            # system_app / workspace_id 由 _wrapped 注入,不作为工具参数透传,
+            # 否则调用方传入同名 kwargs 时会造成重复传参 TypeError。
+            _fn_params = set(_inspect.signature(fn).parameters) - {"system_app", "workspace_id"}
 
             def _wrapped(**kwargs):
                 # 执行框架会注入 agent_id/conv_id/agent/context 等系统参数,

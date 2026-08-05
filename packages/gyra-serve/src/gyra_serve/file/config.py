@@ -91,6 +91,18 @@ class ServeConfig(BaseServeConfig):
         file_server_port = self.port or 7777
         return f"{file_server_host}:{file_server_port}"
 
+    def get_public_url_secret(self) -> Optional[str]:
+        """Derive the HMAC secret used to sign expiring public file URLs.
+
+        Reuses the first configured API key so no extra configuration is needed.
+        Returns ``None`` when no API keys are set, which disables public URL
+        generation (files stay private behind the authenticated API).
+        """
+        if not self.api_keys:
+            return None
+        keys = [k.strip() for k in self.api_keys.split(",") if k.strip()]
+        return keys[0] if keys else None
+
     def get_local_storage_path(self) -> str:
         """Get the local storage path"""
         local_storage_path = self.local_storage_path

@@ -105,8 +105,43 @@ def _materialize_app_as_extra_agent(
 def _materialize_llm_model(
     physical_ref: str, config: Dict[str, Any]
 ) -> Optional[AgentResource]:
-    """type=llm_model → 暂不物化（Agent 架构 llm 渠道是静态配置），返回 None。"""
-    return None
+    """type=llm_model → 设置空间级模型配置覆盖(ContextVar)并注入 AgentInfo。
+
+    空间绑定的 llm_model 资源决定该空间可用的专属模型/token:
+    物化时把模型配置写入 ModelConfigCache 的空间级 ContextVar,该作用域内后续
+    LLM 调用经 get_config/has_model 以"空间模型 > 全局回退"解析,实现空间专属
+    token 管控。不落明文 token:仅引用 api_key_ref,运行时由 ConfigReferenceResolver
+    解析。返回的 AgentResource 让 system prompt 能看到空间绑定的模型与协议。
+    """
+    from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+    model = (config.get("model") or physical_ref or "").strip()
+    if not model:
+        return None
+    ModelConfigCache.set_space_model_config(
+        {
+            "provider": config.get("provider") or "openai",
+            "model": model,
+            "base_url": config.get("base_url") or config.get("api_base"),
+            "api_key_ref": config.get("api_key_ref") or "",
+            "api_key": config.get("api_key"),
+        }
+    )
+    space_cfg = ModelConfigCache.get_space_model_config() or {}
+    return AgentResource.from_dict(
+        {
+            "type": "llm_model",
+            "name": space_cfg.get("model") or model,
+            "value": {
+                "model": space_cfg.get("model"),
+                "provider": space_cfg.get("provider"),
+                "protocol": space_cfg.get("protocol"),
+                "base_url": space_cfg.get("base_url"),
+                "api_key_ref": space_cfg.get("api_key_ref"),
+                "source": "space_bound",
+            },
+        }
+    )
 
 
 def _materialize_ecp(

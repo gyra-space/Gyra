@@ -1,12 +1,14 @@
 'use client';
 
 import { apiInterceptors, getWorkspaceInfo, listMembers, addMember, removeMember, updateMemberRole, updateWorkspace } from '@/client/api';
+import { getUserId } from '@/utils';
 import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Spin, Table, Tag } from 'antd';
 import { useRequest } from 'ahooks';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { SpaceModelsTab } from './space-models-tab';
 
 export default function SettingsPage() {
   const searchParams = useSearchParams();
@@ -29,6 +31,16 @@ export default function SettingsPage() {
     if (!ws?.id) return [];
     const [err, res] = await apiInterceptors(listMembers(ws.id));
     return err ? [] : res || [];
+  }, { refreshDeps: [ws?.id] });
+
+  // 权限整合:空间管理员(owner/approver)才可维护空间模型,成员只读。
+  const { data: canManage } = useRequest(async () => {
+    if (!ws?.id) return false;
+    const [err, res] = await apiInterceptors(listMembers({ workspace_id: ws.id }));
+    if (err) return false;
+    const list = Array.isArray(res) ? res : ((res as any)?.data || []);
+    const me = list.find((m: any) => String(m.user_id) === String(getUserId()));
+    return me?.role === 'owner' || me?.role === 'approver';
   }, { refreshDeps: [ws?.id] });
 
   const handleEditSave = async () => {
@@ -131,6 +143,10 @@ export default function SettingsPage() {
             },
           ]}
         />
+      </Card>
+
+      <Card title="空间模型" className="mb-4">
+        <SpaceModelsTab workspaceId={ws.id} workspaceCode={ws.workspace_code} canManage={!!canManage} />
       </Card>
 
       <Modal

@@ -1,6 +1,7 @@
 'use client';
 
-import { apiInterceptors, getWorkspaceInfo } from '@/client/api';
+import { apiInterceptors, getWorkspaceInfo, listMembers } from '@/client/api';
+import { getUserId } from '@/utils';
 import { Button, Card, Empty, Spin, Tabs } from 'antd';
 import {
   DatabaseOutlined,
@@ -46,6 +47,17 @@ export default function AssetsPage() {
     const [err, res] = await apiInterceptors(getWorkspaceInfo(workspaceCode));
     return err ? null : res;
   }, { refreshDeps: [workspaceCode] });
+
+  // 权限整合:空间管理员(owner/approver)才可维护资源,成员仅可使用/确认待办。
+  const { data: myRole } = useRequest(async () => {
+    if (!ws?.id) return '';
+    const [err, res] = await apiInterceptors(listMembers({ workspace_id: ws.id }));
+    if (err) return '';
+    const list = Array.isArray(res) ? res : ((res as any)?.data || []);
+    const me = list.find((m: any) => String(m.user_id) === String(getUserId()));
+    return me?.role || '';
+  }, { refreshDeps: [ws?.id] });
+  const canManage = myRole === 'owner' || myRole === 'approver';
 
   const handleTabChange = (key: string) => {
     router.replace(`${pathname}?id=${workspaceCode}&tab=${key}`);
@@ -114,7 +126,7 @@ export default function AssetsPage() {
                 </div>
               </div>
             </header>
-            <CapabilityTab workspaceId={ws.id} />
+            <CapabilityTab workspaceId={ws.id} canManage={canManage} />
           </section>
         </div>
       ),

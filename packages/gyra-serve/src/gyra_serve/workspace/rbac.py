@@ -46,6 +46,7 @@ class Permission(str, Enum):
     ATTEST = "attest"
     COACH = "coach"
     ESCALATE = "escalate"
+    MANAGE_RESOURCE = "manage_resource"  # 维护空间资源(含 llm_model 空间专属模型/token)
 
 
 ROLE_PERMISSIONS: Dict[Role, set] = {
@@ -58,6 +59,7 @@ ROLE_PERMISSIONS: Dict[Role, set] = {
         Permission.ATTEST,
         Permission.COACH,
         Permission.ESCALATE,
+        Permission.MANAGE_RESOURCE,
     },
     Role.CONTRIBUTOR: {
         Permission.START_TASK,
@@ -172,6 +174,25 @@ def _lookup_workspace_id_by_asset(asset_id: int) -> Optional[int]:
         session.close()
 
 
+def _lookup_workspace_id_by_resource(resource_id: int) -> Optional[int]:
+    """通过 resource_id 反查 workspace_id。"""
+    from gyra_serve.workspace.models.models import (
+        WorkspaceResourceDao,
+        WorkspaceResourceEntity,
+    )
+
+    session = WorkspaceResourceDao().get_raw_session()
+    try:
+        row = (
+            session.query(WorkspaceResourceEntity)
+            .filter(WorkspaceResourceEntity.id == resource_id)
+            .first()
+        )
+        return row.workspace_id if row else None
+    finally:
+        session.close()
+
+
 def _lookup_workspace_id_by_code(workspace_code: str) -> Optional[int]:
     """通过 workspace_code 反查 workspace_id。"""
     session = WorkspaceDao().get_raw_session()
@@ -263,6 +284,16 @@ async def _resolve_workspace_id(request: Request) -> Optional[int]:
                 return ws_id
         except Exception as e:
             logger.warning(f"rbac resolve workspace by code failed: {e}")
+
+    # 7. body 中的 resource_id (资源管理端点 remove/update 用)
+    resource_id = body.get("resource_id")
+    if resource_id is not None:
+        try:
+            ws_id = _lookup_workspace_id_by_resource(int(resource_id))
+            if ws_id is not None:
+                return ws_id
+        except Exception as e:
+            logger.warning(f"rbac resolve workspace by resource failed: {e}")
 
     return None
 

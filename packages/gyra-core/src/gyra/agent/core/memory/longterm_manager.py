@@ -563,6 +563,14 @@ class LongTermMemoryManager:
             lines.append(line)
             if oss:
                 lines.append(f"   - OSS: {oss}")
+            # 外部临时签名 URL（给模型访问图片/视频等多媒体，无需鉴权）
+            public_url = f.get("public_url")
+            if public_url:
+                lines.append(f"   - 公开访问地址: {public_url}")
+            # 沙箱文件全路径（供模型/agent 直接引用本地沙箱文件）
+            sandbox_path = f.get("sandbox_path")
+            if sandbox_path:
+                lines.append(f"   - 沙箱路径: {sandbox_path}")
         return "\n".join(lines)
 
     async def reflect_on_last_n_turns(

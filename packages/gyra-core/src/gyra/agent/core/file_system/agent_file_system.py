@@ -498,20 +498,23 @@ class AgentFileSystem:
         mime_type: Optional[str] = None,
         file_name: Optional[str] = None,
     ) -> Optional[str]:
-        """使用 FileStorageClient 生成公开URL."""
+        """Use FileStorageClient to generate an internal authenticated file URL.
+
+        This is the page-facing (browser) URL that requires the API key. For
+        external consumers (e.g. model providers) use :meth:`get_file_public_url`
+        which returns the expiring signed URL instead.
+        """
         import asyncio
 
         try:
-            # 生成公开 URL（FileStorageClient 会自动处理代理或直链）
             url = await asyncio.to_thread(
-                self._file_storage_client.get_public_url,
+                self._file_storage_client.get_internal_url,
                 uri,
-                expire=3600,  # 1小时有效期
             )
             return url
         except Exception as e:
             logger.warning(
-                f"[AFSv3] Failed to generate URL with FileStorageClient: {e}"
+                f"[AFSv3] Failed to generate internal URL with FileStorageClient: {e}"
             )
             return uri
 
@@ -1070,6 +1073,20 @@ class AgentFileSystem:
         # 转换为字典格式
         result = []
         for f in unique_files:
+            # 外部签名 URL（给模型用，走 get_public_url；页面不用它）
+            public_url = None
+            if self._file_storage_client:
+                import asyncio as _asyncio
+
+                storage_uri = f.oss_url or f"local://{f.local_path}"
+                try:
+                    public_url = await _asyncio.to_thread(
+                        self._file_storage_client.get_public_url, storage_uri
+                    )
+                except Exception as _e:
+                    logger.warning(
+                        f"[AFSv3] Failed to get public URL for {f.file_key}: {_e}"
+                    )
             result.append(
                 {
                     "file_id": f.file_id,
@@ -1077,8 +1094,16 @@ class AgentFileSystem:
                     "file_type": f.file_type,
                     "file_size": f.file_size,
                     "oss_url": f.oss_url,
+                    # 页面预览/下载用内部鉴权 URL
                     "preview_url": f.preview_url,
                     "download_url": f.download_url,
+                    # 外部签名 URL（给模型看）
+                    "public_url": public_url,
+                    # 沙箱文件全路径（供模型/agent 引用本地沙箱文件）
+                    "local_path": f.local_path,
+                    "sandbox_path": f.metadata.get("sandbox_path")
+                    if f.metadata
+                    else None,
                     "mime_type": f.mime_type,
                     "created_at": f.created_at.isoformat()
                     if isinstance(f.created_at, datetime)
@@ -1392,7 +1417,7 @@ class AgentFileSystem:
         # 格式: {env}/{app}/conversations/{conv_id}/{file_name}
         object_key = self._generate_object_key(actual_file_name, sandbox_path)
 
-        # 6. 执行 OSS 转存
+        # 6. 转存并生成 Object Key
         oss_url = None
         oss_object_path = None
 
@@ -1401,7 +1426,31 @@ class AgentFileSystem:
             f"file_storage_client={self._file_storage_client is not None}"
         )
 
-        if self.sandbox and hasattr(self.sandbox.file, "write_chat_file"):
+        # 优先使用 FileStorageClient —— 文件落 FileStorage 后端，可生成
+        # 免过期的内部代理 URL（/api/v2/serve/file/files/...），供页面预览/下载。
+        # write_chat_file 返回的 OSS temp_url 会过期，仅作为无 FileStorage 时的回退。
+        if self._file_storage_client:
+            try:
+                storage_uri, file_size = await self._save_to_storage(
+                    file_key=actual_file_name,
+                    data=file_content,
+                    extension=file_extension,
+                    file_name=actual_file_name,
+                )
+                if storage_uri.startswith(("https://", "gyra-fs://")):
+                    oss_url = storage_uri
+                    if storage_uri.startswith("https://"):
+                        oss_object_path = self._extract_object_path_from_url(oss_url)
+                logger.info(
+                    f"[AFSv3] Transfer via FileStorageClient: "
+                    f"object_key={object_key}, storage_uri={oss_url}, "
+                    f"extracted_object_path={oss_object_path}"
+                )
+            except Exception as e:
+                logger.warning(f"[AFSv3] FileStorageClient save failed: {e}")
+
+        # 7. 无 FileStorageClient 时，回退到 sandbox.write_chat_file（OSS 转存）
+        if not oss_url and self.sandbox and hasattr(self.sandbox.file, "write_chat_file"):
             try:
                 import asyncio
 
@@ -1428,32 +1477,12 @@ class AgentFileSystem:
                         f"extracted_object_path={oss_object_path}"
                     )
             except Exception as e:
-                logger.warning(f"[AFSv3] write_chat_file failed, trying fallback: {e}")
-
-        # 7. 如果 write_chat_file 失败，尝试使用 FileStorageClient
-        if not oss_url and self._file_storage_client:
-            try:
-                storage_uri, file_size = await self._save_to_storage(
-                    file_key=actual_file_name,
-                    data=file_content,
-                    extension=file_extension,
-                    file_name=actual_file_name,
-                )
-                if storage_uri.startswith(("https://", "gyra-fs://")):
-                    oss_url = storage_uri
-                    if storage_uri.startswith("https://"):
-                        oss_object_path = self._extract_object_path_from_url(oss_url)
-                logger.info(
-                    f"[AFSv3] OSS transfer via FileStorageClient: "
-                    f"object_key={object_key}, extracted_object_path={oss_object_path}"
-                )
-            except Exception as e:
-                logger.warning(f"[AFSv3] FileStorageClient save failed: {e}")
+                logger.warning(f"[AFSv3] write_chat_file failed: {e}")
 
         # 8. 如果仍然没有 URL，记录警告
         if not oss_url:
             logger.warning(
-                f"[AFSv3] No OSS URL generated for {sandbox_path}. "
+                f"[AFSv3] No storage URL generated for {sandbox_path}. "
                 f"File saved to metadata only, may not be accessible via web."
             )
 

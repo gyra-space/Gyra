@@ -14,6 +14,8 @@ export const removeMember = (data: any) => POST('/api/v1/serve_workspace_service
 export const updateMemberRole = (data: any) => POST('/api/v1/serve_workspace_service/members/update_role', data);
 
 export const listResources = (data: any) => POST('/api/v1/serve_workspace_service/resources/list', data);
+export const listWorkspaceAvailableModels = (workspace_id: number) =>
+  GET(`/api/v1/serve_workspace_service/workspaces/${workspace_id}/models/available`);
 export const addResource = (data: any) => POST('/api/v1/serve_workspace_service/resources/add', data);
 export const removeResource = (data: any) => POST('/api/v1/serve_workspace_service/resources/remove', data);
 export const updateResource = (data: any) => POST('/api/v1/serve_workspace_service/resources/update', data);

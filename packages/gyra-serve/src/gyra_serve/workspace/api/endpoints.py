@@ -230,7 +230,8 @@ async def list_resources(
 
 
 @router.post("/resources/add", response_model=Result[WorkspaceResourceResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_permission(Permission.MANAGE_RESOURCE))])
 async def add_resource(
     request: WorkspaceResourceRequest, service: Service = Depends(get_service),
 ) -> Result[WorkspaceResourceResponse]:
@@ -242,7 +243,8 @@ async def add_resource(
 
 
 @router.post("/resources/remove", response_model=Result[bool],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_permission(Permission.MANAGE_RESOURCE))])
 async def remove_resource(
     request: dict, service: Service = Depends(get_service),
 ) -> Result[bool]:
@@ -255,7 +257,8 @@ async def remove_resource(
 
 
 @router.post("/resources/update", response_model=Result[WorkspaceResourceResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_permission(Permission.MANAGE_RESOURCE))])
 async def update_resource(
     request: dict, service: Service = Depends(get_service),
 ) -> Result[WorkspaceResourceResponse]:
@@ -265,6 +268,42 @@ async def update_resource(
         return Result.succ(service.update_resource(resource_id, rr))
     except Exception as e:
         logger.exception("resource update exception!")
+        return Result.failed(str(e))
+
+
+# ----------------------- Space Models (空间模型配置) -----------------------
+@router.get(
+    "/workspaces/{workspace_id}/models/available",
+    response_model=Result,
+    dependencies=[Depends(check_api_key)],
+)
+async def list_available_models(workspace_id: int) -> Result:
+    """列出全局已注册模型(含 provider/model/base_url/能力/多模态元数据),
+    供空间设置页「空间模型」下拉选择。不依赖工作空间上下文,返回全局配置。"""
+    try:
+        from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+        keys = ModelConfigCache.get_all_model_keys()
+        items = []
+        for key in sorted(keys):
+            cfg = ModelConfigCache.get_config(key) or {}
+            items.append(
+                {
+                    "key": key,  # "provider/model"
+                    "provider": cfg.get("provider"),
+                    "model": cfg.get("model") or key.split("/")[-1],
+                    "protocol": cfg.get("protocol"),
+                    "base_url": cfg.get("base_url") or cfg.get("api_base"),
+                    "model_type": cfg.get("model_type") or "llm",
+                    "capabilities": cfg.get("capabilities") or [],
+                    "is_multimodal": bool(
+                        cfg.get("is_multimodal", cfg.get("supports_vision", False))
+                    ),
+                }
+            )
+        return Result.succ(items)
+    except Exception as e:
+        logger.exception("available models exception!")
         return Result.failed(str(e))
 
 

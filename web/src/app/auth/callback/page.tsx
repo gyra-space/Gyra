@@ -19,6 +19,18 @@ export default function AuthCallbackPage() {
     }
 
     setStatus('done');
+
+    // 移动端 OAuth:登录前在 /m/login 写入回跳目标,优先跳回移动端
+    try {
+      const mobileNext = sessionStorage.getItem('gyra_m_oauth_next');
+      sessionStorage.removeItem('gyra_m_oauth_next');
+      if (mobileNext && mobileNext.startsWith('/') && !mobileNext.startsWith('/login')) {
+        router.replace(mobileNext);
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
     router.replace('/');
   }, [router]);
 

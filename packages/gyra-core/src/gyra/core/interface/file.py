@@ -2,10 +2,12 @@
 
 import dataclasses
 import hashlib
+import hmac
 import io
 import ipaddress
 import logging
 import os
+import time
 import uuid
 from abc import ABC, abstractmethod
 from io import BytesIO
@@ -184,6 +186,121 @@ class FileStorageURI:
         return base_uri
 
 
+def sign_public_token(secret: str, bucket: str, file_id: str, expires: int) -> str:
+    """Sign an expiring public-access token for a file.
+
+    Uses HMAC-SHA256 over ``{bucket}/{file_id}:{expires}`` so that a generated
+    token cannot be forged or replayed after its expiry without the secret.
+
+    Args:
+        secret (str): The shared HMAC secret.
+        bucket (str): The storage bucket.
+        file_id (str): The file ID.
+        expires (int): The unix timestamp at which the token becomes invalid.
+
+    Returns:
+        str: The hex HMAC signature.
+    """
+    payload = f"{bucket}/{file_id}:{expires}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
+def verify_signed_public_token(
+    secret: str, bucket: str, file_id: str, expires: int, token: str
+) -> bool:
+    """Verify an expiring public-access token in constant time.
+
+    Args:
+        secret (str): The shared HMAC secret.
+        bucket (str): The storage bucket.
+        file_id (str): The file ID.
+        expires (int): The unix expiry timestamp the token was signed against.
+        token (str): The token supplied by the caller.
+
+    Returns:
+        bool: True if the token is valid, False otherwise.
+    """
+    expected = sign_public_token(secret, bucket, file_id, expires)
+    return hmac.compare_digest(expected, token)
+
+
+def build_signed_public_url(
+    bucket: str,
+    file_id: str,
+    *,
+    secret: str,
+    api_prefix: str = "/api/v2/serve/file",
+    host: Optional[str] = None,
+    expire: Optional[int] = None,
+    params: Optional[Dict] = None,
+) -> str:
+    """Build an expiring, signed public URL for a file served by the file API.
+
+    The URL points to the public (unauthenticated) file endpoint and carries a
+    signed ``token`` plus an ``expires`` timestamp, so it can be handed to
+    external consumers (e.g. multimodal model providers) without exposing the
+    API key. If ``host`` is provided the URL is absolute, otherwise relative so
+    the browser uses the host it is currently accessing.
+
+    Args:
+        bucket (str): The storage bucket.
+        file_id (str): The file ID.
+        secret (str): The shared HMAC secret.
+        api_prefix (str, optional): Base file API mount prefix.
+        host (Optional[str], optional): Host[:port] to make the URL absolute.
+        expire (Optional[int], optional): Validity in seconds. Defaults to 3600.
+        params (Optional[Dict], optional): Extra query params to append.
+
+    Returns:
+        str: The signed public URL.
+    """
+    expire = int(expire or 3600)
+    expires = int(time.time()) + expire
+    token = sign_public_token(secret, bucket, file_id, expires)
+    path = f"{api_prefix.rstrip('/')}/public/files/{bucket}/{file_id}"
+    query = {"expires": expires, "token": token}
+    if params:
+        query.update(params)
+    query_string = urlencode(query)
+    if host:
+        return f"http://{host}{path}?{query_string}"
+    return f"{path}?{query_string}"
+
+
+def build_internal_file_url(
+    bucket: str,
+    file_id: str,
+    *,
+    api_prefix: str = "/api/v2/serve/file/files",
+    host: Optional[str] = None,
+    params: Optional[Dict] = None,
+) -> str:
+    """Build an internal, authenticated file-API URL.
+
+    This is the counterpart of :func:`build_signed_public_url`: it points to the
+    authenticated file endpoint (requires the API key) and is meant for page
+    display / browser access, NOT for external consumers. If ``host`` is
+    provided the URL is absolute, otherwise relative so the browser uses the
+    host it is currently accessing.
+
+    Args:
+        bucket (str): The storage bucket.
+        file_id (str): The file ID.
+        api_prefix (str, optional): Authenticated file endpoint prefix.
+        host (Optional[str], optional): Host[:port] to make the URL absolute.
+        params (Optional[Dict], optional): Extra query params to append.
+
+    Returns:
+        str: The internal authenticated file URL.
+    """
+    path = f"{api_prefix.rstrip('/')}/{bucket}/{file_id}"
+    if params:
+        path += "?" + urlencode(params)
+    if host:
+        return f"http://{host}{path}"
+    return path
+
+
 class StorageBackend(ABC):
     """Storage backend interface."""
 
@@ -251,6 +368,19 @@ class StorageBackend(ABC):
         """
         return None
 
+    def get_internal_url(
+        self,
+        fm: FileMetadata,
+        params: Optional[Dict] = None,
+    ) -> Optional[str]:
+        """Generate an internal authenticated file-API URL.
+
+        Backends that expose files through the authenticated file serve should
+        return the internal URL here; otherwise ``None`` lets the caller fall
+        back to a default.
+        """
+        return None
+
     @property
     @abstractmethod
     def save_chunk_size(self) -> int:
@@ -266,10 +396,30 @@ class LocalFileStorage(StorageBackend):
 
     storage_type: str = "local"
 
-    def __init__(self, base_path: str, save_chunk_size: int = 1024 * 1024):
-        """Initialize the local file storage backend."""
+    def __init__(
+        self,
+        base_path: str,
+        save_chunk_size: int = 1024 * 1024,
+        public_url_secret: Optional[str] = None,
+        public_api_prefix: str = "/api/v2/serve/file",
+        public_host: Optional[str] = None,
+    ):
+        """Initialize the local file storage backend.
+
+        Args:
+            base_path (str): The base directory to store files.
+            save_chunk_size (int, optional): Chunk size for writing files.
+            public_url_secret (Optional[str], optional): HMAC secret used to sign
+                expiring public URLs. When ``None``, ``get_public_url`` is disabled.
+            public_api_prefix (str, optional): Base file API mount prefix.
+            public_host (Optional[str], optional): Host[:port] to build absolute
+                public URLs. When ``None``, relative URLs are returned.
+        """
         self.base_path = base_path
         self._save_chunk_size = save_chunk_size
+        self.public_url_secret = public_url_secret
+        self.public_api_prefix = public_api_prefix
+        self.public_host = public_host
         os.makedirs(self.base_path, exist_ok=True)
 
     @property
@@ -311,6 +461,37 @@ class LocalFileStorage(StorageBackend):
             os.remove(file_path)
             return True
         return False
+
+    def get_public_url(
+        self,
+        fm: FileMetadata,
+        expire: Optional[int] = None,
+        params: Optional[Dict] = None,
+    ) -> Optional[str]:
+        """Generate an expiring signed public URL for a local file.
+
+        Returns ``None`` (disabling public access) unless a signing secret is
+        configured, so the default local storage stays private.
+        """
+        if not self.public_url_secret:
+            return None
+        return build_signed_public_url(
+            fm.bucket,
+            fm.file_id,
+            secret=self.public_url_secret,
+            api_prefix=self.public_api_prefix,
+            host=self.public_host,
+            expire=expire,
+            params=params,
+        )
+
+    def get_internal_url(
+        self,
+        fm: FileMetadata,
+        params: Optional[Dict] = None,
+    ) -> Optional[str]:
+        """Local files are not exposed through the authenticated file serve."""
+        return None
 
 
 def calculate_file_hash(file_data: BinaryIO, buffer_size: int) -> str:
@@ -557,6 +738,32 @@ class FileStorageSystem:
 
         pub_url = backend.get_public_url(metadata, expire, params)
         return pub_url if pub_url else uri
+
+    def get_internal_url(
+        self, uri: str, params: Optional[Dict] = None
+    ) -> Optional[str]:
+        """Generate an internal authenticated file-API URL.
+
+        Args:
+            uri (str): The file URI
+            params (Optional[Dict], optional): Extra query params to append.
+
+        Returns:
+            Optional[str]: The internal authenticated URL, falling back to a
+                default built from the parsed URI when the backend does not
+                expose the file through the authenticated serve.
+        """
+        parsed_uri = FileStorageURI.parse(uri)
+        metadata = self.get_file_metadata(parsed_uri.bucket, parsed_uri.file_id)
+        if metadata:
+            backend = self.storage_backends.get(metadata.storage_type)
+            if backend:
+                url = backend.get_internal_url(metadata, params)
+                if url:
+                    return url
+        return build_internal_file_url(
+            parsed_uri.bucket, parsed_uri.file_id, params=params
+        )
 
     def list_files(
         self, bucket: str, filters: Optional[Dict[str, Any]] = None
@@ -823,6 +1030,23 @@ class FileStorageClient(BaseComponent):
         """
         return self.storage_system.get_public_url(uri, expire, params)
 
+    def get_internal_url(
+        self, uri: str, params: Optional[Dict] = None
+    ) -> Optional[str]:
+        """Generate an internal authenticated file-API URL.
+
+        Use this for page display / browser access (requires the API key). Use
+        :meth:`get_public_url` for external consumers such as model providers.
+
+        Args:
+            uri (str): The file URI
+            params (Optional[Dict], optional): Extra query params to append.
+
+        Returns:
+            Optional[str]: The internal authenticated file URL.
+        """
+        return self.storage_system.get_internal_url(uri, params)
+
 
 class SimpleDistributedStorage(StorageBackend):
     """Simple distributed storage backend."""
@@ -837,6 +1061,8 @@ class SimpleDistributedStorage(StorageBackend):
         transfer_chunk_size: int = 1024 * 1024,
         transfer_timeout: int = 360,
         api_prefix: str = "/api/v2/serve/file/files",
+        public_url_secret: Optional[str] = None,
+        public_api_prefix: str = "/api/v2/serve/file",
     ):
         """Initialize the simple distributed storage backend."""
         self.node_address = node_address
@@ -846,6 +1072,8 @@ class SimpleDistributedStorage(StorageBackend):
         self._transfer_chunk_size = transfer_chunk_size
         self._transfer_timeout = transfer_timeout
         self._api_prefix = api_prefix
+        self.public_url_secret = public_url_secret
+        self.public_api_prefix = public_api_prefix
 
     @property
     def save_chunk_size(self) -> int:
@@ -1001,6 +1229,19 @@ class SimpleDistributedStorage(StorageBackend):
         host, _sep, _port = node_address.partition(":")
         public_host = self._is_public_host(host)
 
+        # When a signing secret is configured, hand out an expiring signed URL
+        # that anyone can fetch from the public endpoint (no API key required).
+        if self.public_url_secret:
+            return build_signed_public_url(
+                bucket,
+                file_id,
+                secret=self.public_url_secret,
+                api_prefix=self.public_api_prefix,
+                host=(node_address if public_host else None),
+                expire=expire,
+                params=params,
+            )
+
         # Construct URL. For non-public bind addresses (e.g. 0.0.0.0, localhost),
         # return a relative URL so the browser uses whatever host it is currently
         # accessing. This avoids broken absolute URLs like http://0.0.0.0:7777
@@ -1026,6 +1267,28 @@ class SimpleDistributedStorage(StorageBackend):
             url = f"{url}?{urlencode(query_params)}"
 
         return url
+
+    def get_internal_url(
+        self,
+        fm: FileMetadata,
+        params: Optional[Dict] = None,
+    ) -> Optional[str]:
+        """Generate an internal authenticated file-API URL.
+
+        Returns the authenticated ``/files/{bucket}/{file_id}`` endpoint so the
+        page can fetch it through the browser session (with the API key), while
+        external consumers use :meth:`get_public_url` instead.
+        """
+        node_address = self._parse_node_address(fm)
+        host, _sep, _port = node_address.partition(":")
+        public_host = self._is_public_host(host)
+        return build_internal_file_url(
+            fm.bucket,
+            fm.file_id,
+            api_prefix=self._api_prefix,
+            host=(node_address if public_host else None),
+            params=params,
+        )
 
 
 class StreamedBytesIO(io.BytesIO):

@@ -118,7 +118,12 @@ function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const [authChecked, setAuthChecked] = useState(false);
   const authCheckInProgress = useRef(false);
 
-  const isPublicRoute = pathname?.startsWith("/login") || pathname?.startsWith("/auth/callback");
+  const isPublicRoute =
+    pathname?.startsWith("/login") ||
+    pathname?.startsWith("/auth/callback") ||
+    pathname?.startsWith("/m/login");
+  // 移动端独立路由 /m:保留认证,但跳过桌面侧边栏/命令面板,由 /m/layout 提供全屏移动壳
+  const isMobileRoute = pathname?.startsWith("/m");
 
   useEffect(() => {
     setMounted(true);
@@ -147,8 +152,11 @@ function LayoutWrapper({ children }: { children: React.ReactNode }) {
         localStorage.removeItem(STORAGE_USERINFO_KEY);
         localStorage.removeItem(STORAGE_USERINFO_VALID_TIME_KEY);
         const currentPath = window.location.pathname;
-        if (!currentPath.startsWith("/login") && !currentPath.startsWith("/auth/callback")) {
-          const next = encodeURIComponent(currentPath + window.location.search);
+        const next = encodeURIComponent(currentPath + window.location.search);
+        if (currentPath.startsWith("/m")) {
+          // 移动端未登录 → 移动专属登录页
+          window.location.href = `/m/login?next=${next}`;
+        } else if (!currentPath.startsWith("/login") && !currentPath.startsWith("/auth/callback")) {
           window.location.href = `/login?next=${next}`;
         }
       } finally {
@@ -184,6 +192,10 @@ function LayoutWrapper({ children }: { children: React.ReactNode }) {
   }
 
   const renderContent = () => {
+    if (isMobileRoute) {
+      // 移动端:全屏无桌面侧栏,由 /m/layout 渲染移动壳
+      return <>{children}</>;
+    }
     return (
       <div className="flex w-screen h-screen overflow-hidden">
         <Head>

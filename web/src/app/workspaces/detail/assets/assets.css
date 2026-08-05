@@ -34,45 +34,85 @@
 }
 
 .ws-asset-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 15px 16px;
   border: 1px solid var(--ws-border-subtle);
-  border-radius: var(--ws-radius, 12px);
+  border-radius: 14px;
   background: var(--ws-surface);
-  transition: box-shadow 0.15s;
+  overflow: hidden;
+  transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+}
+
+.ws-asset-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--ws-brand, #4f46e5), rgba(79, 70, 229, 0));
+  opacity: 0.9;
 }
 
 .ws-asset-card:hover {
   box-shadow: var(--ws-shadow-sm);
+  border-color: rgba(79, 70, 229, 0.28);
+  transform: translateY(-2px);
 }
 
 .ws-asset-card--off {
-  opacity: 0.55;
+  opacity: 0.6;
 }
 
-.ws-asset-card__top {
+.ws-asset-card--off::before {
+  background: linear-gradient(90deg, #9ca3af, rgba(156, 163, 175, 0));
+}
+
+.ws-asset-card__head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   min-width: 0;
 }
 
-.ws-asset-card__icon {
+.ws-asset-card__tile {
   flex-shrink: 0;
-  font-size: 15px;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  color: #fff;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.28);
+}
+
+.ws-asset-card__tile--muted {
+  background: linear-gradient(135deg, #9aa3b2, #c3cad6);
+}
+
+.ws-asset-card__titles {
+  flex: 1;
+  min-width: 0;
 }
 
 .ws-asset-card__name {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--ws-ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.ws-asset-card__type {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ws-ink-2);
 }
 
 .ws-asset-card__tags {
@@ -81,12 +121,38 @@
   gap: 4px;
 }
 
-.ws-asset-card__source {
+.ws-asset-card__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--ws-border-subtle);
+}
+
+.ws-asset-card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   font-size: 12px;
+}
+
+.ws-asset-card__row-key {
+  flex-shrink: 0;
   color: var(--ws-ink-2);
+}
+
+.ws-asset-card__row-val {
+  min-width: 0;
+  color: var(--ws-ink);
+  text-align: right;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.ws-asset-card__row-val--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .ws-asset-card__foot {
@@ -94,6 +160,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  margin-top: auto;
+  padding-top: 4px;
 }
 
 .ws-asset-card__time {
@@ -104,7 +172,7 @@
 .ws-asset-card__ops {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
 /* === 交付沉淀时间线 .ws-feed-* === */

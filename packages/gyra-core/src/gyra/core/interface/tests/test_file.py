@@ -504,3 +504,112 @@ def test_simple_distributed_storage_delete_file_remote(
         f"http://{remote_node_address}/api/v2/serve/file/files/{bucket}/{file_id}",
         timeout=360,
     )
+
+
+def test_sign_public_token_roundtrip():
+    from ..file import sign_public_token, verify_signed_public_token
+
+    secret = "key-123"
+    token = sign_public_token(secret, "bucket", "file1", 1700000000)
+    assert verify_signed_public_token(secret, "bucket", "file1", 1700000000, token)
+    # Wrong token / wrong file / wrong expiry must all fail.
+    assert not verify_signed_public_token(secret, "bucket", "file1", 1700000000, "bad")
+    assert not verify_signed_public_token(secret, "bucket", "file2", 1700000000, token)
+    assert not verify_signed_public_token(secret, "bucket", "file1", 1700000001, token)
+    assert not verify_signed_public_token("other", "bucket", "file1", 1700000000, token)
+
+
+def test_build_signed_public_url_relative_and_absolute():
+    from ..file import build_signed_public_url
+
+    secret = "key-123"
+    relative = build_signed_public_url(
+        "bucket", "file1", secret=secret, expire=100
+    )
+    assert relative.startswith("/api/v2/serve/file/public/files/bucket/file1?")
+    assert "expires=" in relative and "token=" in relative
+
+    absolute = build_signed_public_url(
+        "bucket", "file1", secret=secret, host="10.0.0.1:7777", expire=100
+    )
+    assert absolute.startswith("http://10.0.0.1:7777/api/v2/serve/file/public/files/")
+
+
+def test_local_storage_get_public_url_disabled_by_default(local_storage_backend):
+    metadata = FileMetadata(
+        file_id="file1",
+        bucket="bucket",
+        file_name="a.png",
+        file_size=1,
+        storage_type="local",
+        storage_path="x",
+        uri="gyra-fs://local/bucket/file1",
+        custom_metadata={},
+        file_hash="h",
+    )
+    assert local_storage_backend.get_public_url(metadata) is None
+
+
+def test_local_storage_get_public_url_with_secret(temp_storage_path):
+    backend = LocalFileStorage(
+        temp_storage_path,
+        public_url_secret="key-123",
+        public_host="10.0.0.1:7777",
+    )
+    metadata = FileMetadata(
+        file_id="file1",
+        bucket="bucket",
+        file_name="a.png",
+        file_size=1,
+        storage_type="local",
+        storage_path="x",
+        uri="gyra-fs://local/bucket/file1",
+        custom_metadata={},
+        file_hash="h",
+    )
+    url = backend.get_public_url(metadata, expire=100)
+    assert url.startswith("http://10.0.0.1:7777/api/v2/serve/file/public/files/")
+
+
+def test_distributed_storage_get_public_url_uses_signed_when_secret(
+    temp_storage_path,
+):
+    backend = SimpleDistributedStorage(
+        "10.0.0.1:7777",
+        temp_storage_path,
+        public_url_secret="key-123",
+    )
+    metadata = FileMetadata(
+        file_id="file1",
+        bucket="bucket",
+        file_name="a.png",
+        file_size=1,
+        storage_type="distributed",
+        storage_path="distributed://10.0.0.1:7777/bucket/file1",
+        uri="distributed://10.0.0.1:7777/bucket/file1",
+        custom_metadata={},
+        file_hash="h",
+    )
+    url = backend.get_public_url(metadata, expire=100)
+    assert url.startswith(
+        "http://10.0.0.1:7777/api/v2/serve/file/public/files/bucket/file1"
+    )
+
+
+def test_distributed_storage_get_public_url_auth_fallback_without_secret(
+    distributed_storage_backend,
+):
+    metadata = FileMetadata(
+        file_id="file1",
+        bucket="bucket",
+        file_name="a.png",
+        file_size=1,
+        storage_type="distributed",
+        storage_path="distributed://127.0.0.1:8000/bucket/file1",
+        uri="distributed://127.0.0.1:8000/bucket/file1",
+        custom_metadata={},
+        file_hash="h",
+    )
+    # 127.0.0.1 is not a "public" host → relative authenticated URL.
+    url = distributed_storage_backend.get_public_url(metadata)
+    assert url == "/api/v2/serve/file/files/bucket/file1"
