@@ -1,10 +1,13 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime
 from typing import Optional, Any, List
+from urllib.parse import urlparse
 
 import shortuuid
 from cachetools import TTLCache
@@ -23,10 +26,72 @@ from gyra_serve.agent.db.gpts_tool_messages import (
 )
 
 logger = logging.getLogger(__name__)
-tool_cache = TTLCache(maxsize=200, ttl=300)
+# MCP tools/list 结果缓存：按 (mcp_name, server) 精确缓存，TTL 可调，避免每次会话
+# 启动都访问远程 MCP server。工具列表变更时通过 invalidate_mcp_tool_cache 主动失效。
+MCP_TOOL_CACHE_TTL = int(os.environ.get("GYRA_MCP_TOOL_CACHE_TTL", 600))
+tool_cache = TTLCache(maxsize=200, ttl=MCP_TOOL_CACHE_TTL)
 gpts_tool_messages_dao = GptsToolMessagesDao()
 
 CFG = Config()
+
+
+def _tool_cache_key(mcp_name: str, server: str) -> tuple:
+    """缓存 key：mcp 名 + server 地址，防止同名不同 server 串缓存。"""
+    return mcp_name, server
+
+
+def invalidate_mcp_tool_cache(mcp_name: str, server: str) -> None:
+    """主动失效某个 MCP server 的工具列表缓存（等价 tools/list_changed）。"""
+    key = _tool_cache_key(mcp_name, server)
+    if key in tool_cache:
+        tool_cache.pop(key, None)
+        logger.info(f"mcp_server:{mcp_name}, invalidated tool list cache, server:{server}")
+
+
+def _is_tool_missing_error(err: Any) -> bool:
+    """判断错误是否因工具不存在/未找到导致（tools/list_changed 的等价失效信号）。"""
+    msg = str(err).lower()
+    return any(
+        kw in msg
+        for kw in ("unknown tool", "tool not found", "not found", "method not found", "no tool named")
+    )
+
+
+def _is_sse_url(url: str) -> bool:
+    """根据 URL 路径判断是否为 SSE 端点。
+
+    SSE 端点路径通常包含 `/sse`（如 `/mcp/sse`）；Streamable HTTP 端点
+    则为根路径或 `/mcp`。据此在客户端层面自动选择传输类型。
+    """
+    try:
+        path = urlparse(url).path.lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return path.endswith("/sse") or "/sse" in path
+
+
+@asynccontextmanager
+async def create_mcp_client(url: str, headers: Optional[dict] = None, timeout: Optional[int] = None):
+    """按 URL 自动选择 MCP 传输方式，产出 (read, write) 双向流。
+
+    - SSE（路径含 `/sse`）：使用 ``sse_client``。
+    - Streamable HTTP（其余 HTTP(S) URL）：使用 ``streamable_http_client``，
+      通过 ``httpx2.AsyncClient`` 透传 headers 与超时。
+    """
+    if _is_sse_url(url):
+        async with sse_client(
+            url=url, headers=headers, sse_read_timeout=timeout if timeout is not None else 300.0
+        ) as (read, write):
+            yield read, write
+        return
+    # Streamable HTTP
+    import httpx2
+    from mcp.client.streamable_http import streamable_http_client
+
+    request_timeout = httpx2.Timeout(timeout if timeout is not None else 60.0)
+    async with httpx2.AsyncClient(headers=headers, timeout=request_timeout) as http_client:
+        async with streamable_http_client(url, http_client=http_client) as (read, write):
+            yield read, write
 
 
 def switch_mcp_input_schema(input_schema: dict):
@@ -67,6 +132,7 @@ async def get_mcp_tool_list(
     allow_tools: Optional[List[str]] = None,
     server_ssl_verify: Optional[Any] = None,
     use_cache: bool = True,
+    refresh_cache: bool = False,
     tool_id: Optional[str] = None,
     timeout: Optional[int] = None,
 ):
@@ -85,7 +151,10 @@ async def get_mcp_tool_list(
 
     async def mcp_tool_list(server: str):
         try:
-            cache_result = tool_cache.get(mcp_name)
+            cache_key = _tool_cache_key(mcp_name, server)
+            cache_result = (
+                None if not use_cache or refresh_cache else tool_cache.get(cache_key)
+            )
             if cache_result and cache_result.tools and len(cache_result.tools) > 0:
                 LOGGER.info(
                     f"mcp_server:{mcp_name}, hit tool list cache:{cache_result}"
@@ -99,7 +168,7 @@ async def get_mcp_tool_list(
                     headers["x-mcp-hash-key"],
                     headers["cookie"],
                 ) = trace_id, rpc_id, str(uuid.uuid4()), cookie
-                async with sse_client(url=server, headers=headers) as (read, write):
+                async with create_mcp_client(server, headers=headers) as (read, write):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
                         list_tools = await session.list_tools()
@@ -108,7 +177,7 @@ async def get_mcp_tool_list(
                             f"mcp_server:{mcp_name},sse:{server},header:{headers},list_tools:[{list_tools}],costMs:[{end_time - start_time}]"
                         )
                         if use_cache:
-                            tool_cache[mcp_name] = list_tools
+                            tool_cache[cache_key] = list_tools
                         result = deepcopy(list_tools)
             if allow_tools and len(allow_tools) > 0:
                 tools = [tool for tool in result.tools if tool.name in allow_tools]
@@ -235,8 +304,8 @@ async def call_mcp_tool(
                 mcp_server = f"http://localhost:{CFG.GYRA_WEBSERVER_PORT}/mcp/sse"
             else:
                 mcp_server = server
-            async with sse_client(
-                url=mcp_server, headers=headers, sse_read_timeout=timeout
+            async with create_mcp_client(
+                mcp_server, headers=headers, timeout=timeout
             ) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
@@ -275,6 +344,9 @@ async def call_mcp_tool(
     except asyncio.TimeoutError as e:
         raise ValueError(f"MCP服务{mcp_name}工具调用超时!")
     except Exception as e:
+        # 工具未找到/不存在：远端工具列表可能已变更，主动失效缓存，下次 list 重新拉取。
+        if _is_tool_missing_error(e):
+            invalidate_mcp_tool_cache(mcp_name, server)
         raise ValueError(f"MCP服务{mcp_name}:{tool_name}工具调用异常!", e)
 
 

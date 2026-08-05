@@ -59,6 +59,8 @@ class PromptAssemblyConfig:
             "goal",
             "now",
             "now_time",
+            "now_weekday",
+            "now_timezone",
             "conv_start_time",
             "user_name",
             "user_id",
@@ -206,6 +208,18 @@ class PromptAssembler:
             kwargs["now_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if "now" not in kwargs or not kwargs["now"]:
             kwargs["now"] = datetime.now().strftime("%Y-%m-%d")
+        if "now_weekday" not in kwargs or not kwargs["now_weekday"]:
+            weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+            kwargs["now_weekday"] = weekdays[datetime.now().weekday()]
+        if "now_timezone" not in kwargs or not kwargs["now_timezone"]:
+            import time
+            if time.daylight and time.localtime().tm_isdst > 0:
+                tz_offset_seconds = time.altzone
+            else:
+                tz_offset_seconds = time.timezone
+            tz_offset_hours = abs(tz_offset_seconds) // 3600
+            tz_sign = "-" if tz_offset_seconds >= 0 else "+"
+            kwargs["now_timezone"] = f"UTC{tz_sign}{tz_offset_hours}"
 
         # 1. 工作流 - 需要渲染模板变量（如 now_time）
         workflow_version = kwargs.get("workflow_version", self.config.workflow_version)

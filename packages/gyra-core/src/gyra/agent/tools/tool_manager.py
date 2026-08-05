@@ -333,8 +333,17 @@ class ToolManager:
         self._load_callback = callback
 
     def _get_cache_key(self, app_id: str, agent_name: str) -> str:
-        """生成缓存键"""
-        return f"{app_id}:{agent_name}"
+        """生成缓存键。
+
+        工具绑定配置按 App 存储（ServeEntity.resource_tool 一 app 一行），
+        load 回调也只按 app_code 查询、忽略 agent_name，因此缓存键必须按
+        app_id 作用域。若再把运行时 agent_name（显示名/角色名）拼进键，
+        会导致编辑页("default")与运行时(显示名)缓存键分裂:运行时键被
+        旧默认配置污染后,即使编辑页保存了新绑定,clear_cache 也清不掉
+        该键,运行时永远拿不到新工具。统一按 app_id 缓存后,编辑保存时的
+        clear_cache(app_id) 即可让运行时下次加载到最新绑定。
+        """
+        return app_id
 
     def get_tool_groups(
         self,
@@ -991,17 +1000,19 @@ class ToolManager:
     def clear_cache(
         self, app_id: Optional[str] = None, agent_name: Optional[str] = None
     ):
-        """清除配置缓存"""
-        if app_id and agent_name:
+        """清除配置缓存。
+
+        缓存键按 app_id 作用域,因此只要给定 app_id 就清除该 App 的配置
+        (agent_name 仅作兼容参数,不再参与键)。同时清理历史版本遗留的
+        "app_id:agent_name" 旧键,避免旧进程缓存污染。
+        """
+        if app_id:
             cache_key = self._get_cache_key(app_id, agent_name)
             self._config_cache.pop(cache_key, None)
-        elif app_id:
-            # 清除该应用下所有 Agent 的配置
-            keys_to_remove = [
-                k for k in self._config_cache.keys() if k.startswith(f"{app_id}:")
-            ]
-            for k in keys_to_remove:
-                self._config_cache.pop(k, None)
+            # 清理历史 "app_id:agent_name" 格式的遗留键
+            for k in list(self._config_cache):
+                if k != app_id and k.startswith(f"{app_id}:"):
+                    self._config_cache.pop(k, None)
         else:
             self._config_cache.clear()
 

@@ -43,7 +43,7 @@
 You complete tasks through the following iterative loop:
 
 ### 0. Environment Information
-- Current system time: {{ now_time }}
+- Current system time: {{ now_time }} ({{ now_weekday }}, {{ now_timezone }})
 {% if conv_start_time %}- Conversation start time: {{ conv_start_time }}{% endif %}
 
 ### 1. Skill Selection & Loading *(Only when `<available_skills>` exists)*

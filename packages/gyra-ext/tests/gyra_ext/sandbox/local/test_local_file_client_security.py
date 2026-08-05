@@ -132,3 +132,34 @@ async def test_symlink_escape_blocked(tmp_path):
     # The logical path points inside the session root, but the symlink target escapes.
     with pytest.raises(PermissionError):
         await client.read("/link_to_secret")
+
+
+@pytest.mark.asyncio
+async def test_logical_path_allowed_when_basedir_behind_symlink(tmp_path):
+    """Regression: macOS /var -> /private/var.
+
+    When the sandbox base_dir lives behind a symlink, the stored allowed roots
+    keep the symlinked prefix (abspath) while the candidate path is resolved
+    (realpath). Writing via the LOGICAL work_dir path must succeed instead of
+    being falsely rejected as 'escapes sandbox allowed roots'.
+    """
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    link_root = tmp_path / "link"
+    link_root.symlink_to(real_root, target_is_directory=True)
+
+    sessions = link_root / "sessions"
+    sessions.mkdir()
+    (sessions / "s1").mkdir()
+    runtime = MockRuntime(str(sessions))
+
+    client = LocalFileClient(
+        sandbox_id="s1",
+        work_dir="/data/workspace",
+        runtime=runtime,
+    )
+    assert os.path.realpath(client._session_root) != client._session_root
+
+    await client.write("/data/workspace/file.txt", "hello", overwrite=True)
+    result = await client.read("/data/workspace/file.txt")
+    assert result.content == "hello"

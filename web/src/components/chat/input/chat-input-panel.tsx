@@ -10,6 +10,7 @@ import { UserChatContent } from '@/types/chat';
 import { parseResourceValue } from '@/utils';
 import { MEDIA_RESOURCE_TYPES } from "@/app/application/app/components/chat-layout-config";
 import InputQueueDisplay from './input-queue-display';
+import ToolApprovalCard from './tool-approval-card';
 import useUserInput from '@/hooks/use-user-input';
 
 interface QueuedMessage {
@@ -167,6 +168,7 @@ const ChatInputPanel: React.FC<{ ctrl: AbortController }> = ({ ctrl }) => {
 
   return (
     <div className='flex flex-col w-full mx-auto pt-4 pb-0 bg-transparent'>
+      <ToolApprovalCard sessionId={sessionId} replyLoading={replyLoading} />
       <InputQueueDisplay
         messages={displayMessages}
         isLoading={replyLoading && queueState.hasPendingInput}

@@ -11,7 +11,11 @@ from gyra_serve.core import BaseService
 from ..api.schemas import ServeRequest, ServerResponse, McpTool, QueryFilter
 from ..config import SERVE_SERVICE_COMPONENT_NAME, ServeConfig
 from ..models.models import ServeDao, ServeEntity
-from ...agent.resource.tool.mcp_utils import switch_mcp_input_schema, call_mcp_tool
+from ...agent.resource.tool.mcp_utils import (
+    switch_mcp_input_schema,
+    get_tool_input_schema,
+    call_mcp_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +185,7 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                                          timeout=timeout)
         for tool in result.tools:
             tool_list.append(McpTool(name=tool.name, description=tool.description,
-                                     param_schema=switch_mcp_input_schema(tool.inputSchema)))
+                                     param_schema=switch_mcp_input_schema(get_tool_input_schema(tool))))
         return tool_list
 
     async def call_tool(self, mcp_name: str, tool_name: str, mcp_sse_url: Optional[str] = None,

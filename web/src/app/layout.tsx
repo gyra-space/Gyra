@@ -122,8 +122,9 @@ function LayoutWrapper({ children }: { children: React.ReactNode }) {
     pathname?.startsWith("/login") ||
     pathname?.startsWith("/auth/callback") ||
     pathname?.startsWith("/m/login");
-  // 移动端独立路由 /m:保留认证,但跳过桌面侧边栏/命令面板,由 /m/layout 提供全屏移动壳
-  const isMobileRoute = pathname?.startsWith("/m");
+  // 移动端独立路由 /m/*:保留认证,但跳过桌面侧边栏/命令面板,由 /m/layout 提供全屏移动壳
+  // 注意必须用 "/m/" 前缀,避免误伤 /mcp /models /me /monitoring 等以 /m 开头的桌面路由
+  const isMobileRoute = pathname?.startsWith("/m/");
 
   useEffect(() => {
     setMounted(true);
@@ -153,7 +154,7 @@ function LayoutWrapper({ children }: { children: React.ReactNode }) {
         localStorage.removeItem(STORAGE_USERINFO_VALID_TIME_KEY);
         const currentPath = window.location.pathname;
         const next = encodeURIComponent(currentPath + window.location.search);
-        if (currentPath.startsWith("/m")) {
+        if (currentPath.startsWith("/m/")) {
           // 移动端未登录 → 移动专属登录页
           window.location.href = `/m/login?next=${next}`;
         } else if (!currentPath.startsWith("/login") && !currentPath.startsWith("/auth/callback")) {

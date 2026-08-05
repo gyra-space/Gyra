@@ -6,6 +6,8 @@ host_working_dir 未设置时保持原有的 session 目录嵌套行为。
 """
 import os
 
+import pytest
+
 from gyra.sandbox.providers.base import SessionConfig
 from gyra_ext.sandbox.local.improved_provider import LocalSandboxConfig
 from gyra_ext.sandbox.local.improved_runtime import ImprovedLocalSandboxSession
@@ -45,10 +47,58 @@ def test_config_from_dict_carries_host_work_dir():
     assert sc.host_working_dir == "/tmp/ws/1"
 
 
-def test_config_default_host_work_dir_none():
+def test_config_default_work_dir_promoted_to_host():
+    """默认 work_dir(项目 DATA_DIR 下的真实路径)自动作为 host 工作目录,
+    文件落到真实路径(pilot/data/workspace)而非 /tmp 嵌套目录。"""
+    from gyra_ext.sandbox.local.improved_provider import (
+        DEFAULT_LOCAL_SANDBOX_WORK_DIR,
+    )
+
     cfg = LocalSandboxConfig.from_dict({})
+    assert cfg.host_work_dir == os.path.abspath(DEFAULT_LOCAL_SANDBOX_WORK_DIR)
+    assert cfg.to_session_config().host_working_dir == cfg.host_work_dir
+
+
+def test_config_logical_work_dir_stays_nested():
+    """DATA_DIR 之外的逻辑路径(如 /data/workspace)不提升为 host 工作目录,
+    保持原有 /tmp 嵌套行为。"""
+    cfg = LocalSandboxConfig.from_dict({"work_dir": "/data/workspace"})
     assert cfg.host_work_dir is None
     assert cfg.to_session_config().host_working_dir is None
+
+
+@pytest.mark.asyncio
+async def test_default_config_writes_to_real_workspace(tmp_path, monkeypatch):
+    """端到端:默认配置(DATA_DIR 下真实 work_dir)提升为 host 工作目录后,
+    文件直接写到真实工作空间路径,而非 /tmp 嵌套 session 目录。
+
+    用 tmp_path 模拟 DATA_DIR,避免污染真实的 pilot/data/workspace。
+    """
+    import gyra_ext.sandbox.local.improved_provider as mod
+    from gyra_ext.sandbox.local.file_client import LocalFileClient
+
+    fake_data = tmp_path / "data"
+    fake_data.mkdir()
+    monkeypatch.setattr(mod, "DATA_DIR", str(fake_data))
+    real_ws = str(fake_data / "workspace")
+
+    cfg = LocalSandboxConfig.from_dict({"work_dir": real_ws})
+    assert cfg.host_work_dir == os.path.abspath(real_ws)
+
+    class _RT:
+        base_dir = str(tmp_path / "sessions")
+
+    client = LocalFileClient(
+        sandbox_id="s1",
+        work_dir=cfg.work_dir,
+        runtime=_RT(),
+        host_work_dir=cfg.host_work_dir,
+    )
+    await client.write(f"{real_ws}/file.txt", "hello", overwrite=True)
+
+    # 文件落到真实工作空间路径
+    assert os.path.isfile(os.path.join(real_ws, "file.txt"))
+    assert (fake_data / "workspace" / "file.txt").read_text() == "hello"
 
 
 def test_workspace_sandbox_root(tmp_path, monkeypatch):

@@ -14,7 +14,7 @@ import {
   SyncOutlined,
   ArrowRightOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Input, Spin } from 'antd';
+import { Alert, Button, ConfigProvider, Input, Spin, theme } from 'antd';
 import Image from 'next/image';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -64,6 +64,18 @@ function providerLabel(p: OAuthProvider): string {
   if (p.type === 'local') return '';
   return p.id;
 }
+
+// 登录卡片局部深色主题:玻璃输入框融入深空画布
+const darkTheme = {
+  algorithm: theme.darkAlgorithm,
+  token: {
+    colorPrimary: '#4f46e5',
+    colorBgContainer: 'rgba(255,255,255,0.05)',
+    colorBorder: 'rgba(255,255,255,0.14)',
+    colorTextPlaceholder: 'rgba(255,255,255,0.30)',
+    borderRadius: 8,
+  },
+};
 
 export default function LoginPage() {
   const router = useRouter();
@@ -227,20 +239,20 @@ export default function LoginPage() {
   const hasLocal = providers.some(p => p.type === 'local');
 
   return (
-    <div className='relative min-h-screen flex bg-[#f7f8fa] overflow-hidden'>
+    <div className='relative min-h-screen flex bg-[#0b0d16] overflow-hidden text-white'>
+      {/* ─── 全页共享画布:极光 + 网格铺满整屏,消除左右割裂 ─── */}
+      <div className='aurora-stage'>
+        <div className='aurora-blob aurora-blob--brand top-[-12%] left-[-6%] w-[560px] h-[560px]' />
+        <div className='aurora-blob aurora-blob--cyan bottom-[-16%] right-[2%] w-[560px] h-[560px]' />
+        <div className='aurora-blob aurora-blob--violet top-[36%] left-[46%] w-[440px] h-[440px]' />
+      </div>
+      <div className='absolute inset-0 opacity-[0.05] pointer-events-none'
+        style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)', backgroundSize: '56px 56px' }} />
+      {/* 边缘压暗,视线聚焦内容 */}
+      <div className='absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,transparent_45%,rgba(5,7,12,0.55)_100%)]' />
+
       {/* ─── 左侧品牌展示区 ─── */}
-      <aside className='hidden lg:flex relative flex-col justify-between w-[46%] shrink-0 p-12 xl:p-16 overflow-hidden bg-[#0b0d16] text-white'>
-        {/* 极光背景 */}
-        <div className='aurora-stage'>
-          <div className='aurora-blob aurora-blob--brand top-[-12%] left-[-8%] w-[560px] h-[560px]' />
-          <div className='aurora-blob aurora-blob--cyan bottom-[-14%] right-[-6%] w-[520px] h-[520px]' />
-          <div className='aurora-blob aurora-blob--violet top-[38%] left-[52%] w-[420px] h-[420px]' />
-        </div>
-        {/* 网格纹理 */}
-        <div className='absolute inset-0 opacity-[0.05]'
-          style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)', backgroundSize: '56px 56px' }} />
-        {/* 光晕过滤层 */}
-        <div className='absolute inset-0 bg-gradient-to-tr from-[#0b0d16]/70 via-transparent to-[#0b0d16]/40' />
+      <aside className='hidden lg:flex relative z-10 flex-col justify-between w-[46%] shrink-0 p-12 xl:p-16 overflow-hidden'>
 
         <div className='relative z-10 flex items-center gap-3 animate-rise'>
           <Image src='/gyra-logo.svg' alt='Gyra' width={40} height={40} priority className='drop-shadow-[0_0_20px_rgba(79,70,229,0.7)]' />
@@ -317,29 +329,26 @@ export default function LoginPage() {
         </div>
       </aside>
 
-      {/* ─── 右侧登录区 ─── */}
-      <main className='relative flex-1 flex flex-col items-center justify-center px-6 py-10 bg-[#f7f8fa]'>
-        {/* 浅色极光点缀 */}
-        <div className='pointer-events-none absolute inset-0 overflow-hidden'>
-          <div className='absolute top-[-120px] right-[-80px] w-[420px] h-[420px] rounded-full'
-            style={{ background: 'radial-gradient(circle, rgba(0,218,239,0.10) 0%, transparent 70%)' }} />
-          <div className='absolute bottom-[-100px] left-[-60px] w-[380px] h-[380px] rounded-full'
-            style={{ background: 'radial-gradient(circle, rgba(79,70,229,0.08) 0%, transparent 70%)' }} />
-        </div>
-
+      {/* ─── 右侧登录区:与品牌区共处同一深空画布 ─── */}
+      <main className='relative z-10 flex-1 flex flex-col items-center justify-center px-6 py-10'>
         <div className='relative z-10 w-full max-w-[400px] animate-rise'>
+          <ConfigProvider theme={darkTheme}>
           {/* 移动端 Logo */}
-          <div className='lg:hidden flex justify-center mb-8'>
-            <Image src='/logo_zh_latest.png' alt='Gyra' width={160} height={42} className='h-[42px] w-auto' priority />
+          <div className='lg:hidden flex items-center justify-center gap-2.5 mb-8'>
+            <Image src='/gyra-logo.svg' alt='Gyra' width={34} height={34} priority className='drop-shadow-[0_0_16px_rgba(79,70,229,0.7)]' />
+            <div className='flex items-baseline gap-2'>
+              <span className='text-[19px] font-semibold tracking-tight'>Gyra</span>
+              <span className='text-[10px] text-white/40 tracking-[0.2em] uppercase'>Flywheel</span>
+            </div>
           </div>
 
-          {/* 登录卡片 */}
-          <div className='glass-panel rounded-2xl border border-white/60 shadow-[0_1px_2px_rgba(16,24,40,0.04),0_24px_60px_rgba(16,24,40,0.10)] px-8 py-8'>
+          {/* 登录卡片:深色玻璃拟态 */}
+          <div className='rounded-2xl border border-white/10 bg-[#12151f]/75 backdrop-blur-xl shadow-[0_24px_80px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] px-8 py-8'>
             <div className='mb-7'>
-              <h2 className='text-[22px] font-semibold text-ink-900 tracking-tight'>
+              <h2 className='text-[22px] font-semibold text-white tracking-tight'>
                 Welcome back
               </h2>
-              <p className='mt-1.5 text-[13px] text-ink-400'>Sign in to continue to your workspace</p>
+              <p className='mt-1.5 text-[13px] text-white/45'>Sign in to continue to your workspace</p>
             </div>
 
             {errorMsg && (
@@ -353,7 +362,7 @@ export default function LoginPage() {
 
             {!oauthEnabled ? (
               <div className='text-center py-6'>
-                <p className='text-ink-400 text-sm leading-relaxed'>
+                <p className='text-white/45 text-sm leading-relaxed'>
                   Login is not configured.<br />
                   Please enable OAuth2 or access control plugin in System Settings.
                 </p>
@@ -362,13 +371,13 @@ export default function LoginPage() {
               /* ─── Local login / register form ─── */
               <div>
                 <div className='flex items-center justify-between mb-5'>
-                  <h3 className='text-[15px] font-semibold text-ink-900 tracking-tight'>
+                  <h3 className='text-[15px] font-semibold text-white/90 tracking-tight'>
                     {isRegister ? 'Create Account' : 'Sign In'}
                   </h3>
                   {oauthProviders.length > 0 && (
                     <button
                       onClick={() => setIsLocalMode(false)}
-                      className='text-xs text-ink-400 hover:text-[#4f46e5] transition-colors'
+                      className='text-xs text-white/45 hover:text-[#818cf8] transition-colors'
                     >
                       More options
                     </button>
@@ -382,7 +391,7 @@ export default function LoginPage() {
                 <div className='space-y-3'>
                   <Input
                     size='large'
-                    prefix={<UserOutlined className='text-gray-300' />}
+                    prefix={<UserOutlined className='text-white/30' />}
                     placeholder='Username'
                     value={username}
                     onChange={e => setUsername(e.target.value)}
@@ -392,7 +401,7 @@ export default function LoginPage() {
                   />
                   <Input.Password
                     size='large'
-                    prefix={<LockOutlined className='text-gray-300' />}
+                    prefix={<LockOutlined className='text-white/30' />}
                     placeholder='Password'
                     value={password}
                     onChange={e => setPassword(e.target.value)}
@@ -404,7 +413,7 @@ export default function LoginPage() {
                     <>
                       <Input.Password
                         size='large'
-                        prefix={<LockOutlined className='text-gray-300' />}
+                        prefix={<LockOutlined className='text-white/30' />}
                         placeholder='Confirm Password'
                         value={confirmPassword}
                         onChange={e => setConfirmPassword(e.target.value)}
@@ -414,7 +423,7 @@ export default function LoginPage() {
                       />
                       <Input
                         size='large'
-                        prefix={<MailOutlined className='text-gray-300' />}
+                        prefix={<MailOutlined className='text-white/30' />}
                         placeholder='Email (optional)'
                         value={email}
                         onChange={e => setEmail(e.target.value)}
@@ -432,7 +441,7 @@ export default function LoginPage() {
                     loading={submitting}
                     onClick={isRegister ? handleLocalRegister : handleLocalLogin}
                     className='rounded-lg font-medium'
-                    style={{ height: 44, background: '#4f46e5' }}
+                    style={{ height: 44 }}
                   >
                     {isRegister ? 'Create Account' : 'Sign In'}
                   </Button>
@@ -440,7 +449,7 @@ export default function LoginPage() {
 
                 <div className='mt-4 text-center'>
                   <button
-                    className='text-[13px] text-ink-400 hover:text-[#4f46e5] transition-colors'
+                    className='text-[13px] text-white/45 hover:text-[#818cf8] transition-colors'
                     onClick={() => {
                       setIsRegister(!isRegister);
                       setLocalError('');
@@ -455,16 +464,16 @@ export default function LoginPage() {
                 {oauthProviders.length > 0 && (
                   <>
                     <div className='flex items-center my-5'>
-                      <div className='flex-1 h-px bg-gray-100' />
-                      <span className='px-3 text-[11px] text-gray-300 uppercase tracking-widest'>or</span>
-                      <div className='flex-1 h-px bg-gray-100' />
+                      <div className='flex-1 h-px bg-white/10' />
+                      <span className='px-3 text-[11px] text-white/30 uppercase tracking-widest'>or</span>
+                      <div className='flex-1 h-px bg-white/10' />
                     </div>
                     <div className='flex justify-center gap-3'>
                       {oauthProviders.map(p => (
                         <button
                           key={p.id}
                           onClick={() => handleOAuthLogin(p.id)}
-                          className='flex items-center justify-center w-11 h-11 rounded-xl border border-gray-100 bg-white hover:bg-gray-50 hover:border-gray-200 transition-all text-gray-400 hover:text-gray-600 shadow-[0_1px_2px_rgba(16,24,40,0.04)]'
+                          className='flex items-center justify-center w-11 h-11 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/25 transition-all text-white/50 hover:text-white'
                           title={`Sign in with ${providerLabel(p)}`}
                         >
                           <ProviderIcon type={p.type} />
@@ -477,19 +486,19 @@ export default function LoginPage() {
             ) : (
               /* ─── Provider selection ─── */
               <div>
-                <h3 className='text-[15px] font-semibold text-ink-900 mb-5 tracking-tight'>Sign In</h3>
+                <h3 className='text-[15px] font-semibold text-white/90 mb-5 tracking-tight'>Sign In</h3>
 
                 <div className='space-y-2.5'>
                   {oauthProviders.map(p => (
                     <button
                       key={p.id}
                       onClick={() => handleOAuthLogin(p.id)}
-                      className='flex items-center w-full h-[44px] px-4 rounded-xl border border-gray-100 bg-white hover:bg-gray-50 hover:border-gray-200 transition-all group shadow-[0_1px_2px_rgba(16,24,40,0.04)]'
+                      className='flex items-center w-full h-[44px] px-4 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/25 transition-all group'
                     >
-                      <span className='text-gray-400 group-hover:text-gray-600 transition-colors'>
+                      <span className='text-white/45 group-hover:text-white/85 transition-colors'>
                         <ProviderIcon type={p.type} />
                       </span>
-                      <span className='ml-3 text-[13px] font-medium text-gray-600 group-hover:text-gray-800 transition-colors'>
+                      <span className='ml-3 text-[13px] font-medium text-white/70 group-hover:text-white transition-colors'>
                         Continue with {providerLabel(p)}
                       </span>
                     </button>
@@ -499,19 +508,19 @@ export default function LoginPage() {
                     <>
                       {oauthProviders.length > 0 && (
                         <div className='flex items-center my-2.5'>
-                          <div className='flex-1 h-px bg-gray-100' />
-                          <span className='px-3 text-[11px] text-gray-300 uppercase tracking-widest'>or</span>
-                          <div className='flex-1 h-px bg-gray-100' />
+                          <div className='flex-1 h-px bg-white/10' />
+                          <span className='px-3 text-[11px] text-white/30 uppercase tracking-widest'>or</span>
+                          <div className='flex-1 h-px bg-white/10' />
                         </div>
                       )}
                       <button
                         onClick={() => setIsLocalMode(true)}
-                        className='flex items-center w-full h-[44px] px-4 rounded-xl border border-gray-100 bg-white hover:bg-gray-50 hover:border-gray-200 transition-all group shadow-[0_1px_2px_rgba(16,24,40,0.04)]'
+                        className='flex items-center w-full h-[44px] px-4 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/25 transition-all group'
                       >
-                        <span className='text-gray-400 group-hover:text-gray-600 transition-colors'>
+                        <span className='text-white/45 group-hover:text-white/85 transition-colors'>
                           <LockOutlined style={{ fontSize: 18 }} />
                         </span>
-                        <span className='ml-3 text-[13px] font-medium text-gray-600 group-hover:text-gray-800 transition-colors'>
+                        <span className='ml-3 text-[13px] font-medium text-white/70 group-hover:text-white transition-colors'>
                           Sign in with Username
                         </span>
                       </button>
@@ -523,9 +532,10 @@ export default function LoginPage() {
           </div>
 
           {/* Footer */}
-          <p className='text-center mt-6 text-[11px] text-gray-300 tracking-wide'>
+          <p className='text-center mt-6 text-[11px] text-white/30 tracking-wide'>
             Powered by Gyra
           </p>
+          </ConfigProvider>
         </div>
       </main>
     </div>

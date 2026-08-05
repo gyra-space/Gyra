@@ -108,13 +108,19 @@ class LocalFileClient(FileClient):
     def _ensure_inside_allowed(self, physical_path: str) -> str:
         """Verify that *physical_path* stays within an allowed root.
 
-        Uses realpath to follow symlinks safely. Raises PermissionError on escape.
+        Uses realpath to follow symlinks safely. Roots are stored with
+        os.path.abspath (symlinks unresolved), so each root must also be
+        realpath-resolved before comparison; otherwise a sandbox temp dir that
+        lives behind a symlink (e.g. macOS /var -> /private/var) causes every
+        legitimate workspace path to be falsely rejected as an escape.
+        Raises PermissionError on escape.
         """
         real = os.path.realpath(physical_path)
         for root in self._allowed_roots:
             if not root:
                 continue
-            if real == root or real.startswith(os.path.join(root, "")):
+            root_real = os.path.realpath(root)
+            if real == root_real or real.startswith(os.path.join(root_real, "")):
                 return real
         raise PermissionError(
             f"Path {physical_path} escapes sandbox allowed roots"

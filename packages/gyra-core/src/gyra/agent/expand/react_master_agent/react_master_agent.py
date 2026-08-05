@@ -2099,6 +2099,13 @@ class ReActMasterAgent(ConversableAgent):
             except Exception as e:
                 logger.warning(f"Failed to record user message to work_log: {e}")
 
+        # ========== 清理上一轮工具失败熔断状态 ==========
+        # 失败计数 / 熔断状态挂在 agent 实例上，conv_id 跨用户消息不变，
+        # 会残留到新一轮提问：上一轮某工具连续失败被熔断后，追问仍被阻止。
+        # 每个新用户消息首轮（current_retry_counter == 0）清空计数 + 解除熔断。
+        if self.current_retry_counter == 0:
+            self._reset_tool_failure_count(None)
+
         # ========== 确保工具列表每轮刷新 ==========
         if self.current_retry_counter > 0:
             try:
@@ -2774,8 +2781,11 @@ class ReActMasterAgent(ConversableAgent):
                             # 1. 工具授权 WAITING：工具尚未执行，等待用户授权 → 不记录 work_log
                             # 2. ask_user WAITING：工具已执行（问题已推送给用户），等待用户回复 → 需要记录
                             is_waiting = getattr(result, "state", None) == Status.WAITING.value
-                            is_ask_user = getattr(result, "ask_user", False)
-                            if is_waiting and not is_ask_user:
+                            ask_type = getattr(result, "ask_type", None)
+                            # 工具授权待确认(ask_type=before_action)：工具尚未执行，不记 work_log，
+                            # 恢复时重新执行（已授权则放行）。ask_user(after_action)则照常记录复用。
+                            is_auth_pending = is_waiting and ask_type == "before_action"
+                            if is_auth_pending:
                                 logger.info(
                                     f"📝 Skipping WorkLog for {tool_name} (WAITING for authorization)"
                                 )
@@ -2801,7 +2811,13 @@ class ReActMasterAgent(ConversableAgent):
                             self.set_phase("reporting", "任务完成，生成报告")
 
                         # 如果是terminate action，附加交付文件
-                        if isinstance(result, ActionOutput) and result.terminate:
+                        # 仅真正任务终止(terminate 且非 ask_user/授权等待)才走完成逻辑：
+                        # ask_user/工具授权等待虽终止 loop，但对话进入 WAITING，不应生成报告/置 complete。
+                        if (
+                            isinstance(result, ActionOutput)
+                            and result.terminate
+                            and not getattr(result, "ask_user", False)
+                        ):
                             result = await self._attach_delivery_files(result)
 
                             # ========== 集成：自动生成报告 ==========

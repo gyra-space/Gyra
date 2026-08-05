@@ -527,21 +527,68 @@ class ToolAction(Action[ToolInput]):
         env_context = agent_context.env_context or {}
         eval_mode = env_context.get(EVAL_MODE_KEY, False)
 
-        # Handle user approval requirement
-        if require_approval and self.requires_user_approval(tool_info, tool_pack):
-            logger.info(
-                f"工具[{tool_info.name}]需要进行工具执行确认审核！{require_approval},{self._get_tool_attr(tool_info, 'ask_user')},{tool_pack.ask_user if tool_pack else ''}"
-            )
-            # P1: 子 agent 工具需授权时通知主 agent（BAIZE SubAgent async 场景）
-            await self._notify_main_authorization_needed(agent_context, tool_info, param.args)
-            return await self._create_user_approval_output(
-                tool_info,
-                message_id,
-                args=param.args,
-                tool_pack=tool_pack,
-                metrics=metrics,
-                start_time=start_time,
-            )
+        # 工具执行授权（终止 + 持久化 + 同 id 恢复）：
+        # 按 agent.authorization_config (dict: mode/tool_overrides/白黑名单) 决定
+        # allow/deny/ask。ask -> 未授权则 WAITING(前端弹授权卡片)+登记 pending；
+        # 已授权(恢复场景)则放行。deny -> 拒绝；allow/无配置 -> 放行执行。
+        auth_cfg = getattr(agent, "authorization_config", None)
+        if auth_cfg or require_approval:
+            from ...core.tool_approval_registry import get_tool_approval_registry
+
+            approval_registry = get_tool_approval_registry()
+            conv_id = getattr(agent_context, "conv_id", None)
+
+            # 已授权（恢复场景）-> 放行
+            if conv_id and approval_registry.is_approved(conv_id, self.action_uid):
+                logger.info(
+                    f"工具[{tool_info.name}]已获授权，放行执行 action_uid={self.action_uid}"
+                )
+            else:
+                if auth_cfg:
+                    action = self._decide_tool_action(auth_cfg, tool_info, tool_pack)
+                else:
+                    action = "ask"  # require_approval 显式强制
+
+                if action == "deny":
+                    logger.info(f"工具[{tool_info.name}]被授权策略拒绝(DENY)")
+                    return ActionOutput(
+                        action_id=self.action_uid,
+                        name=self.name,
+                        is_exe_success=False,
+                        action=tool_info.name,
+                        action_name=self._get_tool_attr(tool_info, "description"),
+                        action_input=json.dumps(param.args, ensure_ascii=False),
+                        content=f"工具 [{tool_info.name}] 被授权策略拒绝执行",
+                        view=f"❌ 工具 `{tool_info.name}` 被授权策略拒绝执行",
+                        state=Status.FAILED.value,
+                        terminate=False,
+                        metrics=metrics,
+                        start_time=start_time,
+                    )
+                if action == "ask":
+                    logger.info(
+                        f"工具[{tool_info.name}]需要用户授权(ASK) action_uid={self.action_uid}"
+                    )
+                    if conv_id:
+                        approval_registry.register_pending(
+                            conv_id=conv_id,
+                            action_uid=self.action_uid,
+                            tool_name=tool_info.name,
+                            args=param.args,
+                        )
+                    # P1: 子 agent 工具需授权时通知主 agent（BAIZE SubAgent async 场景）
+                    await self._notify_main_authorization_needed(
+                        agent_context, tool_info, param.args
+                    )
+                    return await self._create_user_approval_output(
+                        tool_info,
+                        message_id,
+                        args=param.args,
+                        tool_pack=tool_pack,
+                        metrics=metrics,
+                        start_time=start_time,
+                    )
+                # allow -> 放行执行
 
         ## 工具执行
         tool_result = None
@@ -719,6 +766,13 @@ class ToolAction(Action[ToolInput]):
         if truncation_result is not None:
             final_content = truncation_result.content
 
+        ask_user = tool_result.get("ask_user", False)
+        extra = {"archive_file_key": archive_file_key} if archive_file_key else None
+        ask_user_metadata = tool_result.get("ask_user_metadata")
+        if ask_user and ask_user_metadata:
+            extra = dict(extra) if extra else {}
+            extra["ask_user_metadata"] = ask_user_metadata
+
         return ActionOutput(
             action_id=self.action_uid,
             is_exe_success=tool_result["success"],
@@ -729,16 +783,17 @@ class ToolAction(Action[ToolInput]):
             content=final_content,
             view=view,
             observations=None,
-            ask_user=False,
-            state=status,  # 使用根据执行结果计算的 status
+            ask_user=ask_user,
+            state=tool_result.get("state", status),  # ask_user 时为 WAITING
             thoughts=param.thought,
-            terminate=False,  # Terminate 工具已移除
+            terminate=tool_result.get("terminate", False),  # 交互工具可终止 loop
             cost_ms=cost_ms,
             eval_mode=eval_mode,
             metrics=metrics,
             start_time=start_time,
             eval_view=tool_result.get("eval_view", {}),
-            extra={"archive_file_key": archive_file_key} if archive_file_key else None,
+            ask_type=tool_result.get("ask_type"),
+            extra=extra,
         )
 
     async def push_action_init_msg(
@@ -903,6 +958,35 @@ class ToolAction(Action[ToolInput]):
         else:
             return False
 
+    def _decide_tool_action(self, auth_cfg: dict, tool_info, tool_pack) -> str:
+        """按授权配置 dict 决定 allow/deny/ask。
+
+        优先级：黑名单 > 白名单 > tool_overrides > 模式默认。
+        模式默认：unrestricted 放行；permissive 仅 requires_permission 工具 ask；
+        strict/moderate 对 requires_permission 工具 ask，其余放行。
+        （不依赖 gyra.core.authorization 实验包，直接解析 dict。）
+        """
+        tool_name = tool_info.name if tool_info else None
+        # 1. 黑名单
+        if tool_name and tool_name in (auth_cfg.get("blacklist_tools") or []):
+            return "deny"
+        # 2. 白名单
+        if tool_name and tool_name in (auth_cfg.get("whitelist_tools") or []):
+            return "allow"
+        # 3. 工具级 override
+        overrides = auth_cfg.get("tool_overrides") or {}
+        if tool_name and tool_name in overrides:
+            return str(overrides[tool_name]).lower()
+        # 4. 模式默认
+        mode = str(auth_cfg.get("mode") or "strict").lower()
+        if mode == "unrestricted":
+            return "allow"
+        requires = self.requires_user_approval(tool_info, tool_pack)
+        if mode == "permissive":
+            return "allow" if not requires else "ask"
+        # strict / moderate
+        return "ask" if requires else "allow"
+
     def _normalize_content(self, content: Any) -> Tuple[str, bool, Optional[str]]:
         """Normalize tool execution content to string.
 
@@ -992,6 +1076,35 @@ class ToolAction(Action[ToolInput]):
 
         return str(content), True, None
 
+    def _extract_interaction_flags(self, content: Any) -> dict:
+        """从 ToolResult.metadata 提取交互标志（ask_user/terminate 等）。
+
+        AskUserTool 等交互工具在 ToolResult.metadata 中声明 ask_user=True，
+        意图暂停 Agent loop 等待用户响应。_normalize_content 只取 output/success，
+        会丢弃 metadata，导致 loop 不暂停。此处把 metadata 中的交互标志提取出来，
+        供 run() 透传到 ActionOutput。
+        """
+        try:
+            from gyra.agent.tools import ToolResult
+        except ImportError:
+            return {}
+        if not isinstance(content, ToolResult) or not content.metadata:
+            return {}
+        md = content.metadata
+        flags: dict = {}
+        if md.get("ask_user"):
+            # 工具已执行（问题已推送给用户），等待用户回复 -> WAITING。
+            # 仅置 ask_user=True 让 loop 经由 ask_user 分支跳出（base_agent
+            # generate_reply 的 ask_user break），不设 terminate=True，避免触发
+            # act() 里的任务完成逻辑（生成报告/set_phase complete）。
+            flags["ask_user"] = True
+            flags["state"] = Status.WAITING.value
+            flags["ask_type"] = AskUserType.AFTER_ACTION.value
+            flags["ask_user_metadata"] = md
+        elif md.get("terminate"):
+            flags["terminate"] = True
+        return flags
+
     async def _execute_tool(self, tool_info: BaseTool, args: Any, **kwargs) -> Any:
         """Execute tool with proper mode handling."""
         agent = kwargs.get("agent")
@@ -1063,15 +1176,28 @@ class ToolAction(Action[ToolInput]):
                     tool_base is not None
                     and hasattr(tool_base, "_get_sandbox_client")
                 ) or hasattr(tool_info, "_get_sandbox_client")
+                # 裸统一框架 ToolBase（未经 UnifiedToolAdapter 包装、直接注入
+                # available_system_tools 的非沙箱工具，如 todowrite/todoread）：
+                # 既无 _tool_base 也无 _get_sandbox_client，需单独识别。否则下方
+                # tool_base is None 会把它误判为旧框架工具而走 sandbox dict 分支，
+                # 导致拿不到 agent（todo 工具报 "Todo 存储不可用"）。
+                from gyra.agent.tools.base import ToolBase as _UnifiedToolBase
+
+                is_unified_toolbase = isinstance(tool_info, _UnifiedToolBase)
                 tool_context = None
                 if (
                     agent
                     and hasattr(agent, "sandbox_manager")
                     and agent.sandbox_manager
-                    and (is_sandbox_tool or tool_base is None)
+                    and (
+                        is_sandbox_tool
+                        or (tool_base is None and not is_unified_toolbase)
+                    )
                 ):
                     tool_context = {"sandbox_manager": agent.sandbox_manager}
-                elif agent is not None and tool_base is not None:
+                elif agent is not None and (
+                    tool_base is not None or is_unified_toolbase
+                ):
                     tool_context = agent
 
                 # Merge system context into arguments before filtering
@@ -1127,6 +1253,9 @@ class ToolAction(Action[ToolInput]):
                     elif hasattr(tool_info, "args") and "context" in (
                         tool_info.args or {}
                     ):
+                        needs_sandbox_context = True
+                    # 裸统一 ToolBase（如 todowrite/todoread）需恢复 context(=agent)
+                    elif is_unified_toolbase:
                         needs_sandbox_context = True
 
                 if needs_sandbox_context and saved_context:
@@ -1247,11 +1376,13 @@ class ToolAction(Action[ToolInput]):
                 normalized_content, is_success, error_msg = self._normalize_content(
                     raw_content
                 )
+                interaction_flags = self._extract_interaction_flags(raw_content)
                 result.update(
                     {
                         "success": is_success,
                         "content": normalized_content,
                         "error": error_msg,
+                        **interaction_flags,
                     }
                 )
         except MCPResultError as e:

@@ -11,6 +11,7 @@ from gyra_app.config import ApplicationConfig
 from gyra_serve.agent.resource.tool.mcp_utils import (
     get_mcp_tool_list,
     switch_mcp_input_schema,
+    get_tool_input_schema,
     call_mcp_tool,
 )
 
@@ -311,7 +312,7 @@ class MCPToolPack(ToolPack):
                 for tool in result.tools:
                     tool_name = tool.name
                     self.tool_server_map[tool_name] = server
-                    args = switch_mcp_input_schema(tool.inputSchema)
+                    args = switch_mcp_input_schema(get_tool_input_schema(tool))
 
                     # 使用偏函数绑定固定参数
                     bound_call = partial(

@@ -784,10 +784,16 @@ export default function TabToolsManagement() {
               children: (
                 <div className="bg-white rounded-lg border border-gray-100 p-4">
                   <AgentAuthorizationConfig
-                    value={appInfo?.authorization_config as AuthorizationConfig}
+                    value={((appInfo?.ext_config as Record<string, unknown> | undefined)?.authorization_config as AuthorizationConfig) ?? (appInfo?.authorization_config as AuthorizationConfig)}
                     onChange={(config) => {
                       const updatedApp = {
                         ...appInfo,
+                        // 持久化到 ext_config（后端 GptsApp 透传 ext_config，顶层
+                        // authorization_config 会被丢弃），构建 agent 时从这里读取。
+                        ext_config: {
+                          ...(appInfo?.ext_config || {}),
+                          authorization_config: config,
+                        },
                         authorization_config: config,
                       };
                       if (typeof fetchUpdateApp === 'function') {

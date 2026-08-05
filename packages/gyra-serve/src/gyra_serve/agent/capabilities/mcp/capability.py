@@ -167,7 +167,7 @@ class MCPCapability(Capability):
         """连 MCP server + get_mcp_tool_list + 重建 FunctionTool(挪自 preload_resource)。
 
         对每个 server:调 get_mcp_tool_list 拉工具列表,逐工具:
-          args = switch_mcp_input_schema(tool.inputSchema)
+          args = switch_mcp_input_schema(get_tool_input_schema(tool))
           bound_call = partial(call_mcp_tool, mcp_name, tool_name, server, headers, timeout, tool_id)
           FunctionTool(name=tool.name, func=bound_call, description, args=args)
         存 self._tools。无 mcp_servers 或拉取失败降级(空工具列表,不崩)。
@@ -183,6 +183,7 @@ class MCPCapability(Capability):
                 call_mcp_tool,
                 get_mcp_tool_list,
                 switch_mcp_input_schema,
+                get_tool_input_schema,
             )
 
             server_list = (
@@ -213,7 +214,7 @@ class MCPCapability(Capability):
                     if not self._overwrite_same_tool and tool_name in seen:
                         continue
                     try:
-                        args = switch_mcp_input_schema(tool.inputSchema)
+                        args = switch_mcp_input_schema(get_tool_input_schema(tool))
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
                             f"[mcp-capability] switch input schema for {tool_name} failed: {e}"

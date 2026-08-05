@@ -82,6 +82,18 @@ class LocalSandboxConfig:
     def __post_init__(self):
         if self.browser_viewport is None:
             self.browser_viewport = {"width": 1280, "height": 720}
+        # work_dir 指向项目数据目录(DATA_DIR)下的真实路径时(默认 pilot/data/workspace,
+        # 以及场景空间目录),默认直接用作 host 工作目录:文件落到真实路径而非 /tmp 下的
+        # 嵌套 session 目录。host_work_dir 已显式设置时不覆盖;DATA_DIR 之外的逻辑路径
+        # (如 /data/workspace)保持原有嵌套行为。
+        if not self.host_work_dir and self.work_dir:
+            wd = os.path.abspath(self.work_dir)
+            try:
+                if os.path.commonpath([wd, DATA_DIR]) == DATA_DIR:
+                    self.host_work_dir = wd
+            except ValueError:
+                # 不同驱动器/根(Windows),无法比较,保持嵌套行为
+                pass
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "LocalSandboxConfig":

@@ -2416,6 +2416,30 @@ class ConversableAgent(Role, Agent):
         def var_now_time(instance):
             return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        @self._vm.register("now_weekday", "当前星期")
+        def var_now_weekday(instance):
+            weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+            return weekdays[datetime.now().weekday()]
+
+        @self._vm.register("now_timezone", "当前时区")
+        def var_now_timezone(instance):
+            import time
+            # 获取时区偏移（秒转小时）
+            if time.daylight and time.localtime().tm_isdst > 0:
+                tz_offset_seconds = time.altzone
+            else:
+                tz_offset_seconds = time.timezone
+
+            tz_offset_hours = abs(tz_offset_seconds) // 3600
+            tz_offset_minutes = (abs(tz_offset_seconds) % 3600) // 60
+            tz_sign = "-" if tz_offset_seconds >= 0 else "+"
+
+            # 格式：UTC+8 或 UTC-5:30
+            if tz_offset_minutes == 0:
+                return f"UTC{tz_sign}{tz_offset_hours}"
+            else:
+                return f"UTC{tz_sign}{tz_offset_hours}:{tz_offset_minutes:02d}"
+
         @self._vm.register("conv_start_time", "对话开始时间")
         def var_conv_start_time(instance, agent_context=None):
             if agent_context and getattr(agent_context, "conv_start_time", None):
@@ -2674,6 +2698,19 @@ class ConversableAgent(Role, Agent):
                     elif k == "now":
                         from datetime import datetime
                         variable_values[k] = datetime.now().strftime("%Y-%m-%d")
+                    elif k == "now_weekday":
+                        from datetime import datetime
+                        weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+                        variable_values[k] = weekdays[datetime.now().weekday()]
+                    elif k == "now_timezone":
+                        import time
+                        if time.daylight and time.localtime().tm_isdst > 0:
+                            tz_offset_seconds = time.altzone
+                        else:
+                            tz_offset_seconds = time.timezone
+                        tz_offset_hours = abs(tz_offset_seconds) // 3600
+                        tz_sign = "-" if tz_offset_seconds >= 0 else "+"
+                        variable_values[k] = f"UTC{tz_sign}{tz_offset_hours}"
                     elif k == "conv_start_time":
                         variable_values[k] = getattr(self.agent_context, "conv_start_time", None) if self.agent_context else None
 

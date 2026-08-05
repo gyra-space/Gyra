@@ -125,3 +125,38 @@ async def test_cwd_relative_traversal_blocked(tmp_path):
     client = _make_client(tmp_path)
     result = await client.exec_command(command="ls", work_dir="../../../etc")
     assert result.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_logical_workdir_allowed_when_basedir_behind_symlink(tmp_path):
+    """Regression: macOS /var -> /private/var.
+
+    When the sandbox base_dir lives behind a symlink, the stored allowed roots
+    keep the symlinked prefix (abspath) while the candidate cwd is resolved
+    (realpath). Passing the LOGICAL work_dir -- as shell_exec.py does via
+    client.work_dir -- must still resolve into the sandbox instead of being
+    falsely rejected as 'escapes sandbox allowed roots'.
+    """
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    link_root = tmp_path / "link"
+    link_root.symlink_to(real_root, target_is_directory=True)
+
+    sessions = link_root / "sessions"
+    sessions.mkdir()
+    (sessions / "s1").mkdir()
+    runtime = MockRuntime(str(sessions))
+
+    client = LocalShellClient(
+        sandbox_id="s1",
+        work_dir="/data/workspace",
+        runtime=runtime,
+    )
+    os.makedirs(client._work_dir_physical, exist_ok=True)
+    # Sanity: the symlink makes abspath != realpath for the session root,
+    # which is the condition that triggered the original false rejection.
+    assert os.path.realpath(client._session_root) != client._session_root
+
+    result = await client.exec_command(command="echo ok", work_dir="/data/workspace")
+    assert result.status == "completed"
+    assert "ok" in result.output

@@ -3289,6 +3289,33 @@ class AgentChat(BaseComponent, ABC):
                 **ext_info,
             )
 
+            # 工具执行授权配置：从 ext_info 或 app ext_config 读取 authorization_config
+            # (dict)，挂到 agent。ToolAction 据此按 mode/tool_overrides/白黑名单决定
+            # ASK(弹授权卡片WAITING)/DENY(拒绝)/ALLOW(放行)。无配置则保持既有自动流程。
+            # 注意：不导入 gyra.core.authorization（该实验包 __init__ 有破损导入），
+            # 直接透传 dict，由 ToolAction 解析。
+            try:
+                _auth_cfg_dict = ext_info.get("authorization_config")
+                if not _auth_cfg_dict and gpts_app:
+                    _ec = getattr(gpts_app, "ext_config", None)
+                    if isinstance(_ec, str):
+                        try:
+                            import json as _json
+
+                            _ec = _json.loads(_ec)
+                        except Exception:
+                            _ec = None
+                    if isinstance(_ec, dict):
+                        _auth_cfg_dict = _ec.get("authorization_config")
+                if (
+                    _auth_cfg_dict
+                    and isinstance(_auth_cfg_dict, dict)
+                    and recipient is not None
+                ):
+                    setattr(recipient, "authorization_config", _auth_cfg_dict)
+            except Exception:
+                pass
+
             # 处理文件上传
             # 优先使用 sandbox_file_refs（从 api_v1.py 传递过来）
             # 如果 sandbox_file_refs 为空，才处理 chat_in_params

@@ -93,12 +93,20 @@ class LocalShellClient(ShellClient):
         return self._ensure_inside_allowed(physical)
 
     def _ensure_inside_allowed(self, physical_path: str) -> str:
-        """Verify that *physical_path* stays within an allowed root."""
+        """Verify that *physical_path* stays within an allowed root.
+
+        Roots are stored with os.path.abspath (symlinks unresolved), while
+        *physical_path* is compared via os.path.realpath (symlinks resolved).
+        When the sandbox temp dir lives behind a symlink (e.g. macOS
+        /var -> /private/var), both sides must be resolved consistently or
+        every legitimate workspace path is falsely rejected as an escape.
+        """
         real = os.path.realpath(physical_path)
         for root in self._allowed_roots:
             if not root:
                 continue
-            if real == root or real.startswith(os.path.join(root, "")):
+            root_real = os.path.realpath(root)
+            if real == root_real or real.startswith(os.path.join(root_real, "")):
                 return real
         raise PermissionError(
             f"Working directory {physical_path} escapes sandbox allowed roots"

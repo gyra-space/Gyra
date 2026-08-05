@@ -204,3 +204,56 @@ def test_load_callback_none_falls_back_to_default(monkeypatch):
     assert config is not None
     for tid in ["ask_user", "Bash", "Read", "Write", "Edit", "deliver_file", "Skill"]:
         assert config.bindings[tid].is_bound is True
+
+
+# ========== 缓存键按 app_id 作用域（修复运行时 agent_name 分裂） ==========
+
+
+def test_cache_key_is_app_scoped_not_agent_scoped(monkeypatch):
+    """缓存键必须按 app_id 作用域。
+
+    工具绑定按 App 存储、load 回调忽略 agent_name，因此同一 app 下无论
+    agent_name 是编辑页的 "default" 还是运行时的显示名（如"场景空间助手"/
+    角色名"BAIZE"），都应命中同一份配置。若按 "app_id:agent_name" 缓存，
+    运行时键会被旧默认配置污染、编辑页保存后清不掉，导致运行时永远拿到的
+    是默认 7 工具而非持久化的多媒体/Web 工具。
+    """
+    _stub_registry_tools(monkeypatch, ALL_TOOL_IDS)
+    manager = ToolManager()
+    load_call_count = {"n": 0}
+    manager.set_load_callback(
+        lambda app_id, agent_name: (load_call_count.__setitem__("n", load_call_count["n"] + 1) or ["Grep"])
+    )
+
+    # 不同 agent_name 第一次调用都会 miss → 触发 load
+    c1 = manager.get_agent_config("app1", "agent1")
+    c2 = manager.get_agent_config("app1", "anther_agent")
+    # 同一 app 命中同一缓存（app-scoped），第二次不再触发 load
+    c3 = manager.get_agent_config("app1", "yet_another")
+
+    assert c1 is c2 is c3, "同一 app 的配置必须是同一实例（app 作用域缓存）"
+    assert load_call_count["n"] == 1, "仅首次调用应触发 load 回调"
+    assert c1.bindings["Grep"].is_bound is True
+
+
+def test_clear_cache_app_id_invalidates_runtime_agent_key(monkeypatch):
+    """编辑页保存后 clear_cache(app_id) 必须让运行时（不同 agent_name）重新加载。
+
+    历史 bug：运行时键为 "app_id:显示名"，编辑页 clear_cache(app_id,"default")
+    只清 "app_id:default"，运行时键一直被旧默认配置污染。修复后缓存键按
+    app_id 作用域，clear_cache(app_id) 即可失效整个 App 的配置。
+    """
+    _stub_registry_tools(monkeypatch, ALL_TOOL_IDS)
+    manager = ToolManager()
+    calls = {"n": 0}
+    manager.set_load_callback(
+        lambda app_id, agent_name: (calls.__setitem__("n", calls["n"] + 1) or ["Grep"])
+    )
+
+    runtime_config = manager.get_agent_config("app1", "场景空间助手")
+    manager.clear_cache("app1", "default")  # 编辑页保存时以其 agent_name 调用的清缓存
+    runtime_config_after = manager.get_agent_config("app1", "场景空间助手")
+
+    # 编辑页的 clear_cache 必须让运行时键重新加载
+    assert calls["n"] == 2, "clear_cache(app_id) 后运行时键应重新触发 load"
+    assert runtime_config_after is not runtime_config
