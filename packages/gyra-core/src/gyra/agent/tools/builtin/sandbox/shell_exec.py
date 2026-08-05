@@ -16,6 +16,7 @@ from ...result import ToolResult
 from gyra.sandbox.sandbox_utils import (
     validate_shell_command,
     collect_shell_output,
+    is_high_risk_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ _PROMPT = """在沙箱工作空间中执行单条 Bash 命令。该工具属于�
 - 输出限制：最多 10KB 或 256 行，超出部分会被截断；大量输出请重定向到文件或通过管道进行过滤。
 - 可以用 '&&' 串联子命令来减少多次调用并清晰处理错误；适当使用管道 '|' 在命令间传递输出。
 - 可使用 python3 -c / bash -c 执行代码片段；复杂脚本建议先写入文件再执行，便于排查输出。
+- 本地沙箱下高危命令（rm -rf、dd、mkfs、写块设备等）执行前需用户授权确认；远程沙箱无限制。
 - 对长时间运行的服务（如 Web 服务器）必须设置5s超时并且后台运行，避免无意义等待。
 - 禁止访问工作空间之外的路径（特别是 ~、.. 或绝对路径越界）。"""
 
@@ -121,6 +123,24 @@ def _format_shell_exec_response(
     return "\n".join(lines).rstrip()
 
 
+def _resolve_sandbox_type() -> str:
+    """读取 sandbox.type 配置，默认 'local'。远程沙箱不校验命令。"""
+    try:
+        from gyra._private.config import Config as GyraConfig
+
+        system_app = GyraConfig().SYSTEM_APP
+        if system_app:
+            app_config = system_app.config.configs.get("app_config")
+            if app_config and hasattr(app_config, "sandbox"):
+                return getattr(app_config.sandbox, "type", None) or "local"
+    except Exception:
+        logger.debug(
+            "[shell_exec] failed to read sandbox.type, defaulting to local",
+            exc_info=True,
+        )
+    return "local"
+
+
 class ShellExecTool(SandboxToolBase):
     """沙箱内 Shell 命令执行工具"""
 
@@ -157,6 +177,21 @@ class ShellExecTool(SandboxToolBase):
             "required": ["command"],
         }
 
+    async def _request_high_risk_approval(self, command: str) -> bool:
+        """请求高危命令执行授权（local 沙箱）。无网关 / 拒绝 / 超时返回 False。"""
+        try:
+            from gyra.agent.tools.authorization_middleware import (
+                request_command_approval,
+            )
+            from gyra.agent.interaction.interaction_gateway import (
+                get_interaction_gateway,
+            )
+        except Exception as exc:
+            logger.warning(f"[shell_exec] auth module import failed: {exc}")
+            return False
+        gateway = get_interaction_gateway()
+        return await request_command_approval(gateway, command, "高危命令执行确认")
+
     async def execute(
         self, args: Dict[str, Any], context: Optional[ToolContext] = None
     ) -> ToolResult:
@@ -177,10 +212,20 @@ class ShellExecTool(SandboxToolBase):
                 tool_name=self.name,
             )
 
+        sandbox_type = _resolve_sandbox_type()
         try:
-            validate_shell_command(command, client.work_dir)
+            validate_shell_command(command, client.work_dir, sandbox_type)
         except (ValueError, PermissionError) as e:
             return ToolResult.fail(error=str(e), tool_name=self.name)
+
+        # local 沙箱下高危命令需用户交互授权；远程沙箱无限制
+        if sandbox_type == "local" and is_high_risk_command(command):
+            approved = await self._request_high_risk_approval(command)
+            if not approved:
+                return ToolResult.fail(
+                    error=f"用户未授权执行高危命令: {command}",
+                    tool_name=self.name,
+                )
 
         try:
             result = await client.shell.exec_command(

@@ -105,17 +105,12 @@ async def test_python_c_multiline_allowed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_bash_c_blocked(tmp_path):
+async def test_bash_c_allowed(tmp_path):
+    """bash -c is permitted (no command allowlist)."""
     client = _make_client(tmp_path)
     result = await client.exec_command(command="bash -c 'echo hi'")
-    assert result.status == "failed"
-
-
-@pytest.mark.asyncio
-async def test_disallowed_binary_blocked(tmp_path):
-    client = _make_client(tmp_path)
-    result = await client.exec_command(command="curl http://example.com")
-    assert result.status == "failed"
+    assert result.status == "completed"
+    assert "hi" in result.output
 
 
 @pytest.mark.asyncio
