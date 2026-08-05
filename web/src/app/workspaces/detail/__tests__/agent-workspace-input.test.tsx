@@ -5,6 +5,7 @@ import { AgentWorkspaceInput } from '../agent-workspace-input';
 jest.mock('@/client/api', () => ({
   apiInterceptors: jest.fn(() => Promise.resolve([null, []])),
   getModelList: jest.fn(),
+  getSkillList: jest.fn(),
   postChatModeParamsFileLoad: jest.fn(),
 }));
 jest.mock('ahooks', () => ({ useRequest: () => ({ loading: false }) }));
@@ -34,8 +35,11 @@ describe('AgentWorkspaceInput', () => {
       />,
     );
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: '本月营收/' } });
+    // 开头 / 弹出剧本列表,选中后清掉 / 再输入主题
+    fireEvent.change(textarea, { target: { value: '/' } });
     fireEvent.click(screen.getByText('营收分析'));
+    fireEvent.change(textarea, { target: { value: '本月营收' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(onSend).toHaveBeenCalledWith(
       expect.objectContaining({
         text: '本月营收',
@@ -67,5 +71,63 @@ describe('AgentWorkspaceInput', () => {
       <AgentWorkspaceInput convUid="c1" onSend={onSend} focus={null} />,
     );
     expect(screen.queryByText('当前关注')).not.toBeInTheDocument();
+  });
+
+  test('+ 号菜单展开显示 添加文件/剧本/技能 入口', () => {
+    const onSend = jest.fn();
+    render(
+      <AgentWorkspaceInput
+        convUid="c1"
+        onSend={onSend}
+        playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
+      />,
+    );
+    fireEvent.click(screen.getByTitle('添加文件 / 剧本 / 技能'));
+    expect(screen.getByText('添加文件')).toBeInTheDocument();
+    expect(screen.getByText('剧本')).toBeInTheDocument();
+    expect(screen.getByText('技能')).toBeInTheDocument();
+  });
+
+  test('+ 号菜单进入剧本面板, 选中后 chip 上屏且 onSend 携带 playbookCommand', () => {
+    const onSend = jest.fn();
+    render(
+      <AgentWorkspaceInput
+        convUid="c1"
+        onSend={onSend}
+        playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
+      />,
+    );
+    fireEvent.click(screen.getByTitle('添加文件 / 剧本 / 技能'));
+    fireEvent.click(screen.getByText('剧本'));
+    fireEvent.click(screen.getByText('营收分析'));
+    // chip 上屏
+    expect(screen.getByTitle('移除剧本')).toBeInTheDocument();
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '本月营收' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '本月营收',
+        playbookCommand: { playbook_id: 1, playbook_name: '营收分析' },
+      }),
+    );
+  });
+
+  test('有 usageMetrics 时渲染上下文空间环形图', () => {
+    const onSend = jest.fn();
+    render(
+      <AgentWorkspaceInput
+        convUid="c1"
+        onSend={onSend}
+        usageMetrics={{ total: 12300, prompt: 12000, completion: 300, context_window: 128000, ratio: 0.096 }}
+      />,
+    );
+    expect(screen.getByRole('img', { name: /上下文空间使用率/ })).toBeInTheDocument();
+  });
+
+  test('无 usageMetrics 时不渲染环形图', () => {
+    const onSend = jest.fn();
+    render(<AgentWorkspaceInput convUid="c1" onSend={onSend} usageMetrics={null} />);
+    expect(screen.queryByRole('img', { name: /上下文空间使用率/ })).not.toBeInTheDocument();
   });
 });

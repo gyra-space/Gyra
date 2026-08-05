@@ -91,7 +91,7 @@ class BashCwdAuthorizer(ToolSpecificAuthorizer):
     """
 
     def can_handle(self, tool_name: str) -> bool:
-        return tool_name in ["Bash", "shell", "execute_bash"]
+        return tool_name in ["Bash", "shell", "execute_bash", "shell_exec"]
 
     async def check(
         self,
@@ -125,58 +125,6 @@ class BashCwdAuthorizer(ToolSpecificAuthorizer):
                     "risk_level": "high",
                     "command": tool_args.get("command", ""),
                     "cwd": tool_args.get("cwd"),
-                },
-            )
-
-        # 2. 获取请求的 cwd
-        requested_cwd = tool_args.get("cwd")
-        if not requested_cwd:
-            # 未指定 cwd，使用默认（在 sandbox 内）
-            return AuthorizationCheckResult(
-                decision=AuthorizationDecision.ALLOW,
-                reason="Using default sandbox working directory",
-            )
-
-        # 3. 规范化路径并检查
-        try:
-            is_inside, normalized_cwd, normalized_sandbox = (
-                self._check_path_inside_sandbox(requested_cwd, sandbox_work_dir)
-            )
-
-            if is_inside:
-                return AuthorizationCheckResult(
-                    decision=AuthorizationDecision.ALLOW,
-                    reason=f"Working directory '{requested_cwd}' is inside sandbox",
-                    metadata={
-                        "cwd": normalized_cwd,
-                        "sandbox_work_dir": normalized_sandbox,
-                    },
-                )
-            else:
-                return AuthorizationCheckResult(
-                    decision=AuthorizationDecision.ASK_USER,
-                    reason=(
-                        f"Command execution directory '{requested_cwd}' is outside "
-                        f"sandbox working directory '{sandbox_work_dir}'"
-                    ),
-                    metadata={
-                        "risk_level": "high",
-                        "command": tool_args.get("command", ""),
-                        "cwd": normalized_cwd,
-                        "sandbox_work_dir": normalized_sandbox,
-                        "requested_cwd": requested_cwd,
-                    },
-                )
-
-        except Exception as e:
-            logger.warning(f"[BashCwdAuthorizer] Path check failed: {e}")
-            # 路径检查失败，保守起见需要授权
-            return AuthorizationCheckResult(
-                decision=AuthorizationDecision.ASK_USER,
-                reason=f"Cannot verify working directory safety: {str(e)}",
-                metadata={
-                    "risk_level": "high",
-                    "error": str(e),
                 },
             )
 

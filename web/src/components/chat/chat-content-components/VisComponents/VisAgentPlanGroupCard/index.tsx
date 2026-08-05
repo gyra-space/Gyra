@@ -62,7 +62,12 @@ const VisAgentPlanGroupCard: React.FC<{ data: GroupData }> = ({ data }) => {
   const expanded = manualExpanded ?? anyRunning;
 
   const toolMeta = getToolNameIcon(data.items?.[0]?.tool_name, data.title);
-  const chipColor = toolMeta?.color ?? '#64748b';
+
+  /* 统一图标 tile:与 VisAgentPlanCard 的 task-icon-chip 同一视觉语言 */
+  const chipClass =
+    'rounded-md inline-flex items-center justify-center flex-shrink-0 ' +
+    'bg-[#eef1f6] text-slate-500 border border-slate-500/10 ' +
+    'dark:bg-[#394052] dark:text-slate-300 dark:border-slate-400/20';
 
   const handleItemClick = (uid: string) => {
     if (!uid) return;

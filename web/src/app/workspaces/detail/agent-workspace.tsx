@@ -58,7 +58,7 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps) {
   const inputRefInner = useRef<AgentWorkspaceInputHandle>(null);
   const inputRef = inputRefProp ?? inputRefInner;
-  const { steps, workspaceView, loading, error, lastInput, convState, send, abort, clearSteps, clearWorkspaceView } = useSceneAgentChat({
+  const { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, send, abort, clearSteps, clearWorkspaceView } = useSceneAgentChat({
     convUid,
     appCode,
     workspaceId,
@@ -163,6 +163,7 @@ export function AgentWorkspace({
             focus={focus}
             onClearFocus={onClearFocus}
             onClearContext={onClearContext}
+            usageMetrics={usageMetrics}
           />
         </div>
       </div>

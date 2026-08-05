@@ -719,11 +719,11 @@ function SideBar() {
 
   if (!isMenuExpand) {
     return (
-      <div className='flex flex-col justify-between items-center pt-3 h-screen w-[64px] bg-[#f7f8fa] dark:bg-[#111] animate-fade animate-duration-300'>
+      <div className='flex flex-col justify-between items-center pt-3 h-screen w-[64px] bg-[var(--bg-elev)] border-r border-[var(--line-soft)] animate-fade animate-duration-300'>
         <div className='flex flex-col items-center'>
           <Link
             href='/'
-            className='flex justify-center items-center w-11 h-11 mb-2 mt-0.5 rounded-[14px] bg-white dark:bg-[#232734] shadow-[0_1px_3px_rgba(16,24,40,0.08)] hover:shadow-[0_4px_12px_rgba(16,24,40,0.12)] transition-shadow'
+            className='flex justify-center items-center w-11 h-11 mb-2 mt-0.5 rounded-[14px] bg-white dark:bg-[#232734] border border-[var(--line-soft)] shadow-[0_1px_3px_rgba(16,24,40,0.08)] hover:shadow-[0_4px_12px_rgba(16,24,40,0.12)] transition-shadow'
           >
             <Image src='/LOGO_SMALL.png' alt='Gyra' width={24} height={24} className='object-contain' />
           </Link>
@@ -815,7 +815,7 @@ function SideBar() {
     <div
       className={cls(
         'flex flex-col justify-between flex-1 pt-3 overflow-hidden h-screen',
-        'bg-[#f7f8fa] dark:bg-[#111]',
+        'bg-[var(--bg-elev)] border-r border-[var(--line-soft)]',
         'animate-fade animate-duration-300 max-w-[260px] w-[260px]',
       )}
     >
@@ -923,7 +923,7 @@ function SideBar() {
       </div>
 
       {/* User & Settings */}
-      <div className='px-4 py-4 mt-2 border-t border-[#eff1f6] dark:border-gray-800 bg-[#f7f8fa] dark:bg-[#111] flex items-center justify-between gap-2'>
+      <div className='px-4 py-4 mt-2 border-t border-[var(--line-soft)] dark:border-gray-800 bg-[var(--bg-elev)] flex items-center justify-between gap-2'>
         <div className='flex-1 min-w-0 overflow-hidden'>
            <UserBar />
         </div>

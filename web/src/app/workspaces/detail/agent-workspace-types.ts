@@ -149,6 +149,17 @@ export interface PlaybookCommand {
   playbook_name: string;
 }
 
+/** 对话中选用的技能(与 SelectedSkill 结构一致,避免依赖 context 模块) */
+export interface SkillRef {
+  skill_code: string;
+  name: string;
+  description?: string;
+  type?: string;
+  icon?: string;
+  author?: string;
+  version?: string;
+}
+
 export interface AgentWorkspaceInputHandle {
   focus: () => void;
   insertText: (text: string) => void;

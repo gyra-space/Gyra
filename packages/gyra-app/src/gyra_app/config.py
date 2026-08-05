@@ -335,6 +335,14 @@ class SandboxConfigParameters(BaseParameters):
             )
         },
     )
+    authorization_enabled: bool = field(
+        default=True,
+        metadata={
+            "help": _(
+                "Enable the sandbox tool authorization gate for shell-like tools."
+            )
+        },
+    )
 
 
 @dataclass

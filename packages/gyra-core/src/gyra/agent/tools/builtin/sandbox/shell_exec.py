@@ -4,10 +4,8 @@ ShellExecTool - 沙箱内 Shell 命令执行工具
 在沙箱工作空间中执行受限 Bash 命令
 """
 
-from typing import Dict, Any, Optional, List
-import posixpath
+from typing import Dict, Any, Optional
 import re
-import shlex
 import logging
 
 from .base import SandboxToolBase
@@ -15,70 +13,15 @@ from ...base import ToolCategory, ToolRiskLevel, ToolEnvironment, ToolSource
 from ...metadata import ToolMetadata
 from ...context import ToolContext
 from ...result import ToolResult
+from gyra.sandbox.sandbox_utils import (
+    validate_shell_command,
+    collect_shell_output,
+)
 
 logger = logging.getLogger(__name__)
 
 # 默认超时时间
 _DEFAULT_TIMEOUT: int = 60
-
-# 允许的命令
-_ALLOWED_COMMANDS = {
-    "cat",
-    "ls",
-    "pwd",
-    "echo",
-    "head",
-    "tail",
-    "wc",
-    "which",
-    "nl",
-    "grep",
-    "find",
-    "rg",
-    "git",
-    "sed",
-    "pip3",
-    "python3",
-}
-
-# 禁止的符号
-_FORBIDDEN_SYMBOLS = {""}
-
-# find 命令禁止的参数
-_FIND_FORBIDDEN_ARGS = {
-    "-delete",
-    "-exec",
-    "-execdir",
-    "-fls",
-    "-fprint",
-    "-fprint0",
-    "-fprintf",
-    "-ok",
-    "-okdir",
-}
-_FIND_FORBIDDEN_PREFIXES = ("-exec", "-ok")
-
-# ripgrep 禁止的选项
-_RG_FORBIDDEN_ARGS = {
-    "--search-zip",
-    "--pre",
-    "--pre-glob",
-    "--hostname-bin",
-}
-
-# Git 允许的子命令（只读）
-_GIT_ALLOWED_SUBCMDS = {"status", "log", "diff", "show", "branch"}
-_GIT_FORBIDDEN_ARGS = {
-    "-d",
-    "-D",
-    "-m",
-    "-M",
-    "--delete",
-    "--move",
-    "--rename",
-    "--force",
-    "-f",
-}
 
 # 输出限制
 _MAX_BYTES = 16 * 1024  # 16KB
@@ -112,86 +55,6 @@ def _strip_ansi_sequences(text: str) -> str:
     return cleaned
 
 
-def _tokenize_command(command: str) -> List[str]:
-    """Split the shell command into arguments."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError as exc:
-        raise ValueError(f"命令解析失败: {exc}") from exc
-    if not tokens:
-        raise ValueError("command 不能为空")
-    return tokens
-
-
-def _validate_tokens(tokens: List[str], sandbox_work_dir: str) -> None:
-    """Ensure the command and its arguments stay within the read-only constraints."""
-    binary = tokens[0]
-    idx = 1
-
-    while idx < len(tokens):
-        token = tokens[idx]
-        if token in _FORBIDDEN_SYMBOLS:
-            raise PermissionError(
-                "命令包含被禁止的符号或重定向，请拆分成单独的只读命令执行"
-            )
-
-        if binary == "find":
-            if token in _FIND_FORBIDDEN_ARGS or token.startswith(
-                _FIND_FORBIDDEN_PREFIXES
-            ):
-                raise PermissionError(
-                    "find 命令禁止使用 -exec/-ok/-delete 等执行或写入参数"
-                )
-
-        if binary == "rg":
-            if token in _RG_FORBIDDEN_ARGS:
-                raise PermissionError(
-                    "rg 禁止使用 --search-zip/--pre 等可能执行外部命令或扩大搜索面的参数"
-                )
-
-        if binary == "git":
-            if idx == 1:
-                sub = token
-                if sub not in _GIT_ALLOWED_SUBCMDS:
-                    allowed_sub = ", ".join(sorted(_GIT_ALLOWED_SUBCMDS))
-                    raise PermissionError(f"git 仅允许只读子命令: {allowed_sub}")
-            if token in _GIT_FORBIDDEN_ARGS:
-                raise PermissionError(
-                    "git 命令包含危险选项（删除/重命名/强制），已禁止"
-                )
-
-        if token.startswith("-"):
-            idx += 1
-            continue
-
-        if token.startswith("~"):
-            raise PermissionError("禁止访问 home 目录")
-
-        if any(part == ".." for part in token.split("/")):
-            raise PermissionError("命令参数尝试跳出工作空间目录，已被禁止")
-
-        if token.startswith("/"):
-            combined = token
-        else:
-            combined = posixpath.join(sandbox_work_dir, token)
-        normalized = posixpath.normpath(combined)
-        base_norm = posixpath.normpath(sandbox_work_dir.rstrip("/")) or "/"
-        prefix = "" if base_norm == "/" else f"{base_norm}/"
-        if normalized != base_norm and not normalized.startswith(prefix):
-            raise PermissionError("命令参数解析后超出了沙箱工作目录，已被禁止")
-
-        idx += 1
-
-    if binary == "sed":
-        if len(tokens) != 4:
-            raise PermissionError("仅允许只读 sed：`sed -n {N|M,N}p FILE` 格式")
-        if tokens[1] != "-n":
-            raise PermissionError("sed 仅允许使用 -n，打印指定行范围")
-        expr = tokens[2]
-        if not re.fullmatch(r"\d+p|\d+,\d+p", expr):
-            raise PermissionError("sed 仅允许 {N|M,N}p 的打印表达式")
-
-
 def _truncate_text(text: str, line_cap: int, byte_cap: int) -> str:
     """Truncate text by lines then by bytes."""
     if not text:
@@ -213,8 +76,23 @@ def _truncate_text(text: str, line_cap: int, byte_cap: int) -> str:
     return safe
 
 
-def _is_file_read_command(tokens: List[str]) -> bool:
+def _is_file_read_command(command: str) -> bool:
     """Heuristically decide if command is likely printing file content."""
+    from gyra.sandbox.sandbox_utils import _tokenize_command
+
+    try:
+        tokens = _tokenize_command(command)
+    except ValueError:
+        return False
+
+    # Only inspect the first subcommand before any separator.
+    for sep in ("&&", "||", "|"):
+        if sep in tokens:
+            tokens = tokens[: tokens.index(sep)]
+            break
+
+    if not tokens:
+        return False
     binary = tokens[0]
     if binary in {"cat", "nl", "head", "tail", "grep", "rg", "sed"}:
         return True
@@ -300,8 +178,7 @@ class ShellExecTool(SandboxToolBase):
             )
 
         try:
-            tokens = _tokenize_command(command)
-            # _validate_tokens(tokens, client.work_dir)
+            validate_shell_command(command, client.work_dir)
         except (ValueError, PermissionError) as e:
             return ToolResult.fail(error=str(e), tool_name=self.name)
 
@@ -318,13 +195,11 @@ class ShellExecTool(SandboxToolBase):
             )
 
         # 获取输出
-        from gyra.sandbox.sandbox_utils import collect_shell_output
-
         stdout = collect_shell_output(result)
         stdout = _strip_ansi_sequences(stdout)
         line_cap = (
             _MAX_LINES_FILE_CHUNK
-            if _is_file_read_command(tokens)
+            if _is_file_read_command(command)
             else _MAX_LINES_DEFAULT
         )
         stdout = _truncate_text(stdout, line_cap, _MAX_BYTES)

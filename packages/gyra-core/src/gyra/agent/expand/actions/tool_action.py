@@ -1133,6 +1133,69 @@ class ToolAction(Action[ToolInput]):
                     arguments["context"] = saved_context
                     logger.debug(f"Restored context for sandbox tool: {tool_info.name}")
 
+                # Sandbox authorization gate for shell-like tools.
+                # Reads sandbox.authorization_enabled from app config (default True).
+                if tool_info.name in ("Bash", "shell_exec", "execute_bash"):
+                    auth_enabled = True
+                    try:
+                        from gyra._private.config import Config as GyraConfig
+
+                        system_app = GyraConfig().SYSTEM_APP
+                        if system_app:
+                            app_config = system_app.config.configs.get("app_config")
+                            if app_config and hasattr(app_config, "sandbox"):
+                                sandbox_cfg = app_config.sandbox
+                                if hasattr(sandbox_cfg, "authorization_enabled"):
+                                    auth_enabled = bool(
+                                        sandbox_cfg.authorization_enabled
+                                    )
+                    except Exception:
+                        logger.warning(
+                            "[ToolAction] Failed to read sandbox.authorization_enabled, "
+                            "defaulting to enabled",
+                            exc_info=True,
+                        )
+
+                    if auth_enabled and agent and getattr(agent, "sandbox_manager", None):
+                        from gyra.agent.tools.authorization_middleware import (
+                            AuthorizationContext,
+                            BashCwdAuthorizer,
+                        )
+
+                        sandbox_client = agent.sandbox_manager.client
+                        sandbox_work_dir = getattr(sandbox_client, "work_dir", None)
+                        auth_ctx = AuthorizationContext(
+                            tool_name=tool_info.name,
+                            tool_args=arguments,
+                            tool_metadata=getattr(tool_info, "metadata", None),
+                            session_id=(
+                                agent.agent_context.conv_id
+                                if agent and agent.agent_context
+                                else None
+                            ),
+                            user_id=None,
+                            sandbox_work_dir=sandbox_work_dir,
+                            agent_name=getattr(agent, "name", None),
+                        )
+                        auth_result = await BashCwdAuthorizer().check(auth_ctx)
+                        if auth_result.decision.value != "allow":
+                            error_msg = (
+                                auth_result.reason
+                                or f"Authorization denied for {tool_info.name}"
+                            )
+                            logger.warning(
+                                f"[ToolAction] Authorization denied for {tool_info.name}: "
+                                f"{error_msg}"
+                            )
+                            result.update(
+                                {
+                                    "success": False,
+                                    "content": error_msg,
+                                    "error": error_msg,
+                                }
+                            )
+                            return result
+
                 # RFC-006 Stage 3:Route B 分流 —— 非 builtin executor_id 的工具经
                 # ToolDispatcher.dispatch → registry.get(executor_id) → Capability.execute。
                 # 判据:agent 有 _tool_dispatcher 且 snapshot 中该 tool 的 ToolEntry.executor_id

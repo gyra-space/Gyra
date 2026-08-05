@@ -1,15 +1,32 @@
 'use client';
 
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
-import { Input, Popover } from 'antd';
-import { ArrowUpOutlined, ClearOutlined, CloseOutlined, DownOutlined, FileOutlined, LoadingOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Input, Popover, Tooltip } from 'antd';
+import {
+  AppstoreOutlined,
+  ArrowUpOutlined,
+  CheckOutlined,
+  ClearOutlined,
+  CloseOutlined,
+  DownOutlined,
+  FileOutlined,
+  LeftOutlined,
+  LoadingOutlined,
+  PaperClipOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  RightOutlined,
+  RocketOutlined,
+} from '@ant-design/icons';
 import classNames from 'classnames';
 import { useRequest } from 'ahooks';
-import { apiInterceptors, getModelList, postChatModeParamsFileLoad } from '@/client/api';
+import { apiInterceptors, getModelList, getSkillList, postChatModeParamsFileLoad } from '@/client/api';
 import ModelIcon from '@/components/icons/model-icon';
 import { transformFileUrl } from '@/utils';
 import type { IModelData } from '@/types/model';
-import type { AgentWorkspaceInputHandle, PlaybookCommand } from './agent-workspace-types';
+import type { UsageMetrics } from '@/components/chat/TokenStatusBar';
+import { formatTokens, getUsageColor, getUsageLevel } from '@/types/context-metrics';
+import type { AgentWorkspaceInputHandle, PlaybookCommand, SkillRef } from './agent-workspace-types';
 
 /** 选了剧本时必须输入任务目标;没选剧本按原逻辑(有文本或有资源即可)。 */
 export function canSendSceneTask(
@@ -20,6 +37,62 @@ export function canSendSceneTask(
   const trimmed = text.trim();
   if (playbookCommand) return trimmed.length > 0;
   return trimmed.length > 0 || hasResources;
+}
+
+/**
+ * 上下文空间消耗环形图:发送按钮旁的实时用量指示。
+ * 数据来自 SSE usage_metric 事件;按使用率分级变色(绿→黄→橙→红)。
+ */
+function ContextUsageRing({ metrics }: { metrics: UsageMetrics | null }) {
+  if (!metrics || !metrics.context_window) return null;
+  const ratio = Math.min(Math.max(metrics.ratio ?? 0, 0), 1);
+  const level = getUsageLevel(ratio);
+  const color = getUsageColor(level);
+  const size = 20;
+  const stroke = 2.5;
+  const r = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * r;
+  const dash = circumference * ratio;
+  const pct = (ratio * 100).toFixed(1);
+  return (
+    <Tooltip
+      title={
+        <div className="text-xs leading-5">
+          <div>上下文空间 {formatTokens(metrics.total)} / {formatTokens(metrics.context_window)} tokens ({pct}%)</div>
+          <div className="text-gray-400">输入 {formatTokens(metrics.prompt)} · 输出 {formatTokens(metrics.completion)}</div>
+        </div>
+      }
+      placement="top"
+    >
+      <div
+        className="relative flex items-center justify-center h-8 w-8 rounded-full cursor-default hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors"
+        role="img"
+        aria-label={`上下文空间使用率 ${pct}%`}
+      >
+        <svg width={size} height={size} className="-rotate-90">
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            strokeWidth={stroke}
+            className="stroke-gray-200 dark:stroke-gray-600"
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            stroke={color}
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={`${dash} ${circumference}`}
+            style={{ transition: 'stroke-dasharray 0.4s ease, stroke 0.4s ease' }}
+          />
+        </svg>
+      </div>
+    </Tooltip>
+  );
 }
 
 interface ResourceItem {
@@ -34,7 +107,7 @@ interface UploadingFile { id: string; file: File; status: 'uploading' | 'success
 
 interface AgentWorkspaceInputProps {
   convUid?: string;
-  onSend: (payload: { text: string; resources?: ResourceItem[]; model?: string; playbookCommand?: PlaybookCommand }) => void;
+  onSend: (payload: { text: string; resources?: ResourceItem[]; model?: string; playbookCommand?: PlaybookCommand; skills?: SkillRef[] }) => void;
   loading?: boolean;
   /** 运行中且无新内容时,按钮转为"进行中·可停止"状态,点击终止当前生成 */
   onStop?: () => void;
@@ -45,10 +118,12 @@ interface AgentWorkspaceInputProps {
   focus?: { id: number; title: string } | null;
   onClearFocus?: () => void;
   onClearContext?: () => void;
+  /** SSE usage_metric 实时推送的上下文消耗,用于发送键旁的环形图 */
+  usageMetrics?: UsageMetrics | null;
 }
 
 export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWorkspaceInputProps>(
-  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext }, ref) {
+  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics }, ref) {
     const [text, setText] = useState('');
     const [resources, setResources] = useState<ResourceItem[]>([]);
     const [uploading, setUploading] = useState<UploadingFile[]>([]);
@@ -56,7 +131,11 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const [selectedModel, setSelectedModel] = useState<string>('');
     const [showPlaybook, setShowPlaybook] = useState(false);
     const [playbookCommand, setPlaybookCommand] = useState<PlaybookCommand | null>(null);
+    const [selectedSkills, setSelectedSkills] = useState<SkillRef[]>([]);
     const [isFocus, setIsFocus] = useState(false);
+    // + 号菜单:root=一级菜单(文件/剧本/技能), playbook/skill=二级选择面板
+    const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+    const [plusPanel, setPlusPanel] = useState<'root' | 'playbook' | 'skill'>('root');
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -78,6 +157,13 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
         if (llm.length) setSelectedModel(llm[0].model_name);
       },
     });
+
+    // 技能列表:+ 号菜单「技能」面板的数据源
+    const { data: skillList } = useRequest(async () => {
+      const [err, res] = await apiInterceptors(getSkillList({ filter: '' }, { page: 1, page_size: 200 }));
+      return err ? [] : (res?.items || []);
+    });
+    const allSkills: SkillRef[] = skillList ?? [];
 
     const normalizeUploadRes = (res: any): { fileUrl: string; previewUrl: string } => {
       let previewUrl = '', fileUrl = '';
@@ -156,10 +242,12 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
         resources: resources.length ? resources : undefined,
         model: selectedModel || undefined,
         playbookCommand: playbookCommand ?? undefined,
+        skills: selectedSkills.length ? selectedSkills : undefined,
       });
       setText('');
       setResources([]);
       setPlaybookCommand(null);
+      setSelectedSkills([]);
       setShowPlaybook(false);
     };
 
@@ -188,6 +276,110 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     // types after picking a chip is the task topic (sent as `text`). Show all
     // playbooks while the picker is open (no name filter).
     const visiblePlaybooks = (playbooks ?? []);
+
+    const toggleSkill = (skill: SkillRef) => {
+      setSelectedSkills((prev) =>
+        prev.some((s) => s.skill_code === skill.skill_code)
+          ? prev.filter((s) => s.skill_code !== skill.skill_code)
+          : [...prev, skill],
+      );
+    };
+
+    const closePlusMenu = () => {
+      setPlusMenuOpen(false);
+      setPlusPanel('root');
+    };
+
+    // + 号菜单项共用样式:图标 + 文字,hover 浅底,圆角
+    const plusMenuItemCls =
+      'flex w-full items-center gap-2.5 px-2.5 py-2 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700/60 rounded-lg transition-colors cursor-pointer text-left';
+
+    const plusMenuContent = plusPanel === 'root' ? (
+      <div className="w-52 py-1">
+        <button
+          type="button"
+          className={plusMenuItemCls}
+          onClick={() => { fileInputRef.current?.click(); closePlusMenu(); }}
+        >
+          <PaperClipOutlined className="text-sm text-gray-500 dark:text-gray-400" />
+          <span>添加文件</span>
+        </button>
+        {(playbooks?.length ?? 0) > 0 && (
+          <button type="button" className={plusMenuItemCls} onClick={() => setPlusPanel('playbook')}>
+            <RocketOutlined className="text-sm text-gray-500 dark:text-gray-400" />
+            <span>剧本</span>
+            <RightOutlined className="ml-auto text-[10px] text-gray-400" />
+          </button>
+        )}
+        <button type="button" className={plusMenuItemCls} onClick={() => setPlusPanel('skill')}>
+          <AppstoreOutlined className="text-sm text-gray-500 dark:text-gray-400" />
+          <span>技能</span>
+          {selectedSkills.length > 0 && (
+            <span className="ml-auto text-[11px] text-indigo-500 font-medium">{selectedSkills.length}</span>
+          )}
+          {selectedSkills.length === 0 && <RightOutlined className="ml-auto text-[10px] text-gray-400" />}
+        </button>
+      </div>
+    ) : (
+      <div className="w-64">
+        <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-gray-100 dark:border-gray-700/60">
+          <button
+            type="button"
+            className="h-6 w-6 flex items-center justify-center rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors"
+            onClick={() => setPlusPanel('root')}
+            title="返回"
+          >
+            <LeftOutlined className="text-[10px]" />
+          </button>
+          <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+            {plusPanel === 'playbook' ? '选择剧本' : '选择技能'}
+          </span>
+        </div>
+        <div className="max-h-64 overflow-y-auto py-1">
+          {plusPanel === 'playbook' && (
+            <>
+              {visiblePlaybooks.map((pb) => (
+                <button
+                  type="button"
+                  key={pb.playbook_id}
+                  className={plusMenuItemCls}
+                  onClick={() => { pickPlaybook(pb); closePlusMenu(); }}
+                >
+                  <RocketOutlined className="text-sm text-gray-400" />
+                  <span className="truncate">{pb.playbook_name}</span>
+                  {playbookCommand?.playbook_id === pb.playbook_id && (
+                    <CheckOutlined className="ml-auto text-xs text-indigo-500" />
+                  )}
+                </button>
+              ))}
+            </>
+          )}
+          {plusPanel === 'skill' && (
+            <>
+              {allSkills.length === 0 && (
+                <div className="px-3 py-2 text-xs text-gray-400">暂无可用技能</div>
+              )}
+              {allSkills.map((skill) => {
+                const checked = selectedSkills.some((s) => s.skill_code === skill.skill_code);
+                return (
+                  <button
+                    type="button"
+                    key={skill.skill_code}
+                    className={plusMenuItemCls}
+                    onClick={() => toggleSkill(skill)}
+                    title={skill.description || skill.name}
+                  >
+                    <AppstoreOutlined className="text-sm text-gray-400" />
+                    <span className="truncate">{skill.name}</span>
+                    {checked && <CheckOutlined className="ml-auto text-xs text-indigo-500" />}
+                  </button>
+                );
+              })}
+            </>
+          )}
+        </div>
+      </div>
+    );
 
     const playbookPopover = (
       <div className="w-72 max-h-72 overflow-y-auto py-1">
@@ -333,6 +525,27 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
               </span>
             </div>
           )}
+          {/* SECTION 1.6 — selected skill chips (multi, removable) */}
+          {selectedSkills.length > 0 && (
+            <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
+              {selectedSkills.map((skill) => (
+                <span
+                  key={skill.skill_code}
+                  className="inline-flex items-center gap-1 bg-cyan-50 dark:bg-cyan-900/30 border border-cyan-200 dark:border-cyan-700 text-cyan-600 dark:text-cyan-300 rounded-md px-2 py-1 text-sm"
+                >
+                  <AppstoreOutlined className="text-xs text-cyan-400" />
+                  <span className="font-medium max-w-[160px] truncate">{skill.name}</span>
+                  <button
+                    className="ml-0.5 text-cyan-400 hover:text-red-500 transition-colors"
+                    onClick={() => toggleSkill(skill)}
+                    title="移除技能"
+                  >
+                    <CloseOutlined className="text-[11px]" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* SECTION 2 — textarea (borderless, card is the only border) */}
           <div className="relative">
@@ -351,7 +564,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   onFocus={() => setIsFocus(true)}
                   onBlur={() => setIsFocus(false)}
                   onKeyDown={handleKeyDown}
-                  placeholder="输入指令给 Agent…(输入 / 选择剧本)"
+                  placeholder="输入指令给 Agent…(+ 添加文件/剧本/技能,/ 快捷选剧本)"
                   className="!text-base !bg-transparent !border-0 !resize-none placeholder:!text-gray-400 !text-gray-800 dark:!text-gray-200 !shadow-none !p-0 !min-h-[60px]"
                   autoSize={{ minRows: 2, maxRows: 8 }}
                   disabled={disabled}
@@ -376,15 +589,29 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
           {/* SECTION 3 — footer toolbar: left tools / right send */}
           <div className="flex items-center justify-between gap-2 px-3 pb-3 min-w-0">
             <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-visible">
-              {/* + file attach button */}
-              <button
-                className="h-8 w-8 rounded-full flex items-center justify-center border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:text-indigo-500 hover:border-indigo-300 dark:hover:border-indigo-600 transition-all hover:bg-indigo-50 dark:hover:bg-indigo-900/20 flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!convUid || disabled || loading}
-                title="上传文件"
+              {/* + 号菜单:添加文件 / 剧本 / 技能 */}
+              <Popover
+                open={plusMenuOpen}
+                onOpenChange={(open) => { setPlusMenuOpen(open); if (!open) setPlusPanel('root'); }}
+                content={plusMenuContent}
+                trigger="click"
+                placement="topLeft"
+                overlayClassName={popoverOverlay}
               >
-                <PlusOutlined className="text-sm" />
-              </button>
+                <button
+                  type="button"
+                  className={classNames(
+                    'h-8 w-8 rounded-full flex items-center justify-center border transition-all flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed',
+                    plusMenuOpen
+                      ? 'border-indigo-300 dark:border-indigo-600 text-indigo-500 bg-indigo-50 dark:bg-indigo-900/20 rotate-45'
+                      : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:text-indigo-500 hover:border-indigo-300 dark:hover:border-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20'
+                  )}
+                  disabled={!convUid || disabled || loading}
+                  title="添加文件 / 剧本 / 技能"
+                >
+                  <PlusOutlined className="text-sm transition-transform" />
+                </button>
+              </Popover>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -408,37 +635,42 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
               {/* model selector pill */}
               <Popover
                 content={(
-                  <div className="w-56 max-h-60 overflow-y-auto py-1">
+                  <div className="w-60 max-h-64 overflow-y-auto py-1">
+                    <div className="px-3 pt-1.5 pb-1 text-[11px] font-medium text-gray-400 dark:text-gray-500">选择模型</div>
                     {modelList.length === 0 && <div className="px-3 py-2 text-xs text-gray-400">暂无可用模型</div>}
                     {modelList.map(m => (
                       <div
                         key={m.model_name}
                         className={classNames(
-                          'flex items-center gap-2 px-3 py-2 cursor-pointer rounded-lg transition-colors group',
+                          'flex items-center gap-2.5 px-3 py-2 cursor-pointer rounded-lg transition-colors group',
                           selectedModel === m.model_name
                             ? 'bg-indigo-50 dark:bg-indigo-900/20'
-                            : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+                            : 'hover:bg-gray-100 dark:hover:bg-gray-700/60'
                         )}
                         onClick={() => setSelectedModel(m.model_name)}
                       >
-                        <ModelIcon model={m.model_name} width={16} height={16} />
+                        <ModelIcon model={m.model_name} width={18} height={18} />
                         <span className={classNames(
-                          'text-sm truncate',
-                          selectedModel === m.model_name ? 'text-indigo-600' : 'text-gray-700 dark:text-gray-300 group-hover:text-indigo-600'
+                          'text-[13px] truncate',
+                          selectedModel === m.model_name ? 'text-indigo-600 dark:text-indigo-400 font-medium' : 'text-gray-700 dark:text-gray-300'
                         )}>{m.model_name}</span>
+                        {selectedModel === m.model_name && (
+                          <CheckOutlined className="ml-auto text-xs text-indigo-500" />
+                        )}
                       </div>
                     ))}
                   </div>
                 )}
                 trigger="click"
+                placement="topLeft"
                 overlayClassName={popoverOverlay}
               >
-                <div className="flex items-center gap-1.5 bg-gray-50 dark:bg-gray-800 px-2 py-1 rounded-full border border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-all group flex-shrink-0">
-                  <ModelIcon model={selectedModel} width={14} height={14} />
-                  <span className="text-xs text-gray-700 dark:text-gray-300 max-w-[80px] truncate group-hover:text-indigo-500 transition-colors">
+                <div className="flex items-center gap-1.5 h-8 px-2.5 rounded-full cursor-pointer text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-all group flex-shrink-0">
+                  <ModelIcon model={selectedModel} width={16} height={16} />
+                  <span className="text-xs font-medium max-w-[96px] truncate">
                     {selectedModel || '选择模型'}
                   </span>
-                  <DownOutlined className="text-[10px] text-gray-400 group-hover:text-indigo-500 transition-colors" />
+                  <DownOutlined className="text-[9px] text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 transition-colors" />
                 </div>
               </Popover>
             </div>
@@ -449,6 +681,8 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   选了剧本要写本次任务目标 — 剧本只指定资源/能力,目标由你定。
                 </div>
               )}
+              {/* 上下文空间消耗环形图:实时显示当前 Agent 上下文用量 */}
+              <ContextUsageRing metrics={usageMetrics ?? null} />
               <button
                 className={classNames(
                   'w-9 h-9 flex items-center justify-center transition-all !border-0 flex-shrink-0 rounded-full',

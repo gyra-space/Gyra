@@ -12,6 +12,17 @@ export const VisAgentPlanCardWrap = styled.div`
       background: #eef0fe;
       border-color: rgba(79, 70, 229, 0.2);
     }
+
+    /* 选中态:品牌色淡底 + 细边框,与 hover 态区分层级 */
+    .header-task {
+      background: #eef0fe;
+      border-color: rgba(79, 70, 229, 0.18);
+
+      body.dark & {
+        background: rgba(79, 70, 229, 0.16);
+        border-color: rgba(129, 140, 248, 0.28);
+      }
+    }
   }
 
   .header {
@@ -137,9 +148,10 @@ export const VisAgentPlanCardWrap = styled.div`
     justify-content: center;
     align-items: center;
     background: #eef0fe;
-    border-radius: 50%;
-    width: 18px;
-    height: 18px;
+    border: 1px solid rgba(79, 70, 229, 0.14);
+    border-radius: 6px;
+    width: 20px;
+    height: 20px;
   }
 
   .title-text {
@@ -252,23 +264,22 @@ export const VisAgentPlanCardWrap = styled.div`
   .header-task {
     width: fit-content;
     max-width: 85%;
-    background: #eff1f6;
+    /* 默认透明,融入对话流;仅 hover / 选中时浮现底色 */
+    background: transparent;
     border: 1px solid transparent;
-    border-radius: 10px;
+    border-radius: 8px;
     padding: 3px 10px 3px 4px;
-    transition: all 0.15s ease;
+    transition: background 0.15s ease, border-color 0.15s ease;
     cursor: pointer;
 
     &:hover {
-      background: #e5e8ef;
+      background: #f1f3f7;
+      border-color: rgba(100, 116, 139, 0.1);
     }
 
-    body.dark & {
-      background: #2a2f3e;
-
-      &:hover {
-        background: #333949;
-      }
+    body.dark &:hover {
+      background: #262b38;
+      border-color: rgba(148, 163, 184, 0.12);
     }
 
     .task-icon {
@@ -276,21 +287,23 @@ export const VisAgentPlanCardWrap = styled.div`
       height: 12px;
     }
 
+    /* 统一图标 tile:中性 slate 底 + 细发丝边框,所有工具同形同色 */
     .task-icon-chip {
-      width: 19px;
-      height: 19px;
+      width: 20px;
+      height: 20px;
       border-radius: 6px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
-    }
-
-    .task-icon-chip-default {
-      background: #ffffff;
+      background: #eef1f6;
+      color: #64748b;
+      border: 1px solid rgba(100, 116, 139, 0.14);
 
       body.dark & {
         background: #394052;
+        color: #cbd5e1;
+        border-color: rgba(148, 163, 184, 0.2);
       }
     }
 
@@ -322,21 +335,32 @@ export const VisAgentPlanCardWrap = styled.div`
       overflow: hidden;
     }
 
+    /* 工具名:等宽字体 + slate 色,与正文 sans 形成明确的"代码标识符"气质区分 */
     .task-title-name {
+      font-family: 'SF Mono', ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
       font-size: 12px;
       font-weight: 500;
-      color: #334155;
+      letter-spacing: -0.01em;
+      color: #475569;
       flex-shrink: 0;
       white-space: nowrap;
+
+      body.dark & {
+        color: #b6c0d4;
+      }
     }
 
     .task-args-summary {
       font-size: 11px;
-      color: #94a3b8;
+      color: #9aa3b5;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       min-width: 0;
+
+      body.dark & {
+        color: #6b7488;
+      }
     }
   }
 

@@ -3,8 +3,9 @@
 import { useCallback, useRef, useState } from 'react';
 import useChat from '@/hooks/use-chat';
 import type { WorkspaceEvent } from '@/hooks/use-chat';
+import type { UsageMetrics } from '@/components/chat/TokenStatusBar';
 import { useChatPolling, type ConversationState } from '@/hooks/use-chat-polling';
-import type { ChatQueryResponse } from '@/client/api/chat';
+import { stopChat, type ChatQueryResponse } from '@/client/api/chat';
 import type { AgentStep } from './agent-types';
 import { parseAgentSteps } from './parse-agent-steps';
 import { parseWorkspaceView } from './parse-workspace-view';
@@ -34,6 +35,8 @@ interface UseSceneAgentChatResult {
   lastInput: SceneAgentSendPayload | null;
   /** 后端会话运行状态:RUNNING 表示后台仍在执行(可关闭页面后恢复) */
   convState: ConversationState;
+  /** SSE usage_metric 事件推送的上下文消耗(实时) */
+  usageMetrics: UsageMetrics | null;
   send: (payload: SceneAgentSendPayload) => void;
   abort: () => void;
   clearSteps: () => void;
@@ -69,7 +72,7 @@ export function useSceneAgentChat({
   const abortRef = useRef<AbortController | null>(null);
   // 乐观插入的用户消息:发送即上屏,服务端回显同文本 user 步骤后移除,避免重复
   const optimisticUserRef = useRef<{ id: string; text: string } | null>(null);
-  const { chat } = useChat({ app_code: appCode || '' });
+  const { chat, usageMetrics } = useChat({ app_code: appCode || '' });
 
   // 拦截 task_created workspace 事件:把任务卡片注入对话执行记录,
   // 用户可在对话中直接看到任务已创建并点击进入任务对话。
@@ -281,7 +284,14 @@ export function useSceneAgentChat({
   const abort = useCallback(() => {
     abortRef.current?.abort();
     setLoading(false);
-  }, []);
+    // 真正终止对话:取消后端 agent task。SSE 断开(abort)本身不终止 agent,
+    // 主动停止需调 stop_chat 接口(状态置 INTERRUPTED)。
+    if (convUid) {
+      stopChat({ conv_session_id: convUid }).catch(() => {
+        /* 终止失败不阻塞 UI,后端 task 可能已结束 */
+      });
+    }
+  }, [convUid]);
 
-  return { steps, workspaceView, loading, error, lastInput, convState, send, abort, clearSteps, clearWorkspaceView };
+  return { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, send, abort, clearSteps, clearWorkspaceView };
 }

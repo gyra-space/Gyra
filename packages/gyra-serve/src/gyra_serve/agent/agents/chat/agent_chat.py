@@ -1579,8 +1579,12 @@ class AgentChat(BaseComponent, ABC):
                 if first_chunk_time
                 else 0,
             )
-            # 取消注册任务
-            self.unregister_running_task(conv_id)
+            # 取消注册任务:仅当 agent task 已结束时注销。
+            # 断流时(SSE 关闭)agent 仍在后台运行,保留注册项,以便:
+            # 1) stop_chat 仍可按 conv_id 找到并取消 task(真正终止);
+            # 2) 后台 finalize(simple chat)在 agent 跑完后兜底注销。
+            if task is not None and task.done():
+                self.unregister_running_task(conv_id)
             # 确保文件句柄关闭
             if file_handle:
                 file_handle.close()

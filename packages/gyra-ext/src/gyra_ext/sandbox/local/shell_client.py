@@ -21,16 +21,88 @@ class LocalShellClient(ShellClient):
     """本地 Shell 客户端实现"""
 
     def __init__(
-        self, sandbox_id: str, work_dir: str, runtime, skill_dir: str = None, **kwargs
+        self,
+        sandbox_id: str,
+        work_dir: str,
+        runtime,
+        skill_dir: str = None,
+        host_work_dir: Optional[str] = None,
+        **kwargs,
     ):
         super().__init__(sandbox_id, work_dir, connection_config=None, **kwargs)
         self._runtime = runtime
+        self._sandbox_id = sandbox_id
+        self._logical_work_dir = work_dir or "/home/ubuntu"
         self._skill_dir = skill_dir
-        self._whitelist_paths = {"/mnt"}
+        self._host_work_dir = host_work_dir
+
+        # Physical roots that define the sandbox boundary.
+        self._session_root = os.path.abspath(
+            os.path.join(self._runtime.base_dir, self._sandbox_id)
+        )
+        if host_work_dir:
+            self._work_dir_physical = os.path.abspath(host_work_dir)
+        else:
+            logical_rel = self._logical_work_dir.lstrip("/")
+            self._work_dir_physical = os.path.abspath(
+                os.path.join(self._session_root, logical_rel)
+            )
+
+        self._allowed_roots = [self._session_root, self._work_dir_physical]
         if skill_dir:
-            self._whitelist_paths.add(skill_dir)
-        if work_dir:
-            self._whitelist_paths.add(work_dir)
+            self._allowed_roots.append(os.path.realpath(skill_dir))
+        self._allowed_roots.append("/mnt")
+
+    def _resolve_cwd(self, work_dir: Any) -> str:
+        """Resolve a logical cwd to a physical path inside the sandbox."""
+        target_cwd = self._work_dir_physical
+        if work_dir is not OMIT and work_dir is not None:
+            target_cwd = work_dir
+
+        if not target_cwd:
+            return self._work_dir_physical
+
+        # The physical work directory itself is always valid.
+        real_target = os.path.realpath(target_cwd)
+        if real_target == os.path.realpath(self._work_dir_physical):
+            return real_target
+
+        # Whitelisted host paths: /mnt and skill_dir are accessed directly.
+        if os.path.isabs(target_cwd):
+            for allowed in ("/mnt", self._skill_dir):
+                if allowed and (
+                    target_cwd == allowed or target_cwd.startswith(f"{allowed}/")
+                ):
+                    return os.path.realpath(target_cwd)
+
+            # Map logical work_dir prefix (e.g. /data/workspace) to physical work_dir.
+            if target_cwd.startswith(self._logical_work_dir):
+                relative = target_cwd[len(self._logical_work_dir) :].lstrip("/")
+                physical = os.path.abspath(
+                    os.path.join(self._work_dir_physical, relative)
+                )
+                return self._ensure_inside_allowed(physical)
+
+            # Any other absolute path is considered an escape attempt.
+            raise PermissionError(
+                f"Absolute cwd {target_cwd} is outside the sandbox work directory"
+            )
+
+        # Relative paths resolve against the physical work directory.
+        physical = os.path.abspath(os.path.join(self._work_dir_physical, target_cwd))
+        return self._ensure_inside_allowed(physical)
+
+    def _ensure_inside_allowed(self, physical_path: str) -> str:
+        """Verify that *physical_path* stays within an allowed root."""
+        real = os.path.realpath(physical_path)
+        for root in self._allowed_roots:
+            if not root:
+                continue
+            if real == root or real.startswith(os.path.join(root, "")):
+                return real
+        raise PermissionError(
+            f"Working directory {physical_path} escapes sandbox allowed roots"
+        )
 
     async def exec_command(
         self,
@@ -44,47 +116,40 @@ class LocalShellClient(ShellClient):
     ) -> ShellCommandResult:
         """执行 Shell 命令"""
 
-        # 确定工作目录
-        # 这里需要将逻辑工作目录转换为物理工作目录，类似于 LocalFileClient
-        # 假设 runtime.base_dir + sandbox_id 是根
+        try:
+            cwd = self._resolve_cwd(work_dir)
+        except PermissionError as exc:
+            logger.warning(f"LocalShellClient rejected cwd: {exc}")
+            return ShellCommandResult(
+                session_id=self._sandbox_id,
+                status="failed",
+                command=command,
+                output=str(exc),
+                exit_code=1,
+                console=[],
+            )
 
-        # 简单处理：如果 cwd 是绝对路径且存在，则直接使用
-        # 如果 cwd 是相对路径，则拼接到 sandbox 根
+        try:
+            from gyra.sandbox.sandbox_utils import validate_shell_command
 
-        sandbox_root = os.path.join(self._runtime.base_dir, self._sandbox_id)
-
-        target_cwd = self._work_dir
-        if work_dir is not OMIT and work_dir is not None:
-            target_cwd = work_dir
-
-        # Resolve path
-        if not target_cwd:
-            cwd = sandbox_root
-        elif os.path.isabs(target_cwd):
-            # Check if path is in whitelist (should be accessed directly on host)
-            is_whitelisted = False
-            for allowed in self._whitelist_paths:
-                if target_cwd == allowed or target_cwd.startswith(f"{allowed}/"):
-                    is_whitelisted = True
-                    break
-
-            if is_whitelisted:
-                # Path is in whitelist, use it directly
-                cwd = target_cwd
-            else:
-                # 如果是绝对路径，我们假设它是相对于沙箱内部的路径，需要映射到物理路径
-                rel = target_cwd.lstrip("/")
-                cwd = os.path.abspath(os.path.join(sandbox_root, rel))
-        else:
-            cwd = os.path.abspath(os.path.join(sandbox_root, target_cwd))
+            validate_shell_command(command, cwd)
+        except (ValueError, PermissionError) as exc:
+            logger.warning(f"LocalShellClient rejected command: {exc}")
+            return ShellCommandResult(
+                session_id=self._sandbox_id,
+                status="failed",
+                command=command,
+                output=str(exc),
+                exit_code=1,
+                console=[],
+            )
 
         # Ensure dir exists, otherwise subprocess fails
         if not os.path.exists(cwd):
-            # 尝试创建或回退
             try:
                 os.makedirs(cwd, exist_ok=True)
-            except:
-                cwd = sandbox_root
+            except Exception:
+                cwd = self._work_dir_physical
 
         timeout_val = 60.0
         if timeout is not OMIT and timeout is not None:
@@ -93,12 +158,9 @@ class LocalShellClient(ShellClient):
         logger.info(f"LocalShellClient exec: {command} in {cwd}")
 
         try:
-            # 使用 runtime 的会话来执行，或者直接使用 subprocess
-            # 为了复用 runtime 的隔离（虽然现在 runtime 也是 subprocess）
-            # 我们这里直接用 subprocess，因为 LocalShellClient 主要是作为 helper
-
-            # 安全性提示：这里直接执行命令，需要确保 LocalSandboxRuntime 已经做好 chroot 或其他隔离
-            # 当前简单实现仅做路径切换
+            # 安全性提示：LocalShellClient 依赖代码层校验；真正的 OS 级隔离需由
+            # LocalSandboxRuntime 的 sandbox-exec / chroot 提供。当前实现已做路径
+            # 与命令策略校验，后续可再叠加 sandbox-exec 包装。
 
             process = await asyncio.create_subprocess_shell(
                 command,

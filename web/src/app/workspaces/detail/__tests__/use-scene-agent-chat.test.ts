@@ -49,6 +49,20 @@ describe('buildSceneAgentSendData', () => {
     expect(data.ext_info).toMatchObject({ vis_render: 'scene_agent_workspace', workspace_id: 9 });
   });
 
+  test('skills 构造 skill(gyra) chat_in_params, 每个技能一条', () => {
+    const skills = [
+      { skill_code: 'ppt-gen', name: 'PPT 生成' },
+      { skill_code: 'data-analysis', name: '数据分析' },
+    ];
+    const payload: SceneAgentSendPayload = { text: '做份周报', skills };
+    const data = buildSceneAgentSendData(payload, { workspaceId: 9 }, 'c1');
+
+    expect(data.chat_in_params).toEqual([
+      { param_type: 'resource', param_value: JSON.stringify(skills[0]), sub_type: 'skill(gyra)' },
+      { param_type: 'resource', param_value: JSON.stringify(skills[1]), sub_type: 'skill(gyra)' },
+    ]);
+  });
+
   test('focusArtifactId 写入 ext_info.focus_artifact_id', () => {
     const payload: SceneAgentSendPayload = { text: '你好' };
     const data = buildSceneAgentSendData(payload, { workspaceId: 9, focusArtifactId: 42 }, 'c1');

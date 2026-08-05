@@ -1,10 +1,12 @@
-import type { PlaybookCommand } from './agent-workspace-types';
+import type { PlaybookCommand, SkillRef } from './agent-workspace-types';
 
 export interface SceneAgentSendPayload {
   text: string;
   resources?: unknown[];
   model?: string;
   playbookCommand?: PlaybookCommand;
+  /** 本次对话选用的技能(随 chat_in_params 下发,sub_type='skill(gyra)') */
+  skills?: SkillRef[];
 }
 
 export interface SendDataOptions {
@@ -45,7 +47,7 @@ export function buildSceneAgentSendData(
   options: SendDataOptions,
   convUid: string,
 ): SceneAgentSendData {
-  const { text, resources = [], model, playbookCommand } = payload;
+  const { text, resources = [], model, playbookCommand, skills } = payload;
   const { workspaceId, taskId, focusArtifactId } = options;
   const trimmed = text.trim();
 
@@ -69,6 +71,15 @@ export function buildSceneAgentSendData(
       param_type: 'playbook_command',
       sub_type: 'playbook',
       param_value: JSON.stringify(playbookCommand),
+    });
+  }
+  if (skills && skills.length > 0) {
+    skills.forEach((skill) => {
+      chatInParams.push({
+        param_type: 'resource',
+        param_value: JSON.stringify(skill),
+        sub_type: 'skill(gyra)',
+      });
     });
   }
 

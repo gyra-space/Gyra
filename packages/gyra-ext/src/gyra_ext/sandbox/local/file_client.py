@@ -40,6 +40,7 @@ class LocalFileClient(FileClient):
         runtime,
         skill_dir: str = None,
         file_storage_client=None,
+        host_work_dir: Optional[str] = None,
         **kwargs,
     ):
         super().__init__(
@@ -51,37 +52,73 @@ class LocalFileClient(FileClient):
         )
         self._runtime = runtime
         self._sandbox_id = sandbox_id
-        self._logical_work_dir = work_dir
+        self._logical_work_dir = work_dir or "/home/ubuntu"
         self._skill_dir = skill_dir
-        self._whitelist_paths = {"/mnt"}
+        self._host_work_dir = host_work_dir
+
+        # Physical roots that define the sandbox boundary.
+        self._session_root = os.path.abspath(
+            os.path.join(self._runtime.base_dir, self._sandbox_id)
+        )
+        if host_work_dir:
+            self._work_dir_physical = os.path.abspath(host_work_dir)
+        else:
+            logical_rel = self._logical_work_dir.lstrip("/")
+            self._work_dir_physical = os.path.abspath(
+                os.path.join(self._session_root, logical_rel)
+            )
+
+        self._allowed_roots = [self._session_root, self._work_dir_physical]
         if skill_dir:
-            self._whitelist_paths.add(skill_dir)
-        if work_dir:
-            self._whitelist_paths.add(work_dir)
+            self._allowed_roots.append(os.path.realpath(skill_dir))
+        self._allowed_roots.append("/mnt")
 
     def _get_physical_path(self, path: str) -> str:
-        """Resolve logical path to physical path in local sandbox."""
-        # Check if path is in whitelist (should be accessed directly on host)
-        if os.path.isabs(path):
-            for allowed in self._whitelist_paths:
-                if path == allowed or path.startswith(f"{allowed}/"):
-                    # Path is in whitelist, return it directly
-                    return path
+        """Resolve logical path to physical path in local sandbox.
 
-        # Get the session from runtime to find the physical root
-        session_root = os.path.join(self._runtime.base_dir, self._sandbox_id)
-
-        # Normalize path
+        Raises:
+            PermissionError: if the resolved path escapes the allowed sandbox roots.
+        """
         if not path:
             path = "."
 
-        # Handle absolute paths as relative to sandbox root
         if os.path.isabs(path):
-            path = path.lstrip("/")
+            # Whitelisted host paths: /mnt and skill_dir are accessed directly.
+            for allowed in ("/mnt", self._skill_dir):
+                if allowed and (path == allowed or path.startswith(f"{allowed}/")):
+                    return os.path.realpath(path)
 
-        full_path = os.path.abspath(os.path.join(session_root, path))
+            # Map logical work_dir prefix (e.g. /data/workspace) to physical work_dir.
+            if path.startswith(self._logical_work_dir):
+                relative = path[len(self._logical_work_dir) :].lstrip("/")
+                physical = os.path.abspath(
+                    os.path.join(self._work_dir_physical, relative)
+                )
+                return self._ensure_inside_allowed(physical)
 
-        return full_path
+            # Any other absolute path is considered an escape attempt.
+            raise PermissionError(
+                f"Absolute path {path} is outside the sandbox work directory"
+            )
+
+        # Relative paths resolve against the physical work directory.
+        physical = os.path.abspath(os.path.join(self._work_dir_physical, path))
+        return self._ensure_inside_allowed(physical)
+
+    def _ensure_inside_allowed(self, physical_path: str) -> str:
+        """Verify that *physical_path* stays within an allowed root.
+
+        Uses realpath to follow symlinks safely. Raises PermissionError on escape.
+        """
+        real = os.path.realpath(physical_path)
+        for root in self._allowed_roots:
+            if not root:
+                continue
+            if real == root or real.startswith(os.path.join(root, "")):
+                return real
+        raise PermissionError(
+            f"Path {physical_path} escapes sandbox allowed roots"
+        )
 
     async def read(
         self,

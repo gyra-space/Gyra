@@ -292,6 +292,7 @@ class ImprovedLocalSandbox(SandboxBase):
             runtime=self._runtime,
             skill_dir=skill_dir,
             file_storage_client=self._file_storage_client,
+            host_work_dir=self._config.host_work_dir,
         )
 
         # Shell client
@@ -300,6 +301,7 @@ class ImprovedLocalSandbox(SandboxBase):
             work_dir=work_dir,
             runtime=self._runtime,
             skill_dir=skill_dir,
+            host_work_dir=self._config.host_work_dir,
         )
 
         # Browser client (if enabled)

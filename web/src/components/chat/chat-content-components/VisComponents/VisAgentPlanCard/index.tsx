@@ -25,6 +25,8 @@ import {
   CloudOutlined,
   ThunderboltOutlined,
   ToolOutlined,
+  PictureOutlined,
+  ExportOutlined,
 } from '@ant-design/icons';
 import { Avatar, Button, Tooltip } from 'antd';
 import { ee, EVENTS } from '@/utils/event-emitter';
@@ -41,31 +43,6 @@ const StatusMap: Record<string, string> = {
 
 const getStatusText = (status: string): string =>
   StatusMap[status] ?? status ?? '成功';
-
-const iconUrlMap: Record<string, string> = {
-  report:
-    'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*xaTaQ5rDghgAAAAALTAAAAgAeprcAQ/original',
-  tool: 'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*WC8ARKan1WEAAAAAQBAAAAgAeprcAQ/original',
-  blankaction:
-    'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*WC8ARKan1WEAAAAAQBAAAAgAeprcAQ/original',
-  knowledge:
-    'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*P2sCQKUZoAUAAAAAOhAAAAgAeprcAQ/original',
-  code: 'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*pPozSIZ_0u4AAAAAO7AAAAgAeprcAQ/original',
-  gyracodeaction:
-    'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*pPozSIZ_0u4AAAAAO7AAAAgAeprcAQ/original',
-  monitor:
-    'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*F4pAT4italwAAAAANhAAAAgAeprcAQ/original',
-  agent: 'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*b_vFSpByHFcAAAAAQBAAAAgAeprcAQ/original',
-  plan: 'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*ibaHSahFSCoAAAAAQBAAAAgAeprcAQ/original',
-  planningaction:
-    'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*ibaHSahFSCoAAAAAQBAAAAgAeprcAQ/original',
-  stage:
-    'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*ibaHSahFSCoAAAAAQBAAAAgAeprcAQ/original',
-  llm: 'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*b_vFSpByHFcAAAAAQBAAAAgAeprcAQ/original',
-  task: 'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*WC8ARKan1WEAAAAAQBAAAAgAeprcAQ/original',
-  hidden: 'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*WC8ARKan1WEAAAAAQBAAAAgAeprcAQ/original',
-  default: 'https://mdn.alipayobjects.com/huamei_5qayww/afts/img/A*WC8ARKan1WEAAAAAQBAAAAgAeprcAQ/original',
-};
 
 const taskTypeLabels: Record<string, string> = {
   tool: '工具调用',
@@ -85,24 +62,25 @@ const taskTypeLabels: Record<string, string> = {
   default: '任务',
 };
 
-const getTaskIcon = (taskType: string): string => {
-  const normalizedType = String(taskType).toLowerCase();
-  return iconUrlMap[normalizedType] || iconUrlMap.default;
-};
-
 /**
  * Map tool names to specific Ant Design icons for visual differentiation.
- * Returns a React node if a match is found, null otherwise (falls back to image icon).
+ * 统一使用 antd 线性图标 + 中性 slate 色,视觉风格完全一致;
+ * Returns a React node if a match is found, null otherwise (falls back to ToolOutlined).
+ * 注意:关键词按顺序匹配,更具体的类别(如 deliver/file)须排在泛化类别(如 image/media)之前。
  */
+const TOOL_ICON_COLOR = '#64748b';
+
 const toolNameIconMap: Array<{ keywords: string[]; icon: React.ReactNode; color: string; label: string }> = [
-  { keywords: ['skill'], icon: <ThunderboltOutlined />, color: '#5d6577', label: '技能' },
-  { keywords: ['sql', 'database', 'db_', 'mysql', 'postgres', 'sqlite', 'query', 'table_spec', 'table_info', 'schema', 'get_table'], icon: <DatabaseOutlined />, color: '#5d6577', label: 'SQL' },
-  { keywords: ['shell', 'bash', 'terminal', 'command', 'exec_command', 'ssh'], icon: <CodeOutlined />, color: '#5d6577', label: '终端' },
-  { keywords: ['browser', 'web', 'http', 'url', 'crawl', 'scrape', 'fetch_url'], icon: <GlobalOutlined />, color: '#5d6577', label: '浏览器' },
-  { keywords: ['file', 'read_file', 'write_file', 'write', 'read', 'upload', 'download', 'document', 'csv', 'excel', 'pdf', 'save', 'mkdir', 'copy', 'move', 'rename', 'delete_file'], icon: <FileTextOutlined />, color: '#5d6577', label: '文件' },
-  { keywords: ['api', 'rest', 'graphql', 'endpoint'], icon: <ApiOutlined />, color: '#5d6577', label: 'API' },
-  { keywords: ['search', 'retrieve', 'lookup', 'find'], icon: <SearchOutlined />, color: '#5d6577', label: '搜索' },
-  { keywords: ['cloud', 'deploy', 'server', 'container', 'docker'], icon: <CloudOutlined />, color: '#5d6577', label: '云服务' },
+  { keywords: ['skill'], icon: <ThunderboltOutlined />, color: TOOL_ICON_COLOR, label: '技能' },
+  { keywords: ['deliver', 'export', 'send'], icon: <ExportOutlined />, color: TOOL_ICON_COLOR, label: '交付' },
+  { keywords: ['sql', 'database', 'db_', 'mysql', 'postgres', 'sqlite', 'query', 'table_spec', 'table_info', 'schema', 'get_table'], icon: <DatabaseOutlined />, color: TOOL_ICON_COLOR, label: 'SQL' },
+  { keywords: ['shell', 'bash', 'terminal', 'command', 'exec_command', 'ssh'], icon: <CodeOutlined />, color: TOOL_ICON_COLOR, label: '终端' },
+  { keywords: ['browser', 'web', 'http', 'url', 'crawl', 'scrape', 'fetch_url'], icon: <GlobalOutlined />, color: TOOL_ICON_COLOR, label: '浏览器' },
+  { keywords: ['file', 'read_file', 'write_file', 'write', 'read', 'upload', 'download', 'document', 'csv', 'excel', 'pdf', 'save', 'mkdir', 'copy', 'move', 'rename', 'delete_file'], icon: <FileTextOutlined />, color: TOOL_ICON_COLOR, label: '文件' },
+  { keywords: ['image', 'media', 'picture', 'photo', 'draw', 'paint'], icon: <PictureOutlined />, color: TOOL_ICON_COLOR, label: '图像' },
+  { keywords: ['api', 'rest', 'graphql', 'endpoint'], icon: <ApiOutlined />, color: TOOL_ICON_COLOR, label: 'API' },
+  { keywords: ['search', 'retrieve', 'lookup', 'find'], icon: <SearchOutlined />, color: TOOL_ICON_COLOR, label: '搜索' },
+  { keywords: ['cloud', 'deploy', 'server', 'container', 'docker'], icon: <CloudOutlined />, color: TOOL_ICON_COLOR, label: '云服务' },
 ];
 
 export const getToolNameIcon = (toolName?: string, title?: string): { icon: React.ReactNode; color: string; label: string } | null => {
@@ -298,27 +276,20 @@ const VisAgentPlanCard: React.FC<IProps> = ({ otherComponents, data }) => {
               {(isTask || isStage) && (
                 isStage ? (
                   <div className="task-icon stage-icon-wrapper">
-                     <FlagFilled style={{ color: '#4f46e5', fontSize: 14 }} />
+                     <FlagFilled style={{ color: '#4f46e5', fontSize: 11 }} />
                   </div>
                 ) : (() => {
                   const toolMeta = getToolNameIcon(data?.tool_name as string, data?.title as string);
                   return toolMeta ? (
                     <Tooltip title={toolMeta.label}>
-                      <span
-                        className="task-icon-chip"
-                        style={{ backgroundColor: `${toolMeta.color}14`, color: toolMeta.color }}
-                      >
+                      <span className="task-icon-chip">
                         {React.cloneElement(toolMeta.icon as React.ReactElement, { style: { fontSize: 11 } })}
                       </span>
                     </Tooltip>
                   ) : (
                     <Tooltip title={getTaskLabel(String(data?.task_type))}>
-                      <span className="task-icon-chip task-icon-chip-default">
-                        <img
-                          className="task-icon"
-                          src={getTaskIcon(String(data?.task_type))}
-                          alt={getTaskLabel(String(data?.task_type))}
-                        />
+                      <span className="task-icon-chip">
+                        <ToolOutlined style={{ fontSize: 11 }} />
                       </span>
                     </Tooltip>
                   );
