@@ -168,6 +168,10 @@ async def _call_with_llm_config(
             or (model_param.get("temperature") if model_param else None),
             "max_new_tokens": max_tokens
             or (model_param.get("max_new_tokens") if model_param else None),
+            "top_p": (model_param.get("top_p") if model_param else None),
+            "reasoning_effort": (
+                model_param.get("reasoning_effort") if model_param else None
+            ),
             "stream_out": False,
         }
         gen_kwargs = {k: v for k, v in gen_kwargs.items() if v is not None}

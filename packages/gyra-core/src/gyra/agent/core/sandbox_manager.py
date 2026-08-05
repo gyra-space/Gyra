@@ -272,6 +272,16 @@ class SandboxManager:
 
         file_storage_client = self._get_file_storage_client()
 
+        # E2B 云端沙箱配置透传（type="e2b" 时生效）
+        e2b_config = {
+            "api_key": sandbox_config.e2b_api_key,
+            "template": sandbox_config.e2b_template,
+            "timeout": sandbox_config.e2b_timeout,
+            "work_dir": sandbox_config.e2b_work_dir,
+            "skill_dir": sandbox_config.e2b_skill_dir,
+        }
+        e2b_config = {k: v for k, v in e2b_config.items() if v is not None}
+
         return await AutoSandbox.create(
             user_id=sandbox_config.user_id,
             agent=sandbox_config.agent_name,
@@ -284,6 +294,7 @@ class SandboxManager:
             oss_sk=sandbox_config.oss_sk,
             oss_endpoint=sandbox_config.oss_endpoint,
             oss_bucket_name=sandbox_config.oss_bucket_name,
+            e2b_config=e2b_config,
         )
 
     def _get_file_storage_client(self):

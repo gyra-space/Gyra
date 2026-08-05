@@ -570,6 +570,65 @@ async def execute_with_authorization(
     return await middleware.execute_with_auth(tool, args, context)
 
 
+async def request_command_approval(
+    interaction_gateway: Any,
+    command: str,
+    reason: str,
+    session_id: Optional[str] = None,
+    agent_name: Optional[str] = None,
+) -> bool:
+    """通过 InteractionGateway 请求高危命令执行授权，返回是否被授权。
+
+    用于 local 沙箱下高危命令（rm -rf、dd 等）执行前的用户确认。
+    网关不可用 / 超时 / 用户拒绝时返回 False（fail-closed）。
+    """
+    from ..interaction.interaction_protocol import (
+        InteractionRequest,
+        InteractionType,
+        InteractionOption,
+    )
+
+    try:
+        request = InteractionRequest(
+            interaction_type=InteractionType.AUTHORIZE,
+            title="高危命令授权确认",
+            message=(
+                f"**高危命令执行确认**\n\n"
+                f"**命令:** `{command}`\n\n"
+                f"**原因:** {reason}\n\n"
+                f"是否允许执行该命令？"
+            ),
+            options=[
+                InteractionOption(
+                    label="允许本次",
+                    value="allow_once",
+                    description="仅允许本次执行",
+                ),
+                InteractionOption(
+                    label="本会话允许",
+                    value="allow_session",
+                    description="本会话内允许该命令",
+                ),
+                InteractionOption(
+                    label="拒绝",
+                    value="deny",
+                    description="取消执行",
+                ),
+            ],
+            session_id=session_id,
+            agent_name=agent_name,
+            tool_name="shell_exec",
+            metadata={"command": command, "reason": reason, "risk_level": "high"},
+        )
+        response = await interaction_gateway.send_and_wait(request, timeout=300)
+        status = getattr(response.status, "value", response.status)
+        choice = response.choice or ""
+        return status == "responsed" and choice in ("allow_once", "allow_session")
+    except Exception as e:
+        logger.error(f"[AuthMiddleware] command approval request failed: {e}")
+        return False
+
+
 __all__ = [
     "ToolAuthorizationMiddleware",
     "AuthorizationContext",
@@ -578,4 +637,5 @@ __all__ = [
     "ToolSpecificAuthorizer",
     "BashCwdAuthorizer",
     "execute_with_authorization",
+    "request_command_approval",
 ]

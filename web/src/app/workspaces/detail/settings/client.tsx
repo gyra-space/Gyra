@@ -93,7 +93,7 @@ export default function SettingsPage() {
   if (!ws) return <div className="p-6"><Empty /></div>;
 
   return (
-    <div className="p-6">
+    <div className="p-6 h-full overflow-auto">
       <div className="flex justify-between items-center mb-4">
         <h1 className="text-xl font-semibold">{t('settings.title') || 'Workspace Settings'}</h1>
         <Link href={`/workspaces/detail?id=${workspaceCode}`}><Button>{t('back') || 'Back'}</Button></Link>

@@ -48,6 +48,11 @@ def _normalize_space_model(config: Optional[Dict[str, Any]]) -> Optional[Dict[st
         "base_url": base_url,
         "api_key_ref": api_key_ref,
         "api_key": api_key,
+        # 透传模型推理参数:空间级配置可覆盖温度/思考深度等,未配置的字段回退全局。
+        "temperature": config.get("temperature"),
+        "max_new_tokens": config.get("max_new_tokens") or config.get("max_tokens"),
+        "top_p": config.get("top_p"),
+        "reasoning_effort": config.get("reasoning_effort"),
         # 透传模型元数据:空间绑定模型未在全局注册时,仍能保留多模态/能力/类型,
         # 使 is_multimodal / get_multimodal_models / select_llm_model 正确识别。
         "model_type": config.get("model_type") or "llm",
@@ -171,7 +176,11 @@ class ModelConfigCache:
                 )
                 if global_cfg:
                     merged.update(global_cfg)
-                merged.update(space_cfg)
+                # 空间配置覆盖全局;但空间未设置的推理参数(值为 None)不得覆盖全局默认,
+                # 从而满足"默认使用系统配置"的要求。
+                for _k, _v in space_cfg.items():
+                    if _v is not None:
+                        merged[_k] = _v
                 return merged
 
         # 先尝试完整 key

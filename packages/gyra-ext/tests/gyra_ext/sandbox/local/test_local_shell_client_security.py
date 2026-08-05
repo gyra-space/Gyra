@@ -71,20 +71,37 @@ async def test_semicolon_injection_blocked(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_command_substitution_blocked(tmp_path):
+async def test_command_substitution_allowed(tmp_path):
+    """Command substitution is permitted in the local sandbox."""
     client = _make_client(tmp_path)
-    result = await client.exec_command(command="cat `id`")
-    assert result.status == "failed"
-
-    result = await client.exec_command(command="cat $(id)")
-    assert result.status == "failed"
+    os.makedirs(client._work_dir_physical, exist_ok=True)
+    result = await client.exec_command(
+        command="echo $(echo hi)", work_dir=client._work_dir_physical
+    )
+    assert result.status == "completed"
+    assert "hi" in result.output
 
 
 @pytest.mark.asyncio
-async def test_python_c_blocked(tmp_path):
+async def test_python_c_allowed(tmp_path):
+    """python3 -c is permitted in the local sandbox (code execution is allowed)."""
     client = _make_client(tmp_path)
     result = await client.exec_command(command="python3 -c 'print(1)'")
-    assert result.status == "failed"
+    assert result.status == "completed"
+    assert "1" in result.output
+
+
+@pytest.mark.asyncio
+async def test_python_c_multiline_allowed(tmp_path):
+    """Multi-line python3 -c with parens/newlines runs (report-generation case)."""
+    client = _make_client(tmp_path)
+    os.makedirs(client._work_dir_physical, exist_ok=True)
+    script = "x = (1, 2)\nprint(sum(x))"
+    result = await client.exec_command(
+        command=f'python3 -c "{script}"', work_dir=client._work_dir_physical
+    )
+    assert result.status == "completed"
+    assert "3" in result.output
 
 
 @pytest.mark.asyncio

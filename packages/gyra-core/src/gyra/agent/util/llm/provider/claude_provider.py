@@ -59,6 +59,10 @@ class ClaudeProvider(LLMProvider):
         }
         if request.temperature is not None:
             params["temperature"] = request.temperature
+        if request.top_p is not None:
+            params["top_p"] = request.top_p
+        if request.reasoning_effort is not None:
+            params["reasoning_effort"] = request.reasoning_effort
         
         if system_prompt:
             # RFC-005 S12:若有 system_blocks(动静态分块),产数组式 system + cache_control;

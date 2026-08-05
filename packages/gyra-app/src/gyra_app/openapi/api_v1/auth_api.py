@@ -31,9 +31,22 @@ def _get_parent_domain(request: Request) -> Optional[str]:
     - localhost -> None (不设置 domain)
     """
     host = request.headers.get("host", "").split(":")[0]
-    # localhost / IP 地址不设置 domain
-    if host in ("localhost", "127.0.0.1") or host.startswith("192.168.") or host.startswith("10."):
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]  # IPv6 literal in brackets, e.g. [::1]
+
+    # localhost / 任意 IP 地址（IPv4/IPv6，公网或私网）不设置 domain。
+    # 浏览器会对 IP 地址 host 拒绝带 Domain 的 Set-Cookie，导致 session
+    # cookie 不被存储，表现为登录成功后立即跳回登录页（登录死循环）。
+    if host == "localhost":
         return None
+    try:
+        import ipaddress
+
+        ipaddress.ip_address(host)  # raises ValueError if host is not an IP
+        return None
+    except ValueError:
+        pass
+
     # a.example.com -> .example.com
     parts = host.split(".")
     if len(parts) >= 2:

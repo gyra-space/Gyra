@@ -15,6 +15,7 @@ class AgentLLMConfig(BaseModel):
     temperature: float = 0.5
     max_new_tokens: int = 2048
     top_p: Optional[float] = None
+    reasoning_effort: Optional[str] = None
     stop: Optional[List[str]] = None
     
     # Extra parameters for specific providers

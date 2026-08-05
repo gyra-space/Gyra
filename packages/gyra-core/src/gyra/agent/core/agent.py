@@ -239,8 +239,10 @@ class AgentContext:
     language: Optional[str] = "zh"
     max_chat_round: int = 100
     max_retry_round: int = 10
-    max_new_tokens: int = 0
-    temperature: float = 0.5
+    max_new_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    reasoning_effort: Optional[str] = None
     allow_format_str_template: Optional[bool] = False
     verbose: bool = False
     # 独立分配的ai云key

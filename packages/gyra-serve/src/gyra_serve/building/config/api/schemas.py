@@ -285,6 +285,8 @@ class AppParamType(Enum):
     Model = "model"
     Temperature = "temperature"
     MaxNewTokens = "max_new_tokens"
+    TopP = "top_p"
+    ReasoningEffort = "reasoning_effort"
     # ImageFile = "image_file"
     # ExcelFile = "excel_file"
     # TextFile = "text_file"

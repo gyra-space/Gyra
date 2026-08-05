@@ -19,6 +19,7 @@ URL 生成:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -241,14 +242,12 @@ class AgentFileSystem:
                 work_dir = getattr(self.sandbox, "work_dir", "/home/ubuntu")
                 sandbox_path = f"{work_dir}/{self.goal_id}/{safe_key}"
                 try:
-                    await self.sandbox.file.create(
-                        sandbox_path, content_bytes.decode("utf-8")
-                    )
+                    # 用 write 直接写 bytes，避免 decode 编码异常损坏压缩包/视频等二进制文件
+                    await self.sandbox.file.write(sandbox_path, content_bytes)
                     logger.info(f"[AFSv3] Saved to sandbox: {sandbox_path}")
-                except UnicodeDecodeError:
-                    # 二进制文件无法以文本形式写入 sandbox，跳过冗余副本
-                    logger.info(
-                        f"[AFSv3] Skip binary sandbox copy: {sandbox_path}"
+                except Exception as e:
+                    logger.warning(
+                        f"[AFSv3] Skip sandbox copy (binary/unavailable): {sandbox_path} err={e}"
                     )
 
             return uri, len(content_bytes)
@@ -277,13 +276,12 @@ class AgentFileSystem:
             work_dir = getattr(self.sandbox, "work_dir", "/home/ubuntu")
             sandbox_path = f"{work_dir}/{self.goal_id}/{safe_key}"
             try:
-                await self.sandbox.file.create(
-                    sandbox_path, content_bytes.decode("utf-8")
-                )
+                # 用 write 直接写 bytes，避免 decode 编码异常损坏压缩包/视频等二进制文件
+                await self.sandbox.file.write(sandbox_path, content_bytes)
                 logger.info(f"[AFSv3] Saved to sandbox: {sandbox_path}")
-            except UnicodeDecodeError:
+            except Exception:
                 logger.info(
-                    f"[AFSv3] Skip binary sandbox copy: {sandbox_path}"
+                    f"[AFSv3] Skip sandbox copy (binary/unavailable): {sandbox_path}"
                 )
         else:
             await asyncio.to_thread(local_path.write_bytes, content_bytes)
@@ -351,13 +349,12 @@ class AgentFileSystem:
             work_dir = getattr(self.sandbox, "work_dir", "/home/ubuntu")
             sandbox_path = f"{work_dir}/{self.goal_id}/{safe_key}"
             try:
-                await self.sandbox.file.create(
-                    sandbox_path, content_bytes.decode("utf-8")
-                )
+                # 用 write 直接写 bytes，避免 decode 编码异常损坏压缩包/视频等二进制文件
+                await self.sandbox.file.write(sandbox_path, content_bytes)
                 logger.info(f"[AFSv3] Saved to sandbox: {sandbox_path}")
-            except UnicodeDecodeError:
+            except Exception:
                 logger.info(
-                    f"[AFSv3] Skip binary sandbox copy: {sandbox_path}"
+                    f"[AFSv3] Skip sandbox copy (binary/unavailable): {sandbox_path}"
                 )
         else:
             await asyncio.to_thread(local_path.write_bytes, content_bytes)
@@ -612,11 +609,15 @@ class AgentFileSystem:
                 )
                 return existing_metadata
 
-        # 3. 准备内容
-        if isinstance(data, (dict, list)):
-            content_str = json.dumps(data, ensure_ascii=False, indent=2)
+        # 3. 准备内容（bytes/二进制原样保留，避免 str() 把压缩包、视频等特殊格式文件损坏）
+        if isinstance(data, bytes):
+            content = data
+        elif isinstance(data, (dict, list)):
+            content = json.dumps(data, ensure_ascii=False, indent=2)
+        elif isinstance(data, str):
+            content = data
         else:
-            content_str = str(data)
+            content = str(data)
 
         actual_file_name = file_name or (
             file_key if "." in file_key else f"{file_key}.{extension}"
@@ -625,7 +626,7 @@ class AgentFileSystem:
 
         # 4. 保存到存储系统
         storage_uri, file_size = await self._save_to_storage(
-            file_key, content_str, extension, actual_file_name
+            file_key, content, extension, actual_file_name
         )
 
         # 5. 获取本地路径（用于缓存）
@@ -1130,6 +1131,122 @@ class AgentFileSystem:
             )
         logger.info(f"[AFSv3] Collected {len(result)} delivery files")
         return result
+
+    # ==================== 沙箱同步 ====================
+
+    async def _walk_sandbox(self, root: str, max_depth: int = 10) -> List[str]:
+        """递归遍历沙箱目录，返回所有文件的绝对路径.
+
+        跳过 AFS 自身写入的 staging 子目录（goal_id），避免重复上传冗余副本。
+        """
+        files: List[str] = []
+        stack: List[str] = [root]
+        depth = 0
+        while stack and depth < max_depth:
+            current = stack.pop()
+            try:
+                entries = await self.sandbox.file.list(current, depth=1)
+            except Exception as e:
+                logger.warning(f"[AFSv3] list sandbox dir failed: {current} err={e}")
+                continue
+            for entry in entries or []:
+                name = (entry.name or "").strip()
+                if not name or name in (".", ".."):
+                    continue
+                entry_path = getattr(entry, "path", None)
+                if not entry_path:
+                    continue
+                is_dir = entry.type in (FileType.DIR, "dir") if entry.type else False
+                if is_dir:
+                    # 跳过 AFS staging 目录（自身冗余副本），避免重复上传
+                    if (
+                        name == self.goal_id
+                        and current.rstrip("/") == root.rstrip("/")
+                    ):
+                        continue
+                    stack.append(entry_path)
+                else:
+                    files.append(entry_path)
+            depth += 1
+        return files
+
+    async def sync_sandbox_to_afs(
+        self,
+        work_dir: Optional[str] = None,
+        max_concurrency: int = 5,
+        file_type: Union[str, FileType] = FileType.DELIVERABLE,
+    ) -> List[AgentFileMetadata]:
+        """并发批量同步沙箱工作目录文件到 AFS 存储.
+
+        用于沙箱释放前调用，确保压缩包、视频、特殊格式文件被 AFS 管理持久化。
+        遍历沙箱工作目录，并发、二进制安全地读取并保存到 AFS。
+
+        Args:
+            work_dir: 沙箱工作目录，默认取 ``sandbox.work_dir``
+            max_concurrency: 并发上限（默认 5）
+            file_type: 保存到 AFS 的文件类型（默认 ``DELIVERABLE``）
+
+        Returns:
+            成功保存的文件元数据列表
+        """
+        if not self.sandbox:
+            logger.warning("[AFSv3] sync_sandbox_to_afs skipped: no sandbox")
+            return []
+
+        work_dir = work_dir or getattr(self.sandbox, "work_dir", "/home/ubuntu")
+
+        # 1. 递归收集沙箱文件路径
+        file_paths = await self._walk_sandbox(work_dir)
+        if not file_paths:
+            logger.info(f"[AFSv3] sync_sandbox_to_afs: no files under {work_dir}")
+            return []
+
+        logger.info(
+            f"[AFSv3] sync_sandbox_to_afs: found {len(file_paths)} files, "
+            f"concurrency={max_concurrency}"
+        )
+
+        # 2. 有界并发保存
+        sem = asyncio.Semaphore(max_concurrency)
+        results: List[AgentFileMetadata] = []
+
+        async def _save_one(abs_path: str) -> None:
+            async with sem:
+                try:
+                    raw = await self.sandbox.file.read(abs_path, format="bytes")
+                    # 兼容两种 read 返回：E2B 返回 bytes，Local 返回 FileInfo(content=bytes)
+                    if isinstance(raw, bytes):
+                        content = raw
+                    elif hasattr(raw, "content"):
+                        c = raw.content
+                        content = c if isinstance(c, bytes) else str(c).encode("utf-8")
+                    else:
+                        content = bytes(raw or b"")
+
+                    rel = os.path.relpath(abs_path, work_dir).replace(os.sep, "/")
+                    file_key = rel if rel not in (".", "") else os.path.basename(abs_path)
+                    base_name = os.path.basename(abs_path)
+                    ext = os.path.splitext(base_name)[1].lstrip(".") or "bin"
+
+                    meta = await self.save_binary_file(
+                        file_key=file_key,
+                        data=content,
+                        file_type=file_type,
+                        extension=ext,
+                        file_name=base_name,
+                        is_deliverable=True,
+                        metadata={"sandbox_path": abs_path},
+                    )
+                    results.append(meta)
+                except Exception as e:
+                    logger.error(f"[AFSv3] sync file failed: {abs_path} err={e}")
+
+        await asyncio.gather(*(_save_one(p) for p in file_paths))
+
+        logger.info(
+            f"[AFSv3] sync_sandbox_to_afs done: {len(results)}/{len(file_paths)} files saved"
+        )
+        return results
 
     # ==================== 会话恢复 ====================
 

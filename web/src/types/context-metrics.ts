@@ -86,10 +86,22 @@ export interface ContextMetrics {
   config: Record<string, unknown>;
   truncation: TruncationMetrics;
   pruning: PruningMetrics;
-  compaction: CompactionMetrics;
+  compression: CompactionMetrics;
   created_at: number;
   updated_at: number;
   duration_seconds: number;
+}
+
+/**
+ * 轻量上下文用量指标（来自 SSE usage_metric 事件）
+ */
+export interface UsageMetrics {
+  total: number;
+  prompt: number;
+  completion: number;
+  context_window: number;
+  ratio: number;
+  step_state?: string;
 }
 
 /**
@@ -101,6 +113,74 @@ export interface ContextMetricsEvent {
   conv_id: string;
   timestamp: string;
   data: ContextMetrics;
+}
+
+/**
+ * 空的三层压缩指标，用于从 UsageMetrics 合成 ContextMetrics
+ */
+export const DEFAULT_TRUNCATION_METRICS: TruncationMetrics = {
+  total_count: 0,
+  total_bytes_truncated: 0,
+  total_bytes_original: 0,
+  total_lines_truncated: 0,
+  total_files_archived: 0,
+  last_tool_name: '',
+  last_original_size: 0,
+  last_truncated_size: 0,
+  last_file_key: null,
+  last_timestamp: 0,
+  tool_stats: {},
+};
+
+export const DEFAULT_PRUNING_METRICS: PruningMetrics = {
+  total_count: 0,
+  total_messages_pruned: 0,
+  total_tokens_saved: 0,
+  last_messages_count: 0,
+  last_tokens_saved: 0,
+  last_trigger_reason: '',
+  last_usage_ratio: 0,
+  last_timestamp: 0,
+  usage_history: [],
+};
+
+export const DEFAULT_COMPRESSION_METRICS: CompactionMetrics = {
+  total_count: 0,
+  total_messages_archived: 0,
+  total_tokens_saved: 0,
+  total_chapters_created: 0,
+  current_chapters: 0,
+  current_chapter_index: 0,
+  last_messages_archived: 0,
+  last_tokens_saved: 0,
+  last_chapter_index: 0,
+  last_summary_length: 0,
+  last_timestamp: 0,
+  chapter_stats: [],
+};
+
+/**
+ * 把轻量的 UsageMetrics 转成 ContextMetrics，供详情抽屉展示。
+ * 三层压缩数据暂时补零，后续接入完整的 context_metrics_* SSE 事件后可替换。
+ */
+export function usageMetricsToContextMetrics(usage: UsageMetrics): ContextMetrics {
+  return {
+    conv_id: '',
+    session_id: '',
+    current_tokens: usage.total,
+    context_window: usage.context_window,
+    usage_ratio: usage.ratio,
+    usage_percent: `${(usage.ratio * 100).toFixed(1)}%`,
+    message_count: 0,
+    round_counter: 0,
+    config: {},
+    truncation: DEFAULT_TRUNCATION_METRICS,
+    pruning: DEFAULT_PRUNING_METRICS,
+    compression: DEFAULT_COMPRESSION_METRICS,
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    duration_seconds: 0,
+  };
 }
 
 /**

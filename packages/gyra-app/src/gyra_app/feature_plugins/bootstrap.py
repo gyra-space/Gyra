@@ -43,30 +43,30 @@ def register_enabled_feature_plugin_routers(app: FastAPI) -> None:
             return bool(entry.get("enabled"))
         return False
 
-    # Check if access_control (unified permission system) is enabled
-    # This enables both user_groups and permissions together
+    # Check if access_control (unified permission system) is enabled.
+    # The permission/user-group management routers are ALWAYS mounted so the
+    # endpoints exist out of the box -- toggling the plugin in the UI no longer
+    # requires a service restart for the routes to appear. The plugin flag only
+    # gates RBAC *enforcement* (auth._is_permissions_enabled) and data seeding;
+    # when the plugin is off, require_permission bypasses checks (open mode),
+    # so these endpoints stay callable without login.
     access_control_enabled = _enabled("access_control")
-
-    # Also support legacy individual plugin flags for backward compatibility
-    user_groups_enabled = _enabled("user_groups") or access_control_enabled
     permissions_enabled = _enabled("permissions") or access_control_enabled
 
-    if user_groups_enabled:
-        from gyra_app.feature_plugins.user_groups.api import (
-            router as user_groups_router,
-        )
+    from gyra_app.feature_plugins.user_groups.api import (
+        router as user_groups_router,
+    )
+    from gyra_app.feature_plugins.permissions.api import (
+        router as permissions_router,
+    )
 
-        app.include_router(user_groups_router, prefix="/api/v1")
-        logger.info("Feature plugin mounted: user_groups at /api/v1/user-groups")
+    app.include_router(user_groups_router, prefix="/api/v1")
+    logger.info("Feature plugin mounted: user_groups at /api/v1/user-groups")
+
+    app.include_router(permissions_router, prefix="/api/v1")
+    logger.info("Feature plugin mounted: permissions at /api/v1/permissions")
 
     if permissions_enabled:
-        from gyra_app.feature_plugins.permissions.api import (
-            router as permissions_router,
-        )
-
-        app.include_router(permissions_router, prefix="/api/v1")
-        logger.info("Feature plugin mounted: permissions at /api/v1/permissions")
-
         from gyra_app.feature_plugins.permissions.seed import ensure_default_roles
         from gyra.storage.metadata.db_manager import db
 

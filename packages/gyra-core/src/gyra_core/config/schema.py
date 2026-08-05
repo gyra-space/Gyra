@@ -60,6 +60,13 @@ class SandboxConfig(BaseModel):
     oss_endpoint: Optional[str] = None
     oss_bucket_name: Optional[str] = None
 
+    # E2B 云端沙箱配置（type="e2b" 时生效）
+    e2b_api_key: Optional[str] = None
+    e2b_template: Optional[str] = None
+    e2b_timeout: Optional[int] = None
+    e2b_work_dir: Optional[str] = None
+    e2b_skill_dir: Optional[str] = None
+
 
 class AgentConfig(BaseModel):
     """单个Agent配置"""

@@ -730,6 +730,16 @@ class AgentChat(BaseComponent, ABC):
                     )
                     host_work_dir = None
 
+            # E2B 云端沙箱配置透传（type="e2b" 时生效）
+            e2b_config = {
+                "api_key": sandbox_config.e2b_api_key,
+                "template": sandbox_config.e2b_template,
+                "timeout": sandbox_config.e2b_timeout,
+                "work_dir": sandbox_config.e2b_work_dir,
+                "skill_dir": sandbox_config.e2b_skill_dir,
+            }
+            e2b_config = {k: v for k, v in e2b_config.items() if v is not None}
+
             sandbox_client = await AutoSandbox.create(
                 user_id=context.staff_no or sandbox_config.user_id,
                 agent=sandbox_config.agent_name,
@@ -743,6 +753,7 @@ class AgentChat(BaseComponent, ABC):
                 oss_sk=sandbox_config.oss_sk,
                 oss_endpoint=sandbox_config.oss_endpoint,
                 oss_bucket_name=sandbox_config.oss_bucket_name,
+                e2b_config=e2b_config,
             )
             sandbox_manager = SandboxManager(sandbox_client=sandbox_client)
             # 后台启动和初始化沙箱服务
@@ -2954,6 +2965,12 @@ class AgentChat(BaseComponent, ABC):
                     elif param.param_type == AppParamType.MaxNewTokens.value:
                         max_tokens = param.param_value
                         logger.info("用户指定了模型MaxTokens，优先使用")
+
+                    elif param.param_type == AppParamType.TopP.value:
+                        logger.info("用户指定了模型TopP，优先使用")
+
+                    elif param.param_type == AppParamType.ReasoningEffort.value:
+                        logger.info("用户指定了模型思考深度(reasoning_effort)，优先使用")
         return llm_context, env_context
 
     async def _dispatch_uploaded_files(
@@ -3216,9 +3233,49 @@ class AgentChat(BaseComponent, ABC):
                 stream=stream,
                 extra=ext_info,
                 mist_keys=gpts_app.llm_config.mist_keys,
+                # 对话输入参数覆盖模型推理参数(未指定时回退空间/全局配置,见 llm_client)
+                temperature=llm_context.get("temperature"),
+                max_new_tokens=llm_context.get("max_new_tokens"),
+                top_p=llm_context.get("top_p"),
+                reasoning_effort=llm_context.get("reasoning_effort"),
             )
 
             cache = await self.memory.cache(conv_uid)
+
+            # PR 8: 注册 usage 实时回调，把累计用量推送到 SSE channel（Agent 空间上下文用量环形图）
+            try:
+                from gyra.agent.core.usage_metric import (
+                    get_context_window,
+                    register_usage_callback,
+                )
+
+                def _push_usage_metric_sse(usage):
+                    try:
+                        context_window = get_context_window(usage.last_model_name)
+                        ratio = (
+                            usage.total_tokens / context_window
+                            if context_window > 0
+                            else 0.0
+                        )
+                        cache.channel.put_nowait(
+                            {
+                                "type": "usage_metric",
+                                "payload": {
+                                    "total": usage.total_tokens,
+                                    "prompt": usage.total_prompt_tokens,
+                                    "completion": usage.total_completion_tokens,
+                                    "context_window": context_window,
+                                    "ratio": ratio,
+                                },
+                            }
+                        )
+                    except Exception as cb_err:  # noqa: BLE001
+                        logger.debug(f"[usage] sse push skipped: {cb_err}")
+
+                register_usage_callback(conv_uid, _push_usage_metric_sse)
+            except Exception as reg_err:  # noqa: BLE001
+                logger.debug(f"[usage] callback registration skipped: {reg_err}")
+
             scheduler: Scheduler = LocalScheduler(cache=cache)
 
             rm = get_resource_manager()
@@ -3439,13 +3496,16 @@ class AgentChat(BaseComponent, ABC):
                 await self.memory.complete(conv_uid)
             except Exception as complete_error:
                 logger.error(f"Failed to complete memory: {complete_error}")
-            # PR 8: 会话结束 log usage 聚合
+            # PR 8: 会话结束 log usage 聚合，并清理 usage 回调
             try:
                 from gyra.agent.core.usage_metric import (
+                    clear_in_memory_usage,
                     format_usage_log,
                     get_in_memory_usage,
-                    clear_in_memory_usage,
+                    unregister_usage_callback,
                 )
+
+                unregister_usage_callback(conv_uid)
                 usage = get_in_memory_usage(conv_uid)
                 if usage is not None and usage.total_llm_calls > 0:
                     logger.info(format_usage_log(usage))

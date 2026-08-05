@@ -24,8 +24,14 @@ import { apiInterceptors, getModelList, getSkillList, postChatModeParamsFileLoad
 import ModelIcon from '@/components/icons/model-icon';
 import { transformFileUrl } from '@/utils';
 import type { IModelData } from '@/types/model';
-import type { UsageMetrics } from '@/components/chat/TokenStatusBar';
-import { formatTokens, getUsageColor, getUsageLevel } from '@/types/context-metrics';
+import {
+  formatTokens,
+  getUsageColor,
+  getUsageLevel,
+  usageMetricsToContextMetrics,
+  type UsageMetrics,
+} from '@/types/context-metrics';
+import { ContextMetricsDisplay } from '@/components/chat/chat-content-components/ContextMetricsDisplay';
 import type { AgentWorkspaceInputHandle, PlaybookCommand, SkillRef } from './agent-workspace-types';
 
 /** 选了剧本时必须输入任务目标;没选剧本按原逻辑(有文本或有资源即可)。 */
@@ -43,7 +49,13 @@ export function canSendSceneTask(
  * 上下文空间消耗环形图:发送按钮旁的实时用量指示。
  * 数据来自 SSE usage_metric 事件;按使用率分级变色(绿→黄→橙→红)。
  */
-function ContextUsageRing({ metrics }: { metrics: UsageMetrics | null }) {
+function ContextUsageRing({
+  metrics,
+  onClick,
+}: {
+  metrics: UsageMetrics | null;
+  onClick?: () => void;
+}) {
   if (!metrics || !metrics.context_window) return null;
   const ratio = Math.min(Math.max(metrics.ratio ?? 0, 0), 1);
   const level = getUsageLevel(ratio);
@@ -60,14 +72,16 @@ function ContextUsageRing({ metrics }: { metrics: UsageMetrics | null }) {
         <div className="text-xs leading-5">
           <div>上下文空间 {formatTokens(metrics.total)} / {formatTokens(metrics.context_window)} tokens ({pct}%)</div>
           <div className="text-gray-400">输入 {formatTokens(metrics.prompt)} · 输出 {formatTokens(metrics.completion)}</div>
+          {onClick && <div className="text-indigo-400 mt-1">点击查看详情</div>}
         </div>
       }
       placement="top"
     >
       <div
-        className="relative flex items-center justify-center h-8 w-8 rounded-full cursor-default hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors"
+        className="relative flex items-center justify-center h-8 w-8 rounded-full cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors"
         role="img"
         aria-label={`上下文空间使用率 ${pct}%`}
+        onClick={onClick}
       >
         <svg width={size} height={size} className="-rotate-90">
           <circle
@@ -136,6 +150,9 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     // + 号菜单:root=一级菜单(文件/剧本/技能), playbook/skill=二级选择面板
     const [plusMenuOpen, setPlusMenuOpen] = useState(false);
     const [plusPanel, setPlusPanel] = useState<'root' | 'playbook' | 'skill'>('root');
+    // 上下文用量详情抽屉开关
+    const [usageDrawerOpen, setUsageDrawerOpen] = useState(false);
+    const contextMetrics = usageMetrics ? usageMetricsToContextMetrics(usageMetrics) : null;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -681,22 +698,35 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   选了剧本要写本次任务目标 — 剧本只指定资源/能力,目标由你定。
                 </div>
               )}
-              {/* 上下文空间消耗环形图:实时显示当前 Agent 上下文用量 */}
-              <ContextUsageRing metrics={usageMetrics ?? null} />
+              {/* 上下文空间消耗环形图:实时显示当前 Agent 上下文用量，点击打开详情抽屉 */}
+              <ContextUsageRing
+                metrics={usageMetrics ?? null}
+                onClick={() => setUsageDrawerOpen(true)}
+              />
+              {contextMetrics && (
+                <ContextMetricsDisplay
+                  metrics={contextMetrics}
+                  compact={false}
+                  showDetails={true}
+                  open={usageDrawerOpen}
+                  onOpenChange={setUsageDrawerOpen}
+                />
+              )}
               <button
                 className={classNames(
                   'w-9 h-9 flex items-center justify-center transition-all !border-0 flex-shrink-0 rounded-full',
                   showStop || hasContent
                     ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 shadow-md hover:shadow-lg text-white'
-                    : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    : 'bg-gray-200 text-gray-400 cursor-not-allowed',
+                  showStop && 'ws-stop-btn--running'
                 )}
                 onClick={showStop ? onStop : handleSend}
                 disabled={showStop ? (!onStop || disabled) : (!hasContent || disabled || !canSend)}
                 title={showStop ? '停止生成' : '发送'}
               >
                 {showStop
-                  // 进行中·可停止:实心方形停止符(按钮常亮表达进行中,方形表达可终止)
-                  ? <span className="block w-3 h-3 bg-current rounded-[2px]" />
+                  // 进行中·可停止:实心方形停止符 + 呼吸缩放;按钮外扩光环表达 Agent 正在运行
+                  ? <span className="ws-stop-btn__square" />
                   : <ArrowUpOutlined className="text-base" />}
               </button>
             </div>

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from gyra.agent.core.model_pricing import get_pricing
 
@@ -31,6 +31,7 @@ class ConversationUsage:
     total_cost_usd: float = 0.0
     by_model: Dict[str, int] = field(default_factory=dict)  # model_name -> total_tokens
     by_role: Dict[str, int] = field(default_factory=dict)  # main/subagent -> total_tokens
+    last_model_name: str = ""  # 最近一次 LLM 调用的模型名，用于估算 context_window
 
     def add_call(
         self,
@@ -48,6 +49,8 @@ class ConversationUsage:
         self.total_completion_tokens += completion_tokens
         self.total_tokens += call_total
         self.total_llm_calls += 1
+        if model_name:
+            self.last_model_name = model_name
 
         if model_name:
             self.by_model[model_name] = self.by_model.get(model_name, 0) + call_total
@@ -61,6 +64,50 @@ class ConversationUsage:
 # conv_id -> ConversationUsage
 _usage_buffers: Dict[str, ConversationUsage] = {}
 
+# 按会话注册的 usage 回调，用于实时推送 SSE（例如 Agent 空间上下文用量环形图）
+# conv_id -> Callable[[ConversationUsage], None]
+UsageCallback = Callable[[ConversationUsage], None]
+_usage_callbacks: Dict[str, UsageCallback] = {}
+
+
+def register_usage_callback(conv_id: str, callback: UsageCallback) -> None:
+    """注册一个会话的 usage 更新回调。"""
+    if conv_id:
+        _usage_callbacks[conv_id] = callback
+
+
+def unregister_usage_callback(conv_id: str) -> None:
+    """注销会话的 usage 回调。"""
+    _usage_callbacks.pop(conv_id, None)
+
+
+def get_context_window(model_name: str) -> int:
+    """根据模型名估算 context window。
+
+    优先读取 ModelConfigCache 中的上下文长度字段；未命中时回退常见默认值 128000。
+    """
+    if not model_name:
+        return 128000
+    try:
+        from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+        cfg = ModelConfigCache.get_config(model_name)
+        if cfg:
+            for key in (
+                "context_length",
+                "max_context_length",
+                "max_context_len",
+                "context_window",
+                "max_context_window",
+                "max_tokens",
+            ):
+                val = cfg.get(key)
+                if isinstance(val, int) and val > 0:
+                    return val
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[usage] get_context_window failed for {model_name}: {e}")
+    return 128000
+
 
 def emit_usage_metric(
     conv_id: str,
@@ -73,6 +120,7 @@ def emit_usage_metric(
 
     供 llm_client / base_agent 在 LLM 调用结束后调用。
     fire-and-forget：异常只 log warning，不影响 LLM 调用路径。
+    若注册了回调，更新 buffer 后会触发回调（异常同样吞掉）。
     """
     if not conv_id:
         return
@@ -87,6 +135,12 @@ def emit_usage_metric(
             completion_tokens=completion_tokens,
             role=role,
         )
+        callback = _usage_callbacks.get(conv_id)
+        if callback is not None:
+            try:
+                callback(usage)
+            except Exception as cb_err:  # noqa: BLE001
+                logger.warning(f"[usage] callback failed conv={conv_id}: {cb_err}")
     except Exception as e:
         logger.warning(
             f"[usage] emit failed conv={conv_id} model={model_name}: {e}"

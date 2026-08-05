@@ -130,4 +130,17 @@ describe('AgentWorkspaceInput', () => {
     render(<AgentWorkspaceInput convUid="c1" onSend={onSend} usageMetrics={null} />);
     expect(screen.queryByRole('img', { name: /上下文空间使用率/ })).not.toBeInTheDocument();
   });
+
+  test('点击上下文空间环形图打开详情抽屉', () => {
+    const onSend = jest.fn();
+    render(
+      <AgentWorkspaceInput
+        convUid="c1"
+        onSend={onSend}
+        usageMetrics={{ total: 12300, prompt: 12000, completion: 300, context_window: 128000, ratio: 0.096 }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('img', { name: /上下文空间使用率/ }));
+    expect(screen.getByText('上下文压缩监控')).toBeInTheDocument();
+  });
 });

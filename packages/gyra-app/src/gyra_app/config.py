@@ -344,6 +344,28 @@ class SandboxConfigParameters(BaseParameters):
         },
     )
 
+    # E2B 云端沙箱配置（type="e2b" 时生效）
+    e2b_api_key: Optional[str] = field(
+        default=None,
+        metadata={"help": _("The E2B API key. Empty falls back to E2B_API_KEY env.")},
+    )
+    e2b_template: Optional[str] = field(
+        default=None,
+        metadata={"help": _("The E2B sandbox template ID (default: base).")},
+    )
+    e2b_timeout: Optional[int] = field(
+        default=None,
+        metadata={"help": _("The E2B sandbox max lifetime in seconds (<= 300).")},
+    )
+    e2b_work_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": _("The E2B sandbox work dir (default: /home/user).")},
+    )
+    e2b_skill_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": _("The E2B sandbox skill dir (default: /home/user/skill).")},
+    )
+
 
 @dataclass
 class ApplicationConfig:

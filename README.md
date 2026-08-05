@@ -48,7 +48,7 @@ AI application engineering has evolved through five eras, each fixing the "unclo
 
 Real business is not a sequence of isolated tasks — it is a continuous stream of events and ongoing work. An SRE doesn't "finish one root-cause analysis"; they watch alerts 7×24, respond, review, and accumulate. A data team doesn't "produce one monthly report"; they reconcile, sign off, and codify metrics month after month.
 
-Gyra's answer is **Loop Engineering**: extend the loop from inside the model all the way out to the business scenario, and turn *sediment → reuse → evolve* into a self-driving flywheel. The full thesis lives in [Three-Layer Loop Engineering: Gyra's Technical Thinking and Practice](./docs/Three_Layer_Loop_Engineering.md).
+Gyra's answer is **Loop Engineering**: extend the loop from inside the model all the way out to the business scenario, and turn *sediment → reuse → evolve* into a self-driving flywheel. The full thesis lives in [Three-Layer Loop Engineering and the Five-Ring Data Flywheel: Gyra's Team-Native AI Flywheel Practice](./docs/Three_Layer_Loop_And_Five_Ring_Flywheel.md).
 
 ### The Three-Layer Loop Architecture
 
@@ -300,7 +300,7 @@ Open **Application Management** → create or open an agent. The three-pane edit
 * **Gyra-Skills** — [gyra-skills](https://github.com/gyra-ai/gyra_skills)
 
 ### Design Documents
-- [Three-Layer Loop Engineering: Gyra's Technical Thinking and Practice](./docs/Three_Layer_Loop_Engineering.md) — the full Loop Engineering thesis: five eras, three nested loops, six flywheels, and the sedimentation-thickness north star.
+- [Three-Layer Loop Engineering and the Five-Ring Data Flywheel: Gyra's Team-Native AI Flywheel Practice](./docs/Three_Layer_Loop_And_Five_Ring_Flywheel.md) — the full Loop Engineering thesis: five eras, three nested loops, the five-ring data flywheel, and the sedimentation-thickness north star.
 - [Scenario Workspace Design](./docs/SCENARIO_WORKSPACE_DESIGN.md) — the P0–P8 roadmap of the AI-native workspace.
 - [RFC Proposals](./docs/rfc/README.md) — hook system, durable execution, permission model, scene profiles, resource protocol.
 

@@ -50,6 +50,13 @@ class SandboxConfigRequest(BaseModel):
     oss_bucket_name: Optional[str] = None
     enable_git_sync: Optional[bool] = None
 
+    # E2B 云端沙箱配置（type="e2b" 时生效）
+    e2b_api_key: Optional[str] = None
+    e2b_template: Optional[str] = None
+    e2b_timeout: Optional[int] = None
+    e2b_work_dir: Optional[str] = None
+    e2b_skill_dir: Optional[str] = None
+
 
 class FileBackendRequest(BaseModel):
     type: str = "local"
@@ -575,6 +582,20 @@ async def update_sandbox_config(request: SandboxConfigRequest):
             config.sandbox.memory_limit = request.memory_limit
         if request.timeout:
             config.sandbox.timeout = request.timeout
+        if request.type:
+            config.sandbox.type = request.type
+
+        # E2B 云端沙箱配置
+        if request.e2b_api_key is not None:
+            config.sandbox.e2b_api_key = request.e2b_api_key
+        if request.e2b_template is not None:
+            config.sandbox.e2b_template = request.e2b_template
+        if request.e2b_timeout is not None:
+            config.sandbox.e2b_timeout = request.e2b_timeout
+        if request.e2b_work_dir is not None:
+            config.sandbox.e2b_work_dir = request.e2b_work_dir
+        if request.e2b_skill_dir is not None:
+            config.sandbox.e2b_skill_dir = request.e2b_skill_dir
 
         saved = save_config_with_error_handling(manager, "沙箱配置")
 

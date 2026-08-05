@@ -6,6 +6,7 @@ import { EventStreamContentType, fetchEventSource } from '@microsoft/fetch-event
 import { App } from 'antd';
 import { useCallback, useState } from 'react';
 import { VisParser } from '@/utils/parse-vis';
+import type { UsageMetrics } from '@/types/context-metrics';
 
 export type WorkspaceEventType =
   | 'task_created'
@@ -60,14 +61,7 @@ export function parseChunkData(
 const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props) => {
   const { message } = App.useApp();
   const [ctrl, setCtrl] = useState<AbortController>({} as AbortController);
-  const [usageMetrics, setUsageMetrics] = useState<{
-    total: number;
-    prompt: number;
-    completion: number;
-    context_window: number;
-    ratio: number;
-    step_state?: string;
-  } | null>(null);
+  const [usageMetrics, setUsageMetrics] = useState<UsageMetrics | null>(null);
 
   const chatV1 = useCallback(
     async ({ data, onMessage, onClose, onDone, onError, onWorkspaceEvent, ctrl }: ChatParams) => {

@@ -220,6 +220,26 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                             param_render_type=ChatInParamType.INT.value,
                         )
                     )
+                case AppParamType.TopP:
+                    results.append(
+                        ChatInParamDefine(
+                            param_type=AppParamType.TopP.value,
+                            param_description="Top P设置",
+                            sub_types=None,
+                            param_default_value="",
+                            param_render_type=ChatInParamType.FLOAT.value,
+                        )
+                    )
+                case AppParamType.ReasoningEffort:
+                    results.append(
+                        ChatInParamDefine(
+                            param_type=AppParamType.ReasoningEffort.value,
+                            param_description="思考深度(reasoning_effort)",
+                            sub_types=None,
+                            param_default_value="",
+                            param_render_type=ChatInParamType.SELECT.value,
+                        )
+                    )
                 case _:
                     continue
         return results

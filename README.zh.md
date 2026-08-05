@@ -45,7 +45,7 @@ AI 应用工程经历了五个时代，每一代都在解决上一代留下的"�
 
 真实业务不是一个个孤立任务，而是**繁乱交织的事件和持续进行的工作**。SRE 不是"完成一次故障定位"就结束，而是 7×24 持续监听告警、定位、应急、复盘、积累；数据运营不是"出一次月报"就结束，而是按月持续取数、对账、签收、沉淀口径。
 
-Gyra 的答案是 **Loop 工程**：把"循环"从模型内部一直延伸到业务场景，并把"沉淀 — 复用 — 进化"做成自驱动的飞轮。完整论述见[三层 Loop 工程时代：Gyra 的技术思考与实践](./docs/Three_Layer_Loop_Engineering.md)。
+Gyra 的答案是 **Loop Engineering（循环工程）**：把"循环"从模型内部一直延伸到业务场景，并把"沉淀 — 复用 — 进化"做成自驱动的飞轮。完整论述见[三层 Loop Engineering 与五环数据飞轮：Gyra 的团队原生 AI 飞轮实践](./docs/Three_Layer_Loop_And_Five_Ring_Flywheel.md)。
 
 ### 三层 Loop 架构
 
@@ -298,7 +298,7 @@ uv run python packages/gyra-app/src/gyra_app/gyra_server.py --config configs/gyr
 * **Gyra-Skills 开发** — [gyra-skills](https://github.com/gyra-ai/gyra_skills)
 
 ### 设计文档
-- [三层 Loop 工程时代：Gyra 的技术思考与实践](./docs/Three_Layer_Loop_Engineering.md) — Loop 工程完整论述：五个时代、三层嵌套循环、六个飞轮与"沉淀厚度"北极星。
+- [三层 Loop Engineering 与五环数据飞轮：Gyra 的团队原生 AI 飞轮实践](./docs/Three_Layer_Loop_And_Five_Ring_Flywheel.md) — Loop Engineering 完整论述：五个时代、三层嵌套循环、五环数据飞轮与"沉淀厚度"北极星。
 - [场景空间架构设计](./docs/SCENARIO_WORKSPACE_DESIGN.md) — AI 原生工作空间的 P0–P8 分期路线。
 - [RFC 设计提案](./docs/rfc/README.md) — Hook 系统、持久化执行、权限模型、场景配置、资源协议。
 

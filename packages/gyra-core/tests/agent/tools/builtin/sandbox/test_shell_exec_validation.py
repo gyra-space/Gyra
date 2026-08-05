@@ -63,26 +63,46 @@ async def test_blocks_shell_injection():
 
 
 @pytest.mark.asyncio
-async def test_blocks_command_substitution():
+async def test_allows_command_substitution():
+    """Command substitution is permitted in the local sandbox."""
     client = _make_mock_sandbox_client("/home/ubuntu")
     tool = ShellExecTool()
     ctx = {"sandbox_client": client}
 
     result = await tool.execute({"command": "cat `id`"}, context=ctx)
-    assert not result.success
+    assert result.success
 
     result = await tool.execute({"command": "cat $(id)"}, context=ctx)
-    assert not result.success
+    assert result.success
 
 
 @pytest.mark.asyncio
-async def test_blocks_python_c():
+async def test_allows_python_c():
+    """python3 -c is permitted in the local sandbox (code execution is allowed)."""
     client = _make_mock_sandbox_client("/home/ubuntu")
     tool = ShellExecTool()
     ctx = {"sandbox_client": client}
 
     result = await tool.execute({"command": "python3 -c 'print(1)'"}, context=ctx)
-    assert not result.success
+    assert result.success
+    client.shell.exec_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_allows_python_c_multiline_with_metachars():
+    """Multi-line python3 -c containing $, parens, newlines is allowed.
+
+    Regression for the scene-agent report case that was blocked by the old
+    raw-metachar scan and the python -c ban.
+    """
+    client = _make_mock_sandbox_client("/home/ubuntu")
+    tool = ShellExecTool()
+    ctx = {"sandbox_client": client}
+
+    command = 'python3 -c "data = (1, 2)\nprint(data)\nprint($x)"'
+    result = await tool.execute({"command": command}, context=ctx)
+    assert result.success
+    client.shell.exec_command.assert_awaited_once()
 
 
 @pytest.mark.asyncio

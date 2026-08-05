@@ -53,6 +53,8 @@ export interface LLMModelConfig {
   name: string;
   temperature: number;
   max_new_tokens: number;
+  top_p?: number;
+  reasoning_effort?: string;
   // 新增模型类型与能力标签
   model_type?: string;
   capabilities?: string[];

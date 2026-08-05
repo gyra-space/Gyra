@@ -105,6 +105,10 @@ class ThetaProvider(LLMProvider):
                 params["max_tokens"] = max(32768, request.max_new_tokens)
             else:
                 params["max_tokens"] = 32768
+            if request.top_p is not None:
+                params["top_p"] = request.top_p
+            if request.reasoning_effort is not None:
+                params["reasoning_effort"] = request.reasoning_effort
 
             use_compat_fc = False
             if request.tools:
@@ -199,6 +203,10 @@ class ThetaProvider(LLMProvider):
                 params["max_tokens"] = max(32768, request.max_new_tokens)
             else:
                 params["max_tokens"] = 32768
+            if request.top_p is not None:
+                params["top_p"] = request.top_p
+            if request.reasoning_effort is not None:
+                params["reasoning_effort"] = request.reasoning_effort
 
             use_compat_fc = False
             if request.tools:

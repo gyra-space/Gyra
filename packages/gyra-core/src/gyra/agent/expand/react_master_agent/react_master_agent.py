@@ -2335,6 +2335,8 @@ class ReActMasterAgent(ConversableAgent):
                     mist_keys=self.mist_keys,
                     max_new_tokens=self.not_null_agent_context.max_new_tokens,
                     temperature=self.not_null_agent_context.temperature,
+                    top_p=self.not_null_agent_context.top_p,
+                    reasoning_effort=self.not_null_agent_context.reasoning_effort,
                     llm_context=llm_context,
                     verbose=self.not_null_agent_context.verbose,
                     trace_id=self.not_null_agent_context.trace_id,

@@ -2,7 +2,7 @@
 
 ## 成果
 - **交付物**：`业务场景Loop全链路.pptx`（12 页，深色科技风，面向客户宣讲）
-- **素材来源**：内容全部取自 `docs/Three_Layer_Loop_Engineering.md`（L3 业务场景 Loop 章节为主），未虚构数据；封面与全景页复用 docs/img 官方配图（已裁去水印）
+- **素材来源**：内容全部取自 `docs/Three_Layer_Loop_And_Five_Ring_Flywheel.md`（L3 业务场景 Loop 章节为主），未虚构数据；封面与全景页复用 docs/img 官方配图（已裁去水印）
 
 ## 12 页结构（客户视角的问题→答案叙事）
 1. 封面：让数据可信，让 Agent 越用越强

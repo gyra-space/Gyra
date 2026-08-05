@@ -35,10 +35,15 @@
 }
 
 /* ── 应用外层:全屏深空,桌面端居中 480px 手机列 ── */
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
 .ms-app {
   position: relative;
-  height: 100%;
-  min-height: 100dvh;
+  height: 100dvh;
   background:
     radial-gradient(1200px 600px at 50% -10%, rgba(109, 92, 255, 0.18), transparent 60%),
     radial-gradient(900px 500px at 100% 110%, rgba(34, 211, 238, 0.10), transparent 55%),
@@ -52,8 +57,7 @@
   position: relative;
   width: 100%;
   max-width: 480px;
-  height: 100%;
-  min-height: 100%;
+  height: 100dvh;
   background:
     radial-gradient(640px 420px at 50% -6%, rgba(109, 92, 255, 0.14), transparent 60%),
     linear-gradient(180deg, var(--ms-elev), var(--ms-bg) 28%);
@@ -385,13 +389,18 @@
 .ms-agent {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
   height: 100%;
   min-height: 0;
 }
 .ms-agent__feed {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   padding: 12px 16px;
@@ -404,6 +413,60 @@
   -webkit-backdrop-filter: blur(16px);
   border-top: 1px solid var(--ms-border);
 }
+
+/* ── 移动端专属 Agent 输入条 ── */
+.ms-agent-composer { display: flex; flex-direction: column; gap: 6px; }
+.ms-agent-composer__meta { display: flex; align-items: center; justify-content: space-between; min-height: 18px; }
+.ms-agent-composer__usage { font-size: 10px; color: var(--ms-text-3); }
+.ms-agent-composer__retry {
+  font-size: 11px; color: var(--ms-brand); background: none; border: none;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px;
+}
+.ms-agent-composer__retry:disabled { color: var(--ms-text-3); cursor: not-allowed; }
+.ms-agent-composer__bar { display: flex; align-items: flex-end; gap: 8px; }
+.ms-agent-composer__ta {
+  flex: 1; min-width: 0;
+  min-height: 40px; max-height: 120px;
+  resize: none;
+  background: var(--ms-surface);
+  border: 1px solid var(--ms-border);
+  border-radius: 14px;
+  color: var(--ms-text);
+  font-size: 15px; line-height: 1.4;
+  padding: 10px 12px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  font-family: inherit;
+}
+.ms-agent-composer__ta::placeholder { color: var(--ms-text-3); }
+.ms-agent-composer__ta:focus { border-color: var(--ms-brand); box-shadow: 0 0 0 3px var(--ms-brand-soft); }
+.ms-agent-composer__send {
+  flex-shrink: 0;
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: grid; place-items: center;
+  background: var(--ms-aurora);
+  color: #fff; font-size: 16px;
+  transition: transform 0.12s ease, opacity 0.12s ease, background 0.12s ease;
+}
+.ms-agent-composer__send:active { transform: scale(0.92); }
+.ms-agent-composer__send:disabled { background: var(--ms-surface-2); color: var(--ms-text-3); cursor: not-allowed; }
+.ms-agent-composer__send--stop { background: rgba(248, 113, 113, 0.2); color: #fca5a5; }
+
+/* ── Agent 渲染器窄屏适配:防桌面样式溢出撑破布局 ── */
+.ms-agent__feed .ws-agent-renderer { min-width: 0; width: 100%; }
+.ms-agent__feed .ws-agent-renderer__summary { min-width: 0; max-width: 100%; overflow-x: hidden; }
+.ms-agent__feed .ws-agent-renderer__summary pre,
+.ms-agent__feed .ws-agent-renderer__summary code { max-width: 100%; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+.ms-agent__feed .ws-agent-renderer__summary table { display: block; max-width: 100%; overflow-x: auto; }
+.ms-agent__feed .ws-agent-renderer__summary img { max-width: 100%; height: auto; }
+.ms-agent__feed .ws-user-bubble,
+.ms-agent__feed .ws-step-user__bubble { max-width: 100%; word-break: break-word; }
+.ms-agent__feed .ws-step,
+.ms-agent__feed .ws-task-card,
+.ms-agent__feed .ws-plan { min-width: 0; max-width: 100%; }
 
 /* ── 空态 ── */
 .ms-empty {

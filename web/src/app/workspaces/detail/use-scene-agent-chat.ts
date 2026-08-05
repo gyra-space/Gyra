@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from 'react';
 import useChat from '@/hooks/use-chat';
 import type { WorkspaceEvent } from '@/hooks/use-chat';
-import type { UsageMetrics } from '@/components/chat/TokenStatusBar';
+import type { UsageMetrics } from '@/types/context-metrics';
 import { useChatPolling, type ConversationState } from '@/hooks/use-chat-polling';
 import { stopChat, type ChatQueryResponse } from '@/client/api/chat';
 import type { AgentStep } from './agent-types';

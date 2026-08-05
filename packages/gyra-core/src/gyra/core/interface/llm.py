@@ -502,6 +502,9 @@ class ModelRequest:
     top_p: Optional[float] = None
     """The top p of the model inference."""
 
+    reasoning_effort: Optional[str] = None
+    """The reasoning effort (thinking depth) of the model inference, e.g. "low"/"medium"/"high"."""
+
     max_new_tokens: Optional[int] = None
     """The maximum number of tokens to generate."""
 

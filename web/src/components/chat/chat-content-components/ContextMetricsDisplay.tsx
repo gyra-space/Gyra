@@ -10,12 +10,7 @@ import {
   InfoCircleOutlined,
   BarChartOutlined,
 } from '@ant-design/icons';
-import type {
-  ContextMetrics,
-  TruncationMetrics,
-  PruningMetrics,
-  CompactionMetrics,
-} from '@/types/context-metrics';
+import type { ContextMetrics } from '@/types/context-metrics';
 import { formatTokens, getUsageLevel, getUsageColor } from '@/types/context-metrics';
 
 const { Text, Title } = Typography;
@@ -24,6 +19,8 @@ interface ContextMetricsDisplayProps {
   metrics: ContextMetrics | null;
   compact?: boolean;
   showDetails?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 /**
@@ -35,8 +32,15 @@ export const ContextMetricsDisplay: React.FC<ContextMetricsDisplayProps> = ({
   metrics,
   compact = true,
   showDetails = true,
+  open,
+  onOpenChange,
 }) => {
-  const [drawerVisible, setDrawerVisible] = React.useState(false);
+  const [internalOpen, setInternalOpen] = React.useState(false);
+  const isOpen = open !== undefined ? open : internalOpen;
+  const setIsOpen = (next: boolean) => {
+    setInternalOpen(next);
+    onOpenChange?.(next);
+  };
 
   if (!metrics) {
     return null;
@@ -48,7 +52,7 @@ export const ContextMetricsDisplay: React.FC<ContextMetricsDisplayProps> = ({
   const renderCompactView = () => (
     <div 
       className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-800 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-      onClick={() => showDetails && setDrawerVisible(true)}
+      onClick={() => showDetails && setIsOpen(true)}
     >
       <CloudServerOutlined style={{ color: usageColor }} />
       <Tooltip title={`上下文使用率: ${metrics.usage_percent}`}>
@@ -89,8 +93,8 @@ export const ContextMetricsDisplay: React.FC<ContextMetricsDisplayProps> = ({
       }
       placement="right"
       width={480}
-      onClose={() => setDrawerVisible(false)}
-      open={drawerVisible}
+      onClose={() => setIsOpen(false)}
+      open={isOpen}
     >
       {/* 总览 */}
       <div className="mb-6">
@@ -202,10 +206,11 @@ export const ContextMetricsDisplay: React.FC<ContextMetricsDisplayProps> = ({
     </Drawer>
   );
 
+  const shouldShowDetails = showDetails ?? !compact;
   return (
     <>
-      {compact ? renderCompactView() : renderDetailedView()}
-      {showDetails && renderDetailedView()}
+      {compact && renderCompactView()}
+      {shouldShowDetails && renderDetailedView()}
     </>
   );
 };

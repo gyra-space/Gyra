@@ -150,7 +150,7 @@ export default function WorkspaceDetailPage() {
       <div className="ws-page-bg" />
       <div
         className="ws-page-content ws-page-content--fluid"
-        style={{ padding: '12px', height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', gap: 10, boxSizing: 'border-box' }}
+        style={{ padding: '10px', height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8, boxSizing: 'border-box' }}
       >
         <div className="ws-console-header">
           <div className="ws-console-header-left">

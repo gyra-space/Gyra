@@ -57,6 +57,10 @@ class OpenAIProvider(LLMProvider):
                 params["temperature"] = request.temperature
             if request.max_new_tokens and request.max_new_tokens > 0:
                 params["max_tokens"] = request.max_new_tokens
+            if request.top_p is not None:
+                params["top_p"] = request.top_p
+            if request.reasoning_effort is not None:
+                params["reasoning_effort"] = request.reasoning_effort
 
             use_compat_fc = False
             if request.tools:
@@ -145,6 +149,10 @@ class OpenAIProvider(LLMProvider):
                 params["temperature"] = request.temperature
             if request.max_new_tokens and request.max_new_tokens > 0:
                 params["max_tokens"] = request.max_new_tokens
+            if request.top_p is not None:
+                params["top_p"] = request.top_p
+            if request.reasoning_effort is not None:
+                params["reasoning_effort"] = request.reasoning_effort
 
             use_compat_fc = False
             if request.tools:

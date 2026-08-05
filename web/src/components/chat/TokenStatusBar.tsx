@@ -1,13 +1,5 @@
 import React from 'react';
-
-export interface UsageMetrics {
-  total: number;
-  prompt: number;
-  completion: number;
-  context_window: number;
-  ratio: number;
-  step_state?: string;
-}
+import type { UsageMetrics } from '@/types/context-metrics';
 
 export const TokenStatusBar: React.FC<{ usageMetrics: UsageMetrics | null }> = ({ usageMetrics }) => {
   if (!usageMetrics) return null;

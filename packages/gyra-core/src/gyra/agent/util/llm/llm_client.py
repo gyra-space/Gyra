@@ -22,6 +22,9 @@ from gyra.util.tracer import root_tracer
 
 logger = logging.getLogger(__name__)
 
+# 思考深度(reasoning_effort)合法取值。越界值不会透传到 provider,规避非法参数报错。
+REASONING_EFFORT_VALUES = {"minimal", "low", "medium", "high"}
+
 
 def _repr_content(content: Any, max_chars: int = 2000) -> Any:
     """将消息 content 转为可打印形式,超长做轻量截断(标注原始长度)。
@@ -401,6 +404,7 @@ class AIWrapper:
                     f"Model '{llm_model}' not found in config and no fallback available"
                 )
 
+        model_config_dict: Optional[Dict] = None
         if llm_model and ModelConfigCache.has_model(llm_model):
             model_config_dict = ModelConfigCache.get_config(llm_model)
             if model_config_dict:
@@ -479,9 +483,12 @@ class AIWrapper:
         messages = params["messages"]
 
         # Resolve temperature
+        # 优先级:显式请求参数 > AgentLLMConfig(agent级) > 空间/全局合并配置 > 系统默认
         temp_val = params.get("temperature")
         if temp_val is None and self._llm_config:
             temp_val = self._llm_config.temperature
+        if temp_val is None and model_config_dict:
+            temp_val = model_config_dict.get("temperature")
         if temp_val is None:
             temp_val = 0.5
         temperature = float(temp_val)
@@ -490,9 +497,41 @@ class AIWrapper:
         max_tokens_val = params.get("max_new_tokens")
         if max_tokens_val is None and self._llm_config:
             max_tokens_val = self._llm_config.max_new_tokens
+        if max_tokens_val is None and model_config_dict:
+            max_tokens_val = (
+                model_config_dict.get("max_new_tokens")
+                or model_config_dict.get("max_tokens")
+            )
         if max_tokens_val is None:
             max_tokens_val = 2048
         max_new_tokens = int(max_tokens_val)
+
+        # Resolve top_p (显式请求参数 > space/global merged config > 不设置)
+        top_p_val = params.get("top_p")
+        if top_p_val is None and self._llm_config:
+            top_p_val = self._llm_config.top_p
+        if top_p_val is None and model_config_dict:
+            top_p_val = model_config_dict.get("top_p")
+        top_p = float(top_p_val) if top_p_val is not None else None
+
+        # Resolve reasoning_effort (思考深度, 显式请求参数 > space/global merged config > 不设置)
+        reasoning_effort_val = params.get("reasoning_effort")
+        if reasoning_effort_val is None and self._llm_config:
+            reasoning_effort_val = self._llm_config.reasoning_effort
+        if reasoning_effort_val is None and model_config_dict:
+            reasoning_effort_val = model_config_dict.get("reasoning_effort")
+        reasoning_effort = (
+            str(reasoning_effort_val).lower()
+            if reasoning_effort_val is not None
+            else None
+        )
+        # 校验思考深度取值:非法值降级为不设置(沿用 provider 默认),而非透传导致报错。
+        if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORT_VALUES:
+            logger.warning(
+                f"Invalid reasoning_effort={reasoning_effort!r} for model={llm_model}, "
+                f"falling back to provider default. Allowed: {sorted(REASONING_EFFORT_VALUES)}"
+            )
+            reasoning_effort = None
 
         # Create ModelRequest
         request = ModelRequest.build_request(
@@ -502,13 +541,12 @@ class AIWrapper:
             echo=self.llm_echo,
             temperature=temperature,
             max_new_tokens=max_new_tokens,
+            top_p=top_p,
+            reasoning_effort=reasoning_effort,
             # Add other parameters from config if needed
         )
         if self._llm_config and self._llm_config.stop:
             request.stop = self._llm_config.stop
-
-        if self._llm_config and self._llm_config.top_p:
-            request.top_p = self._llm_config.top_p
 
         payload = {
             "model": llm_model,

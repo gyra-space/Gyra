@@ -18,8 +18,14 @@ import pytest
 from gyra.agent.core.usage_metric import (
     ConversationUsage,
     aggregate_usage_from_messages,
+    clear_in_memory_usage,
+    emit_usage_metric,
     estimate_cost,
     format_usage_log,
+    get_context_window,
+    get_in_memory_usage,
+    register_usage_callback,
+    unregister_usage_callback,
 )
 
 
@@ -254,3 +260,78 @@ class TestFormatUsageLog:
         log = format_usage_log(usage)
         assert "calls=0" in log
         assert "total=0" in log
+
+
+# ---------------- usage callback registry (Agent 空间实时 SSE) ----------------
+
+class TestUsageCallbackRegistry:
+    def setup_method(self):
+        """每个用例前清理 buffer 与回调，避免相互污染。"""
+        clear_in_memory_usage("cb_test")
+        unregister_usage_callback("cb_test")
+
+    def teardown_method(self):
+        clear_in_memory_usage("cb_test")
+        unregister_usage_callback("cb_test")
+
+    def test_register_and_trigger_callback(self):
+        called_with = []
+
+        def callback(usage):
+            called_with.append(usage)
+
+        register_usage_callback("cb_test", callback)
+        emit_usage_metric("cb_test", "gpt-4o", prompt_tokens=100, completion_tokens=50)
+
+        assert len(called_with) == 1
+        assert called_with[0].total_tokens == 150
+        assert called_with[0].last_model_name == "gpt-4o"
+
+    def test_unregister_stops_callbacks(self):
+        called_with = []
+
+        def callback(usage):
+            called_with.append(usage)
+
+        register_usage_callback("cb_test", callback)
+        emit_usage_metric("cb_test", "gpt-4o", prompt_tokens=100, completion_tokens=50)
+        assert len(called_with) == 1
+
+        unregister_usage_callback("cb_test")
+        emit_usage_metric("cb_test", "gpt-4o", prompt_tokens=200, completion_tokens=100)
+        assert len(called_with) == 1
+
+    def test_callback_exception_is_swallowed(self):
+        def bad_callback(_usage):
+            raise RuntimeError("boom")
+
+        register_usage_callback("cb_test", bad_callback)
+        # 不应抛出异常
+        emit_usage_metric("cb_test", "gpt-4o", prompt_tokens=100, completion_tokens=50)
+
+        usage = get_in_memory_usage("cb_test")
+        assert usage is not None
+        assert usage.total_tokens == 150
+
+
+class TestGetContextWindow:
+    def test_unknown_model_returns_default(self):
+        assert get_context_window("not-a-real-model") == 128000
+
+    def test_empty_model_returns_default(self):
+        assert get_context_window("") == 128000
+
+    def test_reads_registered_config(self):
+        from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+        ModelConfigCache.register_configs(
+            {"test-provider/test-model": {"model": "test-model", "context_length": 64000}}
+        )
+        assert get_context_window("test-model") == 64000
+
+    def test_last_model_name_recorded(self):
+        usage = ConversationUsage(conv_id="c1")
+        usage.add_call("gpt-4o", prompt_tokens=100, completion_tokens=50)
+        assert usage.last_model_name == "gpt-4o"
+        usage.add_call("claude-3-opus", prompt_tokens=200, completion_tokens=100)
+        assert usage.last_model_name == "claude-3-opus"

@@ -33,6 +33,9 @@ gyra_ext = "gyra_ext.mcp.run:main"
 
 
 [project.optional-dependencies]
+sandbox_e2b = [
+    "e2b>=0.15.0",
+]
 rag = [
     "spacy==3.7",
     "markdown",

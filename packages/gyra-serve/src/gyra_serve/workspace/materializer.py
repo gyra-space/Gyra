@@ -125,6 +125,11 @@ def _materialize_llm_model(
             "base_url": config.get("base_url") or config.get("api_base"),
             "api_key_ref": config.get("api_key_ref") or "",
             "api_key": config.get("api_key"),
+            # 透传空间级推理参数(思考深度等),未配置时回退全局/系统配置。
+            "temperature": config.get("temperature"),
+            "max_new_tokens": config.get("max_new_tokens") or config.get("max_tokens"),
+            "top_p": config.get("top_p"),
+            "reasoning_effort": config.get("reasoning_effort"),
         }
     )
     space_cfg = ModelConfigCache.get_space_model_config() or {}

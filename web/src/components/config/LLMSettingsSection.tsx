@@ -197,6 +197,8 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                     name: model.name || "",
                     temperature: model.temperature ?? 0.7,
                     max_new_tokens: model.max_new_tokens ?? 4096,
+                    top_p: model.top_p,
+                    reasoning_effort: model.reasoning_effort,
                     model_type: model.model_type || "llm",
                     capabilities,
                     is_multimodal: model.is_multimodal ?? false,
@@ -351,6 +353,8 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
               name: model.name,
               temperature: model.temperature ?? 0.7,
               max_new_tokens: model.max_new_tokens ?? 4096,
+              top_p: model.top_p,
+              reasoning_effort: model.reasoning_effort,
               model_type: modelType,
               capabilities,
               is_multimodal: model.is_multimodal ?? capabilities.includes("vision"),
@@ -665,8 +669,10 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                       <div className="col-span-3">模型名称</div>
                                       <div className="col-span-2">类型</div>
                                       <div className="col-span-1">Temp</div>
-                                      <div className="col-span-3">Max Tokens</div>
-                                      <div className="col-span-2">能力标签</div>
+                                      <div className="col-span-1">Top P</div>
+                                      <div className="col-span-2">Max Tokens</div>
+                                      <div className="col-span-1">深度</div>
+                                      <div className="col-span-1">能力标签</div>
                                       <div className="col-span-1 text-right">默认 / 操作</div>
                                     </div>
 
@@ -746,7 +752,23 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                               />
                                             </Form.Item>
                                           </div>
-                                          <div className="col-span-3">
+                                          <div className="col-span-1">
+                                            <Form.Item
+                                              name={[modelField.name, "top_p"]}
+                                              className="!mb-0"
+                                              tooltip="核采样参数,留空使用默认"
+                                            >
+                                              <InputNumber
+                                                size="small"
+                                                style={{ width: "100%" }}
+                                                min={0}
+                                                max={1}
+                                                step={0.05}
+                                                placeholder="-"
+                                              />
+                                            </Form.Item>
+                                          </div>
+                                          <div className="col-span-2">
                                             <div className="flex items-center justify-between mb-1">
                                               <span className="text-xs text-gray-400">Max Tokens</span>
                                               <span className="text-xs font-semibold text-blue-600">
@@ -782,7 +804,25 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                               />
                                             </Form.Item>
                                           </div>
-                                          <div className="col-span-2">
+                                          <div className="col-span-1">
+                                            <Form.Item
+                                              name={[modelField.name, "reasoning_effort"]}
+                                              className="!mb-0"
+                                              tooltip="思考深度 reasoning_effort: low/medium/high,留空使用默认"
+                                            >
+                                              <Select
+                                                size="small"
+                                                allowClear
+                                                placeholder="-"
+                                                options={[
+                                                  { value: "low", label: "low" },
+                                                  { value: "medium", label: "medium" },
+                                                  { value: "high", label: "high" },
+                                                ]}
+                                              />
+                                            </Form.Item>
+                                          </div>
+                                          <div className="col-span-1">
                                             <Form.Item
                                               name={[
                                                 modelField.name,
