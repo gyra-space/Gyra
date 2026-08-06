@@ -140,7 +140,9 @@ class LocalShellClient(ShellClient):
         try:
             from gyra.sandbox.sandbox_utils import validate_shell_command
 
-            validate_shell_command(command, cwd)
+            validate_shell_command(
+                command, cwd, allowed_roots=self._allowed_roots
+            )
         except (ValueError, PermissionError) as exc:
             logger.warning(f"LocalShellClient rejected command: {exc}")
             return ShellCommandResult(

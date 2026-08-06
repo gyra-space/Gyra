@@ -27,7 +27,15 @@ class MultimediaAgentConfig(BaseModel):
     )
     description: str = Field(default="多媒体生成 Agent", description="Agent 描述")
 
-    # ---- 能力开关 ----
+    # ---- 能力类型（二选一） ----
+    # 一个 MultimediaAgent 模板实例只承担一种媒体类型：图片 or 视频。运行时按该类型
+    # 决定 kind 与模型池，避免"以为能生成视频实际生成图片"。需要两种能力时，配置两个
+    # Agent 实例（app）分别选 image / video。
+    capability: str = Field(
+        default="image", description="能力类型：image 或 video（二选一）"
+    )
+
+    # ---- 能力开关（兼容旧配置，主控以 capability 为准） ----
     capability_image: bool = Field(default=True, description="是否启用图片生成能力")
     capability_video: bool = Field(default=True, description="是否启用视频生成能力")
 

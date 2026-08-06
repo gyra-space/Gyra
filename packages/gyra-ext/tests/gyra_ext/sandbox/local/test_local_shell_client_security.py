@@ -128,6 +128,24 @@ async def test_cwd_relative_traversal_blocked(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_skill_dir_command_allowed(tmp_path):
+    """Commands referencing the sanctioned skill_dir pass the path fence.
+
+    Regression: SandboxManager.initialize() runs `mkdir -p <skill_dir>` to prep
+    the knowledge repo. The fence must honor the client's allowed_roots (which
+    include skill_dir), not just the physical work_dir -- otherwise the sandbox
+    blocks its own initialization.
+    """
+    skill_dir = tmp_path / "skill"
+    client = _make_client(
+        tmp_path, work_dir="/data/workspace", skill_dir=str(skill_dir)
+    )
+    result = await client.exec_command(command=f"mkdir -p {skill_dir}")
+    assert result.status == "completed"
+    assert skill_dir.exists()
+
+
+@pytest.mark.asyncio
 async def test_logical_workdir_allowed_when_basedir_behind_symlink(tmp_path):
     """Regression: macOS /var -> /private/var.
 

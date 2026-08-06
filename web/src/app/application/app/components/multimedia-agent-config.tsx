@@ -4,12 +4,12 @@ import { AppContext } from '@/contexts';
 import { useRequest } from 'ahooks';
 import {
   App as AntApp,
-  Checkbox,
   Collapse,
   Divider,
   Form,
   Input,
   InputNumber,
+  Segmented,
   Select,
   Switch,
   Tooltip,
@@ -46,6 +46,10 @@ export default function MultimediaAgentConfig() {
   // 「可用模型」多选（候选池）：勾选后，默认模型下拉只在池内选；未勾选则用全局列表
   const watchedImageModels = Form.useWatch('image_models', form) || [];
   const watchedVideoModels = Form.useWatch('video_models', form) || [];
+
+  // 能力类型（二选一）：决定该实例唯一允许的媒体类型，并联动展示对应配置
+  const capability = Form.useWatch('capability', form) || persistedCfg?.capability || 'image';
+  const isVideo = capability === 'video';
 
   // 默认模型下拉选项：候选池内过滤 + 「自动（系统默认）」占位
   const defaultImageOptions = useMemo(
@@ -90,6 +94,7 @@ export default function MultimediaAgentConfig() {
       if (!cfg) return;
       form.setFieldsValue({
         ...cfg,
+        capability: (cfg.capability === 'video' ? 'video' : 'image'),
         fixed_params: (cfg.fixed_params && Object.keys(cfg.fixed_params).length
           ? JSON.stringify(cfg.fixed_params, null, 2)
           : '') as unknown as Record<string, any>,
@@ -200,15 +205,22 @@ export default function MultimediaAgentConfig() {
               items={[
                 {
                   key: 'basic',
-                  label: sectionLabel(<PictureOutlined />, '生成能力'),
+                  label: sectionLabel(<VideoCameraOutlined />, '能力类型（二选一）'),
                   children: (
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                      <Form.Item name="capability_image" valuePropName="checked" className="mb-2">
-                        <Checkbox>启用图片生成能力</Checkbox>
+                    <div className="flex flex-col gap-2">
+                      <Form.Item name="capability" className="mb-0">
+                        <Segmented
+                          block
+                          options={[
+                            { label: '图片 Agent', value: 'image' },
+                            { label: '视频 Agent', value: 'video' },
+                          ]}
+                        />
                       </Form.Item>
-                      <Form.Item name="capability_video" valuePropName="checked" className="mb-2">
-                        <Checkbox>启用视频生成能力</Checkbox>
-                      </Form.Item>
+                      <div className="text-[11px] text-gray-400">
+                        一个 Agent 实例只承担一种媒体类型，运行时按此处选择生成。如需图片和视频，
+                        请分别配置两个 Agent（各自选不同能力类型）。
+                      </div>
                     </div>
                   ),
                 },
@@ -217,59 +229,61 @@ export default function MultimediaAgentConfig() {
                   label: sectionLabel(<VideoCameraOutlined />, '可用模型 & 默认模型'),
                   children: (
                     <div className="space-y-3">
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                        <Form.Item
-                          name="image_models"
-                          label="可用图片模型"
-                          tooltip="勾选该 Agent 可以从哪些图片模型里选；留空则用系统全部可用图片模型"
-                        >
-                          <Select
-                            mode="multiple"
-                            allowClear
-                            loading={modelsLoading}
-                            maxTagCount="responsive"
-                            placeholder="全部可用图片模型"
-                            options={imageModels.map((m) => ({ value: m.model, label: m.model }))}
-                            className="!rounded-xl"
-                          />
-                        </Form.Item>
-                        <Form.Item
-                          name="video_models"
-                          label="可用视频模型"
-                          tooltip="勾选该 Agent 可以从哪些视频模型里选；留空则用系统全部可用视频模型"
-                        >
-                          <Select
-                            mode="multiple"
-                            allowClear
-                            loading={modelsLoading}
-                            maxTagCount="responsive"
-                            placeholder="全部可用视频模型"
-                            options={videoModels.map((m) => ({ value: m.model, label: m.model }))}
-                            className="!rounded-xl"
-                          />
-                        </Form.Item>
-                      </div>
-                      <Divider className="my-1" />
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                        <Form.Item name="default_image_model" label="默认图片模型">
-                          <Select
-                            allowClear
-                            loading={modelsLoading}
-                            options={defaultImageOptions}
-                            placeholder="自动（系统默认）"
-                            className="!rounded-xl"
-                          />
-                        </Form.Item>
-                        <Form.Item name="default_video_model" label="默认视频模型">
-                          <Select
-                            allowClear
-                            loading={modelsLoading}
-                            options={defaultVideoOptions}
-                            placeholder="自动（系统默认）"
-                            className="!rounded-xl"
-                          />
-                        </Form.Item>
-                      </div>
+                      {isVideo ? (
+                        <>
+                          <Form.Item
+                            name="video_models"
+                            label="可用视频模型"
+                            tooltip="勾选该 Agent 可以从哪些视频模型里选；留空则用系统全部可用视频模型"
+                          >
+                            <Select
+                              mode="multiple"
+                              allowClear
+                              loading={modelsLoading}
+                              maxTagCount="responsive"
+                              placeholder="全部可用视频模型"
+                              options={videoModels.map((m) => ({ value: m.model, label: m.model }))}
+                              className="!rounded-xl"
+                            />
+                          </Form.Item>
+                          <Form.Item name="default_video_model" label="默认视频模型">
+                            <Select
+                              allowClear
+                              loading={modelsLoading}
+                              options={defaultVideoOptions}
+                              placeholder="自动（系统默认）"
+                              className="!rounded-xl"
+                            />
+                          </Form.Item>
+                        </>
+                      ) : (
+                        <>
+                          <Form.Item
+                            name="image_models"
+                            label="可用图片模型"
+                            tooltip="勾选该 Agent 可以从哪些图片模型里选；留空则用系统全部可用图片模型"
+                          >
+                            <Select
+                              mode="multiple"
+                              allowClear
+                              loading={modelsLoading}
+                              maxTagCount="responsive"
+                              placeholder="全部可用图片模型"
+                              options={imageModels.map((m) => ({ value: m.model, label: m.model }))}
+                              className="!rounded-xl"
+                            />
+                          </Form.Item>
+                          <Form.Item name="default_image_model" label="默认图片模型">
+                            <Select
+                              allowClear
+                              loading={modelsLoading}
+                              options={defaultImageOptions}
+                              placeholder="自动（系统默认）"
+                              className="!rounded-xl"
+                            />
+                          </Form.Item>
+                        </>
+                      )}
                     </div>
                   ),
                 },
@@ -293,11 +307,8 @@ export default function MultimediaAgentConfig() {
                 {
                   key: 'output',
                   label: sectionLabel(<PictureOutlined />, '固定输出设置'),
-                  children: (
+                  children: isVideo ? (
                     <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                      <Form.Item name="default_image_size" label="默认图片尺寸">
-                        <Select options={IMAGE_SIZE_OPTIONS.map(v => ({ value: v, label: v }))} className="!rounded-xl" />
-                      </Form.Item>
                       <Form.Item name="default_video_resolution" label="默认视频分辨率">
                         <Select options={VIDEO_RESOLUTION_OPTIONS.map(v => ({ value: v, label: v }))} className="!rounded-xl" />
                       </Form.Item>
@@ -308,6 +319,10 @@ export default function MultimediaAgentConfig() {
                         <InputNumber min={1} max={600} className="w-full !rounded-xl" />
                       </Form.Item>
                     </div>
+                  ) : (
+                    <Form.Item name="default_image_size" label="默认图片尺寸">
+                      <Select options={IMAGE_SIZE_OPTIONS.map(v => ({ value: v, label: v }))} className="!rounded-xl" />
+                    </Form.Item>
                   ),
                 },
                 {

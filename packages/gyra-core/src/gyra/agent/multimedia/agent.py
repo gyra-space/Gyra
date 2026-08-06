@@ -131,6 +131,66 @@ class MultimediaAgent(ConversableAgent):
             logger.warning(f"[multimedia-agent] ext_config resolve failed: {e}")
         return MultimediaAgentConfig()
 
+    async def _ensure_agent_file_system(self) -> Optional[Any]:
+        """确保 AgentFileSystem 已初始化（懒加载）。
+
+        多媒体 Agent 作为主 Agent / 场景 Agent 运行时，继承的协议层不会自动创建
+        AFS。这里按 ``conv_id`` 懒加载 AFS，并把 ``metadata_storage`` 指向
+        ``gpts_memory``，使生成的文件作为交付物落盘后可被 gpts_memory.list_files
+        检索，从而在 vis_manus 右面板「交付文件」中展示并支持打开。
+        """
+        if getattr(self, "_agent_file_system", None) is not None:
+            return self._agent_file_system
+
+        try:
+            if not self.agent_context:
+                return None
+            from gyra.agent.core.file_system.agent_file_system import AgentFileSystem
+
+            conv_id = self.agent_context.conv_id or "default"
+            session_id = self.agent_context.conv_session_id or conv_id
+
+            # 尝试获取 FileStorageClient（网络/分布式存储后端）
+            file_storage_client = None
+            try:
+                from gyra.core.interface.file import FileStorageClient
+                from gyra._private.config import Config
+
+                system_app = Config().SYSTEM_APP
+                if system_app:
+                    file_storage_client = FileStorageClient.get_instance(system_app)
+            except Exception:  # noqa: BLE001 - FileStorageClient 不可用
+                pass
+
+            # sandbox 客户端（可选）
+            sandbox = None
+            if getattr(self, "sandbox_manager", None) and self.sandbox_manager.client:
+                sandbox = self.sandbox_manager.client
+
+            self._agent_file_system = AgentFileSystem(
+                conv_id=conv_id,
+                session_id=session_id,
+                metadata_storage=(
+                    self.memory.gpts_memory if getattr(self, "memory", None) else None
+                ),
+                file_storage_client=file_storage_client,
+                sandbox=sandbox,
+            )
+            await self._agent_file_system.sync_workspace()
+
+            # 注入到 executor，供同步/异步交付路径复用
+            self._executor.afs = self._agent_file_system
+            self._executor.conv_id = conv_id
+            logger.info(
+                f"[multimedia-agent] AFS initialized for conv_id={conv_id}"
+            )
+            return self._agent_file_system
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[multimedia-agent] AFS init failed: {e}", exc_info=True
+            )
+            return None
+
     async def thinking(  # type: ignore[override]
         self,
         messages: List[AgentMessage],
@@ -144,7 +204,8 @@ class MultimediaAgent(ConversableAgent):
         """重写：不再调用 LLM，而是执行一次确定性媒体生成。
 
         从 ``received_message`` 提取任务描述，经 ``MultimediaExecutor`` 生成图片/视频，
-        把结果输出文本作为回复 content 返回。
+        把结果输出文本作为回复 content 返回。生成前确保 AFS 已初始化，文件会作为
+        交付物落盘并在右面板展示。
         """
         task = ""
         if received_message is not None:
@@ -157,7 +218,10 @@ class MultimediaAgent(ConversableAgent):
             self._config = self._resolve_config()
             self._executor.config = self._config
 
-        request = self._build_request(task, {"wait": True})
+        # 确保 AFS 已初始化，使生成文件作为交付物落盘
+        afs = await self._ensure_agent_file_system()
+
+        request = self._build_request(task, {"wait": True, "afs": afs})
         result = await self._executor.run(request)
 
         if result is None:
@@ -232,14 +296,16 @@ class MultimediaAgent(ConversableAgent):
             self._config = self._resolve_config()
             self._executor.config = self._config
 
-        bound_afs = afs if afs is not None else self.executor.afs
-        bound_conv = conv_id or self.executor.conv_id
-
         async def _delegate(
             subagent_name: str = "",
             task: str = "",
             context: Optional[Dict[str, Any]] = None,
         ):
+            # 未注入 AFS 时懒加载，确保后台交付文件也正确落盘
+            bound_afs = afs if afs is not None else self.executor.afs
+            if bound_afs is None:
+                bound_afs = await self._ensure_agent_file_system()
+            bound_conv = conv_id or self.executor.conv_id
             ctx = context or {}
             kind = ctx.get("kind") or ctx.get("media_kind") or ""
             model = ctx.get("model") or ""
@@ -306,7 +372,7 @@ class MultimediaAgent(ConversableAgent):
 
         return MultimediaRequest(
             prompt=task,
-            kind=raw.get("kind") or KIND_IMAGE,
+            kind=raw.get("kind") or self.config.capability or KIND_IMAGE,
             model=raw.get("model") or "",
             params=provider_params,
             description=raw.get("description") or "",

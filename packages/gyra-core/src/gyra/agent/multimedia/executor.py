@@ -109,17 +109,29 @@ class MultimediaExecutor:
                 error="任务描述不能为空", tool_name=self.name_for(kind)
             )
 
-        # 能力开关检查
-        if kind == KIND_IMAGE and not self.config.capability_image:
+        # 能力类型检查（二选一）：config.capability 决定该实例唯一允许的媒体类型。
+        allowed = (self.config.capability or KIND_IMAGE).lower()
+        if allowed in (KIND_IMAGE, KIND_VIDEO) and kind != allowed:
+            want = "视频" if kind == KIND_VIDEO else "图片"
+            only = "图片" if allowed == KIND_IMAGE else "视频"
             return ToolResult.fail(
-                error="该多媒体 Agent 未启用图片生成能力",
+                error=f"该多媒体 Agent 配置为仅生成{only}，无法生成{want}。"
+                f"如需生成{want}，请在 Agent 配置中把能力类型切换为「{only}」，"
+                f"或另建一个 {want} Agent。",
                 tool_name=self._tool_name(kind),
             )
-        if kind == KIND_VIDEO and not self.config.capability_video:
-            return ToolResult.fail(
-                error="该多媒体 Agent 未启用视频生成能力",
-                tool_name=self._tool_name(kind),
-            )
+        # 兼容旧配置：capability 未识别时回退 capability_* 开关
+        if allowed not in (KIND_IMAGE, KIND_VIDEO):
+            if kind == KIND_IMAGE and not self.config.capability_image:
+                return ToolResult.fail(
+                    error="该多媒体 Agent 未启用图片生成能力",
+                    tool_name=self._tool_name(kind),
+                )
+            if kind == KIND_VIDEO and not self.config.capability_video:
+                return ToolResult.fail(
+                    error="该多媒体 Agent 未启用视频生成能力",
+                    tool_name=self._tool_name(kind),
+                )
 
         # 1) 自管模型选择
         model = self._resolve_model(kind, request.model)

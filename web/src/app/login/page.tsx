@@ -12,9 +12,8 @@ import {
   DatabaseOutlined,
   ApiOutlined,
   SyncOutlined,
-  ArrowRightOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, ConfigProvider, Input, Spin, theme } from 'antd';
+import { Alert, Button, ConfigProvider, Input, Spin } from 'antd';
 import Image from 'next/image';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -220,14 +219,9 @@ export default function LoginPage() {
 
   if (loading) {
     return (
-      <div className='relative flex items-center justify-center min-h-screen bg-[#0b0d16] overflow-hidden'>
-        <div className='aurora-stage'>
-          <div className='aurora-blob aurora-blob--brand top-[-10%] left-[20%] w-[520px] h-[520px]' />
-          <div className='aurora-blob aurora-blob--cyan bottom-[-10%] right-[10%] w-[460px] h-[460px]' />
-          <div className='aurora-blob aurora-blob--violet top-[40%] left-[60%] w-[380px] h-[380px]' />
-        </div>
+      <div className='relative flex items-center justify-center min-h-screen bg-[#f7f8fa] overflow-hidden'>
         <div className='relative z-10 flex flex-col items-center gap-5'>
-          <Image src='/gyra-logo.svg' alt='Gyra' width={52} height={52} priority className='drop-shadow-[0_0_24px_rgba(79,70,229,0.6)]' />
+          <Image src='/gyra-logo.svg' alt='Gyra' width={48} height={48} priority />
           <Spin size='large' />
         </div>
       </div>
@@ -238,281 +232,261 @@ export default function LoginPage() {
   const hasLocal = providers.some(p => p.type === 'local');
 
   return (
-    <div className='relative min-h-screen flex bg-[#0b0d16] overflow-hidden text-white'>
-      {/* ─── 全页共享画布:极光 + 网格铺满整屏,消除左右割裂 ─── */}
-      <div className='aurora-stage'>
-        <div className='aurora-blob aurora-blob--brand top-[-12%] left-[-6%] w-[560px] h-[560px]' />
-        <div className='aurora-blob aurora-blob--cyan bottom-[-16%] right-[2%] w-[560px] h-[560px]' />
-        <div className='aurora-blob aurora-blob--violet top-[36%] left-[46%] w-[440px] h-[440px]' />
-      </div>
-      <div className='absolute inset-0 opacity-[0.04] pointer-events-none'
-        style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)', backgroundSize: '56px 56px' }} />
-      {/* 边缘压暗,视线聚焦内容 */}
-      <div className='absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,transparent_50%,rgba(5,7,12,0.6)_100%)]' />
+    <div className='relative min-h-screen flex bg-[#f7f8fa] overflow-hidden text-[#14161c]'>
+      {/* 右侧柔和渐变装饰 */}
+      <div className='absolute inset-0 pointer-events-none'
+        style={{ background: 'radial-gradient(900px 600px at 85% 50%, rgba(79,70,229,0.06), transparent 60%)' }} />
 
       {/* ─── 左侧品牌展示区 ─── */}
-      <aside className='hidden lg:flex relative z-10 flex-col justify-between w-[46%] shrink-0 p-10 xl:p-14 overflow-y-auto min-h-0'>
-
-        <div className='relative z-10 flex items-center gap-3 animate-rise'>
-          <Image src='/gyra-logo.svg' alt='Gyra' width={40} height={40} priority className='drop-shadow-[0_0_20px_rgba(79,70,229,0.7)]' />
-          <div className='flex items-baseline gap-2'>
-            <span className='text-[22px] font-semibold tracking-tight'>Gyra</span>
-            <span className='text-[11px] text-white/40 tracking-[0.2em] uppercase'>Flywheel</span>
+      <aside className='hidden lg:flex relative z-10 flex-col justify-center w-[45%] shrink-0 px-14 xl:px-20 py-12'>
+        <div className='relative z-10 max-w-[460px] animate-rise'>
+          <div className='flex items-center gap-3 mb-8'>
+            <Image src='/gyra-logo.svg' alt='Gyra' width={38} height={38} priority />
+            <div className='flex items-baseline gap-2'>
+              <span className='text-[22px] font-semibold tracking-tight'>Gyra</span>
+              <span className='text-[11px] text-[#8a92a6] tracking-[0.2em] uppercase'>Flywheel</span>
+            </div>
           </div>
-        </div>
 
-        <div className='relative z-10 max-w-[480px] animate-rise-slow'>
-          <div className='inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/15 bg-white/5 backdrop-blur-sm text-[12px] text-white/70 mb-5'>
-            <span className='w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]' />
+          <div className='inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-[#e5e8ef] bg-white text-[12px] text-[#5d6577] mb-6 shadow-sm'>
+            <span className='w-1.5 h-1.5 rounded-full bg-[#22c55e]' />
             AI-Native Multi-Agent Platform
           </div>
 
-          <h1 className='text-[36px] xl:text-[42px] font-semibold leading-[1.1] tracking-tight'>
+          <h1 className='text-[38px] xl:text-[44px] font-semibold leading-[1.08] tracking-tight text-[#14161c]'>
             The Team-Native
             <br />
-            <span className='bg-gradient-to-r from-[#00DAEF] via-[#818cf8] to-[#a78bfa] bg-clip-text text-transparent'>
+            <span className='bg-gradient-to-r from-[#4f46e5] to-[#00b6d3] bg-clip-text text-transparent'>
               AI Flywheel
             </span>
           </h1>
 
-          <p className='mt-4 text-[15px] leading-relaxed text-white/55 max-w-[420px]'>
+          <p className='mt-5 text-[15px] leading-relaxed text-[#5d6577] max-w-[400px]'>
             Build, run and scale intelligent agents that collaborate like a real team —
             orchestration, knowledge, tools and a compounding data flywheel in one platform.
           </p>
 
-          {/* 特性卡片 */}
-          <div className='mt-6 grid grid-cols-2 gap-3'>
+          {/* 精简特性:只保留标题,更紧凑 */}
+          <div className='mt-8 grid grid-cols-2 gap-3 max-w-[420px]'>
             {FEATURES.map(f => (
               <div key={f.title}
-                className='group rounded-xl border border-white/10 bg-white/[0.04] p-3.5 backdrop-blur-sm transition-all duration-300 hover:bg-white/[0.08] hover:border-white/20 hover:-translate-y-0.5'>
-                <div className='w-8 h-8 rounded-lg flex items-center justify-center text-[#a5b4fc] bg-white/[0.06] border border-white/10 mb-2.5 transition-colors group-hover:bg-[#4f46e5] group-hover:text-white'>
+                className='group flex items-center gap-3 rounded-xl border border-[#e5e8ef] bg-white px-4 py-3 shadow-sm transition-all duration-200 hover:border-[#4f46e5]/30 hover:shadow-md'>
+                <div className='w-8 h-8 rounded-lg flex items-center justify-center text-[#4f46e5] bg-[#eef0fe] transition-colors group-hover:bg-[#4f46e5] group-hover:text-white'>
                   {f.icon}
                 </div>
-                <h3 className='text-[13px] font-semibold text-white/90 mb-1'>{f.title}</h3>
-                <p className='text-[12px] leading-relaxed text-white/45'>{f.desc}</p>
+                <span className='text-[13px] font-medium text-[#3b4154]'>{f.title}</span>
               </div>
             ))}
           </div>
         </div>
-
-        {/* 底部：简洁品牌标语 */}
-        <div className='relative z-10 flex items-center gap-3 animate-rise-slow'>
-          <div className='w-8 h-8 rounded-lg bg-gradient-to-br from-[#00DAEF] to-[#4f46e5] flex items-center justify-center shadow-[0_6px_18px_rgba(79,70,229,0.4)]'>
-            <ArrowRightOutlined className='text-white text-[14px]' />
-          </div>
-          <div className='text-[12px] text-white/40 leading-tight'>
-            <div className='text-white/60 font-medium'>Powered by Gyra</div>
-            <div className='text-white/30'>AI-native multi-agent orchestration</div>
-          </div>
-        </div>
       </aside>
 
-      {/* ─── 右侧登录区:与品牌区共处同一深空画布 ─── */}
+      {/* ─── 右侧登录区 ─── */}
       <main className='relative z-10 flex-1 flex flex-col items-center justify-center px-6 py-10'>
-        <div className='relative z-10 w-full max-w-[380px] animate-rise'>
-          <ConfigProvider theme={darkTheme}>
-          {/* 移动端 Logo */}
-          <div className='lg:hidden flex items-center justify-center gap-2.5 mb-8'>
-            <Image src='/gyra-logo.svg' alt='Gyra' width={34} height={34} priority className='drop-shadow-[0_0_16px_rgba(79,70,229,0.7)]' />
-            <div className='flex items-baseline gap-2'>
-              <span className='text-[19px] font-semibold tracking-tight'>Gyra</span>
-              <span className='text-[10px] text-white/40 tracking-[0.2em] uppercase'>Flywheel</span>
-            </div>
-          </div>
-
-          {/* 登录卡片:深色玻璃拟态 */}
-          <div className='rounded-2xl border border-white/10 bg-[#12151f]/75 backdrop-blur-xl shadow-[0_24px_80px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] px-7 py-7'>
-            <div className='mb-7'>
-              <h2 className='text-[22px] font-semibold text-white tracking-tight'>
-                Welcome back
-              </h2>
-              <p className='mt-1.5 text-[13px] text-white/45'>Sign in to continue to your workspace</p>
-            </div>
-
-            {errorMsg && (
-              <Alert
-                type={errorCode === 'user_disabled' ? 'error' : 'warning'}
-                message={errorMsg}
-                showIcon
-                className='mb-4 rounded-lg'
-              />
-            )}
-
-            {!oauthEnabled ? (
-              <div className='text-center py-6'>
-                <p className='text-white/45 text-sm leading-relaxed'>
-                  Login is not configured.<br />
-                  Please enable OAuth2 or access control plugin in System Settings.
-                </p>
+        <div className='relative z-10 w-full max-w-[400px] animate-rise'>
+          <ConfigProvider theme={lightTheme}>
+            {/* 移动端 Logo */}
+            <div className='lg:hidden flex items-center justify-center gap-2.5 mb-8'>
+              <Image src='/gyra-logo.svg' alt='Gyra' width={34} height={34} priority />
+              <div className='flex items-baseline gap-2'>
+                <span className='text-[19px] font-semibold tracking-tight'>Gyra</span>
+                <span className='text-[10px] text-[#8a92a6] tracking-[0.2em] uppercase'>Flywheel</span>
               </div>
-            ) : isLocalMode ? (
-              /* ─── Local login / register form ─── */
-              <div>
-                <div className='flex items-center justify-between mb-5'>
-                  <h3 className='text-[15px] font-semibold text-white/90 tracking-tight'>
-                    {isRegister ? 'Create Account' : 'Sign In'}
-                  </h3>
-                  {oauthProviders.length > 0 && (
-                    <button
-                      onClick={() => setIsLocalMode(false)}
-                      className='text-xs text-white/45 hover:text-[#818cf8] transition-colors'
-                    >
-                      More options
-                    </button>
-                  )}
+            </div>
+
+            {/* 登录卡片:白色干净卡片 */}
+            <div className='rounded-2xl border border-[#e5e8ef] bg-white px-8 py-8 shadow-[0_8px_40px_rgba(16,24,40,0.08)]'>
+              <div className='mb-7'>
+                <h2 className='text-[22px] font-semibold text-[#14161c] tracking-tight'>
+                  Welcome back
+                </h2>
+                <p className='mt-1.5 text-[13px] text-[#5d6577]'>Sign in to continue to your workspace</p>
+              </div>
+
+              {errorMsg && (
+                <Alert
+                  type={errorCode === 'user_disabled' ? 'error' : 'warning'}
+                  message={errorMsg}
+                  showIcon
+                  className='mb-4 rounded-lg'
+                />
+              )}
+
+              {!oauthEnabled ? (
+                <div className='text-center py-6'>
+                  <p className='text-[#5d6577] text-sm leading-relaxed'>
+                    Login is not configured.<br />
+                    Please enable OAuth2 or access control plugin in System Settings.
+                  </p>
                 </div>
+              ) : isLocalMode ? (
+                /* ─── Local login / register form ─── */
+                <div>
+                  <div className='flex items-center justify-between mb-5'>
+                    <h3 className='text-[15px] font-semibold text-[#14161c] tracking-tight'>
+                      {isRegister ? 'Create Account' : 'Sign In'}
+                    </h3>
+                    {oauthProviders.length > 0 && (
+                      <button
+                        onClick={() => setIsLocalMode(false)}
+                        className='text-xs text-[#8a92a6] hover:text-[#4f46e5] transition-colors'
+                      >
+                        More options
+                      </button>
+                    )}
+                  </div>
 
-                {localError && (
-                  <Alert type='error' message={localError} showIcon className='mb-4 rounded-lg' closable onClose={() => setLocalError('')} />
-                )}
+                  {localError && (
+                    <Alert type='error' message={localError} showIcon className='mb-4 rounded-lg' closable onClose={() => setLocalError('')} />
+                  )}
 
-                <div className='space-y-3'>
-                  <Input
-                    size='large'
-                    prefix={<UserOutlined className='text-white/30' />}
-                    placeholder='Username'
-                    value={username}
-                    onChange={e => setUsername(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    className='rounded-lg'
-                    style={{ height: 44 }}
-                  />
-                  <Input.Password
-                    size='large'
-                    prefix={<LockOutlined className='text-white/30' />}
-                    placeholder='Password'
-                    value={password}
-                    onChange={e => setPassword(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    className='rounded-lg'
-                    style={{ height: 44 }}
-                  />
-                  {isRegister && (
+                  <div className='space-y-3'>
+                    <Input
+                      size='large'
+                      prefix={<UserOutlined className='text-[#8a92a6]' />}
+                      placeholder='Username'
+                      value={username}
+                      onChange={e => setUsername(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      className='rounded-lg'
+                      style={{ height: 44 }}
+                    />
+                    <Input.Password
+                      size='large'
+                      prefix={<LockOutlined className='text-[#8a92a6]' />}
+                      placeholder='Password'
+                      value={password}
+                      onChange={e => setPassword(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      className='rounded-lg'
+                      style={{ height: 44 }}
+                    />
+                    {isRegister && (
+                      <>
+                        <Input.Password
+                          size='large'
+                          prefix={<LockOutlined className='text-[#8a92a6]' />}
+                          placeholder='Confirm Password'
+                          value={confirmPassword}
+                          onChange={e => setConfirmPassword(e.target.value)}
+                          onKeyDown={handleKeyDown}
+                          className='rounded-lg'
+                          style={{ height: 44 }}
+                        />
+                        <Input
+                          size='large'
+                          prefix={<MailOutlined className='text-[#8a92a6]' />}
+                          placeholder='Email (optional)'
+                          value={email}
+                          onChange={e => setEmail(e.target.value)}
+                          onKeyDown={handleKeyDown}
+                          className='rounded-lg'
+                          style={{ height: 44 }}
+                        />
+                      </>
+                    )}
+
+                    <Button
+                      type='primary'
+                      block
+                      size='large'
+                      loading={submitting}
+                      onClick={isRegister ? handleLocalRegister : handleLocalLogin}
+                      className='rounded-lg font-medium'
+                      style={{ height: 44 }}
+                    >
+                      {isRegister ? 'Create Account' : 'Sign In'}
+                    </Button>
+                  </div>
+
+                  <div className='mt-4 text-center'>
+                    <button
+                      className='text-[13px] text-[#5d6577] hover:text-[#4f46e5] transition-colors'
+                      onClick={() => {
+                        setIsRegister(!isRegister);
+                        setLocalError('');
+                        setConfirmPassword('');
+                      }}
+                    >
+                      {isRegister ? 'Already have an account? Sign in' : "Don't have an account? Register"}
+                    </button>
+                  </div>
+
+                  {/* OAuth provider icons */}
+                  {oauthProviders.length > 0 && (
                     <>
-                      <Input.Password
-                        size='large'
-                        prefix={<LockOutlined className='text-white/30' />}
-                        placeholder='Confirm Password'
-                        value={confirmPassword}
-                        onChange={e => setConfirmPassword(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        className='rounded-lg'
-                        style={{ height: 44 }}
-                      />
-                      <Input
-                        size='large'
-                        prefix={<MailOutlined className='text-white/30' />}
-                        placeholder='Email (optional)'
-                        value={email}
-                        onChange={e => setEmail(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        className='rounded-lg'
-                        style={{ height: 44 }}
-                      />
+                      <div className='flex items-center my-5'>
+                        <div className='flex-1 h-px bg-[#e5e8ef]' />
+                        <span className='px-3 text-[11px] text-[#8a92a6] uppercase tracking-widest'>or</span>
+                        <div className='flex-1 h-px bg-[#e5e8ef]' />
+                      </div>
+                      <div className='flex justify-center gap-3'>
+                        {oauthProviders.map(p => (
+                          <button
+                            key={p.id}
+                            onClick={() => handleOAuthLogin(p.id)}
+                            className='flex items-center justify-center w-11 h-11 rounded-xl border border-[#e5e8ef] bg-white hover:bg-[#f2f4f8] hover:border-[#4f46e5]/30 transition-all text-[#5d6577] hover:text-[#4f46e5] shadow-sm'
+                            title={`Sign in with ${providerLabel(p)}`}
+                          >
+                            <ProviderIcon type={p.type} />
+                          </button>
+                        ))}
+                      </div>
                     </>
                   )}
-
-                  <Button
-                    type='primary'
-                    block
-                    size='large'
-                    loading={submitting}
-                    onClick={isRegister ? handleLocalRegister : handleLocalLogin}
-                    className='rounded-lg font-medium'
-                    style={{ height: 44 }}
-                  >
-                    {isRegister ? 'Create Account' : 'Sign In'}
-                  </Button>
                 </div>
+              ) : (
+                /* ─── Provider selection ─── */
+                <div>
+                  <h3 className='text-[15px] font-semibold text-[#14161c] mb-5 tracking-tight'>Sign In</h3>
 
-                <div className='mt-4 text-center'>
-                  <button
-                    className='text-[13px] text-white/45 hover:text-[#818cf8] transition-colors'
-                    onClick={() => {
-                      setIsRegister(!isRegister);
-                      setLocalError('');
-                      setConfirmPassword('');
-                    }}
-                  >
-                    {isRegister ? 'Already have an account? Sign in' : "Don't have an account? Register"}
-                  </button>
-                </div>
-
-                {/* OAuth provider icons */}
-                {oauthProviders.length > 0 && (
-                  <>
-                    <div className='flex items-center my-5'>
-                      <div className='flex-1 h-px bg-white/10' />
-                      <span className='px-3 text-[11px] text-white/30 uppercase tracking-widest'>or</span>
-                      <div className='flex-1 h-px bg-white/10' />
-                    </div>
-                    <div className='flex justify-center gap-3'>
-                      {oauthProviders.map(p => (
-                        <button
-                          key={p.id}
-                          onClick={() => handleOAuthLogin(p.id)}
-                          className='flex items-center justify-center w-11 h-11 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/25 transition-all text-white/50 hover:text-white'
-                          title={`Sign in with ${providerLabel(p)}`}
-                        >
-                          <ProviderIcon type={p.type} />
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            ) : (
-              /* ─── Provider selection ─── */
-              <div>
-                <h3 className='text-[15px] font-semibold text-white/90 mb-5 tracking-tight'>Sign In</h3>
-
-                <div className='space-y-2.5'>
-                  {oauthProviders.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => handleOAuthLogin(p.id)}
-                      className='flex items-center w-full h-[44px] px-4 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/25 transition-all group'
-                    >
-                      <span className='text-white/45 group-hover:text-white/85 transition-colors'>
-                        <ProviderIcon type={p.type} />
-                      </span>
-                      <span className='ml-3 text-[13px] font-medium text-white/70 group-hover:text-white transition-colors'>
-                        Continue with {providerLabel(p)}
-                      </span>
-                    </button>
-                  ))}
-
-                  {hasLocal && (
-                    <>
-                      {oauthProviders.length > 0 && (
-                        <div className='flex items-center my-2.5'>
-                          <div className='flex-1 h-px bg-white/10' />
-                          <span className='px-3 text-[11px] text-white/30 uppercase tracking-widest'>or</span>
-                          <div className='flex-1 h-px bg-white/10' />
-                        </div>
-                      )}
+                  <div className='space-y-2.5'>
+                    {oauthProviders.map(p => (
                       <button
-                        onClick={() => setIsLocalMode(true)}
-                        className='flex items-center w-full h-[44px] px-4 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/25 transition-all group'
+                        key={p.id}
+                        onClick={() => handleOAuthLogin(p.id)}
+                        className='flex items-center w-full h-[44px] px-4 rounded-xl border border-[#e5e8ef] bg-white hover:bg-[#f2f4f8] hover:border-[#4f46e5]/30 transition-all group shadow-sm'
                       >
-                        <span className='text-white/45 group-hover:text-white/85 transition-colors'>
-                          <LockOutlined style={{ fontSize: 18 }} />
+                        <span className='text-[#5d6577] group-hover:text-[#4f46e5] transition-colors'>
+                          <ProviderIcon type={p.type} />
                         </span>
-                        <span className='ml-3 text-[13px] font-medium text-white/70 group-hover:text-white transition-colors'>
-                          Sign in with Username
+                        <span className='ml-3 text-[13px] font-medium text-[#3b4154] group-hover:text-[#14161c] transition-colors'>
+                          Continue with {providerLabel(p)}
                         </span>
                       </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
+                    ))}
 
-          {/* Footer */}
-          <p className='text-center mt-6 text-[11px] text-white/30 tracking-wide'>
-            Powered by Gyra
-          </p>
+                    {hasLocal && (
+                      <>
+                        {oauthProviders.length > 0 && (
+                          <div className='flex items-center my-2.5'>
+                            <div className='flex-1 h-px bg-[#e5e8ef]' />
+                            <span className='px-3 text-[11px] text-[#8a92a6] uppercase tracking-widest'>or</span>
+                            <div className='flex-1 h-px bg-[#e5e8ef]' />
+                          </div>
+                        )}
+                        <button
+                          onClick={() => setIsLocalMode(true)}
+                          className='flex items-center w-full h-[44px] px-4 rounded-xl border border-[#e5e8ef] bg-white hover:bg-[#f2f4f8] hover:border-[#4f46e5]/30 transition-all group shadow-sm'
+                        >
+                          <span className='text-[#5d6577] group-hover:text-[#4f46e5] transition-colors'>
+                            <LockOutlined style={{ fontSize: 18 }} />
+                          </span>
+                          <span className='ml-3 text-[13px] font-medium text-[#3b4154] group-hover:text-[#14161c] transition-colors'>
+                            Sign in with Username
+                          </span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <p className='text-center mt-6 text-[11px] text-[#8a92a6] tracking-wide'>
+              Powered by Gyra
+            </p>
           </ConfigProvider>
         </div>
       </main>

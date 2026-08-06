@@ -106,6 +106,8 @@ export interface MultimediaAgentConfig {
   name?: string;
   /** Agent 描述 */
   description?: string;
+  /** 能力类型：'image' 或 'video'（二选一，一个实例只承担一种媒体类型） */
+  capability?: 'image' | 'video';
   /** 是否启用图片生成能力 */
   capability_image?: boolean;
   /** 是否启用视频生成能力 */

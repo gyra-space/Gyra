@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import posixpath
 import re
 import shlex
@@ -28,12 +29,22 @@ def _tokenize_command(command: str) -> List[str]:
     return tokens
 
 
-def _validate_tokens(tokens: List[str], sandbox_work_dir: str) -> None:
+def _validate_tokens(
+    tokens: List[str],
+    sandbox_work_dir: str,
+    allowed_roots: Optional[List[str]] = None,
+) -> None:
     """Ensure command arguments stay within the sandbox work directory (path fence).
 
     Command binaries and flags are not restricted; only path-like arguments are
-    confined to *sandbox_work_dir*.
+    confined to *sandbox_work_dir* (plus any *allowed_roots*, e.g. skill_dir or
+    /mnt, which the LocalShellClient already sanctions as cwd). Both sides are
+    resolved with realpath so paths behind a symlinked temp dir (macOS
+    /var -> /private/var) are not falsely rejected.
     """
+    roots = [sandbox_work_dir]
+    roots.extend(allowed_roots or [])
+
     idx = 1
     while idx < len(tokens):
         token = tokens[idx]
@@ -48,12 +59,27 @@ def _validate_tokens(tokens: List[str], sandbox_work_dir: str) -> None:
             combined = token
         else:
             combined = posixpath.join(sandbox_work_dir, token)
-        normalized = posixpath.normpath(combined)
-        base_norm = posixpath.normpath(sandbox_work_dir.rstrip("/")) or "/"
-        prefix = "" if base_norm == "/" else f"{base_norm}/"
-        if normalized != base_norm and not normalized.startswith(prefix):
+        if not _within_roots(combined, roots):
             raise PermissionError("命令参数解析后超出了沙箱工作目录，已被禁止")
         idx += 1
+
+
+def _within_roots(candidate: str, roots: List[str]) -> bool:
+    """Return True if *candidate* equals or is nested under any root.
+
+    Mirrors LocalShellClient._ensure_inside_allowed: both sides are realpath-
+    resolved so symlinked prefixes compare consistently.
+    """
+    real_candidate = os.path.realpath(candidate)
+    for root in roots:
+        if not root:
+            continue
+        real_root = os.path.realpath(root)
+        if real_candidate == real_root or real_candidate.startswith(
+            os.path.join(real_root, "")
+        ):
+            return True
+    return False
 
 
 def is_high_risk_command(command: str) -> bool:
@@ -86,16 +112,20 @@ def is_high_risk_command(command: str) -> bool:
 
 
 def validate_shell_command(
-    command: str, sandbox_work_dir: str, sandbox_type: str = "local"
+    command: str,
+    sandbox_work_dir: str,
+    sandbox_type: str = "local",
+    allowed_roots: Optional[List[str]] = None,
 ) -> None:
     """
     Validate a shell command for sandbox execution.
 
     - Remote sandboxes (``sandbox_type != "local"``): no validation, fully open;
       isolation is enforced at the OS level.
-    - Local sandbox: arguments must stay inside *sandbox_work_dir* (path fence).
-      Binaries/flags are not restricted; high-risk commands are routed to
-      interactive authorization by the caller (ShellExecTool), not blocked here.
+    - Local sandbox: arguments must stay inside *sandbox_work_dir* (path fence),
+      or within any of *allowed_roots* (e.g. skill_dir). Binaries/flags are not
+      restricted; high-risk commands are routed to interactive authorization by
+      the caller (ShellExecTool), not blocked here.
 
     Raises:
         ValueError: on parse error or empty command
@@ -113,7 +143,7 @@ def validate_shell_command(
     def _flush() -> None:
         if not subcommand:
             return
-        _validate_tokens(subcommand, sandbox_work_dir)
+        _validate_tokens(subcommand, sandbox_work_dir, allowed_roots)
         subcommand.clear()
 
     for token in tokens:
