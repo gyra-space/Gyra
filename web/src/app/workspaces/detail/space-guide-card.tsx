@@ -22,8 +22,8 @@ interface SpaceGuideCardProps {
   workspaceCode: string;
 }
 
-const DATA_TYPES = ['data_source', 'knowledge_space'];
-const CAPABILITY_TYPES = ['skill', 'mcp', 'llm_model', 'environment', 'app', 'ecp'];
+const DATA_TYPES = ['data_source', 'knowledge_space', 'environment'];
+const CAPABILITY_TYPES = ['skill', 'mcp', 'app', 'llm_model'];
 
 /** 空间导览卡:回答新人三个问题 —— 这空间是干嘛的、有什么数据、Agent 会干什么、有哪些现成剧本。 */
 export function SpaceGuideCard({ workspaceId, workspaceCode }: SpaceGuideCardProps) {

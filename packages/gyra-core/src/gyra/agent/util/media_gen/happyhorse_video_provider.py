@@ -150,13 +150,6 @@ class HappyHorseVideoProvider(MediaGenProvider):
                 "Install with: pip install httpx"
             )
 
-        scenario = _scenario_of(model)
-        if not scenario:
-            raise ValueError(
-                f"Unknown HappyHorse model '{model}'. "
-                f"Supported: {sorted(_SUPPORTED_MODELS)}"
-            )
-
         timeout = kwargs.get("timeout", 600)
         base_url = normalize_base_url(self.base_url or _DEFAULT_BASE_URL)
 
@@ -167,6 +160,17 @@ class HappyHorseVideoProvider(MediaGenProvider):
         watermark = kwargs.get("watermark", False)
         image_url = kwargs.get("image_url")
         reference_images = kwargs.get("reference_images")
+
+        # 场景由模型名后缀（-t2v/-i2v/-r2v）决定；模型名无后缀时按输入推断：
+        # 有参考图 → r2v，有首帧图 → i2v，否则 → t2v（文生视频）。
+        scenario = _scenario_of(model)
+        if not scenario:
+            if reference_images:
+                scenario = "r2v"
+            elif image_url:
+                scenario = "i2v"
+            else:
+                scenario = "t2v"
 
         # Validate duration (HappyHorse range is 3-15)
         if not isinstance(duration, int) or duration < 3 or duration > 15:

@@ -182,6 +182,18 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     });
     const allSkills: SkillRef[] = skillList ?? [];
 
+    // 后端上传返回的 preview_url 可能是相对路径(如 /api/v2/serve/file/files/...),
+    // 前端静态导出可能与 API 不同源,直接放入 <img src> 会被浏览器按当前页面源解析,
+    // 导致图片加载失败显示裂图。这里对相对路径补全 API 基址,与 resolveArtifactFileUrl 逻辑一致。
+    const resolvePreviewUrl = (url: string): string => {
+      if (!url) return '';
+      if (url.startsWith('/')) {
+        const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+        return `${apiBase}${url}`;
+      }
+      return transformFileUrl(url);
+    };
+
     const normalizeUploadRes = (res: any): { fileUrl: string; previewUrl: string } => {
       let previewUrl = '', fileUrl = '';
       if (res?.preview_url) { previewUrl = res.preview_url; fileUrl = res.file_path || previewUrl; }
@@ -217,7 +229,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const resourceName = (r: ResourceItem) =>
       r.image_url?.file_name || r.file_url?.file_name || r.audio_url?.file_name || r.video_url?.file_name || '';
     const resourcePreview = (r: ResourceItem) =>
-      r.image_url?.preview_url || r.file_url?.preview_url || r.audio_url?.preview_url || r.video_url?.preview_url || '';
+      resolvePreviewUrl(r.image_url?.preview_url || r.file_url?.preview_url || r.audio_url?.preview_url || r.video_url?.preview_url || '');
     const isImageResource = (r: ResourceItem) => !!r.image_url;
 
     const hasContent = text.trim().length > 0 || resources.length > 0 || playbookCommand !== null;
@@ -486,7 +498,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                     <div key={`${name}-${i}`} className="relative group">
                       <div className={`w-[60px] h-[60px] rounded-lg border-2 overflow-hidden bg-white dark:bg-gray-800 shadow-sm hover:shadow-md transition-all duration-200 ${theme.border}`}>
                         {isImg && preview
-                          ? <img src={preview} className="w-full h-full object-cover" />
+                          ? <img src={preview} className="w-full h-full object-cover" onError={(e) => { const t = e.currentTarget; t.onerror = null; t.style.display = 'none'; if (t.parentElement) { t.parentElement.innerHTML = `<div class="w-full h-full flex items-center justify-center ${theme.bg}"><span class="text-xl">📷</span></div>`; } }} />
                           : <div className={`w-full h-full flex items-center justify-center ${theme.bg}`}>
                               <FileOutlined className={`${theme.icon} text-xl`} />
                             </div>}

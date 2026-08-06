@@ -8,17 +8,17 @@ import {
   updateResource,
   getSkillList,
   getMCPList,
+  getAppList,
 } from '@/client/api';
 import {
-  Alert, App, Button, Empty, Input, Modal, Select, Space, Spin, Switch, Tag,
+  Alert, App, Button, Empty, Modal, Select, Space, Spin, Switch,
 } from 'antd';
 import {
   ToolOutlined,
   ApiOutlined,
-  AppstoreOutlined,
+  RobotOutlined,
   CloudServerOutlined,
   PlusOutlined,
-  DeploymentUnitOutlined,
   ExportOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
@@ -26,15 +26,13 @@ import { useRequest } from 'ahooks';
 import { useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import Link from 'next/link';
+import { SpaceModelsTab } from '../settings/space-models-tab';
 import './assets.css';
 
 const TYPE_META: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
   skill: { label: '技能', color: 'geekblue', icon: <ToolOutlined /> },
   mcp: { label: 'MCP', color: 'purple', icon: <ApiOutlined /> },
-  llm_model: { label: '模型', color: 'cyan', icon: <CloudServerOutlined /> },
-  environment: { label: '环境', color: 'default', icon: <CloudServerOutlined /> },
-  app: { label: '智能体', color: 'blue', icon: <AppstoreOutlined /> },
-  ecp: { label: 'ECP语义层', color: 'volcano', icon: <DeploymentUnitOutlined /> },
+  app: { label: '智能体', color: 'blue', icon: <RobotOutlined /> },
 };
 
 /** 排序:启用在前,最近更新在前。 */
@@ -45,9 +43,10 @@ function sortCaps(rows: any[]) {
   });
 }
 
-/** 能力:空间里的 Agent 会"干"什么 —— skill / MCP / 模型 / 智能体。 */
-export function CapabilityTab({ workspaceId, canManage = true }: {
+/** 能力:空间里的 Agent 会"干"什么 —— 技能 / MCP / 子智能体 / 专属模型。 */
+export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: {
   workspaceId: number;
+  workspaceCode?: string;
   /** 是否空间管理员 owner(管理)。成员只看不改,仅可使用资源。 */
   canManage?: boolean;
 }) {
@@ -55,16 +54,23 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
   const { modal, message } = App.useApp();
   const [addOpen, setAddOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [addType, setAddType] = useState<'skill' | 'mcp' | 'ecp'>('skill');
+  const [addType, setAddType] = useState<'skill' | 'mcp' | 'app'>('skill');
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [selectedMcp, setSelectedMcp] = useState<any>(null);
-  const [ecpName, setEcpName] = useState('');
-  const [ecpRef, setEcpRef] = useState('');
+  const [selectedApp, setSelectedApp] = useState<string | null>(null);
 
   const { data: resources, loading, refresh } = useRequest(async () => {
     const [err, res] = await apiInterceptors(listResources({ workspace_id: workspaceId }));
     return err ? [] : res || [];
   }, { refreshDeps: [workspaceId] });
+
+  const allResources = useMemo(() => {
+    const rows = (resources || []).filter((r: any) => TYPE_META[r.type]);
+    const byType = (types: string[]) => new Set(
+      rows.filter((r: any) => types.includes(r.type)).map((r: any) => String(r.physical_ref || r.name)),
+    );
+    return { rows, byType };
+  }, [resources]);
 
   const { data: skillData, refresh: refreshSkills } = useRequest(
     async () => await apiInterceptors(getSkillList({ filter: '' }, { page: 1, page_size: 200 })),
@@ -85,33 +91,33 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
   );
   const allMcps = useMemo(() => mcpData || [], [mcpData]);
 
+  // 可配置为子 Agent 的应用(物理引用取 app_code)
+  const { data: appData, refresh: refreshApps } = useRequest(
+    async () => {
+      const [err, res] = await apiInterceptors(getAppList({ page: 1, page_size: 200 }));
+      return err ? [] : res?.app_list || [];
+    },
+  );
+  const allApps = useMemo(() => appData || [], [appData]);
+
   const sections = useMemo(() => {
-    const rows = (resources || []).filter((r: any) => TYPE_META[r.type]);
+    const rows = allResources.rows;
     return [
       { key: 'skill', title: '技能', items: sortCaps(rows.filter((r: any) => r.type === 'skill')) },
       { key: 'mcp', title: 'MCP 服务', items: sortCaps(rows.filter((r: any) => r.type === 'mcp')) },
-      { key: 'ecp', title: 'ECP 语义层', items: sortCaps(rows.filter((r: any) => r.type === 'ecp')) },
-      {
-        key: 'other',
-        title: '模型与智能体',
-        items: sortCaps(rows.filter((r: any) => ['llm_model', 'app', 'environment'].includes(r.type))),
-      },
+      { key: 'app', title: '子智能体', items: sortCaps(rows.filter((r: any) => r.type === 'app')) },
     ].filter((s) => s.items.length > 0);
-  }, [resources]);
+  }, [allResources]);
 
   const totalCount = useMemo(() => sections.reduce((n, s) => n + s.items.length, 0), [sections]);
 
-  const boundSkills = useMemo(
-    () => new Set(
-      (resources || [])
-        .filter((r: any) => r.type === 'skill')
-        .map((r: any) => String(r.physical_ref || r.name)),
-    ),
-    [resources],
-  );
   const candidateSkills = useMemo(
-    () => allSkills.filter((s: any) => !boundSkills.has(String(s.skill_code)) && !boundSkills.has(String(s.name))),
-    [allSkills, boundSkills],
+    () => allSkills.filter((s: any) => !allResources.byType(['skill']).has(String(s.skill_code)) && !allResources.byType(['skill']).has(String(s.name))),
+    [allSkills, allResources],
+  );
+  const candidateApps = useMemo(
+    () => allApps.filter((a: any) => !allResources.byType(['app']).has(String(a.app_code))),
+    [allApps, allResources],
   );
 
   const handleAdd = async () => {
@@ -142,13 +148,14 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
         is_active: true,
         config: {},
       }));
-    } else if (addType === 'ecp') {
-      if (!ecpName.trim()) { setSaving(false); message.warning('请填写 ECP 语义层名称'); return; }
+    } else if (addType === 'app') {
+      const app = allApps.find((a: any) => a.app_code === selectedApp);
+      if (!app) { setSaving(false); message.warning('请选择子智能体'); return; }
       [err] = await apiInterceptors(addResource({
         workspace_id: workspaceId,
-        type: 'ecp',
-        name: ecpName.trim(),
-        physical_ref: ecpRef.trim() || undefined,
+        type: 'app',
+        name: app.app_name || app.app_code,
+        physical_ref: app.app_code,
         category: 'scenario_bound',
         access_mode: 'read',
         is_active: true,
@@ -161,8 +168,7 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
     setAddOpen(false);
     setSelectedSkill(null);
     setSelectedMcp(null);
-    setEcpName('');
-    setEcpRef('');
+    setSelectedApp(null);
     refresh();
   };
 
@@ -187,7 +193,7 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
   const handleRemove = (r: any) => {
     modal.confirm({
       title: `移除能力「${r.name}」?`,
-      content: '移除后空间内的 Agent 将无法使用该能力。',
+      content: '移除后空间内的主 Agent 将无法使用该能力。',
       okText: '移除',
       okButtonProps: { danger: true },
       onOk: async () => {
@@ -257,7 +263,7 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
           <div key={s.key} className="ws-asset-section">
             <div className="ws-asset-section__head">
               <span className="ws-asset-section__icon">
-                {s.key === 'skill' ? <ToolOutlined /> : s.key === 'mcp' ? <ApiOutlined /> : <AppstoreOutlined />}
+                {s.key === 'skill' ? <ToolOutlined /> : s.key === 'mcp' ? <ApiOutlined /> : <RobotOutlined />}
               </span>
               <span className="ws-asset-section__title">{s.title}</span>
               <span className="ws-asset-section__count">{s.items.length}</span>
@@ -268,6 +274,15 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
           </div>
         ))
       )}
+
+      {/* 专属模型:复用设置页的 SpaceModelsTab,完整保留私有 token / 推理参数 / 编辑配置 */}
+      <div className="ws-asset-section">
+        <div className="ws-asset-section__head">
+          <span className="ws-asset-section__icon"><CloudServerOutlined /></span>
+          <span className="ws-asset-section__title">专属模型</span>
+        </div>
+        <SpaceModelsTab workspaceId={workspaceId} workspaceCode={workspaceCode || ''} canManage={canManage} />
+      </div>
 
       <Modal
         open={addOpen}
@@ -286,7 +301,7 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
             options={[
               { value: 'skill', label: '技能(skill)— 指导 Agent 做事的方法' },
               { value: 'mcp', label: 'MCP — 扩展 Agent 工具能力的服务' },
-              { value: 'ecp', label: 'ECP 语义层 — 注入已确认语义目录与查询工具' },
+              { value: 'app', label: '子智能体 — 主 Agent 可调用的协作 Agent' },
             ]}
           />
         </div>
@@ -320,6 +335,24 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
                   去 MCP 模块配置 <ExportOutlined />
                 </Link>
                 <Button type="link" size="small" icon={<ReloadOutlined />} onClick={refreshMcp}>
+                  刷新列表
+                </Button>
+              </Space>
+            }
+          />
+        )}
+        {addType === 'app' && (
+          <Alert
+            type="info"
+            showIcon
+            className="mb-3"
+            message="勾选的子智能体将被物化为主 Agent 的协作 Agent(extra_agents)"
+            description={
+              <Space>
+                <Link href="/apps" target="_blank">
+                  去应用模块创建 <ExportOutlined />
+                </Link>
+                <Button type="link" size="small" icon={<ReloadOutlined />} onClick={refreshApps}>
                   刷新列表
                 </Button>
               </Space>
@@ -362,23 +395,24 @@ export function CapabilityTab({ workspaceId, canManage = true }: {
               }))}
             />
           </div>
-        ) : (
+        ) : addType === 'app' ? (
           <div>
-            <div className="text-sm text-gray-500 mb-2">ECP 语义层名称</div>
-            <Input
-              className="mb-3"
-              placeholder="例如:ECP 语义层"
-              value={ecpName}
-              onChange={(e) => setEcpName(e.target.value)}
-            />
-            <div className="text-sm text-gray-500 mb-2">ECP workspace id</div>
-            <Input
-              placeholder="填写 ECP workspace id, 例如 ecp_<workspace_code> 或 default"
-              value={ecpRef}
-              onChange={(e) => setEcpRef(e.target.value)}
+            <div className="text-sm text-gray-500 mb-2">选择子智能体</div>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="从应用列表选择"
+              value={selectedApp}
+              onChange={setSelectedApp}
+              showSearch
+              optionFilterProp="label"
+              notFoundContent={allApps.length ? null : <Spin size="small" />}
+              options={candidateApps.map((a: any) => ({
+                value: a.app_code,
+                label: `${a.app_name || a.app_code}${a.app_describe ? ` — ${a.app_describe}` : ''}`,
+              }))}
             />
           </div>
-        )}
+        ) : null}
       </Modal>
     </div>
   );

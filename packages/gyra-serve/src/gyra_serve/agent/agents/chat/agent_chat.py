@@ -1189,6 +1189,60 @@ class AgentChat(BaseComponent, ABC):
         return None
 
     @staticmethod
+    def _resolve_app_model_name(gpt_app: Any) -> Optional[str]:
+        """安全地从 app 解析当前模型名（用于文件分流的能力判断）。
+
+        ``gpts_app.llm_config`` 是 ``LLMResource``，没有 ``.model`` 字段，直接访问会
+        抛 AttributeError。这里按优先级安全取值：
+        1. ``llm_config.agent_llm_config`` 字典里的 ``model``；
+        2. 多媒体 agent 的 ``ext_config.multimedia_agent`` 默认图片/视频模型；
+        3. 兜底返回 None（此时靠 ``prefer_direct_media`` 决定分流）。
+        """
+        if gpt_app is None:
+            return None
+        try:
+            llm_cfg = getattr(gpt_app, "llm_config", None)
+            if llm_cfg is not None:
+                agent_llm = (
+                    llm_cfg.agent_llm_config
+                    if hasattr(llm_cfg, "agent_llm_config")
+                    else None
+                )
+                if isinstance(agent_llm, dict) and agent_llm.get("model"):
+                    return agent_llm.get("model")
+                if isinstance(agent_llm, str):
+                    try:
+                        import json as _json
+
+                        agent_llm = _json.loads(agent_llm)
+                        if isinstance(agent_llm, dict) and agent_llm.get("model"):
+                            return agent_llm.get("model")
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 多媒体 agent：解析其默认生成模型
+        try:
+            ext_cfg = getattr(gpt_app, "ext_config", None)
+            if isinstance(ext_cfg, str):
+                import json as _json
+
+                ext_cfg = _json.loads(ext_cfg)
+            if isinstance(ext_cfg, dict):
+                mm = ext_cfg.get("multimedia_agent") or {}
+                if isinstance(mm, dict):
+                    return (
+                        mm.get("default_video_model")
+                        or mm.get("default_image_model")
+                        or None
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+
+        return None
+
+    @staticmethod
     def _resolve_vis_render(ext_info, gpt_app):
         """场景 Agent(workspace_id)默认 scene_agent_workspace,否则走 app layout / gpt_vis_all。"""
         if ext_info.get("workspace_id"):
@@ -1919,12 +1973,28 @@ class AgentChat(BaseComponent, ABC):
             ## 模型服务
             # LLM client is resolved by AIWrapper via ProviderRegistry at
             # call time (reading agent.llm config). llm_client is left None.
+            # 多媒体 Agent 可无 llm_config（使用媒体生成模型），此处安全回退空配置。
+            _app_llm = getattr(app, "llm_config", None)
+            _llm_strategy = (
+                getattr(_app_llm, "llm_strategy", None)
+                if _app_llm is not None
+                else None
+            )
+            _llm_config_kwargs = (
+                {}
+                if _llm_strategy is None
+                else {"llm_strategy": LLMStrategyType(_llm_strategy)}
+            )
             llm_config = LLMConfig(
                 llm_client=self.llm_provider,
-                llm_strategy=LLMStrategyType(app.llm_config.llm_strategy),
-                strategy_context=app.llm_config.llm_strategy_value,
-                llm_param=app.llm_config.llm_param,
-                mist_keys=app.llm_config.mist_keys,
+                **_llm_config_kwargs,
+                strategy_context=(
+                    getattr(_app_llm, "llm_strategy_value", None)
+                    if _app_llm is not None
+                    else None
+                ),
+                llm_param=getattr(_app_llm, "llm_param", None),
+                mist_keys=getattr(_app_llm, "mist_keys", None),
             )
 
             real_all_resources.extend(app.all_resources)
@@ -3090,7 +3160,11 @@ class AgentChat(BaseComponent, ABC):
                     llm_context[param.param_type] = param.param_value
                     if param.param_type == AppParamType.Model.value:
                         logger.info("用户指定了模型，优先使用")
-                        gpts_app.llm_config.llm_strategy_value = [param.param_value]
+                        # 多媒体 Agent 无 llm_config（使用媒体生成模型），跳过 LLM 模型覆盖
+                        if gpts_app.llm_config is not None:
+                            gpts_app.llm_config.llm_strategy_value = [
+                                param.param_value
+                            ]
 
                     elif param.param_type == AppParamType.Temperature.value:
                         temperature = param.param_value
@@ -3258,7 +3332,17 @@ class AgentChat(BaseComponent, ABC):
         if not gpts_app.agent:
             raise ValueError("当前应用还没配置Agent模版无法开启对话!")
         if not gpts_app.llm_config:
-            raise ValueError("当前应用还没配置模型无法开始对话!")
+            # 多媒体 Agent 使用媒体生成模型，不依赖 LLM 配置，可跳过该校验
+            try:
+                from gyra_serve.agent.file_io.file_type_config import (
+                    is_multimedia_agent,
+                )
+
+                _skip_llm = is_multimedia_agent(gpt_app=gpts_app)
+            except Exception:  # noqa: BLE001
+                _skip_llm = False
+            if not _skip_llm:
+                raise ValueError("当前应用还没配置模型无法开始对话!")
         recipient: Optional[ConversableAgent] = None
         gpts_status = Status.COMPLETE.value
         staff_no = ext_info.get("staff_no") or gpts_app.user_code or "gyra"
@@ -3372,7 +3456,7 @@ class AgentChat(BaseComponent, ABC):
                 env_context=env_context,
                 stream=stream,
                 extra=ext_info,
-                mist_keys=gpts_app.llm_config.mist_keys,
+                mist_keys=getattr(gpts_app.llm_config, "mist_keys", None),
                 # 对话输入参数覆盖模型推理参数(未指定时回退空间/全局配置,见 llm_client)
                 temperature=llm_context.get("temperature"),
                 max_new_tokens=llm_context.get("max_new_tokens"),
@@ -3537,11 +3621,7 @@ class AgentChat(BaseComponent, ABC):
                     user_query=user_query,
                     staff_no=staff_no,
                     model_name=ext_info.get("model_name")
-                    or (
-                        gpts_app.llm_config.model
-                        if gpts_app and gpts_app.llm_config
-                        else None
-                    ),
+                    or self._resolve_app_model_name(gpts_app),
                     prefer_direct_media=_prefer_direct,
                 )
                 if file_dispatch_result:

@@ -7,7 +7,6 @@ import {
   DatabaseOutlined,
   DeploymentUnitOutlined,
   SendOutlined,
-  ToolOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
@@ -15,14 +14,13 @@ import Link from 'next/link';
 import { useTranslation } from 'react-i18next';
 import { DataAssetsTab } from './data-assets-tab';
 import { DeliveryPanel } from './delivery-panel';
-import { CapabilityTab } from './capability-tab';
 import { EcpConsole } from '@/app/ecp/components/ecp-console';
 
 const TAB_KEYS = ['semantic', 'support', 'delivery'] as const;
 type TabKey = typeof TAB_KEYS[number];
 
-// 兼容旧 tab 参数:data/capability 合并到 support
-const LEGACY_TAB_MAP: Record<string, TabKey> = { data: 'support', capability: 'support' };
+// 兼容旧 tab 参数:data 合并到 support(能力已独立为 /capability 页)
+const LEGACY_TAB_MAP: Record<string, TabKey> = { data: 'support' };
 const resolveTab = (raw: string | null | undefined): TabKey => {
   if (raw && (TAB_KEYS as readonly string[]).includes(raw)) return raw as TabKey;
   if (raw && LEGACY_TAB_MAP[raw]) return LEGACY_TAB_MAP[raw];
@@ -101,7 +99,7 @@ export default function AssetsPage() {
           {t('assets.tab_support') || '支撑资源'}
         </span>
       ),
-      // 数据 + 能力聚合:ECP 语义层覆盖不到时,降级关联的原始资源。
+      // 数据资源:ECP 语义层覆盖不到时,降级关联的原始数据(数据库/数据集/知识库/环境)。
       children: (
         <div className="ws-support-wrap">
           <section className="ws-support-section">
@@ -110,23 +108,11 @@ export default function AssetsPage() {
               <div>
                 <div className="ws-support-section__title">{t('assets.support_data') || '数据资源'}</div>
                 <div className="ws-support-section__desc">
-                  {t('assets.support_data_desc') || 'ECP 覆盖不到时降级关联:数据库 / 数据集 / 知识库 / 文档。'}
+                  {t('assets.support_data_desc') || 'ECP 覆盖不到时降级关联:数据库 / 数据集 / 知识库 / 环境。'}
                 </div>
               </div>
             </header>
             <DataAssetsTab workspaceId={ws.id} workspaceCode={ws.workspace_code} />
-          </section>
-          <section className="ws-support-section">
-            <header className="ws-support-section__head">
-              <span className="ws-support-section__icon"><ToolOutlined /></span>
-              <div>
-                <div className="ws-support-section__title">{t('assets.support_capability') || '能力资源'}</div>
-                <div className="ws-support-section__desc">
-                  {t('assets.support_capability_desc') || 'Agent 执行所需的技能 / MCP / 模型 / ECP 语义层注入。'}
-                </div>
-              </div>
-            </header>
-            <CapabilityTab workspaceId={ws.id} canManage={canManage} />
           </section>
         </div>
       ),
@@ -159,7 +145,7 @@ export default function AssetsPage() {
               </p>
               <h1 className="ws-page-title">{t('assets.title_page') || '资产'}</h1>
               <p className="ws-page-subtitle">
-                {t('assets.subtitle') || '以 ECP 语义资产为核心,支撑资源(数据/能力)按需降级关联,交付沉淀为任务产出。'}
+                {t('assets.subtitle') || '以 ECP 语义资产为核心,支撑资源(数据)按需降级关联,交付沉淀为任务产出。'}
               </p>
             </div>
           </div>

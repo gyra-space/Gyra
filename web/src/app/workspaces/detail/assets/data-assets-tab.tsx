@@ -25,6 +25,7 @@ import {
   FileExcelOutlined,
   FileTextOutlined,
   CloudUploadOutlined,
+  CloudServerOutlined,
   BookOutlined,
   InboxOutlined,
   DeploymentUnitOutlined,
@@ -172,6 +173,12 @@ export function DataAssetsTab({
         title: '知识库',
         icon: <BookOutlined />,
         items: sortAssets(rows.filter((r: any) => r.type === 'knowledge_space')),
+      },
+      {
+        key: 'environment',
+        title: '环境',
+        icon: <CloudServerOutlined />,
+        items: sortAssets((resources || []).filter((r: any) => r.type === 'environment')),
       },
     ].filter((s) => s.items.length > 0);
   }, [resources, dbById, datasetIds]);
@@ -418,16 +425,21 @@ export function DataAssetsTab({
 
   const renderCard = (r: any) => {
     const isKnowledge = r.type === 'knowledge_space';
-    const icon = isKnowledge
-      ? <BookOutlined className="ws-asset-card__icon" style={{ color: '#9333ea' }} />
-      : r.owned
-        ? <FileExcelOutlined className="ws-asset-card__icon" style={{ color: '#16a34a' }} />
-        : <DatabaseOutlined className="ws-asset-card__icon" style={{ color: 'var(--ws-brand, #4f46e5)' }} />;
-    const source = isKnowledge
-      ? r.physical_ref
-      : r.db
-        ? `${r.db.db_name}${r.db.db_host ? ` · ${r.db.db_host}` : ''}`
-        : `#${r.physical_ref}`;
+    const isEnv = r.type === 'environment';
+    const icon = isEnv
+      ? <CloudServerOutlined className="ws-asset-card__icon" style={{ color: '#64748b' }} />
+      : isKnowledge
+        ? <BookOutlined className="ws-asset-card__icon" style={{ color: '#9333ea' }} />
+        : r.owned
+          ? <FileExcelOutlined className="ws-asset-card__icon" style={{ color: '#16a34a' }} />
+          : <DatabaseOutlined className="ws-asset-card__icon" style={{ color: 'var(--ws-brand, #4f46e5)' }} />;
+    const source = isEnv
+      ? r.physical_ref || r.name
+      : isKnowledge
+        ? r.physical_ref
+        : r.db
+          ? `${r.db.db_name}${r.db.db_host ? ` · ${r.db.db_host}` : ''}`
+          : `#${r.physical_ref}`;
     return (
       <div key={r.id} className={`ws-asset-card${r.is_active ? '' : ' ws-asset-card--off'}`}>
         <div className="ws-asset-card__top">
@@ -436,10 +448,12 @@ export function DataAssetsTab({
           <Switch size="small" checked={!!r.is_active} onChange={(c) => handleToggle(r, c)} />
         </div>
         <div className="ws-asset-card__tags">
-          {isKnowledge
-            ? <Tag color="purple">知识库</Tag>
-            : <Tag color={DB_TYPE_COLOR[r.db?.db_type] || 'blue'}>{r.db?.db_type || '数据库'}</Tag>}
-          {r.owned ? <Tag color="gold">自持</Tag> : <Tag>引用</Tag>}
+          {isEnv
+            ? <Tag color="default">环境</Tag>
+            : isKnowledge
+              ? <Tag color="purple">知识库</Tag>
+              : <Tag color={DB_TYPE_COLOR[r.db?.db_type] || 'blue'}>{r.db?.db_type || '数据库'}</Tag>}
+          {!isEnv && !isKnowledge && (r.owned ? <Tag color="gold">自持</Tag> : <Tag>引用</Tag>)}
         </div>
         <div className="ws-asset-card__source" title={source}>{source}</div>
         <div className="ws-asset-card__foot">

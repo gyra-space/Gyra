@@ -18,6 +18,7 @@ import {
   AppstoreOutlined,
   HomeOutlined,
   DatabaseOutlined,
+  ToolOutlined,
 } from '@ant-design/icons';
 import { SceneWorkspaceShell } from './scene-workspace-shell';
 import { ChatContext } from '@/contexts';
@@ -174,6 +175,9 @@ export default function WorkspaceDetailPage() {
             </Link>
             <Link href={`/workspaces/detail/assets?id=${workspaceCode}&tab=semantic`} className={`ws-console-nav-link${navActive('assets')}`}>
               <DatabaseOutlined />{t('workspaces.assets') || '资产'}
+            </Link>
+            <Link href={`/workspaces/detail/capability?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('capability')}`}>
+              <ToolOutlined />{t('workspaces.capability') || '能力'}
             </Link>
             <Link href={`/workspaces/detail/settings?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('settings')}`}>
               <SettingOutlined />{t('workspaces.settings') || '设置'}
