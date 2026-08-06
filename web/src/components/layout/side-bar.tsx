@@ -752,7 +752,7 @@ function SideBar() {
                   key={section.key}
                   placement='right'
                   trigger='hover'
-                  overlayInnerStyle={{ padding: 4 }}
+                  styles={{ body: { padding: 4 } }}
                   content={
                     <div className='flex flex-col gap-0.5 min-w-[168px]'>
                       <div className='px-2.5 py-1.5 text-xs font-medium text-gray-400 dark:text-gray-500'>

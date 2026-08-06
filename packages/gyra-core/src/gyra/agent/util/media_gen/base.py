@@ -34,7 +34,7 @@ class MediaSubmission:
     and a task_id is known. ``complete`` is a no-arg coroutine that polls the
     task and downloads the result into a :class:`MediaGenResult`. This split
     lets the tool submit synchronously (catching immediate errors like 403)
-    while polling/downloading in the background via MediaJobRegistry.
+    while polling/downloading in the background via AsyncTaskManager.
 
     Attributes:
         task_id: Provider task id returned by the submit endpoint.

@@ -581,6 +581,16 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   onFocus={() => setIsFocus(true)}
                   onBlur={() => setIsFocus(false)}
                   onKeyDown={handleKeyDown}
+                  onPaste={async (e) => {
+                    const clipboardData = e.clipboardData;
+                    if (!clipboardData || !clipboardData.files.length) return;
+                    for (const f of Array.from(clipboardData.files)) {
+                      if (f.type.startsWith('image/') || f.type.startsWith('video/') || f.type.startsWith('audio/')) {
+                        e.preventDefault();
+                        await handleFileUpload(f);
+                      }
+                    }
+                  }}
                   placeholder="输入指令给 Agent…(+ 添加文件/剧本/技能,/ 快捷选剧本)"
                   className="!text-base !bg-transparent !border-0 !resize-none placeholder:!text-gray-400 !text-gray-800 dark:!text-gray-200 !shadow-none !p-0 !min-h-[60px]"
                   autoSize={{ minRows: 2, maxRows: 8 }}

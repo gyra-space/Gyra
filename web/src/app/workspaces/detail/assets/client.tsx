@@ -48,7 +48,7 @@ export default function AssetsPage() {
     return err ? null : res;
   }, { refreshDeps: [workspaceCode] });
 
-  // 权限整合:空间管理员(owner/approver)才可维护资源,成员仅可使用/确认待办。
+  // 权限整合:空间管理员 owner(管理)才可维护资源,成员仅可使用/确认待办。
   const { data: myRole } = useRequest(async () => {
     if (!ws?.id) return '';
     const [err, res] = await apiInterceptors(listMembers({ workspace_id: ws.id }));
@@ -57,7 +57,7 @@ export default function AssetsPage() {
     const me = list.find((m: any) => String(m.user_id) === String(getUserId()));
     return me?.role || '';
   }, { refreshDeps: [ws?.id] });
-  const canManage = myRole === 'owner' || myRole === 'approver';
+  const canManage = myRole === 'owner';
 
   const handleTabChange = (key: string) => {
     router.replace(`${pathname}?id=${workspaceCode}&tab=${key}`);

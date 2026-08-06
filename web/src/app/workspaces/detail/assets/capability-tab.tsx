@@ -48,7 +48,7 @@ function sortCaps(rows: any[]) {
 /** 能力:空间里的 Agent 会"干"什么 —— skill / MCP / 模型 / 智能体。 */
 export function CapabilityTab({ workspaceId, canManage = true }: {
   workspaceId: number;
-  /** 是否空间管理员(owner/approver)。成员只看不改,仅可使用资源。 */
+  /** 是否空间管理员 owner(管理)。成员只看不改,仅可使用资源。 */
   canManage?: boolean;
 }) {
   // 静态 Modal/message 在本应用(React 19 静态渲染路径)下会静默失效,必须用 App.useApp() 上下文实例

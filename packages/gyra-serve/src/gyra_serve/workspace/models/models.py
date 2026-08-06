@@ -1,7 +1,7 @@
 """Workspace / WorkspaceMember / WorkspaceResource entities + DAOs."""
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from sqlalchemy import (
     Boolean,
@@ -90,6 +90,10 @@ class WorkspaceMemberEntity(Model):
     workspace_id = Column(Integer, nullable=False, index=True)
     user_id = Column(Integer, nullable=False, index=True)
     role = Column(String(32), nullable=False, default="contributor")
+    # 用户级主空间标记(每个用户在最多一个空间为 True)。区别于历史
+    # workspace.settings.is_home(空间级,跨用户共享),此处按用户隔离,
+    # 使"我的默认空间"真正属于个人。
+    is_home = Column(Boolean, nullable=False, default=False, index=True)
 
     gmt_created = Column(DateTime, name="gmt_create", default=datetime.now)
     gmt_modified = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -464,6 +468,26 @@ class WorkspaceMemberDao(BaseDao[WorkspaceMemberEntity, WorkspaceMemberRequest, 
         finally:
             session.close()
 
+    def list_by_workspace_with_user_info(self, workspace_id: int) -> List[Tuple[WorkspaceMemberEntity, Optional[str]]]:
+        """List members with user names by joining user table.
+
+        Returns:
+            List of (member_entity, user_name) tuples
+        """
+        from gyra_app.auth.user_service import UserEntity
+
+        session = self.get_raw_session()
+        try:
+            results = (
+                session.query(WorkspaceMemberEntity, UserEntity.name)
+                .outerjoin(UserEntity, WorkspaceMemberEntity.user_id == UserEntity.id)
+                .filter(WorkspaceMemberEntity.workspace_id == workspace_id)
+                .all()
+            )
+            return results
+        finally:
+            session.close()
+
     def count_by_workspace(self, workspace_id: int) -> int:
         session = self.get_raw_session()
         try:
@@ -489,6 +513,68 @@ class WorkspaceMemberDao(BaseDao[WorkspaceMemberEntity, WorkspaceMemberRequest, 
                 .first()
             )
             return row.role if row else None
+        finally:
+            session.close()
+
+    # ---------------- 用户级主空间(home) ----------------
+    def clear_home(self, user_id: int) -> None:
+        """清除该用户在所有空间的主空间标记(最多一个为 True)。"""
+        session = self.get_raw_session()
+        try:
+            session.query(WorkspaceMemberEntity).filter(
+                WorkspaceMemberEntity.user_id == user_id,
+                WorkspaceMemberEntity.is_home.is_(True),
+            ).update(
+                {WorkspaceMemberEntity.is_home: False},
+                synchronize_session=False,
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def set_home(self, workspace_id: int, user_id: int) -> bool:
+        """把某空间设为该用户的主空间;返回是否成功(False=用户非该空间成员)。"""
+        self.clear_home(user_id)
+        session = self.get_raw_session()
+        try:
+            row = (
+                session.query(WorkspaceMemberEntity)
+                .filter(
+                    and_(
+                        WorkspaceMemberEntity.workspace_id == workspace_id,
+                        WorkspaceMemberEntity.user_id == user_id,
+                    )
+                )
+                .first()
+            )
+            if row is None:
+                return False
+            row.is_home = True
+            row.gmt_modified = datetime.now()
+            session.commit()
+            return True
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def get_home_workspace_id(self, user_id: int) -> Optional[int]:
+        """返回该用户主空间的 workspace_id;未设置返回 None。"""
+        session = self.get_raw_session()
+        try:
+            row = (
+                session.query(WorkspaceMemberEntity)
+                .filter(
+                    WorkspaceMemberEntity.user_id == user_id,
+                    WorkspaceMemberEntity.is_home.is_(True),
+                )
+                .first()
+            )
+            return row.workspace_id if row else None
         finally:
             session.close()
 

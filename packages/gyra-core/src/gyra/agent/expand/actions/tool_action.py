@@ -663,6 +663,10 @@ class ToolAction(Action[ToolInput]):
         except Exception as _hook_err:
             logger.debug(f"[ToolAction] post_tool_use hook skipped: {_hook_err}")
 
+        ## 工具执行处登记异步任务：工具提交后台任务（media/spawn）时，立即把任务
+        # 登记进会话 pending 台账，避免依赖 coordinator 轮询发现（跨进程不可靠）。
+        await self._register_async_task(agent_context, tool_result)
+
         ## 大结果归档处理 - 使用 Truncator
         # 注意：read_file 工具用于读取已归档文件，不应再次截断归档，否则会形成死循环
         attach_view = None
@@ -1103,6 +1107,11 @@ class ToolAction(Action[ToolInput]):
             flags["ask_user_metadata"] = md
         elif md.get("terminate"):
             flags["terminate"] = True
+        if md.get("async_task"):
+            # 工具提交了后台异步任务（media 生成 / spawn_agent_task）。登记该任务
+            # 到会话 pending 台账，供轮次结束置 WAITING 与跨进程恢复；不在此处置
+            # WAITING，因为 agent 提交后可能同轮继续工作。
+            flags["async_task"] = md["async_task"]
         return flags
 
     async def _execute_tool(self, tool_info: BaseTool, args: Any, **kwargs) -> Any:
@@ -1479,6 +1488,44 @@ class ToolAction(Action[ToolInput]):
         if parsed and isinstance(parsed, tuple):
             return parsed[1]  # Return the arguments part
         return default_args or {}
+
+    async def _register_async_task(
+        self, agent_context: AgentContext, tool_result: dict
+    ) -> None:
+        """工具执行处登记后台异步任务到会话 pending 台账。
+
+        工具（generate_video wait=false / spawn_agent_task）在 ToolResult.metadata
+        中声明 ``async_task`` 时，立即把任务记录进会话 pending（供轮次结束置 WAITING
+        与跨进程/重启恢复）。相比 coordinator 轮询发现，工具执行处登记更直接、跨进程
+        一致。core 层 try import serve 的 coordinator 单例，避免循环依赖。
+        """
+        if not tool_result or not isinstance(tool_result, dict):
+            return
+        at = tool_result.get("async_task")
+        if not at or not isinstance(at, dict):
+            return
+        conv_id = at.get("conv_id") or (
+            getattr(agent_context, "conv_id", "") if agent_context else ""
+        )
+        task_id = at.get("task_id")
+        if not conv_id or not task_id:
+            return
+        try:
+            from gyra_serve.agent.async_task_coordinator import (
+                get_async_task_coordinator,
+            )
+            coordinator = get_async_task_coordinator()
+            if coordinator is None:
+                return
+            await coordinator.track_task(
+                conv_id=conv_id,
+                task_id=task_id,
+                kind=at.get("kind", ""),
+                label=at.get("model") or at.get("agent_name") or "",
+                status="running",
+            )
+        except Exception as e:  # noqa: BLE001 - serve 不可用时静默跳过
+            logger.debug(f"[ToolAction] register async task skipped: {e}")
 
     async def _notify_main_authorization_needed(
         self, agent_context: AgentContext, tool_info: BaseTool, args: Optional[dict]

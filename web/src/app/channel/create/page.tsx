@@ -25,7 +25,7 @@ export default function CreateChannelPage() {
       if (err) {
         throw err;
       }
-      return res?.data;
+      return (res as any)?.data;
     },
     {
       manual: true,

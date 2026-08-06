@@ -56,10 +56,8 @@ export const PermissionsZh = {
   permissions_remove_permission_error: '删除权限失败',
   permissions_system_role_cannot_delete: '系统角色不能删除',
   permissions_system_role_readonly: '系统角色为只读，不允许配置或修改',
-  permissions_name_required: '请输入角色名称',
   permissions_name_placeholder: '请输入角色名称',
   permissions_delete_confirm: '确定要删除此角色吗？',
-  permissions_remove_permission_confirm: '确定要删除此权限吗？',
 
   // Status
   permissions_system_role: '系统角色',
@@ -237,7 +235,6 @@ export const PermissionsZh = {
   permissions_user_groups: '用户组',
   permissions_user_groups_hint: '用户组用于批量管理用户权限。将角色分配给用户组后，该组内的所有用户将继承这些角色。',
   permissions_manage_members: '管理成员',
-  permissions_manage_roles: '管理角色',
   permissions_group_members: '组成员',
   permissions_group_roles: '组角色',
   permissions_group_roles_hint: '为用户组分配角色后，该组内所有用户将继承这些角色。',

@@ -230,7 +230,7 @@ const getCategoryColor = (category: string): string => {
 };
 
 // Helper to get category label
-const getCategoryLabel = (category: string, t: (key: string) => string): string => {
+const getCategoryLabel = (category: string, t: any): string => {
   const labels: Record<string, string> = {
     agent: t('permissions_resource_agent'),
     tool: t('permissions_resource_tool'),
@@ -242,7 +242,7 @@ const getCategoryLabel = (category: string, t: (key: string) => string): string 
 };
 
 // Helper to get action options by resource type
-const getActionOptions = (resourceType: string, t: (key: string) => string) => {
+const getActionOptions = (resourceType: string, t: any) => {
   const actionMap: Record<string, { value: string; label: string }[]> = {
     agent: [
       { value: 'read', label: t('permissions_action_read') },
@@ -927,7 +927,7 @@ function PermissionPanel({
       <div className="flex items-center justify-between w-full">
         <div className="flex flex-col">
           <Space>
-            <Tag color={getCategoryColor(item.policy.category)} size="small">
+            <Tag color={getCategoryColor(item.policy.category)}>
               {getCategoryLabel(item.policy.category, t)}
             </Tag>
             <span className="font-medium">{item.title}</span>
@@ -987,7 +987,7 @@ function PermissionPanel({
           <Transfer
             dataSource={transferDataSource}
             targetKeys={targetKeys}
-            onChange={handleTransferChange}
+            onChange={handleTransferChange as any}
             disabled={readonly}
             titles={[t('permissions_available_roles'), t('permissions_assigned_roles')]}
             render={(item) => renderTransferItem(item as TransferItem)}

@@ -254,7 +254,7 @@ export class VisComponentRegistry {
   private static definitions: Map<string, VisComponentDefinition> = new Map();
 
   static register<T extends VisComponentProps>(definition: VisComponentDefinition<T>): void {
-    this.definitions.set(definition.tag, definition);
+    this.definitions.set(definition.tag, definition as any);
   }
 
   static get(tag: string): VisComponentDefinition | undefined {

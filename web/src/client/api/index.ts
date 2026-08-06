@@ -136,3 +136,4 @@ export * from './workspace-asset';
 export * from './delivery';
 export * from './intervention';
 export * from './trigger';
+export * from './async-task';

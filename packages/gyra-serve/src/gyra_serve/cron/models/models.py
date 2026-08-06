@@ -5,6 +5,7 @@ This module defines the database entity and data access object for cron jobs.
 
 import json
 import logging
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Union
@@ -114,6 +115,49 @@ class CronJobEntity(Model):
             f"CronJobEntity(id={self.id}, name='{self.name}', "
             f"enabled={self.enabled}, schedule_kind='{self.schedule_kind}', "
             f"payload_kind='{self.payload_kind}')"
+        )
+
+
+class CronJobLogEntity(Model):
+    """Database entity for cron job execution logs.
+
+    Each row records one execution of a cron job (scheduled or manual),
+    so the frontend can show a success/failure history rather than only
+    the latest run state on the job entity.
+    """
+
+    __tablename__ = "gyra_serve_cron_job_log"
+
+    # Primary key
+    id = Column(String(64), primary_key=True, comment="Log unique identifier")
+
+    # Reference back to the cron job
+    job_id = Column(String(64), index=True, nullable=False, comment="Cron job id")
+
+    # Execution outcome
+    run_at_ms = Column(Integer, nullable=False, comment="Run start time in ms")
+    status = Column(
+        String(32), nullable=False, comment="Execution status (ok/error/skipped)"
+    )
+    duration_ms = Column(Integer, nullable=True, comment="Execution duration in ms")
+    error = Column(Text, nullable=True, comment="Error message if failed")
+    trigger = Column(
+        String(32), default="scheduled", comment="Trigger source (scheduled/manual)"
+    )
+
+    # Timestamps
+    gmt_create = Column(
+        DateTime,
+        name="gmt_create",
+        default=datetime.now,
+        nullable=False,
+        comment="Record creation time",
+    )
+
+    def __repr__(self):
+        return (
+            f"CronJobLogEntity(id={self.id}, job_id={self.job_id}, "
+            f"status={self.status}, run_at_ms={self.run_at_ms})"
         )
 
 
@@ -409,3 +453,83 @@ class ServeDao(BaseDao[CronJobEntity, ServeRequest, ServerResponse]):
             for job in jobs:
                 session.expunge(job)
             return jobs
+
+    def record_log(
+        self,
+        job_id: str,
+        run_at_ms: Optional[int] = None,
+        status: str = "ok",
+        duration_ms: Optional[int] = None,
+        error: Optional[str] = None,
+        trigger: str = "scheduled",
+    ) -> None:
+        """Persist a single cron job execution log.
+
+        Args:
+            job_id: The owning cron job id.
+            run_at_ms: Run start time in ms (defaults to now).
+            status: Execution status (ok/error/skipped).
+            duration_ms: Execution duration in ms.
+            error: Error message if failed.
+            trigger: Trigger source (scheduled/manual).
+        """
+        log = CronJobLogEntity(
+            id=uuid.uuid4().hex[:16],
+            job_id=job_id,
+            run_at_ms=run_at_ms if run_at_ms is not None else int(time.time() * 1000),
+            status=status,
+            duration_ms=duration_ms,
+            error=error,
+            trigger=trigger,
+            gmt_create=datetime.now(),
+        )
+        with self.session() as session:
+            session.add(log)
+            session.commit()
+
+    def list_logs(self, job_id: str, limit: int = 50) -> list[dict]:
+        """List the most recent execution logs for a job (newest first).
+
+        Args:
+            job_id: The owning cron job id.
+            limit: Maximum number of logs to return.
+
+        Returns:
+            List of log dicts (id, job_id, run_at_ms, status, duration_ms,
+            error, trigger, gmt_create).
+        """
+        with self.session(commit=False) as session:
+            rows = (
+                session.query(CronJobLogEntity)
+                .filter(CronJobLogEntity.job_id == job_id)
+                .order_by(CronJobLogEntity.run_at_ms.desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": r.id,
+                    "job_id": r.job_id,
+                    "run_at_ms": r.run_at_ms,
+                    "status": r.status,
+                    "duration_ms": r.duration_ms,
+                    "error": r.error,
+                    "trigger": r.trigger,
+                    "gmt_create": r.gmt_create.strftime("%Y-%m-%d %H:%M:%S")
+                    if r.gmt_create
+                    else None,
+                }
+                for r in rows
+            ]
+
+    def delete_logs_by_job(self, job_id: str) -> None:
+        """Delete all execution logs for a job (used when the job is removed).
+
+        Args:
+            job_id: The owning cron job id.
+        """
+        with self.session() as session:
+            session.query(CronJobLogEntity).filter(
+                CronJobLogEntity.job_id == job_id
+            ).delete()
+            session.commit()

@@ -56,7 +56,7 @@ function getCfg(resource: any, key: string, fallback = '') {
 /**
  * 空间模型:为空间绑定可用模型并配置专属 token(api_key_ref 引用加密 secrets)。
  * 未配置任何空间模型时,空间任务/对话回退到全局默认模型(agent 配置)。
- * 空间管理员(owner/approver)可维护,成员只读。
+ * 空间管理员 owner(管理)可维护,成员只读。
  */
 export function SpaceModelsTab({
   workspaceId, workspaceCode, canManage = true,

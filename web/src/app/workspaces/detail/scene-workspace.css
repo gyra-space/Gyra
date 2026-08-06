@@ -288,6 +288,13 @@
   min-height: 0;
 }
 
+/* 子任务对话内联容器:去掉内边距,交由 ChatSession(minimal) 自行撑满与滚动
+   (与任务详情页的 flex-1 + h-full 嵌入模式一致) */
+.ws-scene-space__body--subagent {
+  padding: 0;
+  overflow: hidden;
+}
+
 /* === 场景空间预览面板(步骤/文件/实体) === */
 .ws-preview {
   display: flex;
@@ -1018,8 +1025,8 @@
 }
 
 .ws-agent-renderer__summary {
-  padding-top: 8px;
-  border-top: 1px solid var(--ws-border-subtle);
+  /* 与上方工具步骤流以留白分隔(叠加父级 4px gap),不用生硬分割线 */
+  margin-top: 10px;
   font-size: 13px;
   color: var(--ws-ink);
   line-height: 1.7;
@@ -1500,10 +1507,9 @@
 .ws-rail-more {
   margin-top: 4px; padding: 7px 0;
   text-align: center; font-size: 11.5px; font-weight: 500;
-  color: var(--ws-accent); background: var(--ws-accent-light);
-  border-radius: 8px; cursor: pointer; transition: filter .15s;
+  color: var(--ws-ink-2); background: var(--ws-surface-2, rgba(0,0,0,.03));
+  border-radius: 8px;
 }
-.ws-rail-more:hover { filter: brightness(0.97); }
 
 /* === 响应式断点(置于文件末尾,确保覆盖上文同优先级基础规则) === */
 

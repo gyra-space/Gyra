@@ -125,7 +125,7 @@ class SpawnAgentTaskTool(ToolBase):
                 tool_name=self.name,
             )
 
-        # 获取 AsyncTaskManager
+        # 获取 AsyncTaskManager（统一单例优先；无注入时回退 context 资源）
         manager = self._manager
         if not manager and context:
             manager = (
@@ -133,6 +133,10 @@ class SpawnAgentTaskTool(ToolBase):
                 if hasattr(context, "get_resource")
                 else None
             )
+        if not manager:
+            from ....util.async_task_manager import AsyncTaskManager
+
+            manager = AsyncTaskManager.media_instance()
 
         if not manager:
             return ToolResult.fail(
@@ -143,12 +147,40 @@ class SpawnAgentTaskTool(ToolBase):
         try:
             from ....util.async_task_manager import AsyncTaskSpec
 
+            conv_id = ""
+            if context is not None:
+                conv_id = getattr(context, "conversation_id", "") or ""
+
+            # 统一单例下 subagent 任务需经 delegate 委派；若 context 提供
+            # subagent_delegate_factory，则用其构造委派协程（否则回退 manager 内置
+            # subagent_manager，兼容非统一实例）。
+            delegate = None
+            if context is not None:
+                factory = None
+                try:
+                    factory = (
+                        context.get_resource("subagent_delegate_factory")
+                        if hasattr(context, "get_resource")
+                        else None
+                    )
+                except Exception:  # noqa: BLE001
+                    factory = None
+                if callable(factory):
+                    delegate = lambda: factory(  # noqa: E731
+                        subagent_name=agent_name,
+                        task=task,
+                        conv_id=conv_id,
+                        context=args.get("context", {}),
+                    )
+
             spec = AsyncTaskSpec(
                 agent_name=agent_name,
                 task_description=task,
                 context=args.get("context", {}),
                 timeout=args.get("timeout", 300),
                 depend_on=args.get("depend_on", []),
+                conv_id=conv_id,
+                delegate=delegate,
             )
 
             task_id = await manager.spawn(spec)
@@ -170,7 +202,17 @@ class SpawnAgentTaskTool(ToolBase):
             return ToolResult.ok(
                 output=output,
                 tool_name=self.name,
-                metadata={"task_id": task_id, "agent_name": agent_name},
+                metadata={
+                    "task_id": task_id,
+                    "agent_name": agent_name,
+                    # 供 ToolAction 在工具执行处登记 pending 异步任务
+                    "async_task": {
+                        "task_id": task_id,
+                        "kind": "subagent",
+                        "model": agent_name,
+                        "conv_id": conv_id,
+                    },
+                },
             )
 
         except Exception as e:

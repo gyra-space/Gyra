@@ -251,7 +251,7 @@ export default function TabScenes() {
   // Sync selected scenes from appInfo
   useEffect(() => {
     if (appInfo?.scenes && appInfo.scenes.length > 0) {
-      const serverHasNewScenes = appInfo.scenes.some(id => !selectedScenes.includes(id));
+      const serverHasNewScenes = appInfo.scenes.some((id: string) => !selectedScenes.includes(id));
       const localHasUnsyncedScenes = selectedScenes.some(id => !appInfo.scenes.includes(id));
       const isInitializing = selectedScenes.length === 0;
       

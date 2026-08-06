@@ -1,6 +1,7 @@
 'use client';
 
-import { apiInterceptors, getWorkspaceInfo, listMembers, addMember, removeMember, updateMemberRole, updateWorkspace } from '@/client/api';
+import { apiInterceptors, getOrCreateHomeWorkspace, getWorkspaceInfo, listMembers, addMember, removeMember, updateMemberRole, updateWorkspace, setHomeWorkspace } from '@/client/api';
+import { usersService, type User } from '@/services/users';
 import { getUserId } from '@/utils';
 import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Spin, Table, Tag } from 'antd';
 import { useRequest } from 'ahooks';
@@ -19,6 +20,8 @@ export default function SettingsPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [userOptions, setUserOptions] = useState<User[]>([]);
+  const [searching, setSearching] = useState(false);
   const { message } = App.useApp();
 
   const { data: ws, loading, refresh } = useRequest(async () => {
@@ -29,19 +32,42 @@ export default function SettingsPage() {
 
   const { data: members, refresh: refreshMembers } = useRequest(async () => {
     if (!ws?.id) return [];
-    const [err, res] = await apiInterceptors(listMembers(ws.id));
+    const [err, res] = await apiInterceptors(listMembers({ workspace_id: ws.id }));
     return err ? [] : res || [];
   }, { refreshDeps: [ws?.id] });
 
-  // 权限整合:空间管理员(owner/approver)才可维护空间模型,成员只读。
+  // 权限整合:空间管理员 owner(管理)才可维护空间模型,成员只读。
   const { data: canManage } = useRequest(async () => {
     if (!ws?.id) return false;
     const [err, res] = await apiInterceptors(listMembers({ workspace_id: ws.id }));
     if (err) return false;
     const list = Array.isArray(res) ? res : ((res as any)?.data || []);
     const me = list.find((m: any) => String(m.user_id) === String(getUserId()));
-    return me?.role === 'owner' || me?.role === 'approver';
+    return me?.role === 'owner';
   }, { refreshDeps: [ws?.id] });
+
+  // 当前用户的默认(主)空间:用于标记"已是默认空间"。
+  const { data: homeWs, refresh: refreshHome } = useRequest(async () => {
+    const [err, res] = await apiInterceptors(
+      getOrCreateHomeWorkspace({ user_id: Number(getUserId()) || 0 }),
+    );
+    return err ? null : res;
+  }, { refreshDeps: [ws?.id] });
+  const isHome = !!ws && !!homeWs && (homeWs as any)?.workspace_code === ws.workspace_code;
+  const [settingHome, setSettingHome] = useState(false);
+
+  const handleSetHome = async () => {
+    if (!ws?.id) return;
+    setSettingHome(true);
+    const [err] = await apiInterceptors(setHomeWorkspace({
+      workspace_id: ws.id,
+      user_id: Number(getUserId()) || 0,
+    }));
+    setSettingHome(false);
+    if (err) { message.error(err.message); return; }
+    message.success('已设为默认空间');
+    refreshHome();
+  };
 
   const handleEditSave = async () => {
     try {
@@ -57,6 +83,24 @@ export default function SettingsPage() {
       setEditOpen(false);
       refresh();
     } catch (e) {}
+  };
+
+  const handleSearchUser = async (keyword: string) => {
+    setSearching(true);
+    try {
+      // 空关键词也加载全部用户，便于在“添加成员”下拉中直接浏览并选择所有平台用户
+      const res = await usersService.listUsers(1, 20, keyword);
+      setUserOptions(res?.list || []);
+    } catch {
+      setUserOptions([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handleOpenAddMember = () => {
+    setAddMemberOpen(true);
+    handleSearchUser('');
   };
 
   const handleAddMember = async () => {
@@ -100,7 +144,18 @@ export default function SettingsPage() {
       </div>
 
       <Card title={t('settings.basic') || 'Basic Info'} className="mb-4"
-        extra={<Button onClick={() => { form.setFieldsValue(ws); setEditOpen(true); }}>Edit</Button>}>
+        extra={<div className="flex items-center gap-2">
+          {isHome && <Tag color="blue">默认空间</Tag>}
+          <Button
+            type={isHome ? 'default' : 'primary'}
+            disabled={isHome}
+            loading={settingHome}
+            onClick={handleSetHome}
+          >
+            {isHome ? '已是默认空间' : '设为默认空间'}
+          </Button>
+          <Button onClick={() => { form.setFieldsValue(ws); setEditOpen(true); }}>Edit</Button>
+        </div>}>
         <Descriptions column={2} bordered size="small">
           <Descriptions.Item label="Code">{ws.workspace_code}</Descriptions.Item>
           <Descriptions.Item label="Name">{ws.name}</Descriptions.Item>
@@ -113,7 +168,7 @@ export default function SettingsPage() {
       </Card>
 
       <Card title={t('settings.members') || 'Members'}
-        extra={<Button onClick={() => setAddMemberOpen(true)}>+ {t('settings.add_member') || 'Add Member'}</Button>}>
+        extra={<Button onClick={handleOpenAddMember}>+ {t('settings.add_member') || 'Add Member'}</Button>}>
         <Table
           rowKey="id"
           size="small"
@@ -130,7 +185,11 @@ export default function SettingsPage() {
                   size="small"
                   value={role}
                   onChange={(v) => handleRoleChange(r.user_id, v)}
-                  options={['owner', 'contributor', 'approver', 'viewer'].map(v => ({ value: v, label: v }))}
+                  options={[
+                    { value: 'owner', label: '管理' },
+                    { value: 'contributor', label: '使用' },
+                    { value: 'viewer', label: '查看' },
+                  ]}
                   disabled={role === 'owner'}
                 />
               ),
@@ -173,9 +232,25 @@ export default function SettingsPage() {
         okText="Add"
       >
         <Form form={memberForm} layout="vertical" className="mt-4" initialValues={{ role: 'contributor' }}>
-          <Form.Item name="user_id" label="User ID" rules={[{ required: true }]}><Input type="number" /></Form.Item>
+          <Form.Item name="user_id" label="User" rules={[{ required: true, message: 'Search and select a user' }]}>
+            <Select
+              showSearch
+              filterOption={false}
+              loading={searching}
+              placeholder="Search by username / name / email"
+              onSearch={handleSearchUser}
+              notFoundContent={searching ? <Spin size="small" /> : null}
+              options={userOptions.map((u) => ({
+                value: u.id,
+                label: `${u.name}${u.fullname ? ` (${u.fullname})` : ''}${u.email ? ` · ${u.email}` : ''}`,
+              }))}
+            />
+          </Form.Item>
           <Form.Item name="role" label="Role">
-            <Select options={['contributor', 'approver', 'viewer'].map(v => ({ value: v, label: v }))} />
+            <Select options={[
+              { value: 'contributor', label: '使用' },
+              { value: 'viewer', label: '查看' },
+            ]} />
           </Form.Item>
         </Form>
       </Modal>

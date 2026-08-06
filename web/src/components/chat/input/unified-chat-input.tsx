@@ -498,7 +498,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
     let changed = false;
     if (defaultBoundSkills.length > 0 && (!selectedSkills || selectedSkills.length === 0)) {
-      setSelectedSkills(defaultBoundSkills);
+      setSelectedSkills(defaultBoundSkills as any);
       changed = true;
     }
     if (defaultBoundMcps.length > 0 && selectedMcps.length === 0) {
@@ -944,7 +944,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
           },
         ];
         setChatInParams(newChatInParams);
-        setResourceValue(updatedResources as Record<string, unknown>);
+        setResourceValue(updatedResources as unknown as Record<string, unknown>);
         
         message.success(t('upload_success', '上传成功'));
       }
@@ -1312,7 +1312,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
         setResourceValue(null);
       } else {
         // 直接存储数组
-        setResourceValue(newResources as Record<string, unknown>);
+        setResourceValue(newResources as unknown as Record<string, unknown>);
       }
       
       const chatInParamsResource = chatInParams.find((i: ChatInParamItem) => i.param_type === 'resource');
@@ -2050,7 +2050,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
         open={isConnectorsModalOpen}
         onCancel={() => setIsConnectorsModalOpen(false)}
         defaultTab="skill"
-        selectedSkills={selectedSkills}
+        selectedSkills={selectedSkills as any}
         onSkillsChange={setSelectedSkills}
         selectedMcps={selectedMcps}
         onMcpsChange={setSelectedMcps}

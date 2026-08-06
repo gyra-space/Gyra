@@ -74,6 +74,17 @@ export interface CronStatus {
   next_wake_at_ms?: number;
 }
 
+export interface CronJobLog {
+  id: string;
+  job_id: string;
+  run_at_ms: number;
+  status: 'ok' | 'error' | 'skipped';
+  duration_ms?: number;
+  error?: string;
+  trigger?: string;
+  gmt_create?: string;
+}
+
 // API endpoints
 const API_PREFIX = '/api/v1/serve/cron';
 
@@ -161,6 +172,15 @@ export interface CronValidateResult {
   next_runs?: string[];
   error?: string;
 }
+
+/**
+ * Get execution logs (success/failure history) for a cron job
+ */
+export const getCronJobLogs = (jobId: string, limit = 50) => {
+  return GET<{ limit: number }, CronJobLog[]>(`${API_PREFIX}/jobs/${jobId}/logs`, {
+    limit,
+  });
+};
 
 /**
  * Validate a cron expression and preview next run times

@@ -326,12 +326,34 @@ class GptsConversationsDao(BaseDao):
             session.close()
 
     def get_running_convs(self) -> list:
-        """PR 4: 查所有 state=RUNNING 的会话（RecoveryDaemon 启动扫描用）。"""
+        """PR 4: 查所有 state=RUNNING 的会话（RecoveryDaemon 启动扫描用）。
+
+        状态列存储的是 Status.X.value（小写，如 "running"），因此这里用小写匹配。
+        """
         session = self.get_raw_session()
         try:
             return (
                 session.query(GptsConversationsEntity)
-                .filter(GptsConversationsEntity.state == "RUNNING")
+                .filter(GptsConversationsEntity.state == "running")
+                .all()
+            )
+        finally:
+            session.close()
+
+    def get_waiting_convs(self) -> list:
+        """查所有 state=WAITING 的会话（异步任务恢复守护启动扫描用）。
+
+        会话处于 WAITING 且 extra 含 pending_async_tasks / pending_subagents 时，
+        说明主 agent 已结束本轮、正在等后台任务。进程重启后由
+        AsyncTaskCoordinator.recover_all 扫描这些会话，按台账/内存态恢复未完成任务。
+
+        状态列存储的是 Status.X.value（小写，如 "waiting"），因此这里用小写匹配。
+        """
+        session = self.get_raw_session()
+        try:
+            return (
+                session.query(GptsConversationsEntity)
+                .filter(GptsConversationsEntity.state == "waiting")
                 .all()
             )
         finally:

@@ -274,10 +274,10 @@ export default function CustomPermissions({ roles: externalRoles }: CustomPermis
       const role = roleList.find((r) => r.id === p.role_id);
       const preset = findMatchingPreset(p.resource_type, p.action, p.resource_id);
       const name = preset
-        ? t(preset.labelKey)
+        ? t(preset.labelKey as any)
         : `${p.resource_type}_${p.action}_${isPresetScope(p.resource_id) ? 'all' : p.resource_id}`;
       const description = preset
-        ? t(preset.descKey)
+        ? t(preset.descKey as any)
         : `${p.resource_type} / ${p.resource_id} / ${p.action}`;
       return {
         id: p.id,
@@ -300,10 +300,10 @@ export default function CustomPermissions({ roles: externalRoles }: CustomPermis
     (def: PermissionDefinition): CustomPolicy => {
       const preset = findMatchingPreset(def.resource_type, def.action, def.resource_id);
       const name = def.name || (preset
-        ? t(preset.labelKey)
+        ? t(preset.labelKey as any)
         : `${def.resource_type}_${def.action}_${isPresetScope(def.resource_id) ? 'all' : def.resource_id}`);
       const description = def.description || (preset
-        ? t(preset.descKey)
+        ? t(preset.descKey as any)
         : `${def.resource_type} / ${def.resource_id} / ${def.action}`);
       return {
         id: def.id,
@@ -759,7 +759,7 @@ export default function CustomPermissions({ roles: externalRoles }: CustomPermis
                 icon={<CopyOutlined />}
                 onClick={() => applyTemplate(template)}
               >
-                {t(template.labelKey)}
+                {t(template.labelKey as any)}
               </Button>
             ))}
           </Space>

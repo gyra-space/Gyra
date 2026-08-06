@@ -100,7 +100,7 @@ class SeedanceVideoProvider(MediaGenProvider):
 
         The HTTP submit runs synchronously so immediate errors (auth, bad
         params) surface now. Polling + download is deferred to
-        ``submission.complete()`` for background execution via MediaJobRegistry.
+        ``submission.complete()`` for background execution via AsyncTaskManager.
         """
         try:
             import httpx

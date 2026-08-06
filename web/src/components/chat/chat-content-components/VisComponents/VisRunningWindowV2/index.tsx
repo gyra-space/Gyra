@@ -112,7 +112,6 @@ export const VisRunningWindowV2: FC<IProps> = ({ otherComponents, data }) => {
   const explorerContent = useMemo(
     () => (
       <ExplorerPanel $visible={isExplorerVisible}>
-        {/* @ts-expect-error GPTVis components */}
         <GPTVis
           components={{ ...codeComponents, ...(otherComponents || {}) }}
           {...markdownPlugins}
@@ -132,7 +131,6 @@ export const VisRunningWindowV2: FC<IProps> = ({ otherComponents, data }) => {
   const mainContent = useMemo(
     () => (
       <ContentBody ref={contentRef}>
-        {/* @ts-expect-error GPTVis components */}
         <GPTVis
           className="prose prose-sm max-w-none"
           components={{ ...codeComponents, ...(otherComponents || {}) }}

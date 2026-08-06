@@ -3,23 +3,14 @@ import { getAppStrategy, getAppStrategyValues, promptTypeTarget, getChatLayout, 
 import { AppContext } from '@/contexts';
 import { safeJsonParse } from '@/utils/json';
 import { useRequest } from 'ahooks';
-import { Checkbox, Form, Input, InputNumber, Radio, Select, Tag, Modal, Switch, Tooltip } from 'antd';
+import { Checkbox, Form, Input, InputNumber, Radio, Select, Tag, Switch, Tooltip } from 'antd';
 import { isString, uniqBy } from 'lodash';
-import Image from 'next/image';
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ChatLayoutConfig from './chat-layout-config';
-import { EditOutlined, PictureOutlined, ThunderboltOutlined, CloudServerOutlined, HomeOutlined, HeartOutlined, CodeOutlined, SwapOutlined, DatabaseOutlined, AlertOutlined, GlobalOutlined, SafetyOutlined, DashboardOutlined, BugOutlined, ApiOutlined } from '@ant-design/icons';
-import { SmartPluginIcon } from '@/components/icons/smart-plugin-icon';
-
-const iconOptions = [
-  { value: 'smart-plugin', label: '智能插件', category: 'preset', color: 'from-indigo-500 to-purple-500', isSvg: true },
-  { value: '/agents/agent1.jpg', label: '数据分析', category: 'preset', color: 'from-emerald-500 to-teal-500' },
-  { value: '/agents/agent2.jpg', label: '代码助手', category: 'preset', color: 'from-violet-500 to-purple-500' },
-  { value: '/agents/agent3.jpg', label: '文档处理', category: 'preset', color: 'from-orange-500 to-amber-500' },
-  { value: '/agents/agent4.jpg', label: '安全审计', category: 'preset', color: 'from-rose-500 to-pink-500' },
-  { value: '/agents/agent5.jpg', label: '系统运维', category: 'preset', color: 'from-cyan-500 to-blue-500' },
-];
+import MultimediaAgentConfig from './multimedia-agent-config';
+import { ThunderboltOutlined, PictureOutlined, CloudServerOutlined, HomeOutlined, HeartOutlined, CodeOutlined, SwapOutlined, DatabaseOutlined, AlertOutlined, GlobalOutlined, SafetyOutlined, DashboardOutlined, BugOutlined, ApiOutlined } from '@ant-design/icons';
+import { AgentAvatarPicker } from '@/components/common/agent-avatar-picker';
 
 const layoutConfigChangeList = [
   'chat_in_layout',
@@ -35,6 +26,9 @@ const layoutConfigValueChangeList = [
   'temperature_value',
   'max_new_tokens_value',
 ];
+
+// 多媒体 Agent 作为一等公民主 Agent 模板的主运行时取值（app.agent = MULTIMEDIA）
+const MULTIMEDIA_AGENT_TYPE = 'MULTIMEDIA';
 
 // 首页场景图标预设
 const HOME_SCENE_ICON_OPTIONS = [
@@ -68,10 +62,12 @@ export default function TabOverview() {
   const { t } = useTranslation();
   const { appInfo, fetchUpdateApp } = useContext(AppContext);
   const [form] = Form.useForm();
-  const [selectedIcon, setSelectedIcon] = useState<string>(appInfo?.icon || 'smart-plugin');
-  const [isIconModalOpen, setIsIconModalOpen] = useState(false);
   const [resourceOptions, setResourceOptions] = useState<any[]>([]);
   const [homeSceneFeatured, setHomeSceneFeatured] = useState<boolean>(appInfo?.ext_config?.home_scene?.featured ?? false);
+  // 多媒体 Agent 类型是否处于选中态（由「Agent 类型」下拉驱动，仅启用配套模板，不改主运行时）
+  const [multimediaMode, setMultimediaMode] = useState<boolean>(
+    !!appInfo?.ext_config?.multimedia_agent?.enabled,
+  );
 
   // Initialize form values from appInfo
   useEffect(() => {
@@ -102,7 +98,12 @@ export default function TabOverview() {
         : (teamContext || {});
 
       const defaultV1Agent = 'BAIZE';
-      const v1AgentValue = appInfo.agent || defaultV1Agent;
+      const multimediaEnabled =
+        appInfo.agent === MULTIMEDIA_AGENT_TYPE ||
+        !!appInfo?.ext_config?.multimedia_agent?.enabled;
+      const v1AgentValue = multimediaEnabled
+        ? MULTIMEDIA_AGENT_TYPE
+        : (appInfo.agent || defaultV1Agent);
 
       const homeScene = appInfo?.ext_config?.home_scene;
       const formValues: any = {
@@ -128,7 +129,7 @@ export default function TabOverview() {
       }
       form.setFieldsValue(formValues);
 
-      setSelectedIcon(appInfo.icon || 'smart-plugin');
+      setMultimediaMode(multimediaEnabled);
 
       if (!appInfo.agent) {
         fetchUpdateApp({ ...appInfo, agent: defaultV1Agent });
@@ -178,6 +179,18 @@ export default function TabOverview() {
   const targetOptions = useMemo(() => targetData?.data?.data?.map((o: any) => ({
     ...o, value: o.name, label: (<div className="flex justify-between items-center"><span>{o.name}</span><span className="text-gray-400 text-xs">{o.desc}</span></div>),
   })), [targetData]);
+  // Agent 类型下拉：在普通主 Agent 之外追加「多媒体 Agent」一等公民模板选项
+  const agentTypeOptions = useMemo(() => [
+    ...(targetOptions || []).filter((o: any) => o.value !== MULTIMEDIA_AGENT_TYPE),
+    {
+      value: MULTIMEDIA_AGENT_TYPE,
+      label: (
+        <div className="flex justify-between items-center">
+          <span className="text-fuchsia-600 font-medium">多媒体 Agent</span>
+        </div>
+      ),
+    },
+  ] as any[], [targetOptions]);
   const layoutDataOptions = useMemo(() => layoutData?.data?.data?.map((o: any) => ({ ...o, value: o.name, label: `${o.description}[${o.name}]` })), [layoutData]);
   const reasoningEngineOptions = useMemo(() =>
     reasoningEngineData?.data?.data?.flatMap((item: any) =>
@@ -220,7 +233,35 @@ export default function TabOverview() {
     const [fieldValue] = Object.values(changedValues ?? {});
 
     if (fieldName === 'agent') {
-      fetchUpdateApp({ ...appInfo, agent: fieldValue });
+      if (fieldValue === MULTIMEDIA_AGENT_TYPE) {
+        // 多媒体 Agent 是一等公民主 Agent 模板：app.agent 持久化为 MULTIMEDIA +
+        // 启用配套模板配置（同一个请求里同时写 agent 与 ext_config.enabled，避免竞态覆盖）
+        setMultimediaMode(true);
+        fetchUpdateApp({
+          ...appInfo,
+          agent: MULTIMEDIA_AGENT_TYPE,
+          ext_config: {
+            ...(appInfo?.ext_config || {}),
+            multimedia_agent: {
+              ...(appInfo?.ext_config?.multimedia_agent || {}),
+              enabled: true,
+            },
+          },
+        });
+      } else {
+        setMultimediaMode(false);
+        fetchUpdateApp({
+          ...appInfo,
+          agent: fieldValue,
+          ext_config: {
+            ...(appInfo?.ext_config || {}),
+            multimedia_agent: {
+              ...(appInfo?.ext_config?.multimedia_agent || {}),
+              enabled: false,
+            },
+          },
+        });
+      }
     } else if (fieldName === 'agent_version') {
       fetchUpdateApp({ ...appInfo, agent_version: fieldValue as string });
     } else if (fieldName === 'llm_strategy') {
@@ -268,8 +309,6 @@ export default function TabOverview() {
   };
 
   const handleIconSelect = (iconValue: string) => {
-    setSelectedIcon(iconValue);
-    setIsIconModalOpen(false);
     fetchUpdateApp({ ...appInfo, icon: iconValue });
   };
 
@@ -290,30 +329,13 @@ export default function TabOverview() {
             </h3>
             {/* 头像 + 名称 + 描述 */}
             <div className="flex items-start gap-5">
-              <div className="flex flex-col items-center gap-2 shrink-0">
-                <div
-                  className="relative group w-16 h-16 rounded-2xl border-2 border-gray-200/80 shadow-md hover:shadow-xl hover:border-blue-300/60 transition-all duration-300 cursor-pointer ring-4 ring-white flex items-center justify-center bg-gradient-to-br from-indigo-50 to-purple-50"
-                  onClick={() => setIsIconModalOpen(true)}
-                >
-                  <div className="w-full h-full rounded-2xl overflow-hidden">
-                    {selectedIcon === 'smart-plugin' ? (
-                      <SmartPluginIcon size={56} className="relative z-10" />
-                    ) : (
-                      <Image src={selectedIcon} width={64} height={64} alt="agent icon" className="object-cover w-full h-full" unoptimized />
-                    )}
-                  </div>
-                  <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-300 backdrop-blur-[2px] bg-black/40 rounded-2xl">
-                    <EditOutlined className="text-white text-xl drop-shadow-lg" />
-                  </div>
-                  {selectedIcon && (
-                    <div className="absolute -top-1.5 -right-1.5 w-6 h-6 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full border-2 border-white flex items-center justify-center shadow-md z-20">
-                      <span className="text-white text-[10px] font-bold">✓</span>
-                    </div>
-                  )}
-                </div>
-                <span className="text-xs text-gray-500 font-medium">
-                  {iconOptions.find(i => i.value === selectedIcon)?.label || t('App_icon')}
-                </span>
+              <div className="flex flex-col items-start gap-2 shrink-0">
+                <AgentAvatarPicker
+                  value={appInfo?.icon}
+                  name={appInfo?.app_name}
+                  size={64}
+                  onChange={handleIconSelect}
+                />
               </div>
               {/* 名称(满宽) + 描述(多行满宽) 纵向堆叠 */}
               <div className="flex-1 space-y-4">
@@ -343,37 +365,46 @@ export default function TabOverview() {
                 >
                   <Select
                     placeholder={t('baseinfo_select_agent_type')}
-                    options={targetOptions}
+                    options={agentTypeOptions}
                     allowClear
                     className="w-full [&_.ant-select-selector]:!rounded-xl [&_.ant-select-selector]:border-gray-200 [&_.ant-select-selector]:focus-within:border-violet-400 [&_.ant-select-selector]:focus-within:ring-2 [&_.ant-select-selector]:focus-within:ring-violet-100"
                   />
                 </Form.Item>
-                {/* Runtime 版本选择器 */}
-                <Form.Item
-                  label={<span className="text-gray-600 font-medium text-[13px]">Runtime 版本</span>}
-                  name="agent_version"
-                  className="mb-0 col-span-2"
-                  tooltip="v1: 经典 BAIZE 运行时；v2: Core_v2 新运行时"
-                >
-                  <Radio.Group optionType="button" buttonStyle="solid">
-                    <Radio.Button value="v1">v1 (经典)</Radio.Button>
-                    <Radio.Button value="v2">v2 (Core_v2)</Radio.Button>
-                  </Radio.Group>
-                </Form.Item>
+                {/* Runtime 版本选择器（多媒体 Agent 不跑 LLM 运行时，隐藏） */}
+                {!multimediaMode && (
+                  <Form.Item
+                    label={<span className="text-gray-600 font-medium text-[13px]">Runtime 版本</span>}
+                    name="agent_version"
+                    className="mb-0 col-span-2"
+                    tooltip="v1: 经典 BAIZE 运行时；v2: Core_v2 新运行时"
+                  >
+                    <Radio.Group optionType="button" buttonStyle="solid">
+                      <Radio.Button value="v1">v1 (经典)</Radio.Button>
+                      <Radio.Button value="v2">v2 (Core_v2)</Radio.Button>
+                    </Radio.Group>
+                  </Form.Item>
+                )}
                 {is_reasoning_engine_agent && (
                   <Form.Item name="reasoning_engine" label={<span className="text-gray-600 font-medium text-[13px]">{t('baseinfo_reasoning_engine')}</span>} rules={[{ required: true, message: t('baseinfo_select_reasoning_engine') }]} className="mb-0 col-span-2">
                     <Select options={reasoningEngineOptions} placeholder={t('baseinfo_select_reasoning_engine')} className="w-full [&_.ant-select-selector]:!rounded-xl [&_.ant-select-selector]:border-gray-200 [&_.ant-select-selector]:focus-within:border-violet-400 [&_.ant-select-selector]:focus-within:ring-2 [&_.ant-select-selector]:focus-within:ring-violet-100" />
                   </Form.Item>
                 )}
-                {/* 模型策略 + 模型策略参数 并排 */}
-                <Form.Item label={<span className="text-gray-600 font-medium text-[13px]">{t('baseinfo_llm_strategy')}</span>} name="llm_strategy" rules={[{ required: true, message: t('baseinfo_select_llm_strategy') }]} className="mb-0">
-                  <Select options={strategyOptions} placeholder={t('baseinfo_select_llm_strategy')} className="w-full [&_.ant-select-selector]:!rounded-xl [&_.ant-select-selector]:border-gray-200 [&_.ant-select-selector]:focus-within:border-violet-400 [&_.ant-select-selector]:focus-within:ring-2 [&_.ant-select-selector]:focus-within:ring-violet-100" />
-                </Form.Item>
-                <Form.Item label={<span className="text-gray-600 font-medium text-[13px]">{t('baseinfo_llm_strategy_value')}</span>} name="llm_strategy_value" rules={[{ required: true, message: t('baseinfo_select_llm_model') }]} className="mb-0">
-                  <Select mode="multiple" allowClear options={llmOptions} placeholder={t('baseinfo_select_llm_model')} className="w-full [&_.ant-select-selector]:!rounded-xl [&_.ant-select-selector]:border-gray-200 [&_.ant-select-selector]:focus-within:border-violet-400 [&_.ant-select-selector]:focus-within:ring-2 [&_.ant-select-selector]:focus-within:ring-violet-100" maxTagCount="responsive"
-                    maxTagPlaceholder={(omittedValues) => (<Tag className="rounded-lg text-[10px] font-medium">+{omittedValues.length} ...</Tag>)} />
-                </Form.Item>
+                {/* 模型策略 + 模型策略参数 并排（多媒体 Agent 不跑 LLM，模型由「多媒体 Agent 模板」自动/只选多媒体模型管理） */}
+                {!multimediaMode && (
+                  <>
+                    <Form.Item label={<span className="text-gray-600 font-medium text-[13px]">{t('baseinfo_llm_strategy')}</span>} name="llm_strategy" rules={[{ required: true, message: t('baseinfo_select_llm_strategy') }]} className="mb-0">
+                      <Select options={strategyOptions} placeholder={t('baseinfo_select_llm_strategy')} className="w-full [&_.ant-select-selector]:!rounded-xl [&_.ant-select-selector]:border-gray-200 [&_.ant-select-selector]:focus-within:border-violet-400 [&_.ant-select-selector]:focus-within:ring-2 [&_.ant-select-selector]:focus-within:ring-violet-100" />
+                    </Form.Item>
+                    <Form.Item label={<span className="text-gray-600 font-medium text-[13px]">{t('baseinfo_llm_strategy_value')}</span>} name="llm_strategy_value" rules={[{ required: true, message: t('baseinfo_select_llm_model') }]} className="mb-0">
+                      <Select mode="multiple" allowClear options={llmOptions} placeholder={t('baseinfo_select_llm_model')} className="w-full [&_.ant-select-selector]:!rounded-xl [&_.ant-select-selector]:border-gray-200 [&_.ant-select-selector]:focus-within:border-violet-400 [&_.ant-select-selector]:focus-within:ring-2 [&_.ant-select-selector]:focus-within:ring-violet-100" maxTagCount="responsive"
+                        maxTagPlaceholder={(omittedValues) => (<Tag className="rounded-lg text-[10px] font-medium">+{omittedValues.length} ...</Tag>)} />
+                    </Form.Item>
+                  </>
+                )}
               </div>
+
+              {/* 多媒体 Agent 模板 - 仅当「Agent 类型」选择「多媒体 Agent」时展示 (配套子模板,供 spawn_agent_task 调用) */}
+              {multimediaMode && <MultimediaAgentConfig />}
             </div>
 
             {/* 首页场景配置子段 */}
@@ -489,85 +520,6 @@ export default function TabOverview() {
           </div>
         </div>
       </Form>
-
-      {/* Icon Selection Modal */}
-      <Modal
-        title={
-          <div className="flex items-center gap-3 pb-2 border-b border-gray-100">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/25">
-              <PictureOutlined className="text-white text-lg" />
-            </div>
-            <div>
-              <div className="font-semibold text-gray-800 text-base">{t('App_icon')}</div>
-              <div className="text-xs text-gray-400">选择一个代表您应用特性的图标</div>
-            </div>
-          </div>
-        }
-        open={isIconModalOpen}
-        onCancel={() => setIsIconModalOpen(false)}
-        footer={null}
-        width={520}
-        centered
-        className="[&_.ant-modal-content]:rounded-2xl [&_.ant-modal-content]:shadow-2xl [&_.ant-modal-header]:border-b-0 [&_.ant-modal-header]:pb-0 [&_.ant-modal-body]:pt-2"
-      >
-        <div className="py-4">
-          <div className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-3 px-1">预设图标</div>
-          <div className="grid grid-cols-3 gap-4">
-            {iconOptions.map(icon => (
-              <div
-                key={icon.value}
-                onClick={() => handleIconSelect(icon.value)}
-                className={`
-                  group cursor-pointer relative rounded-2xl p-4 transition-all duration-300
-                  ${selectedIcon === icon.value
-                    ? 'bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-400 shadow-lg shadow-blue-500/15 scale-[1.02]'
-                    : 'bg-gray-50/80 border-2 border-transparent hover:border-gray-200 hover:bg-white hover:shadow-lg hover:shadow-gray-200/50 hover:scale-[1.02]'
-                  }
-                `}
-              >
-                <div className="flex flex-col items-center gap-3">
-                  <div className={`
-                    relative w-16 h-16 rounded-2xl overflow-hidden shadow-md transition-all duration-300 flex items-center justify-center
-                    ${selectedIcon === icon.value ? 'ring-4 ring-blue-200/50' : 'group-hover:shadow-lg'}
-                  `}>
-                    <div className={`absolute inset-0 bg-gradient-to-br ${icon.color} opacity-10`} />
-                    {icon.isSvg ? (
-                      <SmartPluginIcon size={56} className="relative z-10" />
-                    ) : (
-                      <Image
-                        src={icon.value}
-                        width={64}
-                        height={64}
-                        alt={icon.label}
-                        className="object-cover w-full h-full relative z-10"
-                        unoptimized
-                      />
-                    )}
-                    {selectedIcon === icon.value && (
-                      <div className="absolute inset-0 bg-blue-500/10 flex items-center justify-center z-20">
-                        <div className="w-7 h-7 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center shadow-lg">
-                          <span className="text-white text-xs font-bold">✓</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  <span className={`
-                    text-xs font-medium text-center transition-colors duration-200
-                    ${selectedIcon === icon.value ? 'text-blue-600' : 'text-gray-600 group-hover:text-gray-800'}
-                  `}>
-                    {icon.label}
-                  </span>
-                </div>
-                {selectedIcon === icon.value && (
-                  <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full border-2 border-white flex items-center justify-center shadow-md">
-                    <span className="text-white text-[8px] font-bold">✓</span>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      </Modal>
     </div>
   );
 }

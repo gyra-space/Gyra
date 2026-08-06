@@ -413,7 +413,7 @@ export class IncrementalParamBuilder {
    */
   isStreaming(callId: string, paramName: string): boolean {
     const state = this.getParamState(callId, paramName);
-    return state?.isStreaming && !state.isComplete;
+    return (state?.isStreaming && !state.isComplete) || false;
   }
   
   /**

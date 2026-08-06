@@ -42,6 +42,31 @@ class GptAppResource(AppResource):
         """Return the app icon."""
         return self._app_icon
 
+    # 多媒体 Agent 配置缓存：None 表示未解析，dict 为已解析的启用配置
+    _multimedia_config_cache: Optional[dict] = None
+
+    def get_multimedia_config(self) -> Optional[dict]:
+        """返回该子 Agent app 的多媒体 Agent 配置（若启用），否则 None。
+
+        供 core 层按 app_code 寻址时解析目标 app 自身的 ``ext_config.multimedia_agent``，
+        从而动态构造绑定该 app 配置的独立 MultimediaAgent 实例（多实例互不覆盖）。
+        """
+        if self._multimedia_config_cache is not None:
+            return self._multimedia_config_cache
+        try:
+            from gyra_serve.building.app.service.service import Service as AppService
+
+            cfg = AppService.get_instance(CFG.SYSTEM_APP).get_multimedia_agent_config(
+                self._app_code
+            )
+        except Exception:  # noqa: BLE001 - 解析失败按非多媒体处理
+            cfg = None
+        if cfg and cfg.get("enabled"):
+            self._multimedia_config_cache = cfg
+        else:
+            self._multimedia_config_cache = None
+        return self._multimedia_config_cache
+
     @classmethod
     def _get_app_list(cls, **kwargs) -> List[AppInfo]:
         from gyra_serve.agent.agents.app_agent_manage import get_app_manager

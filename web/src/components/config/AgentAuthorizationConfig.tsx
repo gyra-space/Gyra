@@ -490,7 +490,7 @@ export function AgentAuthorizationConfig({
                 availableTools={availableTools}
                 placeholder={t('auth_select_whitelist', '选择白名单工具')}
                 disabled={disabled}
-                t={t}
+                t={t as any}
               />
             </Form.Item>
           </Col>
@@ -512,7 +512,7 @@ export function AgentAuthorizationConfig({
                 availableTools={availableTools}
                 placeholder={t('auth_select_blacklist', '选择黑名单工具')}
                 disabled={disabled}
-                t={t}
+                t={t as any}
               />
             </Form.Item>
           </Col>
@@ -534,7 +534,7 @@ export function AgentAuthorizationConfig({
                 onChange={(v) => handleChange('tool_overrides', v)}
                 availableTools={availableTools}
                 disabled={disabled}
-                t={t}
+                t={t as any}
               />
             </Panel>
           </Collapse>

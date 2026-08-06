@@ -669,7 +669,6 @@ const SkillPage: React.FC = () => {
                             task.status === 'failed' ? 'red' :
                             task.status === 'running' ? 'blue' : 'default'
                           }
-                          size="small"
                         >
                           {task.status}
                         </Tag>

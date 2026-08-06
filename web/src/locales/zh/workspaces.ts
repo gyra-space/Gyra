@@ -242,4 +242,5 @@ export const WorkspacesZh = {
   'deliveries.no_archived': '暂无归档产出',
   'deliveries.resend': '重发',
   'view': '查看',
+  'playbooks.visual_editor.resources.ecp': 'ECP 语义层',
 };

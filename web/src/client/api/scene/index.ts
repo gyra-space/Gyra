@@ -311,7 +311,7 @@ export function parseFrontMatter(content: string): ParsedSceneContent {
       let value: any = line.slice(colonIndex + 1).trim();
 
       if (value.startsWith('[') && value.endsWith(']')) {
-        value = value.slice(1, -1).split(',').map(v => v.trim()).filter(Boolean);
+        value = value.slice(1, -1).split(',').map((v: string) => v.trim()).filter(Boolean);
       } else if (value.startsWith('"') && value.endsWith('"')) {
         value = value.slice(1, -1);
       } else if (value.startsWith("'") && value.endsWith("'")) {

@@ -88,7 +88,7 @@ class Serve(BaseServe):
 
         Load the database model to ensure table creation.
         """
-        from .models.models import CronJobEntity  # noqa: F401
+        from .models.models import CronJobEntity, CronJobLogEntity  # noqa: F401
         # Import tools to register them with @system_tool decorator
         from .tools import create_cron_job  # noqa: F401
 

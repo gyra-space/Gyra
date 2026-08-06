@@ -2,69 +2,33 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { SmartPluginIcon } from '@/components/icons/smart-plugin-icon';
+import { getAvatarColor, getInitial, isDefaultAvatar, resolveAvatarUrl } from '@/utils/agent-avatar';
 
 interface AgentAvatarProps {
-  /** Agent icon URL. Empty values and the magic value `smart-plugin` are treated as unset. */
+  /** Agent icon URL / gyra-fs URI。空值、magic 值 `smart-plugin` 或历史默认占位图均视为未上传。 */
   icon?: string | null;
-  /** Agent name, used for the initial-letter fallback and image alt text. */
+  /** Agent name，用于首字母头像回退与图片 alt。 */
   name?: string | null;
-  /** Rendered size in pixels. */
+  /** 渲染尺寸（像素）。 */
   size?: number;
-  /** Additional classes for the avatar container (e.g. rounded shapes, borders). */
+  /** 附加类名（如圆角、边框）。 */
   className?: string;
-}
-
-const AVATAR_COLORS = [
-  '#4f46e5',
-  '#00b96b',
-  '#722ed1',
-  '#eb2f96',
-  '#fa8c16',
-  '#13c2c2',
-  '#2f54eb',
-  '#52c41a',
-  '#f5222d',
-  '#faad14',
-  '#9254de',
-  '#08979c',
-];
-
-function hashCode(str: string): number {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash);
-}
-
-function getAvatarColor(name: string): string {
-  return AVATAR_COLORS[hashCode(name) % AVATAR_COLORS.length];
-}
-
-function getInitial(name: string): string {
-  if (!name) return '?';
-  const trimmed = name.trim();
-  const first = trimmed[0];
-  if (!first) return '?';
-  // For CJK characters, take the first char directly
-  if (first.charCodeAt(0) > 0x4e00) {
-    return first;
-  }
-  // For ASCII, uppercase first letter
-  return first.toUpperCase();
+  /** 是否渲染为圆形（默认圆形，移除圆角样式时传 false）。 */
+  rounded?: boolean;
 }
 
 /**
- * Renders an agent icon with a system-style fallback:
- * 1. The provided icon URL.
- * 2. A colored circle with the agent's initial letter (matching the system avatar pattern).
- * 3. The SmartPlugin SVG icon if no name is available.
+ * 统一的 Agent 头像组件，全链路共用：
+ * 1. 已上传 icon → 渲染图片（自动 transformFileUrl，兼容 gyra-fs://）。
+ * 2. 未上传 → 名称首字母彩色头像（无名称时回退 SmartPlugin SVG 图标）。
+ * 3. 图片加载失败 → 自动回退到首字母头像。
  */
 export const AgentAvatar: React.FC<AgentAvatarProps> = ({
   icon,
   name,
   size = 36,
   className = '',
+  rounded = true,
 }) => {
   const [error, setError] = useState(false);
 
@@ -72,34 +36,27 @@ export const AgentAvatar: React.FC<AgentAvatarProps> = ({
     setError(false);
   }, [icon]);
 
-  const rawIcon = icon?.trim();
-  const isDefaultOrEmpty = !rawIcon || rawIcon === 'smart-plugin';
-
   const displayName = name || '';
   const initial = useMemo(() => getInitial(displayName), [displayName]);
   const bgColor = useMemo(() => getAvatarColor(displayName), [displayName]);
+  const src = useMemo(() => resolveAvatarUrl(isDefaultAvatar(icon) ? '' : icon), [icon]);
 
-  if (isDefaultOrEmpty || error) {
+  const containerCls = `flex items-center justify-center overflow-hidden ${className}`;
+  const radius = rounded ? 'rounded-full' : '';
+  const commonStyle = { width: size, height: size };
+
+  if (!src || error) {
     if (!displayName) {
       return (
-        <div
-          className={`flex items-center justify-center overflow-hidden ${className}`}
-          style={{ width: size, height: size }}
-        >
+        <div className={`${containerCls} ${radius}`} style={commonStyle}>
           <SmartPluginIcon size={Math.round(size * 0.75)} />
         </div>
       );
     }
-
     return (
       <div
-        className={`flex items-center justify-center overflow-hidden text-white font-medium ${className}`}
-        style={{
-          width: size,
-          height: size,
-          backgroundColor: bgColor,
-          fontSize: size * 0.45,
-        }}
+        className={`${containerCls} ${radius} text-white font-medium`}
+        style={{ ...commonStyle, backgroundColor: bgColor, fontSize: size * 0.45 }}
       >
         {initial}
       </div>
@@ -107,13 +64,11 @@ export const AgentAvatar: React.FC<AgentAvatarProps> = ({
   }
 
   return (
-    <div
-      className={`flex items-center justify-center overflow-hidden ${className}`}
-      style={{ width: size, height: size }}
-    >
+    <div className={`${containerCls} ${radius}`} style={commonStyle}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={rawIcon}
-        alt={name || 'Agent'}
+        src={src}
+        alt={displayName || 'Agent'}
         className="w-full h-full object-cover"
         onError={() => setError(true)}
       />

@@ -14,10 +14,10 @@ import {
 } from '@ant-design/icons';
 import { App, Dropdown, Tooltip } from 'antd';
 import copy from 'copy-to-clipboard';
-import React, { useContext, useEffect, useMemo, useState } from 'react';
+import React, { useContext, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRequest } from 'ahooks';
-import { SmartPluginIcon } from '@/components/icons/smart-plugin-icon';
+import { AgentAvatar } from '@/components/common/agent-avatar';
 import { useSearchParams } from 'next/navigation';
 import { useContextMetrics } from '@/contexts/context-metrics-context';
 import ContextMetricsDisplay from '../chat-content-components/ContextMetricsDisplay';
@@ -40,20 +40,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({ isScrollToTop = false, isProces
   const icon = useMemo(() => {
     return appInfo?.icon || '';
   }, [appInfo]);
-
-  const [iconError, setIconError] = useState(false);
-  useEffect(() => {
-    setIconError(false);
-  }, [icon]);
-
-  const isDefaultAvatar = useMemo(() => {
-    return (
-      !icon ||
-      icon === 'smart-plugin' ||
-      icon === '/agents/default_avatar.png' ||
-      icon === '/agents/chat_avatar_default.png'
-    );
-  }, [icon]);
 
   const isCollected = useMemo(() => {
     return appInfo?.is_collected === 'true';
@@ -138,29 +124,15 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({ isScrollToTop = false, isProces
 
   return (
     <div className="w-full flex-shrink-0 flex items-center px-5 py-3">
-      {/* App icon — no extra bg, just the image/icon directly */}
+      {/* App icon — 统一头像逻辑：已上传用图片，未上传用首字母头像 */}
       <div className="relative flex-shrink-0 mr-3">
-        <div className="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden">
-          {!isDefaultAvatar && !iconError ? (
-            <img
-              src={icon}
-              alt={appInfo?.app_name}
-              className="w-9 h-9 object-cover rounded-xl"
-              onError={() => setIconError(true)}
-            />
-          ) : icon === 'smart-plugin' && !iconError ? (
-            <img
-              src="/icons/colorful-plugin.png"
-              alt={appInfo?.app_name}
-              className="w-9 h-9 object-cover rounded-xl"
-              onError={() => setIconError(true)}
-            />
-          ) : (
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
-              <SmartPluginIcon size={22} />
-            </div>
-          )}
-        </div>
+        <AgentAvatar
+          icon={icon}
+          name={appInfo?.app_name}
+          size={36}
+          className="rounded-xl"
+          rounded={false}
+        />
         {isProcessing && (
           <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5">
             <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-60" />

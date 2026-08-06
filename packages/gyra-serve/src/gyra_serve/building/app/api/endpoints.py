@@ -1,8 +1,8 @@
 import logging
 from functools import cache
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.security.http import HTTPAuthorizationCredentials, HTTPBearer
 
 from gyra.component import SystemApp
@@ -506,6 +506,39 @@ async def delete(
         logger.exception("app remove exception!")
         return Result.failed(err_code="E110006", msg=f"delete app error: {ex}")
 
+
+
+
+
+@router.get("/building/multimedia-agent/{app_code}")
+async def get_multimedia_agent_config(
+    app_code: str,
+    service: Service = Depends(get_service),
+    user: Optional[UserRequest] = Depends(_require_agent_read()),
+):
+    """读取应用的多媒体 Agent 模板配置（ext_config.multimedia_agent）。"""
+    try:
+        config = service.get_multimedia_agent_config(app_code)
+        return Result.succ(config)
+    except Exception as ex:
+        logger.exception("get multimedia agent config exception!")
+        return Result.failed(msg=f"get multimedia agent config error: {ex}")
+
+
+@router.post("/building/multimedia-agent/{app_code}")
+async def save_multimedia_agent_config(
+    app_code: str,
+    config: Dict[str, Any] = Body(...),
+    service: Service = Depends(get_service),
+    user: Optional[UserRequest] = Depends(_require_agent_write()),
+):
+    """保存应用的多媒体 Agent 模板配置到 ext_config.multimedia_agent。"""
+    try:
+        saved = await service.save_multimedia_agent_config(app_code, config)
+        return Result.succ(saved)
+    except Exception as ex:
+        logger.exception("save multimedia agent config exception!")
+        return Result.failed(msg=f"save multimedia agent config error: {ex}")
 
 
 

@@ -1,5 +1,5 @@
 import { V2SimplifiedVisParser } from '../V2SimplifiedVisParser';
-import { V2Event, SimplifiedVisComponent } from '../types';
+import { V2Event } from '../types';
 
 describe('V2SimplifiedVisParser', () => {
   let parser: V2SimplifiedVisParser;
@@ -18,7 +18,7 @@ describe('V2SimplifiedVisParser', () => {
         uid: 's1-thinking-0',
         tag: 'thinking',
         content: '你好',
-      } as SimplifiedVisComponent,
+      } as unknown as Record<string, unknown>,
     };
 
     parser.handleEvent(event);

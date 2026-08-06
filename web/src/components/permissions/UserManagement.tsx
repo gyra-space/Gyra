@@ -110,7 +110,7 @@ export default function UserManagement({ roles: externalRoles }: UserManagementP
             email: rbacUser.email || '',
             is_active: rbacUser.is_active ?? 1,
             roles: rbacUser.roles || [],
-            gmt_create: rbacUser.gmt_create,
+            gmt_create: rbacUser.gmt_create ?? null,
             oauth_provider: '',
             legacy_role: 'normal',
             avatar: '',

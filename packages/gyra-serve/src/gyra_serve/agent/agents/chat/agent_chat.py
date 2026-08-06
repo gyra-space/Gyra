@@ -441,6 +441,34 @@ class GlobalSandboxManagerCache:
                 )
 
 
+def _resolve_forwardable_url(
+    file_url: str,
+    file_storage_client=None,
+) -> str:
+    """把文件引用解析成 provider 可直接消费的公共 http(s) URL。
+
+    多媒体生成 provider 只接受公共服务的文件协议/地址（http/https），不认
+    内部协议（gyra-fs://）或沙箱本地路径。规则：
+    - http(s) → 原样返回
+    - 其它（gyra-fs:// 等内部协议）→ 经 FileStorageClient 生成公开 URL
+    - 无法解析 → 返回原值（保留信息，由上层决定是否可转发）
+    """
+    if not file_url:
+        return ""
+    if file_url.startswith("http://") or file_url.startswith("https://"):
+        return file_url
+    if file_storage_client is not None:
+        try:
+            public = file_storage_client.get_public_url(file_url)
+            if public:
+                return public
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[AgentChat] Failed to resolve public URL for {file_url}: {e}"
+            )
+    return file_url
+
+
 async def _materialize_sandbox_file_refs(
     system_app: SystemApp,
     sandbox_client,
@@ -449,6 +477,7 @@ async def _materialize_sandbox_file_refs(
     """将上传文件引用中的文件实际写入沙箱，并返回用于提示的引用列表.
 
     支持 gyra-fs:// 协议（通过 FileStorageClient 直接读取）以及 http(s) URL。
+    文件提示同时注入 provider 可消费的公共 URL，供主 agent 转发给多媒体子 agent。
     """
     work_dir = sandbox_client.work_dir
     uploads_dir = f"{work_dir}/uploads"
@@ -464,7 +493,7 @@ async def _materialize_sandbox_file_refs(
     except Exception as e:
         logger.warning(f"[AgentChat] Failed to get FileStorageClient: {e}")
 
-    for ref in sandbox_file_refs:
+    for idx, ref in enumerate(sandbox_file_refs, 1):
         if not isinstance(ref, dict):
             logger.warning(f"[AgentChat] Invalid sandbox_file_ref type: {type(ref)}")
             continue
@@ -483,7 +512,15 @@ async def _materialize_sandbox_file_refs(
 
         new_path = f"{uploads_dir}/{file_name}"
         ref["sandbox_path"] = new_path
-        updated_refs.append(f"1. `{new_path}`")
+        # 解析 provider 可直接消费的公共 http(s) URL，供主 agent 转发给多媒体
+        # 子 agent 作首帧/参考图（provider 只认公共协议/地址，不认 gyra-fs://）。
+        public_url = _resolve_forwardable_url(file_url, file_storage_client)
+        ref["public_url"] = public_url
+        forward_url = public_url or file_url
+        ref_info = f"{idx}. `{new_path}`"
+        if forward_url:
+            ref_info += f" (URL: {forward_url})"
+        updated_refs.append(ref_info)
         logger.info(f"[AgentChat] Updated sandbox_path: {new_path}")
 
         if not file_url:
@@ -604,6 +641,37 @@ class AgentChat(BaseComponent, ABC):
         except Exception as coord_err:
             logger.warning(
                 f"[AgentChat] failed to register SubagentCoordinator: {coord_err}"
+            )
+
+        # 注册全局 AsyncTaskCoordinator 单例：监听 media / spawn_agent_task 后台异步任务，
+        # 完成后自动恢复主会话 loop；并把 media 进程级单例纳入轮询。
+        try:
+            from gyra_serve.agent.async_task_coordinator import (
+                AsyncTaskCoordinator,
+                set_async_task_coordinator,
+            )
+            self.async_task_coord = AsyncTaskCoordinator(agent_chat=self)
+            set_async_task_coordinator(self.async_task_coord)
+            from gyra.agent.util.async_task_manager import AsyncTaskManager
+
+            # 注入 DB 持久化 ledger（AsyncTaskDao），替代 JSONL 台账。
+            # 使 media 单例与 subagent 任务统一写 gpts_async_tasks 表，
+            # 支撑分布式查询 / 跨进程恢复。
+            try:
+                from gyra_serve.agent.db.async_task_db import AsyncTaskDao
+
+                AsyncTaskManager.set_global_ledger(AsyncTaskDao())
+            except Exception as ledger_err:
+                logger.warning(
+                    f"[AgentChat] failed to inject DB ledger for async tasks: {ledger_err}"
+                )
+
+            self.async_task_coord.add_manager(AsyncTaskManager.media_instance())
+            self.async_task_coord.start_watch()
+            logger.info("[AgentChat] global AsyncTaskCoordinator registered")
+        except Exception as async_err:
+            logger.warning(
+                f"[AgentChat] failed to register AsyncTaskCoordinator: {async_err}"
             )
 
     def init_app(self, system_app: SystemApp):
@@ -780,6 +848,34 @@ class AgentChat(BaseComponent, ABC):
             sandbox_key = _sandbox_key(None, conv_id, staff_no)
             await GlobalSandboxManagerCache.cleanup_and_remove(sandbox_key)
 
+    def _register_multimedia_agents(self, gpt_app: Any) -> None:
+        """把多媒体 Agent 模板注册进 AgentManager（协议层统一，类似 ReActMaster）。
+
+        - 注册 ``role=MULTIMEDIA`` 使 ``app.agent="MULTIMEDIA"`` 可持久化，并作为
+          一等公民主 Agent 模板使用（无需独立的 MultimediaAgentRegistry 旁路）。
+        - 同时把当前 app 的 ``ext_config.multimedia_agent`` 绑定到模板实例，供
+          spawn_agent_task 委派时按当前 app 配置解析（同一模板服务不同 app）。
+        """
+        try:
+            from gyra.agent.multimedia import MultimediaAgent
+
+            # 模板身份：实例的 role。类级访问 pydantic Field（MultimediaAgent.profile）
+            # 会抛 AttributeError（非 ValueError），导致注册被外层吞掉、模板从未登记。
+            role = MultimediaAgent().role
+
+            # 已在代理管理器注册则跳过重复注册
+            try:
+                self.agent_manage.get_by_name(role)
+            except ValueError:
+                self.agent_manage.register_agent(MultimediaAgent)
+                logger.info(f"[multimedia-agent] registered template (role={role})")
+
+            inst = self.agent_manage.get_agent(role)
+            if inst is not None:
+                inst.ext_config = getattr(gpt_app, "ext_config", None) or {}
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[multimedia-agent] register failed: {e}")
+
     def after_start(self):
         # LLM client is resolved per-request by AIWrapper + ProviderRegistry
         # reading from agent.llm config; no shared llm_provider is needed.
@@ -792,6 +888,22 @@ class AgentChat(BaseComponent, ABC):
             logger.warning("[AgentChat] no running event loop, skip recovery scan")
         except Exception as e:
             logger.warning(f"[AgentChat] recovery scan launch failed: {e}")
+
+        # #4: 启动时恢复 WAITING 会话未完成的异步任务（media / spawn_agent_task），
+        # 按台账/内存态判定终态，全部终态则触发主 resume 恢复 loop。
+        try:
+            from gyra_serve.agent.async_task_coordinator import (
+                get_async_task_coordinator,
+            )
+            async_coord = get_async_task_coordinator()
+            if async_coord is not None:
+                asyncio.create_task(async_coord.recover_all())
+        except RuntimeError:
+            logger.warning(
+                "[AgentChat] no running event loop, skip async task recovery"
+            )
+        except Exception as e:
+            logger.warning(f"[AgentChat] async task recovery launch failed: {e}")
 
     async def save_conversation(
         self,
@@ -1144,6 +1256,8 @@ class AgentChat(BaseComponent, ABC):
         await self.dynamic_resource_adapter(gpt_app, ext_info)
         if not gpt_app:
             raise ValueError(f"Not found app {gpts_name}!")
+        # 注册多媒体 Agent（从应用 ext_config.multimedia_agent 读取模板配置）
+        self._register_multimedia_agents(gpt_app)
 
         # Workspace context + 物化资源注入
         system_prompt_parts = []
@@ -1570,6 +1684,26 @@ class AgentChat(BaseComponent, ABC):
             yield task, f"data:{error_content}\n\n", agent_conv_id
             yield task, _format_vis_msg("[DONE]"), agent_conv_id
         finally:
+            # 大厅直接对话(task_id 为空)收尾:把本轮明确交付(deliverable)的文件
+            # 物化为空间交付产物(Artifact)。任务模式(task_id 非空)由 playbook
+            # runtime 收尾物化,此处跳过避免重复。
+            try:
+                if _ws_id_for_bus and not ext_info.get("task_id"):
+                    from gyra_serve.workspace.agent_tools.materialize_deliverables import (
+                        materialize_direct_conversation_deliverables,
+                    )
+
+                    await materialize_direct_conversation_deliverables(
+                        system_app=self.system_app,
+                        workspace_id=int(_ws_id_for_bus),
+                        conv_id=conv_id,
+                        agent_conv_id=agent_conv_id,
+                        created_by_agent=gpt_app.app_code,
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"[workspace] materialize lobby deliverables failed: {e}"
+                )
             if _ws_id_for_bus:
                 from gyra_serve.workspace.event_bus import (
                     unregister_workspace_queue,
@@ -2979,6 +3113,8 @@ class AgentChat(BaseComponent, ABC):
         conv_id: str,
         user_query: HumanMessage,
         staff_no: Optional[str] = None,
+        model_name: Optional[str] = None,
+        prefer_direct_media: bool = False,
     ) -> Optional[HumanMessage]:
         """处理上传的文件，根据类型分流.
 
@@ -2990,6 +3126,8 @@ class AgentChat(BaseComponent, ABC):
             conv_id: 会话ID
             user_query: 用户消息
             staff_no: 用户工号 (用于获取 sandbox)
+            model_name: 当前 agent 所用模型名（按模型能力决定是否直接消费）
+            prefer_direct_media: 是否为多媒体 agent（媒体文件直接消费）
 
         Returns:
             更新后的用户消息（如果需要），如果无需更新则返回None
@@ -3067,6 +3205,8 @@ class AgentChat(BaseComponent, ABC):
             sandbox_client=sandbox_client,
             system_app=self.system_app,
             file_storage_client=file_storage_client,
+            model_name=model_name,
+            prefer_direct_media=prefer_direct_media,
         )
 
         if not media_contents:
@@ -3382,14 +3522,69 @@ class AgentChat(BaseComponent, ABC):
             elif chat_in_params:
                 # 如果没有 sandbox_file_refs，才处理 chat_in_params
                 logger.info("[AgentChat] Processing files from chat_in_params")
+                # 按当前 agent 模型能力 + 是否多媒体 agent 统一分流（路径 B）
+                try:
+                    from gyra_serve.agent.file_io.file_type_config import (
+                        is_multimedia_agent,
+                    )
+
+                    _prefer_direct = is_multimedia_agent(gpt_app=gpts_app)
+                except Exception:
+                    _prefer_direct = False
                 file_dispatch_result = await self._dispatch_uploaded_files(
                     chat_in_params=chat_in_params,
                     conv_id=conv_uid,
                     user_query=user_query,
                     staff_no=staff_no,
+                    model_name=ext_info.get("model_name")
+                    or (
+                        gpts_app.llm_config.model
+                        if gpts_app and gpts_app.llm_config
+                        else None
+                    ),
+                    prefer_direct_media=_prefer_direct,
                 )
                 if file_dispatch_result:
                     user_query = file_dispatch_result
+
+            # 合并从 api_v1 透传的多模态内容（模型有能力直接消费的 image/audio/video）。
+            # 当存在 sandbox_file_refs 时，上面的沙箱分支会把 user_query 重建为
+            # "纯文本+文件提示"，从而丢掉原本可直接进模型消费的媒体；这里补回，
+            # 并按 URL 去重，避免与原始 in_message 中已有的媒体重复。
+            _multimodal_contents = ext_info.get("multimodal_contents") or []
+            if _multimodal_contents and isinstance(user_query, HumanMessage):
+                try:
+                    from gyra.core.interface.media import MediaContent as _MC
+
+                    _parsed = _MC.parse_chat_completion_message(
+                        {"content": _multimodal_contents}
+                    )
+                    _existing = set()
+                    if isinstance(user_query.content, list):
+                        for _mc in user_query.content:
+                            if (
+                                isinstance(_mc, _MC)
+                                and _mc.type in ("image", "audio", "video")
+                            ):
+                                _existing.add(str(_mc.object.data))
+                    _new_items = [
+                        _m for _m in _parsed if str(_m.object.data) not in _existing
+                    ]
+                    if isinstance(user_query.content, list):
+                        user_query.content = list(user_query.content) + _new_items
+                    elif user_query.content:
+                        user_query.content = [_MC.build_text(user_query.content)] + _new_items
+                    else:
+                        user_query.content = _new_items
+                    if _new_items:
+                        logger.info(
+                            f"[AgentChat] Merged {len(_new_items)} direct-consume "
+                            f"multimodal contents into user message"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"[AgentChat] Failed to merge multimodal_contents: {e}"
+                    )
 
             if is_retry_chat:
                 # retry chat
@@ -3441,6 +3636,27 @@ class AgentChat(BaseComponent, ABC):
                 except Exception as sub_err:
                     logger.debug(
                         f"[AgentChat] pending_subagents check skipped: {sub_err}"
+                    )
+
+            # 异步任务（media 生成 / spawn_agent_task wait=false）存在未完成任务时，
+            # 主会话也置 WAITING，等 AsyncTaskCoordinator 完成后触发 resume 恢复 loop。
+            if gpts_status != Status.WAITING.value:
+                try:
+                    from gyra_serve.agent.async_task_coordinator import (
+                        get_async_task_coordinator,
+                    )
+                    async_coord = get_async_task_coordinator()
+                    if async_coord is not None and await async_coord.has_pending_tasks(
+                        conv_uid
+                    ):
+                        logger.info(
+                            f"[AgentChat] conv={conv_uid} has pending async tasks, "
+                            f"setting WAITING"
+                        )
+                        gpts_status = Status.WAITING.value
+                except Exception as async_err:
+                    logger.debug(
+                        f"[AgentChat] pending_async_tasks check skipped: {async_err}"
                     )
 
             validate_session_transition(Status.RUNNING, Status(gpts_status))

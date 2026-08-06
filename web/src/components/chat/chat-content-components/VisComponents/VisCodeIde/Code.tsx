@@ -1,5 +1,6 @@
 import { CodePreview } from '../../code-preview';
 import { codeComponents } from '../../config';
+import type { CodeIde } from '../types';
 
 import { CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { GPTVisLite } from '@antv/gpt-vis';
@@ -10,7 +11,7 @@ import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
 
-interface Props extends TS.CodeIde {
+interface Props extends CodeIde {
   pureCode?: boolean;
   showType?: 'code-with-console' | 'html-preview' | 'code';
 }
@@ -30,7 +31,7 @@ function Code(props: Props) {
     case 'code':
       return (
         <div style={{ width: '100%' }} className="vis-codeide-code">
-          <CodePreview lang={language} code={markdown || ''} style={oneLight} />
+          <CodePreview language={language || ''} code={markdown || ''} light={oneLight} />
         </div>
       );
     case 'html-preview':
@@ -55,9 +56,9 @@ function Code(props: Props) {
             className="vis-codeide-code-with-console"
           >
             <CodePreview
-              lang={language}
+              language={language || ''}
               code={markdown || ''}
-              style={oneLight}
+              light={oneLight}
             />
             <Tabs
               tabBarStyle={{

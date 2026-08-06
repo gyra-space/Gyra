@@ -1,12 +1,13 @@
 import { Segmented, Tabs } from 'antd';
 import { isEqual, set } from 'lodash';
 import React, { useEffect, useState } from 'react';
+import type { CodeIde } from '../types';
 import Code from './Code';
 import { VisCodeIdeDiv, VisPureCode } from './style';
 
 interface Props {
   pureCode?: boolean;
-  items?: TS.CodeIde[];
+  items?: CodeIde[];
 }
 
 const VisCodeIde = ({ items = [], pureCode = false }: Props) => {

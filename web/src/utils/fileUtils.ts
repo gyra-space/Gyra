@@ -275,7 +275,7 @@ export function formatFileSize(
     return '0 B';
   }
 
-  const { decimals = 2, unit = 'auto' } = options;
+  const { decimals = 2, unit = 'auto' } = options || {};
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
 
   if (unit !== 'auto') {

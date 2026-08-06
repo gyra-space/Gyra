@@ -8,7 +8,7 @@ import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { SmartPluginIcon } from '@/components/icons/smart-plugin-icon';
+import { AgentAvatarPicker } from '@/components/common/agent-avatar-picker';
 import './styles.css';
 
 interface WorkModeSelectProps {
@@ -17,16 +17,6 @@ interface WorkModeSelectProps {
   value?: TeamMode;
   onChange?: (value: TeamMode) => void;
 }
-
-// 可选图标列表
-const iconOptions = [
-  { value: 'smart-plugin', label: '智能插件', isSvg: true },
-  { value: '/agents/agent1.jpg', label: 'agent1' },
-  { value: '/agents/agent2.jpg', label: 'agent2' },
-  { value: '/agents/agent3.jpg', label: 'agent3' },
-  { value: '/agents/agent4.jpg', label: 'agent4' },
-  { value: '/agents/agent5.jpg', label: 'agent5' },
-];
 
 // 自定义team_mode选择
 const WorkModeSelect: React.FC<WorkModeSelectProps> = ({ disable = false, options = [], value, onChange }) => {
@@ -95,7 +85,7 @@ const CreateAppModal: React.FC<{
   skipRedirect?: boolean;
 }> = ({ open, onCancel, type = 'add', refresh, skipRedirect = false }) => {
   const { notification } = App.useApp();
-  const [selectedIcon, setSelectedIcon] = useState<string>('/icons/colorful-plugin.png');
+  const [selectedIcon, setSelectedIcon] = useState<string>('');
   const { t, i18n } = useTranslation();
   const [appInfo, setAppInfo] = useState<any>({});
   const { message } = App.useApp();
@@ -109,6 +99,13 @@ const CreateAppModal: React.FC<{
       if (stored) {
         setAppInfo(JSON.parse(stored));
       }
+    }
+  });
+
+  // 编辑态回填当前头像
+  useState(() => {
+    if (type === 'edit' && appInfo?.icon) {
+      setSelectedIcon(appInfo.icon);
     }
   });
 
@@ -256,60 +253,15 @@ const CreateAppModal: React.FC<{
                 label={`${t("App_icon")}`}
                 name="icon"
               >
-                <div className="flex items-end gap-4">
-                  {/* 左侧当前选中的图标 */}
-                  <div className="flex flex-col items-center gap-2">
-                    {selectedIcon === 'smart-plugin' ? (
-                      <div className="w-12 h-12 rounded-md border-2 border-gray-200 flex items-center justify-center bg-gradient-to-br from-indigo-50 to-purple-50">
-                        <SmartPluginIcon size={40} />
-                      </div>
-                    ) : (
-                      <Image
-                        src={selectedIcon}
-                        width={48}
-                        height={48}
-                        alt="app icon"
-                        className="rounded-md border-2"
-                      />
-                    )}
-                  </div>
-                  <div className="flex items-end h-12">
-                    <div className="w-px h-7 bg-gray-300"></div>
-                  </div>
-                  {/* 右侧图标选择器 */}
-                  <div className="flex flex-col gap-2">
-                    <div className="flex flex-wrap gap-2 max-w-[300px]">
-                      {iconOptions.map((icon) => (
-                        <div
-                          key={icon.value}
-                          className={`cursor-pointer rounded-md border-2 transition-all duration-200 hover:border-[#4f46e5] ${
-                            selectedIcon === icon.value
-                              ? "border-[#4f46e5] bg-[#f5faff]"
-                              : "border-gray-100 hover:bg-gray-50"
-                          }`}
-                          onClick={() => {
-                            setSelectedIcon(icon.value);
-                            form.setFieldValue("icon", icon.value);
-                          }}
-                        >
-                          {icon.isSvg ? (
-                            <div className="w-7 h-7 rounded-md flex items-center justify-center bg-gradient-to-br from-indigo-50 to-purple-50">
-                              <SmartPluginIcon size={24} />
-                            </div>
-                          ) : (
-                            <Image
-                              src={icon.value}
-                              width={28}
-                              height={28}
-                              alt={icon.label}
-                              className="rounded-md"
-                            />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
+                <AgentAvatarPicker
+                  value={selectedIcon}
+                  name={form.getFieldValue('app_name') || ''}
+                  size={64}
+                  onChange={(icon) => {
+                    setSelectedIcon(icon);
+                    form.setFieldValue('icon', icon);
+                  }}
+                />
               </Form.Item>
             </Form>
           </div>

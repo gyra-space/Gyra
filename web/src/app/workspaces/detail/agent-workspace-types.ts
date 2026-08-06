@@ -130,6 +130,16 @@ export interface WorkspaceTaskFile {
 
 export type WorkspacePanelView = 'execution' | 'deliverable' | 'summary' | 'task_files';
 
+/** 异步子 agent 任务看板卡片项（与后端 SubagentBoard 看板同构） */
+export interface WorkspaceSubagentItem {
+  sub_conv_id: string;
+  agent_name?: string;
+  task?: string;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'awaiting_authorization';
+  mode?: string;
+  authorization?: string;
+}
+
 export interface WorkspaceView {
   planning: WorkspacePlanning | null;
   execution: WorkspaceExecutionStep[];
@@ -142,6 +152,8 @@ export interface WorkspaceView {
   panel_view?: WorkspacePanelView;
   /** 大厅入驻内容(全量推送,按 exhibit_id 幂等更新) */
   lobby_exhibits?: LobbyExhibit[];
+  /** 异步子 agent 任务看板卡片项(无子任务时为空数组) */
+  subagents?: WorkspaceSubagentItem[];
 }
 
 export interface PlaybookCommand {

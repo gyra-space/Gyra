@@ -33,7 +33,7 @@ const UserInputPanel: React.FC<UserInputPanelProps> = ({
     submitUserInput,
     isSubmitting,
     hasPendingInput,
-    pendingCount,
+    queueLength: pendingCount,
     queueState,
   } = useUserInput(sessionId);
 

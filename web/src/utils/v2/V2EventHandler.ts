@@ -55,7 +55,7 @@ export class V2EventHandler {
       const { done, value } = await reader.read();
       if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
+      buffer += decoder.decode(value as unknown as AllowSharedBufferSource, { stream: true });
 
       // 按行分割处理
       const lines = buffer.split('\n');

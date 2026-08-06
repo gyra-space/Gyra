@@ -225,7 +225,6 @@ const VisAgentPlanCard: React.FC<IProps> = ({ otherComponents, data }) => {
       <div
         className={`markdown-content-wrap ${isStage ? 'markdown-content-wrap-stage' : ''}`}
       >
-        {/* @ts-expect-error GPTVis + markdownPlugins spread */}
         <GPTVis
           components={{ ...codeComponents, ...(otherComponents ?? {}) }}
           {...markdownPlugins}

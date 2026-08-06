@@ -169,7 +169,7 @@ export default function ConfigPage() {
         },
         parameters: [],
         tags: [],
-      }));
+      })) as unknown as ToolMetadata[];
       setToolMetadata(metadata);
       setEnabledTools(data.map((t: ToolInfo) => t.name));
     } catch (error) {
@@ -1014,8 +1014,7 @@ function FileServiceConfigSection({
                     placeholder={getRegionPlaceholder()} 
                     showSearch 
                     allowClear
-                    mode="combobox"
-                    filterOption={(input, option) => 
+                    filterOption={(input, option) =>
                       (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
                     }
                     onChange={(value) => {
@@ -1073,8 +1072,7 @@ function FileServiceConfigSection({
                   placeholder={getEndpointPlaceholder()} 
                   showSearch 
                   allowClear
-                  mode="combobox"
-                  filterOption={(input, option) => 
+                  filterOption={(input, option) =>
                     (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
                   }
                 >
@@ -1127,8 +1125,7 @@ function FileServiceConfigSection({
                     placeholder={isOSS ? 'OSS_ACCESS_KEY' : isS3 ? 'S3_ACCESS_KEY' : 'ACCESS_KEY'}
                     showSearch
                     allowClear
-                    mode="combobox"
-                    filterOption={(input, option) => 
+                    filterOption={(input, option) =>
                       (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
                     }
                   >
@@ -1153,8 +1150,7 @@ function FileServiceConfigSection({
                     placeholder={isOSS ? 'OSS_ACCESS_SECRET' : isS3 ? 'S3_ACCESS_SECRET' : 'ACCESS_SECRET'}
                     showSearch
                     allowClear
-                    mode="combobox"
-                    filterOption={(input, option) => 
+                    filterOption={(input, option) =>
                       (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
                     }
                   >

@@ -1,6 +1,7 @@
 """Unit tests for SceneAgentWorkspaceConverter."""
 import json
 import re
+from unittest.mock import AsyncMock, patch
 import pytest
 
 from gyra_ext.vis.gyra.gyra_vis_scene_agent_workspace_converter import (
@@ -142,6 +143,58 @@ async def test_intermediate_replies_become_steps_not_summary():
     narr_steps = [s for s in payload["execution"] if s["type"] == "thinking"]
     assert len(narr_steps) == 1
     assert narr_steps[0]["output"] == "先查一下"
+
+
+@pytest.mark.asyncio
+async def test_text_before_tool_inlines_not_summary():
+    """文本先于工具调用产生(时序):文本凝固为内联步骤排在工具前,不再压底为 summary。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    # 1) LLM 先输出文本(stream content 携带 start_time)
+    await conv.visualization(messages=[], stream_msg={
+        "message_id": "m1", "content": "先检查当前可用的模型", "start_time": "2026-08-05T10:00:01",
+    })
+    # 2) 之后工具调用(工具 start_time 更晚)
+    await conv.visualization(messages=[], stream_msg={
+        "message_id": "m1",
+        "action_report": [_make_action_output(
+            action_id="t1", action="list_media_models", state="complete",
+            content="共 2 个模型", start_time="2026-08-05T10:00:05",
+        )],
+    })
+    payload = _extract_payload(
+        await conv.visualization(messages=[], stream_msg={"message_id": "m1"})
+    )
+    assert payload["summary"] is None
+    steps = payload["execution"]
+    assert [s["type"] for s in steps] == ["thinking", "tool_call"]
+    assert steps[0]["output"] == "先检查当前可用的模型"
+    assert steps[1]["action"] == "list_media_models"
+
+
+@pytest.mark.asyncio
+async def test_text_after_tool_stays_summary():
+    """工具完成后再输出的总结文本(时序最后)仍作为底部 summary,顺序不错乱。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    await conv.visualization(messages=[], stream_msg={
+        "message_id": "m1", "content": "先查一下", "start_time": "2026-08-05T10:00:01",
+    })
+    await conv.visualization(messages=[], stream_msg={
+        "message_id": "m1",
+        "action_report": [_make_action_output(
+            action_id="t1", action="list_media_models", state="complete",
+            content="共 2 个模型", start_time="2026-08-05T10:00:05",
+        )],
+    })
+    # 3) 工具之后 LLM 输出总结(新 message,start_time 最晚)
+    await conv.visualization(messages=[], stream_msg={
+        "message_id": "m2", "content": "已找到可用模型", "start_time": "2026-08-05T10:00:09",
+    })
+    payload = _extract_payload(
+        await conv.visualization(messages=[], stream_msg={"message_id": "m2"})
+    )
+    assert payload["summary"] == "已找到可用模型"
+    steps = payload["execution"]
+    assert [s["type"] for s in steps] == ["thinking", "tool_call"]
 
 
 @pytest.mark.asyncio
@@ -311,3 +364,77 @@ async def test_final_view_resets_lobby_exhibits():
     payload = _extract_payload(await conv.final_view(messages=[msg]))
     assert payload["lobby_exhibits"] == []
     assert payload["summary"] == "历史回答"
+
+
+# ------------------------------------------------------------------
+# 异步子 agent 任务看板(subagents)
+# ------------------------------------------------------------------
+
+def _make_subagent_item(**overrides):
+    base = {
+        "sub_conv_id": "sub_1",
+        "agent_name": "multimedia",
+        "task": "生成视频",
+        "status": "running",
+        "mode": "async",
+        "authorization": None,
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_subagents_field_present_empty_by_default():
+    """无 coordinator(单测环境)时 subagents 为空数组,字段始终存在。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    payload = _extract_payload(await conv.visualization(messages=[]))
+    assert payload["subagents"] == []
+
+
+@pytest.mark.asyncio
+async def test_subagents_collected_from_coordinator():
+    """coordinator 返回子任务卡片 → 并入 scene_agent_workspace payload。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    items = [
+        _make_subagent_item(status="running"),
+        _make_subagent_item(sub_conv_id="sub_2", status="done"),
+    ]
+    with patch(
+        "gyra_ext.vis.gyra.gyra_vis_scene_agent_workspace_converter.get_subagent_coordinator",
+        return_value=AsyncMock(list_subagent_items=AsyncMock(return_value=items)),
+    ):
+        payload = _extract_payload(
+            await conv.visualization(messages=[_make_gpt_msg(content="hi", message_id="m0")], conv_id="conv_main_1")
+        )
+    assert [it["sub_conv_id"] for it in payload["subagents"]] == ["sub_1", "sub_2"]
+    assert payload["subagents"][0]["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_subagents_final_view_rebuild():
+    """历史重建(final_view)也能恢复到子任务看板。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    items = [_make_subagent_item(sub_conv_id="sub_x", status="awaiting_authorization", authorization="确认?")]
+    with patch(
+        "gyra_ext.vis.gyra.gyra_vis_scene_agent_workspace_converter.get_subagent_coordinator",
+        return_value=AsyncMock(list_subagent_items=AsyncMock(return_value=items)),
+    ):
+        payload = _extract_payload(
+            await conv.final_view(messages=[_make_gpt_msg(content="历史", message_id="h1")], conv_id="conv_main_1")
+        )
+    assert payload["subagents"][0]["sub_conv_id"] == "sub_x"
+    assert payload["subagents"][0]["status"] == "awaiting_authorization"
+
+
+@pytest.mark.asyncio
+async def test_subagents_collect_failure_returns_empty():
+    """coordinator 异常 → subagents 为空数组,不影响主视图。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    with patch(
+        "gyra_ext.vis.gyra.gyra_vis_scene_agent_workspace_converter.get_subagent_coordinator",
+        side_effect=RuntimeError("db down"),
+    ):
+        payload = _extract_payload(
+            await conv.visualization(messages=[_make_gpt_msg(content="hi", message_id="m0")], conv_id="conv_main_1")
+        )
+    assert payload["subagents"] == []

@@ -23,7 +23,7 @@ export default function TabSkills() {
 
   // Fetch MCP from MCP list
   const { data: mcpData, loading: loadingMcp, refresh: refreshMcp } = useRequest(
-    async () => await apiInterceptors(getMCPList({ filter: '' }, { page: 1, page_size: 200 })),
+    async () => await apiInterceptors(getMCPList({ filter: '' }, { page: String(1), page_size: String(200) })),
   );
 
   // Extract Skills
@@ -51,7 +51,7 @@ export default function TabSkills() {
   // Extract MCP
   const mcpServers = useMemo(() => {
     const [, res] = mcpData || [];
-    const items = res?.items || [];
+    const items = (res as any)?.items || [];
     return items.map((item: any) => ({
       key: item.mcp_code,
       name: item.name,

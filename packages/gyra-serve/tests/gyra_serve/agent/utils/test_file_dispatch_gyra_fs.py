@@ -12,20 +12,10 @@ from gyra_serve.agent.utils.file_dispatch import dispatch_file_to_sandbox
 
 
 @pytest.mark.asyncio
-async def test_dispatch_gyra_fs_reads_via_storage_client():
-    """gyra-fs:// URI 无法生成公开 URL 时，应直接通过 FileStorageClient 读取。"""
-    fake_file = MagicMock()
-    fake_file.read = MagicMock(return_value=b"# Markdown content")
-    fake_file.close = MagicMock()
-
-    fake_storage_system = MagicMock()
-    fake_storage_system.get_public_url = MagicMock(return_value=None)
-    fake_storage_system.get_file = MagicMock(return_value=(fake_file, MagicMock()))
-
+async def test_dispatch_gyra_fs_without_public_url_returns_none():
+    """gyra-fs:// URI 无法生成公开 URL 时，应优雅跳过(返回 None)，不崩溃。"""
     fake_file_storage_client = MagicMock()
     fake_file_storage_client.get_public_url = MagicMock(return_value=None)
-    fake_file_storage_client.get_file = MagicMock(return_value=(fake_file, MagicMock()))
-    fake_file_storage_client.storage_system = fake_storage_system
 
     sandbox_client = MagicMock()
     sandbox_client.work_dir = "/tmp/sandbox"
@@ -39,18 +29,11 @@ async def test_dispatch_gyra_fs_reads_via_storage_client():
         file_storage_client=fake_file_storage_client,
     )
 
-    assert result == "/tmp/sandbox/uploads/doc.md"
+    assert result is None
     fake_file_storage_client.get_public_url.assert_called_once_with(
         "gyra-fs://local/gyra_app_file/abc-123"
     )
-    fake_file_storage_client.get_file.assert_called_once_with(
-        "gyra-fs://local/gyra_app_file/abc-123"
-    )
-    fake_file.read.assert_called_once()
-    fake_file.close.assert_called_once()
-    sandbox_client.file.create.assert_called_once_with(
-        "/tmp/sandbox/uploads/doc.md", "# Markdown content", overwrite=True
-    )
+    sandbox_client.file.create.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -69,9 +52,7 @@ async def test_dispatch_gyra_fs_uses_public_url_when_available():
     sandbox_client.file = MagicMock()
     sandbox_client.file.create = AsyncMock(return_value=None)
 
-    with patch(
-        "gyra_serve.agent.utils.file_dispatch.httpx.AsyncClient"
-    ) as mock_client:
+    with patch("httpx.AsyncClient") as mock_client:
         fake_client = MagicMock()
         fake_client.get = AsyncMock(return_value=fake_response)
         fake_client.__aenter__ = AsyncMock(return_value=fake_client)

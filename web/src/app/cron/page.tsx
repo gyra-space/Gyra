@@ -3,27 +3,32 @@
 import { apiInterceptors, getCronJobs, getCronStatus, deleteCronJob, runCronJob } from '@/client/api';
 import { CronJob } from '@/client/api/cron';
 import {
+  ClockCircleOutlined,
   DeleteOutlined,
   EditOutlined,
+  HistoryOutlined,
   PlayCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { App, Button, Card, Space, Switch, Table, Tag, Typography, Popconfirm, Tooltip, Empty } from 'antd';
+import { App, Button, Space, Switch, Table, Tag, Typography, Popconfirm, Tooltip, Empty } from 'antd';
 import moment from 'moment';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { CronLogsDrawer } from './components/cron-logs';
+import '../workspaces/workspaces.css';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 export default function CronPage() {
   const { t } = useTranslation();
   const router = useRouter();
   const { message } = App.useApp();
   const [includeDisabled, setIncludeDisabled] = useState(false);
+  const [logsTarget, setLogsTarget] = useState<{ jobId: string; name: string } | null>(null);
 
   // Fetch status
   const { data: statusData, loading: statusLoading, refresh: refreshStatus } = useRequest(async () => {
@@ -100,7 +105,7 @@ export default function CronPage() {
       key: 'name',
       width: 150,
       render: (name: string, record: CronJob) => (
-        <Link href={`/cron/edit?id=${record.id}`} className="text-blue-500 hover:text-blue-700">
+        <Link href={`/cron/edit?id=${record.id}`} className="text-[var(--ws-accent)] hover:opacity-80">
           {name}
         </Link>
       ),
@@ -130,14 +135,14 @@ export default function CronPage() {
           every: { label: t('cron_interval'), color: 'green' },
           at: { label: t('cron_once'), color: 'orange' },
         };
-        const item = kindMap[kind] || { label: kind, color: 'default' };
+        const item = kindMap[kind] || { label: kind, color: 'default' as string };
         return <Tag color={item.color}>{item.label}</Tag>;
       },
     },
     {
       title: t('cron_schedule'),
       key: 'schedule',
-      width: 150,
+      width: 130,
       render: (_: any, record: CronJob) => {
         const { schedule } = record;
         if (schedule.kind === 'cron') {
@@ -148,7 +153,7 @@ export default function CronPage() {
           if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
           return `${Math.floor(seconds / 3600)}h`;
         } else if (schedule.kind === 'at') {
-          return moment(schedule.at).format('YYYY-MM-DD HH:mm:ss');
+          return moment(schedule.at).format('YYYY-MM-DD HH:mm');
         }
         return '-';
       },
@@ -167,7 +172,20 @@ export default function CronPage() {
       dataIndex: ['state', 'last_run_at_ms'],
       key: 'last_run',
       width: 160,
-      render: (ms: number) => (ms ? moment(ms).format('YYYY-MM-DD HH:mm:ss') : '-'),
+      render: (ms: number, record: CronJob) => {
+        const status = record.state?.last_status;
+        const color = status === 'error' ? 'error' : status === 'ok' ? 'success' : 'default';
+        return (
+          <Space size={4}>
+            <span>{ms ? moment(ms).format('YYYY-MM-DD HH:mm:ss') : '-'}</span>
+            {status && (
+              <Tag color={color} style={{ marginInlineEnd: 0 }}>
+                {status === 'ok' ? t('cron_ok') : status === 'error' ? t('cron_error') : t('cron_skipped')}
+              </Tag>
+            )}
+          </Space>
+        );
+      },
     },
     {
       title: t('cron_next_run'),
@@ -179,7 +197,7 @@ export default function CronPage() {
     {
       title: t('Operation'),
       key: 'action',
-      width: 120,
+      width: 150,
       render: (_: any, record: CronJob) => (
         <Space size="small">
           <Tooltip title={t('Edit')}>
@@ -187,6 +205,13 @@ export default function CronPage() {
               type="text"
               icon={<EditOutlined />}
               onClick={() => router.push(`/cron/edit?id=${record.id}`)}
+            />
+          </Tooltip>
+          <Tooltip title={t('cron_execution_logs')}>
+            <Button
+              type="text"
+              icon={<HistoryOutlined />}
+              onClick={() => setLogsTarget({ jobId: record.id, name: record.name })}
             />
           </Tooltip>
           <Tooltip title={t('cron_run_now')}>
@@ -213,73 +238,97 @@ export default function CronPage() {
   ];
 
   return (
-    <div className="p-6 [&_table]:table">
-      <div className="mb-6">
-        <Title level={3}>{t('cron_page_title')}</Title>
-      </div>
+    <div className="ws-page scrollbar-default">
+      <div className="ws-page-bg" />
 
-      {/* Status Card */}
-      <Card className="mb-6" loading={statusLoading}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-8">
-            <div>
-              <Text type="secondary">{t('cron_scheduler_status')}</Text>
-              <div className="mt-1">
-                <Tag color={statusData?.running ? 'processing' : 'default'}>
-                  {statusData?.running ? t('cron_running') : t('cron_stopped')}
-                </Tag>
+      {/* Sticky header */}
+      <div
+        className="sticky top-0 z-30 backdrop-blur border-b border-[var(--ws-border)]"
+        style={{ backgroundColor: 'color-mix(in srgb, var(--ws-surface) 88%, transparent)' }}
+      >
+        <div className="ws-page-content">
+          <header className="ws-page-header !mb-0 py-3">
+            <div className="ws-page-header-left">
+              <div className="ws-page-icon"><ClockCircleOutlined /></div>
+              <div>
+                <div className="ws-page-eyebrow">Cron · Scheduled Tasks</div>
+                <h1 className="ws-page-title">{t('cron_page_title')}</h1>
+                <p className="ws-page-subtitle">管理定时任务，查看调度状态与历史执行记录</p>
               </div>
             </div>
-            <div>
-              <Text type="secondary">{t('cron_total_jobs')}</Text>
-              <div className="mt-1 text-xl font-semibold">{statusData?.jobs || 0}</div>
-            </div>
-            <div>
-              <Text type="secondary">{t('cron_enabled_jobs')}</Text>
-              <div className="mt-1 text-xl font-semibold text-green-600">{statusData?.enabled_jobs || 0}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Text type="secondary">{t('cron_show_disabled')}</Text>
-            <Switch checked={includeDisabled} onChange={setIncludeDisabled} />
-          </div>
-        </div>
-      </Card>
-
-      {/* Jobs Table */}
-      <Card
-        title={
-          <div className="flex items-center justify-between">
-            <span>{t('cron_page_title')}</span>
-            <Space>
-              <Button icon={<ReloadOutlined />} onClick={() => { refreshJobs(); refreshStatus(); }}>
-                {t('Refresh_status')}
-              </Button>
-              <Link href="/cron/create">
-                <Button type="primary" icon={<PlusOutlined />}>
-                  {t('cron_create')}
+            <div className="ws-page-actions">
+              <Space wrap>
+                <Button icon={<ReloadOutlined />} size="large" onClick={() => { refreshJobs(); refreshStatus(); }}>
+                  {t('Refresh_status')}
                 </Button>
-              </Link>
-            </Space>
-          </div>
-        }
-      >
-        <Table
-          columns={columns}
-          dataSource={jobsData}
-          rowKey="id"
-          loading={jobsLoading}
-          pagination={{ pageSize: 10 }}
-          locale={{
-            emptyText: (
-              <Empty
-                description={t('cron_no_jobs')}
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-              />
-            ),
-          }}
-        />
-      </Card>
+                <Link href="/cron/create">
+                  <Button type="primary" icon={<PlusOutlined />} size="large">
+                    {t('cron_create')}
+                  </Button>
+                </Link>
+              </Space>
+            </div>
+          </header>
+        </div>
+      </div>
+
+      <div className="ws-page-content">
+        <main className="pt-6 pb-24 space-y-5">
+          {/* Status strip */}
+          <section className="bg-[var(--ws-surface)] rounded-xl border border-[var(--ws-border)] shadow-sm p-5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-8">
+                <div>
+                  <Text type="secondary">{t('cron_scheduler_status')}</Text>
+                  <div className="mt-1">
+                    <Tag color={statusData?.running ? 'processing' : 'default'}>
+                      {statusData?.running ? t('cron_running') : t('cron_stopped')}
+                    </Tag>
+                  </div>
+                </div>
+                <div>
+                  <Text type="secondary">{t('cron_total_jobs')}</Text>
+                  <div className="mt-1 text-xl font-semibold text-[var(--ws-ink)]">{statusData?.jobs || 0}</div>
+                </div>
+                <div>
+                  <Text type="secondary">{t('cron_enabled_jobs')}</Text>
+                  <div className="mt-1 text-xl font-semibold" style={{ color: 'var(--ws-success)' }}>
+                    {statusData?.enabled_jobs || 0}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Text type="secondary">{t('cron_show_disabled')}</Text>
+                <Switch checked={includeDisabled} onChange={setIncludeDisabled} />
+              </div>
+            </div>
+          </section>
+
+          {/* Jobs Table */}
+          <section className="bg-[var(--ws-surface)] rounded-xl border border-[var(--ws-border)] shadow-sm p-5">
+            <Table<CronJob>
+              rowKey="id"
+              columns={columns}
+              dataSource={jobsData}
+              loading={jobsLoading}
+              pagination={{ pageSize: 10 }}
+              locale={{
+                emptyText: (
+                  <Empty description={t('cron_no_jobs')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                ),
+              }}
+            />
+          </section>
+        </main>
+      </div>
+
+      {/* Execution logs drawer */}
+      <CronLogsDrawer
+        open={!!logsTarget}
+        jobId={logsTarget?.jobId}
+        jobName={logsTarget?.name}
+        onClose={() => setLogsTarget(null)}
+      />
     </div>
   );
 }

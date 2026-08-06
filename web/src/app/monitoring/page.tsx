@@ -76,7 +76,7 @@ export default function MonitoringPage() {
   // Fetch dashboard data - disabled since backend API is not implemented
   // Enable this when backend implements /api/v1/monitoring/* endpoints
   const dashboardLoading = false;
-  const dashboardData = null;
+  const dashboardData: any = null;
   const refreshDashboard = async () => {
     // Disabled - monitoring API is not implemented on backend
     message.warning(t('monitoring_api_not_implemented', 'Monitoring API is not implemented on backend'));
@@ -390,7 +390,7 @@ export default function MonitoringPage() {
             {alerts.length > 0 ? (
               <List
                 dataSource={alerts}
-                renderItem={(alert) => (
+                renderItem={(alert: any) => (
                   <List.Item
                     actions={[
                       <Button

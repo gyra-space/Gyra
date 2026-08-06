@@ -143,7 +143,8 @@ async def terminate_task(
 
 
 @router.post("/tasks/{task_id}/delete", response_model=Result[bool],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_permission(Permission.DELETE_TASK))])
 async def delete_task(
     task_id: int,
     service: Service = Depends(get_service),

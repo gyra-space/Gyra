@@ -2,6 +2,7 @@
 
 import { useContext, useMemo, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { TFunction } from 'i18next';
 import { useRequest } from 'ahooks';
 import { Input, Spin, Tag, Tooltip, Dropdown, Collapse, Badge, Empty, App } from 'antd';
 import {
@@ -87,7 +88,10 @@ export default function TabTools() {
 
   // 获取分类工具列表
   const { data: toolsData, loading, refresh } = useRequest(
-    async () => await getToolsByCategory({ include_empty: false }),
+    async () => {
+      const res = await getToolsByCategory({ include_empty: false });
+      return res.data.data;
+    },
     { refreshDeps: [] }
   );
 
@@ -366,7 +370,7 @@ function ToolCategorySection({
   togglingTools: Set<string>;
   onToggleCategory: () => void;
   onToggleTool: (tool: ToolResource) => void;
-  t: (key: string) => string;
+  t: TFunction;
 }) {
   const Icon = CATEGORY_ICONS[category.category] || ToolOutlined;
   const associatedCount = category.tools.filter(t => associatedToolIds.has(t.tool_id)).length;
@@ -448,7 +452,7 @@ function ToolItem({
   isToggling: boolean;
   onToggle: () => void;
   isLast: boolean;
-  t: (key: string) => string;
+  t: TFunction;
 }) {
   const sourceTag = SOURCE_TAGS[tool.source] || { label: tool.source.toUpperCase(), color: 'default' };
   const riskColor = RISK_COLORS[tool.risk_level] || 'default';

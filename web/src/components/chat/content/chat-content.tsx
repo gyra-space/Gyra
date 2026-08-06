@@ -253,12 +253,12 @@ const ChatContent: React.FC<{
           // make the compact Manus left panel feel too sparse. Skip code blocks
           // so their internal formatting is preserved.
           const codeBlocks: string[] = [];
-          pw = pw.replace(/(```[\s\S]*?```)/g, (match) => {
+          pw = pw.replace(/(```[\s\S]*?```)/g, (match: string) => {
             codeBlocks.push(match);
             return '__MANUS_CODE_BLOCK_' + (codeBlocks.length - 1) + '__';
           });
           pw = pw.replace(/\n{3,}/g, '\n\n');
-          pw = pw.replace(/__MANUS_CODE_BLOCK_(\d+)__/g, (_, index) => codeBlocks[parseInt(index)]);
+          pw = pw.replace(/__MANUS_CODE_BLOCK_(\d+)__/g, (_: string, index: string) => codeBlocks[parseInt(index)]);
           // 把相邻的同工具步骤围栏聚合成一个分组卡片(纯展示层变换,
           // 不影响上游 VisParser 的 uid 增量合并)。
           pw = groupConsecutivePlanCards(pw);

@@ -242,4 +242,5 @@ export const WorkspacesEn = {
   'deliveries.no_archived': 'No archived outputs yet',
   'deliveries.resend': 'Resend',
   'view': 'View',
+  'playbooks.visual_editor.resources.ecp': 'ECP Semantic Layer',
 };

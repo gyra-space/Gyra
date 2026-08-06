@@ -4,7 +4,7 @@ import { IApp } from '@/types/app';
 import { PlusOutlined, ReloadOutlined, WarningOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useDebounceFn, useRequest } from 'ahooks';
 import { App, Button, Input, Spin, Tooltip } from 'antd';
-import Image from 'next/image';
+import { AgentAvatar } from '@/components/common/agent-avatar';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import CreateAppModal from '@/components/create-app-modal';
@@ -159,17 +159,13 @@ export default function AgentList({ selectedAppCode, onSelect, onListLoaded, ref
                   }`}
                   onClick={() => onSelect(app)}
                 >
-                  <div className="w-9 h-9 rounded-xl overflow-hidden ring-1 ring-gray-200/60 shadow-sm flex-shrink-0">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={app.icon?.trim() && app.icon !== 'smart-plugin' ? app.icon : '/icons/colorful-plugin.png'}
-                      alt={app.app_name || 'Agent'}
-                      className="object-cover w-full h-full"
-                      onError={(e) => {
-                        const target = e.target as HTMLImageElement;
-                        target.onerror = null;
-                        target.src = '/icons/colorful-plugin.png';
-                      }}
+                  <div className="flex-shrink-0">
+                    <AgentAvatar
+                      icon={app.icon}
+                      name={app.app_name}
+                      size={36}
+                      className="ring-1 ring-gray-200/60 shadow-sm rounded-xl"
+                      rounded={false}
                     />
                   </div>
                   <div className="flex-1 min-w-0">

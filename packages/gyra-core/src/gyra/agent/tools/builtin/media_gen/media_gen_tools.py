@@ -706,11 +706,13 @@ class GenerateVideoTool(ToolBase):
                 "wait": {
                     "type": "boolean",
                     "description": (
-                        "是否同步等待生成完成。默认 false(异步):提交后立即返回 job_id,"
-                        "后台生成,完成后自动通知(可用 check_media_job 主动查询)。"
-                        "设为 true:阻塞等待并在当次调用返回视频文件(向后兼容)。"
+                        "是否同步等待生成完成。默认 true(同步):阻塞等待并在当次调用返回"
+                        "已交付的视频文件(d-attach 交付物),保证结果可靠送达。"
+                        "设为 false(异步):立即返回 job_id,后台生成,完成后在下一轮推理"
+                        "自动通知(可用 check_media_job 主动查询);注意异步模式在本次"
+                        "对话结束后不会再主动推送,需用户再次交互或查询才能看到结果。"
                     ),
-                    "default": False,
+                    "default": True,
                 },
                 "description": {
                     "type": "string",
@@ -801,16 +803,16 @@ class GenerateVideoTool(ToolBase):
         if reference_images:
             gen_kwargs["reference_images"] = reference_images
 
-        wait = bool(args.get("wait", False))
+        wait = bool(args.get("wait", True))
 
         # Async path: provider supports submit_video and caller didn't request
         # wait. Submit synchronously (immediate errors like 403 surface now),
-        # then poll+download in the background via MediaJobRegistry.
+        # then poll+download in the background via AsyncTaskManager.
         if not wait and hasattr(provider, "submit_video"):
             try:
-                from gyra.agent.util.media_gen.media_job_registry import (
-                    MediaJobRegistry,
-                    MediaJobSpec,
+                from gyra.agent.util.async_task_manager import (
+                    AsyncTaskManager,
+                    AsyncTaskSpec,
                 )
                 submission = await provider.submit_video(prompt, model, **gen_kwargs)
             except NotImplementedError:
@@ -827,22 +829,27 @@ class GenerateVideoTool(ToolBase):
 
             description = args.get("description", "").strip() or f"AI 生成视频: {prompt[:50]}"
 
+            # 在提交阶段(上下文必然存活)预先解析 AFS,后台 deliver 时复用,
+            # 避免后台协程里 context 已失效导致 AFS 解析为 None、文件不落盘。
+            resolved_afs = _get_agent_file_system(context)
+
             async def _resume():
                 return await submission.complete()
 
             async def _deliver(result):
                 fname = f"generated_video_{uuid.uuid4().hex[:8]}.{result.format}"
                 return await self._save_and_deliver(
-                    result, fname, description, context, prompt
+                    result, fname, description, context, prompt, afs=resolved_afs
                 )
 
             conv_id = _get_conversation_id(context)
-            job_id = MediaJobRegistry.instance().submit(
-                MediaJobSpec(
+            mgr = AsyncTaskManager.media_instance()
+            job_id = await mgr.spawn(
+                AsyncTaskSpec(
                     conv_id=conv_id,
                     kind="video",
                     model=model,
-                    description=description,
+                    task_description=description,
                     resume=_resume,
                     deliver=_deliver,
                     timeout=gen_kwargs.get("timeout", 600),
@@ -862,7 +869,18 @@ class GenerateVideoTool(ToolBase):
                     f"生成完成后会自动通知。也可调用 "
                     f'check_media_job(job_id="{job_id}") 主动查询。'
                 ),
-                metadata={"job_id": job_id, "task_id": submission.task_id, "model": model},
+                metadata={
+                    "job_id": job_id,
+                    "task_id": submission.task_id,
+                    "model": model,
+                    # 供 ToolAction 在工具执行处登记 pending 异步任务
+                    "async_task": {
+                        "task_id": job_id,
+                        "kind": "video",
+                        "model": model,
+                        "conv_id": conv_id,
+                    },
+                },
             )
 
         # Sync path (wait=True, or provider without submit_video e.g. Sora)
@@ -899,9 +917,10 @@ class GenerateVideoTool(ToolBase):
         description: str,
         context: Optional[ToolContext],
         prompt: str,
+        afs: Any = None,
     ) -> ToolResult:
         """Save generated video to storage and render d-attach component."""
-        afs = _get_agent_file_system(context)
+        afs = afs or _get_agent_file_system(context)
 
         preview_url = None
         dattach_md = ""
@@ -1211,13 +1230,14 @@ class ListMediaModelsTool(ToolBase):
 
 _CHECK_MEDIA_JOB_PROMPT = """查询异步媒体生成任务的状态与结果。
 
-generate_video 默认异步执行:提交后立即返回 job_id,后台轮询生成。本工具用于:
+generate_video 默认同步等待(结果为当次调用返回的交付物)；仅当显式传 wait=false
+时才进入异步模式:提交后立即返回 job_id,后台轮询生成。本工具用于:
 - 主动查询某个 job 的状态 (pending/running/completed/failed/timeout)。
 - 任务完成后取回生成的视频/图片交付物。
 - 不传 job_id 则返回当前会话所有媒体生成任务的摘要。
 
-注意:完成的任务会在下一轮推理自动通知,通常无需主动反复查询;仅在需要立即取
-结果或排查失败原因时使用。
+注意:异步模式下完成的任务会在下一轮推理自动通知,通常无需主动反复查询;仅在需要
+立即取结果或排查失败原因时使用。
 """
 
 
@@ -1256,12 +1276,12 @@ class CheckMediaJobTool(ToolBase):
     async def execute(
         self, args: Dict[str, Any], context: Optional[ToolContext] = None
     ) -> ToolResult:
-        from gyra.agent.util.media_gen.media_job_registry import (
-            MediaJobRegistry,
-            MediaJobStatus,
+        from gyra.agent.util.async_task_manager import (
+            AsyncTaskManager,
+            AsyncTaskStatus,
         )
 
-        mgr = MediaJobRegistry.instance()
+        mgr = AsyncTaskManager.media_instance()
         job_id = (args.get("job_id") or "").strip()
         conv_id = _get_conversation_id(context)
 
@@ -1299,11 +1319,11 @@ class CheckMediaJobTool(ToolBase):
             f"- 耗时: {state.elapsed_seconds():.1f}s",
         ]
         artifacts: List[Artifact] = []
-        if state.status == MediaJobStatus.COMPLETED and state.tool_result is not None:
-            out = getattr(state.tool_result, "output", None)
+        if state.status == AsyncTaskStatus.COMPLETED and state.result is not None:
+            out = getattr(state.result, "output", None)
             if out:
                 parts.append(f"\n{out}")
-            arts = getattr(state.tool_result, "artifacts", None) or []
+            arts = getattr(state.result, "artifacts", None) or []
             artifacts = list(arts)
         if state.error:
             parts.append(f"- 错误: {state.error}")

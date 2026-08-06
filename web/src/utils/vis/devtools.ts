@@ -290,8 +290,8 @@ export class VisDevTools {
       version: '2.0',
       timestamp: Date.now(),
       components: Array.from(this.parser.getAllComponents().entries()).map(([uid, comp]) => ({
-        uid,
         ...comp,
+        uid,
       })),
       indexStats: this.parser.getIndex().getStats(),
       history: this.history.map((s) => ({

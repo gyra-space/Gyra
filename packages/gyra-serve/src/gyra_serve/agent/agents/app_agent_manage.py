@@ -88,10 +88,26 @@ class AppManager(BaseComponent, ABC):
         # init team employees
         # TODO employee has it own llm provider
         employees: List[ConversableAgent] = []
+        # 多媒体子 Agent：把该 app 自身的 ext_config.multimedia_agent 绑定到实例，
+        # 使同一 MULTIMEDIA 模板下不同 app 各自携带自己的名称/默认模型/风格 prompt，
+        # 通过 app_code 寻址时互不覆盖。（多实例各自独立）
+        multimedia_ext = getattr(gpts_app, "ext_config", None)
+        if not isinstance(multimedia_ext, dict):
+            multimedia_ext = None
         for record in gpts_app.details:
             agent = await create_agent_from_gpt_detail(
                 record, llm_provider, context, agent_memory
             )
+            if multimedia_ext:
+                try:
+                    from gyra.agent.multimedia import MultimediaAgent
+
+                    if isinstance(agent, MultimediaAgent):
+                        agent.bind_app_config(multimedia_ext)
+                except Exception as e:  # noqa: BLE001 - 绑定失败不影响主流程
+                    logger.warning(
+                        f"[app-agent] bind multimedia config failed for {record.agent_name}: {e}"
+                    )
             # agent.name_prefix = gpts_app.app_name
             employees.append(agent)
 

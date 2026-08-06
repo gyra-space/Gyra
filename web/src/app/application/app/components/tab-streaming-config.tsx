@@ -34,6 +34,7 @@ import {
 import { AppContext } from '@/contexts';
 import {
   getToolsByCategory,
+  type ToolListResponse,
 } from '@/client/api/tools/v2';
 import { GET, PUT, DELETE } from '@/client/api';
 
@@ -306,10 +307,11 @@ export default function TabStreamingConfig() {
     async () => {
       try {
         const res = await getToolsByCategory({ include_empty: false });
-        
-        if (res.success && res.categories) {
+        const data = res.data as unknown as ToolListResponse;
+
+        if (data.success && data.categories) {
           const tools: AvailableTool[] = [];
-          res.categories.forEach(category => {
+          data.categories.forEach(category => {
             category.tools.forEach(tool => {
               const inputSchema = tool.input_schema as { properties?: Record<string, unknown> } | undefined;
               const paramNames = getParamsFromSchema(inputSchema);
@@ -357,8 +359,8 @@ export default function TabStreamingConfig() {
           `/api/v1/streaming-config/apps/${appCode}`
         );
         
-        const data = response.data;
-        
+        const data = response.data as unknown as { configs?: ToolConfig[] };
+
         if (data?.configs) {
           setConfigs(data.configs.map((cfg) => ({
             ...cfg,
@@ -415,7 +417,7 @@ export default function TabStreamingConfig() {
         });
         message.success(t('streaming_save_success') || 'Configuration saved');
       } else {
-        const errorMsg = response.data?.error || t('streaming_save_failed') || 'Save failed';
+        const errorMsg = (response.data as any)?.error || t('streaming_save_failed') || 'Save failed';
         console.error('[StreamingConfig] Save failed:', errorMsg);
         message.error(errorMsg);
       }
@@ -662,11 +664,11 @@ export default function TabStreamingConfig() {
                       placeholder={t('streaming_add_tool') || '添加新工具配置'}
                       style={{ width: 250 }}
                       onChange={(value) => {
-                        setSelectedTool(value);
+                        setSelectedTool(value ?? null);
                         const tool = availableTools.find((t) => t.tool_name === value);
                         if (tool) {
                           const newConfig: ToolConfig = {
-                            tool_name: value,
+                            tool_name: value as unknown as string,
                             tool_display_name: tool.tool_display_name,
                             tool_description: tool.description,
                             param_configs: [],

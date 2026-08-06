@@ -89,7 +89,7 @@ export default function ({ url = '' }: { url: string }) {
               {...markdownPlugins}
             >
               {detail.outputType?.toLowerCase() === 'json' ?
-                `\`\`\`json\n${JSON.stringify(safeJsonParse(detail?.content), null, 2)}\n\`\`\`` :
+                `\`\`\`json\n${JSON.stringify(safeJsonParse(detail?.content || '', {}), null, 2)}\n\`\`\`` :
                 detail?.content
               }
             </GPTVisLite>

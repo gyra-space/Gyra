@@ -134,6 +134,50 @@ describe('parseWorkspaceView', () => {
   });
 });
 
+describe('subagents(异步子 agent 任务看板)', () => {
+  const baseChunk = { render_name: 'scene_agent_workspace', planning: null, execution: [], summary: null };
+
+  test('subagents 解析与规范化', () => {
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      subagents: [
+        { sub_conv_id: 'sub_1', agent_name: 'multimedia', task: '生成视频', status: 'running', mode: 'async' },
+        { sub_conv_id: 'sub_2', agent_name: 'expert', task: '分析数据', status: 'done', authorization: '确认执行?' },
+      ],
+    }, null);
+    expect(view.subagents).toHaveLength(2);
+    expect(view.subagents![0].status).toBe('running');
+    expect(view.subagents![0].agent_name).toBe('multimedia');
+    expect(view.subagents![1].status).toBe('done');
+    expect(view.subagents![1].authorization).toBe('确认执行?');
+  });
+
+  test('未知状态回落 running;缺 sub_conv_id 的条目被丢弃', () => {
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      subagents: [
+        { sub_conv_id: 'sub_1', status: 'hologram' },
+        { status: 'running' },
+      ],
+    }, null);
+    expect(view.subagents).toHaveLength(1);
+    expect(view.subagents![0].status).toBe('running');
+  });
+
+  test('chunk 未携带 subagents 时保留 prev', () => {
+    const prev = parseWorkspaceView({
+      ...baseChunk,
+      subagents: [{ sub_conv_id: 'sub_1', status: 'running' }],
+    }, null);
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      execution: [{ id: 's1', type: 'tool_call', title: 'A', status: 'done' }],
+    }, prev);
+    expect(view.subagents).toHaveLength(1);
+    expect(view.subagents![0].status).toBe('running');
+  });
+});
+
 describe('lobby_exhibits(大厅通用内容协议)', () => {
   const baseChunk = { render_name: 'scene_agent_workspace', planning: null, execution: [], summary: null };
 

@@ -94,6 +94,10 @@ function CssWrapper({ children }: { children: React.ReactElement }) {
       } else {
         document.body?.classList?.remove("light");
       }
+      // Keep html data-theme and class in sync for markdown / CSS selectors
+      document.documentElement?.setAttribute("data-theme", mode);
+      document.documentElement?.classList?.remove(mode === "light" ? "dark" : "light");
+      document.documentElement?.classList?.add(mode);
     }
   }, [mode]);
 
@@ -110,6 +114,23 @@ function CssWrapper({ children }: { children: React.ReactElement }) {
   return <div className="h-screen overflow-hidden">{children}</div>;
 }
 
+// 移动端设备检测:窄屏(≤767px)或移动 UA 视为移动设备,用于自动进入 /m 移动端模式
+function useIsMobileDevice() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const isMobileUA = () =>
+      /Android|iPhone|iPod|iPad|Mobile|Windows Phone|webOS/i.test(
+        navigator.userAgent
+      );
+    const update = () => setIsMobile(mq.matches || isMobileUA());
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+  return isMobile;
+}
+
 function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const { mode } = useContext(ChatContext);
   const { i18n } = useTranslation();
@@ -117,6 +138,49 @@ function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const [mounted, setMounted] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const authCheckInProgress = useRef(false);
+
+  const isMobileDevice = useIsMobileDevice();
+  const prevMobileDevice = useRef(isMobileDevice);
+
+  // 移动设备 + 非移动路由 → 自动进入移动端模式
+  useEffect(() => {
+    if (!mounted || !isMobileDevice) return;
+    const p = pathname || '';
+    if (p.startsWith('/m/') || p === '/m') return; // 已在移动端
+    if (p === '/auth/callback') return; // 桌面/移动共用 OAuth 回调,不跳转
+    if (p === '/login') {
+      window.location.replace('/m/login');
+      return;
+    }
+    if (p.startsWith('/workspaces/detail')) {
+      // 桌面工作区详情 → 移动工作区,保留 id 参数
+      window.location.replace('/m/workspace' + window.location.search);
+      return;
+    }
+    // 其余桌面路由 → 移动首页
+    window.location.replace('/m/');
+  }, [mounted, isMobileDevice, pathname]);
+
+  // 设备由移动端切回桌面(如拉宽窗口) → 自动从 /m 回到对应桌面路由
+  useEffect(() => {
+    if (!mounted) return;
+    const wasMobile = prevMobileDevice.current;
+    prevMobileDevice.current = isMobileDevice;
+    if (isMobileDevice || !wasMobile) return; // 仅当"曾是移动 → 现为桌面"才回跳
+    const p = pathname || '';
+    if (!p.startsWith('/m/')) return; // 不在移动端,无需处理
+    if (p === '/m/login') {
+      window.location.replace('/login');
+      return;
+    }
+    if (p.startsWith('/m/workspace')) {
+      // 移动工作区 → 桌面工作区详情,保留 id 参数
+      window.location.replace('/workspaces/detail' + window.location.search);
+      return;
+    }
+    // 其余移动路由 → 桌面首页
+    window.location.replace('/');
+  }, [mounted, isMobileDevice, pathname]);
 
   const isPublicRoute =
     pathname?.startsWith("/login") ||

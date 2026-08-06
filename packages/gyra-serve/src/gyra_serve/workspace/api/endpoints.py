@@ -15,6 +15,7 @@ from .schemas import (
     RenameConversationRequest,
     SceneModeSetRequest,
     SetCurrentConversationRequest,
+    SetHomeWorkspaceRequest,
     WorkspaceListFilter,
     WorkspaceMemberListRequest,
     WorkspaceMemberRequest,
@@ -95,6 +96,23 @@ async def default_or_create_workspace(
         return Result.succ(service.get_or_create_home(request.user_id))
     except Exception as e:
         logger.exception("workspace default-or-create exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/workspaces/set-home",
+             response_model=Result[Optional[WorkspaceResponse]],
+             dependencies=[Depends(check_api_key)])
+async def set_home_workspace(
+    request: SetHomeWorkspaceRequest, service: Service = Depends(get_service),
+) -> Result[Optional[WorkspaceResponse]]:
+    """把某空间设为用户的默认(主)空间。仅当用户是该空间成员时生效。"""
+    try:
+        ws = service.set_home(request.user_id, request.workspace_id)
+        if ws is None:
+            return Result.failed("user is not a member of this workspace")
+        return Result.succ(ws)
+    except Exception as e:
+        logger.exception("workspace set-home exception!")
         return Result.failed(str(e))
 
 

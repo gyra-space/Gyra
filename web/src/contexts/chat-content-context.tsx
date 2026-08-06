@@ -28,7 +28,7 @@ interface ChatContentProps {
   appInfo: IApp;
   temperatureValue: number;
   maxNewTokensValue: number;
-  resourceValue: Record<string, unknown>;
+  resourceValue: Record<string, unknown> | null;
   modelValue: string;
   selectedSkills: SelectedSkill[];
   chatInParams: Array<{
@@ -39,7 +39,7 @@ interface ChatContentProps {
   setModelValue: React.Dispatch<React.SetStateAction<string>>;
   setTemperatureValue: React.Dispatch<React.SetStateAction<number>>;
   setMaxNewTokensValue: React.Dispatch<React.SetStateAction<number>>;
-  setResourceValue: React.Dispatch<React.SetStateAction<Record<string, unknown>>>;
+  setResourceValue: React.Dispatch<React.SetStateAction<Record<string, unknown> | null>>;
   setSelectedSkills: React.Dispatch<React.SetStateAction<SelectedSkill[]>>;
   setChatInParams: (params: Array<{
     param_type: string;

@@ -364,7 +364,7 @@ export const rendererRegistry = new RendererRegistry();
 interface StreamingParamRendererProps {
   callId: string;
   paramName: string;
-  builder: ReturnType<typeof import('./incremental-param-builder').IncrementalParamBuilder>;
+  builder: InstanceType<typeof import('./incremental-param-builder').IncrementalParamBuilder>;
   customRenderer?: IRenderer;
   className?: string;
 }

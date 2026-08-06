@@ -2,6 +2,7 @@ import pytest
 
 from gyra.component import SystemApp
 from gyra.storage.metadata import db
+from gyra_serve.building.app.api.schemas import ServeRequest
 from gyra_serve.core.tests.conftest import (  # noqa: F401
     asystem_app,
     client,
@@ -73,6 +74,61 @@ def test_service_get_list(service: Service):
 def test_service_get_list_by_page(service: Service):
     # TODO: implement your test case
     pass
+
+
+@pytest.mark.asyncio
+async def test_get_and_save_multimedia_agent_config(service: Service):
+    """测试 get/save_multimedia_agent_config 读写 ext_config.multimedia_agent。"""
+    # 1. 创建一个测试 app
+    req = ServeRequest(
+        app_code="test-multimedia-agent-app",
+        app_name="测试多媒体 Agent 应用",
+        app_describe="多媒体 Agent 配置测试",
+        team_mode="single_agent",
+    )
+    entity = service.create(req)
+    assert entity is not None
+    assert entity.app_code == "test-multimedia-agent-app"
+
+    # 2. 首次读取（未配置应返回默认配置，enabled=False）
+    result = service.get_multimedia_agent_config("test-multimedia-agent-app")
+    assert isinstance(result, dict)
+    assert result.get("enabled") is False
+    assert result.get("name") == "multimedia_agent"  # 默认值
+    assert result.get("capability_image") is True
+    assert result.get("capability_video") is True
+
+    # 3. 写入自定义配置
+    test_config = {
+        "enabled": True,
+        "name": "my-image-generator",
+        "description": "我的图片生成 Agent",
+        "capability_image": True,
+        "capability_video": False,
+        "default_image_model": "dall-e-3",
+        "default_image_size": "1024x1792",
+        "style_prompt": "复古胶片风格",
+        "scene_prompt": "居中构图",
+        "negative_prompt": "模糊, 低质量",
+        "async_default": False,
+        "timeout": 120,
+        "fixed_params": {"quality": "hd", "n": 1},
+    }
+    saved = await service.save_multimedia_agent_config(
+        "test-multimedia-agent-app", test_config
+    )
+    assert saved is not None
+    assert saved.get("enabled") is True
+    assert saved.get("name") == "my-image-generator"
+    assert saved.get("capability_video") is False
+    assert saved.get("default_image_model") == "dall-e-3"
+    assert saved.get("fixed_params") == {"quality": "hd", "n": 1}
+
+    # 4. 再次读取应匹配保存结果
+    result2 = service.get_multimedia_agent_config("test-multimedia-agent-app")
+    assert result2 == saved
+    assert result2.get("enabled") is True
+    assert result2.get("name") == "my-image-generator"
 
 
 # Add more test cases according to your own logic

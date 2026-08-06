@@ -6,12 +6,13 @@ import { GPTVisLite } from '@antv/gpt-vis';
 import { Avatar, Descriptions, Flex, } from 'antd';
 import { isEqual } from 'lodash';
 import React, { useState } from 'react';
+import type { LLM } from '../types';
 import { VisLLMDiv } from './style';
 import ThinkInput from './ThinkInput';
 
 interface IProps {
   footer?: string | React.ReactNode;
-  data: TS.LLM;
+  data: LLM;
 }
 
 const VisLLM = ({ data }: IProps) => {
@@ -48,7 +49,7 @@ const VisLLM = ({ data }: IProps) => {
         ]}
       />
       {
-        showModelInput && <ThinkInput url={link_url} />
+        showModelInput && <ThinkInput url={link_url || ''} />
       }
       <div>
         {markdown && (

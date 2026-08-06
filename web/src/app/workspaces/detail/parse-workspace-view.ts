@@ -4,6 +4,7 @@ import type {
   WorkspaceDeliverableFile,
   WorkspaceExecutionStep,
   WorkspacePanelView,
+  WorkspaceSubagentItem,
   WorkspaceTaskFile,
   WorkspaceView,
 } from './agent-workspace-types';
@@ -11,6 +12,7 @@ import type {
 const VALID_TYPES = ['tool_call', 'thinking', 'artifact', 'delivery', 'user', 'task_created'];
 const VALID_STATUS = ['running', 'done', 'failed'];
 const VALID_PANEL_VIEWS = ['execution', 'deliverable', 'summary', 'task_files'];
+const VALID_SUBAGENT_STATUS = ['pending', 'running', 'done', 'failed', 'awaiting_authorization'];
 
 const VALID_EXHIBIT_KINDS: LobbyExhibitKind[] = [
   'image', 'video', 'audio', 'table', 'slides', 'html', 'pdf',
@@ -142,6 +144,23 @@ function normalizeTaskFile(raw: unknown): WorkspaceTaskFile | null {
   };
 }
 
+function normalizeSubagent(raw: unknown): WorkspaceSubagentItem | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.sub_conv_id !== 'string' || !r.sub_conv_id) return null;
+  const status = VALID_SUBAGENT_STATUS.includes(r.status as string)
+    ? (r.status as WorkspaceSubagentItem['status'])
+    : 'running';
+  return {
+    sub_conv_id: r.sub_conv_id,
+    agent_name: typeof r.agent_name === 'string' ? r.agent_name : undefined,
+    task: typeof r.task === 'string' ? r.task : undefined,
+    status,
+    mode: typeof r.mode === 'string' ? r.mode : undefined,
+    authorization: typeof r.authorization === 'string' ? r.authorization : undefined,
+  };
+}
+
 /**
  * ts 归一化为毫秒数。服务端步骤是本地时间 naive ISO(可能带 6 位微秒或空格
  * 分隔),乐观用户步骤是 UTC ISO(带 Z);Date.parse 对 naive 按本地时区、
@@ -156,7 +175,7 @@ function tsToMs(ts: string | null | undefined): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-const EMPTY_VIEW: WorkspaceView = { planning: null, execution: [], summary: null, deliverable_files: [], task_files: [], panel_view: 'execution', lobby_exhibits: [] };
+const EMPTY_VIEW: WorkspaceView = { planning: null, execution: [], summary: null, deliverable_files: [], task_files: [], panel_view: 'execution', lobby_exhibits: [], subagents: [] };
 
 export function parseWorkspaceView(chunk: unknown, prev: WorkspaceView | null): WorkspaceView {
   if (!chunk || typeof chunk !== 'object') return prev ?? EMPTY_VIEW;
@@ -219,5 +238,10 @@ export function parseWorkspaceView(chunk: unknown, prev: WorkspaceView | null): 
     lobby_exhibits = Array.from(byId.values());
   }
 
-  return { planning, execution, summary, deliverable_files, task_files, panel_view, lobby_exhibits };
+  // 异步子 agent 任务看板:后端每次全量推送,直接替换(与 deliverable_files 同语义)
+  const subagents = Array.isArray(c.subagents)
+    ? c.subagents.map(normalizeSubagent).filter((s): s is WorkspaceSubagentItem => s !== null)
+    : (prev?.subagents ?? []);
+
+  return { planning, execution, summary, deliverable_files, task_files, panel_view, lobby_exhibits, subagents };
 }

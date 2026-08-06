@@ -4,6 +4,7 @@ import { Divider, DropDownProps, Dropdown, Tooltip, Typography, Card } from 'ant
 import cls from 'classnames';
 import { useTranslation } from 'react-i18next';
 import Image from 'next/image';
+import { AgentAvatar } from '@/components/common/agent-avatar';
 import React, { useRef, useEffect } from 'react';
 import './style.css';
 
@@ -63,15 +64,12 @@ const BlurredCard: React.FC<{
         <div>
           <div className='flex items-start gap-3 mb-4'>
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-1.5 ring-1 ring-gray-200 dark:ring-gray-700">
-              <img 
-                src={logo} 
-                alt={name} 
-                className='w-10 min-w-10 h-10 object-contain rounded-lg max-w-none' 
-                onError={(e) => {
-                  const target = e.target as HTMLImageElement;
-                  target.onerror = null;
-                  target.src = '/icons/colorful-plugin.png';
-                }} 
+              <AgentAvatar
+                icon={logo}
+                name={name}
+                size={40}
+                className='rounded-lg'
+                rounded={false}
               />
             </div>
             <div className='flex-1 min-w-0'>

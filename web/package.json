@@ -40,6 +40,7 @@
     "copy-to-clipboard": "^3.3.3",
     "graphology": "^0.26.0",
     "graphology-layout-forceatlas2": "^0.10.1",
+    "graphology-types": "^0.24.8",
     "html2canvas": "^1.4.1",
     "i18next": "^25.3.2",
     "jspdf": "^3.0.1",

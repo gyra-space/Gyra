@@ -2,7 +2,7 @@
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from gyra.component import SystemApp
 from gyra.storage.metadata import BaseDao
@@ -221,22 +221,30 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
     def get_or_create_home(self, user_id: int) -> WorkspaceResponse:
         """用户首页默认空间(幂等 get-or-create)。
 
-        解析顺序:
-        1. 成员可见空间中带 settings.is_home 标记的 -> 返回
-        2. 无标记 -> 取最早创建(id 最小)的补标记后返回(兼容存量用户,零迁移)
-        3. 一个空间都没有 -> 新建"我的工作台"(create 的派生钩子全部生效:
+        解析顺序(基于用户级 member.is_home,按用户隔离):
+        1. 成员可见空间中有 member.is_home=True 的 -> 返回
+        2. 兼容存量:有旧 settings.is_home 标记(空间级)的 -> 一次性提升为用户级主空间返回
+        3. 无标记 -> 取最早创建(id 最小)的补用户级标记后返回(零迁移)
+        4. 一个空间都没有 -> 新建"我的工作台"(create 的派生钩子全部生效:
         owner 成员/默认 agent/ECP workspace 供给)
         归档的空间不参与选择;用户归档首页空间后,下次访问自动选下一个或新建。
         """
         spaces = self.list_workspaces(user_id)
         if spaces:
-            home = next(
+            home_id = self._member_dao.get_home_workspace_id(user_id)
+            if home_id is not None:
+                home = next((s for s in spaces if s.id == home_id), None)
+                if home:
+                    return home
+            # 存量数据兼容:旧空间级 settings.is_home 一次性提升为用户级主空间
+            legacy = next(
                 (s for s in spaces if (s.settings or {}).get("is_home")), None
             )
-            if home:
-                return home
+            if legacy:
+                self._mark_home_member(legacy.id, user_id)
+                return legacy
             home = min(spaces, key=lambda s: s.id)
-            self._mark_home(home)
+            self._mark_home_member(home.id, user_id)
             return home
         return self.create(
             WorkspaceRequest(
@@ -246,23 +254,31 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
             )
         )
 
-    def _mark_home(self, ws: WorkspaceResponse) -> None:
-        """给空间打 is_home 标记(合并现有 settings,不覆盖其他键)。"""
+    def set_home(self, user_id: int, workspace_id: int) -> Optional[WorkspaceResponse]:
+        """把某空间设为用户的默认(主)空间。
+
+        仅当用户是该空间成员时生效;成功后返回该空间,否则返回 None。
+        """
+        ok = self._member_dao.set_home(workspace_id, user_id)
+        if not ok:
+            return None
+        return self.get_by_id(workspace_id)
+
+    def _mark_home_member(self, workspace_id: int, user_id: int) -> None:
+        """给用户在该空间的成员关系打 is_home 标记(用户级)。"""
         try:
-            settings = dict(ws.settings or {})
-            settings["is_home"] = True
-            self._dao.update(
-                {"workspace_code": ws.workspace_code},
-                {"settings_json": json.dumps(settings, ensure_ascii=False)},
-                force_update=True,
-            )
+            self._member_dao.set_home(workspace_id, user_id)
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"mark home workspace failed: {e}")
+            logger.warning(f"mark home member failed ws={workspace_id} user={user_id}: {e}")
 
     # ---------------- Member management ----------------
     def list_members(self, workspace_id: int) -> List[WorkspaceMemberResponse]:
-        entities = self._member_dao.list_by_workspace(workspace_id)
-        return [self._member_dao.to_response(e) for e in entities]
+        """List members with user names.
+
+        Queries member entities and joins user table to get user names.
+        """
+        results = self._member_dao.list_by_workspace_with_user_info(workspace_id)
+        return [self._member_dao.to_response(entity, user_name) for entity, user_name in results]
 
     def add_member(self, request: WorkspaceMemberRequest) -> WorkspaceMemberResponse:
         entities = self._member_dao.list_by_workspace(request.workspace_id)

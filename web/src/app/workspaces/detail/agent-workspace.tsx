@@ -26,6 +26,8 @@ export interface AgentWorkspaceProps {
   onDeliverableClick?: (file: WorkspaceDeliverableFile) => void;
   /** 点击对话记录中的任务卡片:进入任务对话 */
   onTaskClick?: (taskId: number) => void;
+  /** 点击异步子 agent 卡片:在中间容器内联展开子会话 */
+  onSubagentClick?: (subConvId: string) => void;
   onWorkspaceEvent?: (event: WorkspaceEvent) => void;
   /** 用户在 Agent 空间提交任务、开始对话时触发(外层据此折叠中间内容区) */
   onConversationStart?: () => void;
@@ -48,6 +50,7 @@ export function AgentWorkspace({
   onStepClick,
   onDeliverableClick,
   onTaskClick,
+  onSubagentClick,
   onWorkspaceEvent,
   onConversationStart,
   inputRef: inputRefProp,
@@ -146,6 +149,7 @@ export function AgentWorkspace({
               }) : undefined}
               onDeliverableClick={onDeliverableClick}
               onTaskClick={onTaskClick}
+              onSubagentClick={onSubagentClick}
             />
           )}
         </div>

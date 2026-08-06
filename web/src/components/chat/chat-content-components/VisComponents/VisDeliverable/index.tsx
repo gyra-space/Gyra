@@ -25,7 +25,7 @@ const renderTypeConfig: Record<string, { icon: React.ReactNode; label: string }>
   archive: { icon: <FileZipOutlined style={{ fontSize: 20, color: '#faad14' }} />, label: '压缩文件' },
 };
 
-const VisDeliverable: React.FC<{  DeliverableData }> = ({ data }) => {
+const VisDeliverable: React.FC<{ DeliverableData: any }> = ({ DeliverableData: data }) => {
   const { deliverable_files = [], task_files_count = 0 } = data;
 
   const handleDeliverableClick = useCallback((fileId: string) => {
@@ -44,7 +44,7 @@ const VisDeliverable: React.FC<{  DeliverableData }> = ({ data }) => {
 
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, padding: '4px 0' }}>
-      {deliverable_files.map((f) => {
+      {deliverable_files.map((f: any) => {
         const config = renderTypeConfig[f.render_type || 'iframe'] || renderTypeConfig.iframe;
         return (
           <button

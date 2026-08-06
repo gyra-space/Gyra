@@ -218,6 +218,15 @@ export function SceneWorkspaceShell({
     expandSpace();
   };
 
+  // 点击异步子 agent 卡片:在中间容器内联展开子会话(不再新标签打开)
+  const handleSubagentClick = (subConvId: string) => {
+    setFocusDismissed(false);
+    setPreviewItem({ sub_conv_id: subConvId });
+    setDetailContext('subagent');
+    expandSpace();
+    setMobilePane('space');
+  };
+
   // 大厅入口:进入飞轮工作台(中间区域切换,小屏定位到空间面板)
   const handleEnterFlywheel = () => {
     setDetailContext('flywheel');
@@ -392,6 +401,7 @@ export function SceneWorkspaceShell({
           activeTask={activeTask}
           workspaceId={workspaceId}
           workspaceCode={workspace?.workspace_code}
+          appCode={appCode}
           playbooks={playbooks}
           onBack={handleBackToDashboard}
           onProposalResolved={bumpInbox}
@@ -442,6 +452,7 @@ export function SceneWorkspaceShell({
             handleEnterConversation(taskId);
             setMobilePane('agent');
           }}
+          onSubagentClick={handleSubagentClick}
           onWorkspaceEvent={handleWorkspaceEvent}
           onConversationStart={() => setSpaceCollapsed(true)}
           inputRef={agentInputRef}

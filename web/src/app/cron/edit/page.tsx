@@ -1,15 +1,23 @@
 'use client';
 
 import { apiInterceptors, getCronJob, updateCronJob, deleteCronJob, runCronJob } from '@/client/api';
-import { CronJob } from '@/client/api/cron';
-import { ArrowLeftOutlined, DeleteOutlined, PlayCircleOutlined, SaveOutlined } from '@ant-design/icons';
+import {
+  ArrowLeftOutlined,
+  ClockCircleOutlined,
+  DeleteOutlined,
+  HistoryOutlined,
+  PlayCircleOutlined,
+  SaveOutlined,
+} from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { App, Button, Card, Descriptions, Space, Spin, Form, Popconfirm, Tag, Typography } from 'antd';
+import { App, Button, Descriptions, Form, Popconfirm, Space, Spin, Tag, Typography } from 'antd';
 import moment from 'moment';
 import { useRouter, useSearchParams } from 'next/navigation';
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import CronForm from '../components/cron-form';
+import CronLogsTable from '../components/cron-logs';
+import '../../workspaces/workspaces.css';
 
 const { Text } = Typography;
 
@@ -20,6 +28,7 @@ export default function EditCronPage() {
   const jobId = searchParams?.get('id');
   const { message, modal } = App.useApp();
   const [form] = Form.useForm();
+  const [showLogs, setShowLogs] = useState(false);
 
   // Fetch job details
   const { data: jobData, loading: jobLoading, refresh: refreshJob } = useRequest(
@@ -143,7 +152,7 @@ export default function EditCronPage() {
     try {
       const values = await form.validateFields();
       await runUpdateJob(values);
-    } catch (error) {
+    } catch {
       // Form validation error
     }
   };
@@ -182,76 +191,115 @@ export default function EditCronPage() {
   }
 
   return (
-    <div className="p-6 min-h-screen overflow-auto">
-      {/* Header - 固定在顶部 */}
-      <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 pb-4 mb-4 border-b">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Button
-              type='text'
-              icon={<ArrowLeftOutlined />}
-              onClick={() => router.push('/cron')}
-            >
-              {t('Back')}
-            </Button>
-            <span className="text-xl font-semibold">{t('cron_edit')}: {jobData.name}</span>
-          </div>
-          <Space>
-            <Button
-              icon={<PlayCircleOutlined />}
-              loading={runLoading}
-              onClick={() => runJobNow()}
-            >
-              {t('cron_run_now')}
-            </Button>
-            <Popconfirm
-              title={t('cron_confirm_delete')}
-              onConfirm={handleDelete}
-              okText={t('Yes')}
-              cancelText={t('No')}
-            >
-              <Button danger icon={<DeleteOutlined />} loading={deleteLoading}>
-                {t('Delete')}
-              </Button>
-            </Popconfirm>
-            <Button type="primary" icon={<SaveOutlined />} loading={updateLoading} onClick={handleSave}>
-              {t('save')}
-            </Button>
-          </Space>
+    <div className="ws-page scrollbar-default">
+      <div className="ws-page-bg" />
+
+      {/* Sticky header */}
+      <div
+        className="sticky top-0 z-30 backdrop-blur border-b border-[var(--ws-border)]"
+        style={{ backgroundColor: 'color-mix(in srgb, var(--ws-surface) 88%, transparent)' }}
+      >
+        <div className="ws-page-content">
+          <header className="ws-page-header !mb-0 py-3">
+            <div className="ws-page-header-left">
+              <div className="ws-page-icon"><ClockCircleOutlined /></div>
+              <div>
+                <div className="ws-page-eyebrow">Cron · Scheduled Tasks</div>
+                <h1 className="ws-page-title">{t('cron_edit')}: {jobData.name}</h1>
+                <p className="ws-page-subtitle">调整任务配置、立即执行或查看历史执行记录</p>
+              </div>
+            </div>
+            <div className="ws-page-actions">
+              <Space wrap>
+                <Button icon={<ArrowLeftOutlined />} size="large" onClick={() => router.push('/cron')}>
+                  {t('Back')}
+                </Button>
+                <Button
+                  icon={<HistoryOutlined />}
+                  size="large"
+                  onClick={() => setShowLogs((v) => !v)}
+                >
+                  {t('cron_execution_logs')}
+                </Button>
+                <Button
+                  icon={<PlayCircleOutlined />}
+                  size="large"
+                  loading={runLoading}
+                  onClick={() => runJobNow()}
+                >
+                  {t('cron_run_now')}
+                </Button>
+                <Popconfirm
+                  title={t('cron_confirm_delete')}
+                  onConfirm={handleDelete}
+                  okText={t('Yes')}
+                  cancelText={t('No')}
+                >
+                  <Button danger icon={<DeleteOutlined />} size="large" loading={deleteLoading}>
+                    {t('Delete')}
+                  </Button>
+                </Popconfirm>
+                <Button type="primary" icon={<SaveOutlined />} size="large" loading={updateLoading} onClick={handleSave}>
+                  {t('save')}
+                </Button>
+              </Space>
+            </div>
+          </header>
         </div>
       </div>
 
-      {/* Job Status */}
-      <Card className="mb-4" size="small">
-        <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small">
-          <Descriptions.Item label={t('cron_status')}>
-            <Tag color={jobData.enabled ? 'success' : 'default'}>
-              {jobData.enabled ? t('cron_enabled') : t('cron_disabled')}
-            </Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label={t('cron_last_run')}>
-            {jobData.state?.last_run_at_ms
-              ? moment(jobData.state.last_run_at_ms).format('YYYY-MM-DD HH:mm:ss')
-              : '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label={t('cron_next_run')}>
-            {jobData.state?.next_run_at_ms
-              ? moment(jobData.state.next_run_at_ms).format('YYYY-MM-DD HH:mm:ss')
-              : '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label={t('cron_consecutive_errors')}>
-            <Tag color={(jobData.state?.consecutive_errors || 0) > 0 ? 'error' : 'success'}>
-              {jobData.state?.consecutive_errors || 0}
-            </Tag>
-          </Descriptions.Item>
-        </Descriptions>
-      </Card>
+      <div className="ws-page-content">
+        <main className="pt-6 pb-24 max-w-3xl space-y-5">
+          {/* Job Status */}
+          <section className="bg-[var(--ws-surface)] rounded-xl border border-[var(--ws-border)] shadow-sm p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-1 h-5 bg-[var(--ws-accent)] rounded-full" />
+              <h3 className="text-sm font-semibold text-[var(--ws-ink)]">{t('cron_status')}</h3>
+            </div>
+            <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small">
+              <Descriptions.Item label={t('cron_status')}>
+                <Tag color={jobData.enabled ? 'success' : 'default'}>
+                  {jobData.enabled ? t('cron_enabled') : t('cron_disabled')}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label={t('cron_last_run')}>
+                {jobData.state?.last_run_at_ms
+                  ? moment(jobData.state.last_run_at_ms).format('YYYY-MM-DD HH:mm:ss')
+                  : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('cron_next_run')}>
+                {jobData.state?.next_run_at_ms
+                  ? moment(jobData.state.next_run_at_ms).format('YYYY-MM-DD HH:mm:ss')
+                  : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('cron_consecutive_errors')}>
+                <Tag color={(jobData.state?.consecutive_errors || 0) > 0 ? 'error' : 'success'}>
+                  {jobData.state?.consecutive_errors || 0}
+                </Tag>
+              </Descriptions.Item>
+            </Descriptions>
+            {jobData.state?.last_error && (
+              <div className="mt-3 bg-[var(--ws-danger)]/5 border border-[var(--ws-danger)]/20 rounded-lg p-3">
+                <Text type="danger" style={{ wordBreak: 'break-all' }}>{jobData.state.last_error}</Text>
+              </div>
+            )}
+          </section>
 
-      {/* Edit Form - 可滚动区域 */}
-      <div className="overflow-y-auto pb-8">
-        <Card>
+          {/* Edit Form */}
           <CronForm form={form} initialValues={jobData} />
-        </Card>
+
+          {/* Execution Logs */}
+          {showLogs && (
+            <section className="bg-[var(--ws-surface)] rounded-xl border border-[var(--ws-border)] shadow-sm p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-1 h-5 bg-[var(--ws-accent)] rounded-full" />
+                <span className="text-[var(--ws-accent)]"><HistoryOutlined /></span>
+                <h3 className="text-sm font-semibold text-[var(--ws-ink)]">{t('cron_execution_logs')}</h3>
+              </div>
+              <CronLogsTable jobId={jobId} />
+            </section>
+          )}
+        </main>
       </div>
     </div>
   );

@@ -9,6 +9,7 @@ import { ReloadOutlined, SearchOutlined, GlobalOutlined, RocketFilled, FireFille
 import { useDebounceFn } from 'ahooks';
 import { App as AntdApp, Spin } from 'antd';
 import moment from 'moment';
+import { AgentAvatar } from '@/components/common/agent-avatar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import './explore-page.css';
@@ -252,21 +253,12 @@ export default function ExplorePage() {
                     <div className='explore-card-header'>
                       <div className='explore-card-identity' onClick={() => handleChat(item)}>
                         <div className='explore-card-avatar'>
-                          {item.icon ? (
-                            <img
-                              src={item.icon}
-                              alt={item.app_name}
-                              onError={(e) => {
-                                const target = e.target as HTMLImageElement;
-                                target.onerror = null;
-                                target.src = '/icons/colorful-plugin.png';
-                              }}
-                            />
-                          ) : (
-                            <span className='explore-card-avatar-text'>
-                              {(item.app_name || 'A').charAt(0).toUpperCase()}
-                            </span>
-                          )}
+                          <AgentAvatar
+                            icon={item.icon}
+                            name={item.app_name}
+                            size={40}
+                            rounded={false}
+                          />
                         </div>
                         <div className='explore-card-meta'>
                           <h3 className='explore-card-name'>{item.app_name}</h3>

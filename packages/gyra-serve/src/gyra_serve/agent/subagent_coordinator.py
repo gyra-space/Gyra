@@ -146,6 +146,28 @@ class SubagentCoordinator:
         if all(h.is_terminal() for h in handles):
             await self._trigger_main_resume(main_conv_id, handles)
 
+    async def list_subagent_items(self, main_conv_id: str) -> List[Dict[str, Any]]:
+        """返回子任务看板卡片项（供场景空间 vis / 其他协议复用）。
+
+        从 gpts_conversations.extra.pending_subagents 读取当前所有子任务状态，
+        合成与 d-subagent-board 看板同构的卡片项列表（含待授权态）。
+        """
+        handles = await self._read_pending(main_conv_id)
+        items = []
+        for h in handles:
+            board_status = "awaiting_authorization" if h.authorization else h.status.value
+            items.append(
+                {
+                    "sub_conv_id": h.sub_conv_id,
+                    "agent_name": h.agent_name,
+                    "task": h.task,
+                    "status": board_status,
+                    "mode": h.mode.value,
+                    "authorization": h.authorization,
+                }
+            )
+        return items
+
     async def _emit_board_event(
         self, main_conv_id: str, handles: List[SubAgentHandle]
     ) -> None:
@@ -161,25 +183,8 @@ class SubagentCoordinator:
             vis = Vis.of("subagent_board")
             if vis is None:
                 return
-            items = []
-            completed = 0
-            for h in handles:
-                if h.authorization:
-                    board_status = "awaiting_authorization"
-                else:
-                    board_status = h.status.value
-                if h.is_terminal():
-                    completed += 1
-                items.append(
-                    {
-                        "sub_conv_id": h.sub_conv_id,
-                        "agent_name": h.agent_name,
-                        "task": h.task,
-                        "status": board_status,
-                        "mode": h.mode.value,
-                        "authorization": h.authorization,
-                    }
-                )
+            items = await self.list_subagent_items(main_conv_id)
+            completed = sum(1 for it in items if it["status"] in ("done", "failed"))
             content = {
                 "uid": f"subagent_board_{main_conv_id}",
                 "type": "all",

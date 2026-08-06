@@ -65,14 +65,13 @@ function providerLabel(p: OAuthProvider): string {
   return p.id;
 }
 
-// 登录卡片局部深色主题:玻璃输入框融入深空画布
-const darkTheme = {
-  algorithm: theme.darkAlgorithm,
+// 登录卡片浅色主题:干净输入框融入浅灰画布
+const lightTheme = {
   token: {
     colorPrimary: '#4f46e5',
-    colorBgContainer: 'rgba(255,255,255,0.05)',
-    colorBorder: 'rgba(255,255,255,0.14)',
-    colorTextPlaceholder: 'rgba(255,255,255,0.30)',
+    colorBgContainer: '#ffffff',
+    colorBorder: '#e5e8ef',
+    colorTextPlaceholder: '#8a92a6',
     borderRadius: 8,
   },
 };
@@ -246,13 +245,13 @@ export default function LoginPage() {
         <div className='aurora-blob aurora-blob--cyan bottom-[-16%] right-[2%] w-[560px] h-[560px]' />
         <div className='aurora-blob aurora-blob--violet top-[36%] left-[46%] w-[440px] h-[440px]' />
       </div>
-      <div className='absolute inset-0 opacity-[0.05] pointer-events-none'
+      <div className='absolute inset-0 opacity-[0.04] pointer-events-none'
         style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)', backgroundSize: '56px 56px' }} />
       {/* 边缘压暗,视线聚焦内容 */}
-      <div className='absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,transparent_45%,rgba(5,7,12,0.55)_100%)]' />
+      <div className='absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,transparent_50%,rgba(5,7,12,0.6)_100%)]' />
 
       {/* ─── 左侧品牌展示区 ─── */}
-      <aside className='hidden lg:flex relative z-10 flex-col justify-between w-[46%] shrink-0 p-12 xl:p-16 overflow-hidden'>
+      <aside className='hidden lg:flex relative z-10 flex-col justify-between w-[46%] shrink-0 p-10 xl:p-14 overflow-y-auto min-h-0'>
 
         <div className='relative z-10 flex items-center gap-3 animate-rise'>
           <Image src='/gyra-logo.svg' alt='Gyra' width={40} height={40} priority className='drop-shadow-[0_0_20px_rgba(79,70,229,0.7)]' />
@@ -263,12 +262,12 @@ export default function LoginPage() {
         </div>
 
         <div className='relative z-10 max-w-[480px] animate-rise-slow'>
-          <div className='inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/15 bg-white/5 backdrop-blur-sm text-[12px] text-white/70 mb-7'>
+          <div className='inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/15 bg-white/5 backdrop-blur-sm text-[12px] text-white/70 mb-5'>
             <span className='w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]' />
             AI-Native Multi-Agent Platform
           </div>
 
-          <h1 className='text-[40px] xl:text-[48px] font-semibold leading-[1.08] tracking-tight'>
+          <h1 className='text-[36px] xl:text-[42px] font-semibold leading-[1.1] tracking-tight'>
             The Team-Native
             <br />
             <span className='bg-gradient-to-r from-[#00DAEF] via-[#818cf8] to-[#a78bfa] bg-clip-text text-transparent'>
@@ -276,62 +275,41 @@ export default function LoginPage() {
             </span>
           </h1>
 
-          <p className='mt-6 text-[15px] leading-relaxed text-white/55 max-w-[440px]'>
+          <p className='mt-4 text-[15px] leading-relaxed text-white/55 max-w-[420px]'>
             Build, run and scale intelligent agents that collaborate like a real team —
             orchestration, knowledge, tools and a compounding data flywheel in one platform.
           </p>
 
           {/* 特性卡片 */}
-          <div className='mt-10 grid grid-cols-2 gap-3.5'>
+          <div className='mt-6 grid grid-cols-2 gap-3'>
             {FEATURES.map(f => (
               <div key={f.title}
-                className='group rounded-xl border border-white/10 bg-white/[0.04] p-4 backdrop-blur-sm transition-all duration-300 hover:bg-white/[0.08] hover:border-white/20 hover:-translate-y-0.5'>
-                <div className='w-9 h-9 rounded-lg flex items-center justify-center text-[#a5b4fc] bg-white/[0.06] border border-white/10 mb-3 transition-colors group-hover:bg-[#4f46e5] group-hover:text-white'>
+                className='group rounded-xl border border-white/10 bg-white/[0.04] p-3.5 backdrop-blur-sm transition-all duration-300 hover:bg-white/[0.08] hover:border-white/20 hover:-translate-y-0.5'>
+                <div className='w-8 h-8 rounded-lg flex items-center justify-center text-[#a5b4fc] bg-white/[0.06] border border-white/10 mb-2.5 transition-colors group-hover:bg-[#4f46e5] group-hover:text-white'>
                   {f.icon}
                 </div>
-                <h3 className='text-[13px] font-semibold text-white/90 mb-1.5'>{f.title}</h3>
+                <h3 className='text-[13px] font-semibold text-white/90 mb-1'>{f.title}</h3>
                 <p className='text-[12px] leading-relaxed text-white/45'>{f.desc}</p>
               </div>
             ))}
           </div>
         </div>
 
-        {/* 底部：Agent 运行预览 */}
-        <div className='relative z-10 flex items-center gap-4 animate-rise-slow'>
-          <div className='flex-1 rounded-xl border border-white/10 bg-[#0e111b]/80 backdrop-blur-md p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)]'>
-            <div className='flex items-center gap-1.5 mb-3'>
-              <span className='w-2 h-2 rounded-full bg-[#ff5f57]' />
-              <span className='w-2 h-2 rounded-full bg-[#febc2e]' />
-              <span className='w-2 h-2 rounded-full bg-[#28c840]' />
-              <span className='ml-2 text-[10px] text-white/35 tracking-widest'>AGENT CONSOLE</span>
-            </div>
-            <div className='space-y-2 text-[11px] font-mono'>
-              <div className='flex items-center gap-2 text-white/60'>
-                <span className='text-[#818cf8]'>○</span> planning → research → act
-              </div>
-              <div className='flex items-center gap-2 text-white/60'>
-                <span className='text-[#00DAEF]'>◐</span> grounding against knowledge base
-              </div>
-              <div className='flex items-center gap-2 text-white/60'>
-                <span className='text-[#34d399]'>●</span> calling 3 tools via MCP
-              </div>
-              <div className='flex items-center gap-2 text-white'>
-                <span className='text-[#a78bfa]'>✔</span> task completed · flywheel updated
-              </div>
-            </div>
+        {/* 底部：简洁品牌标语 */}
+        <div className='relative z-10 flex items-center gap-3 animate-rise-slow'>
+          <div className='w-8 h-8 rounded-lg bg-gradient-to-br from-[#00DAEF] to-[#4f46e5] flex items-center justify-center shadow-[0_6px_18px_rgba(79,70,229,0.4)]'>
+            <ArrowRightOutlined className='text-white text-[14px]' />
           </div>
-          <div className='hidden xl:flex flex-col items-center gap-2 shrink-0'>
-            <div className='w-10 h-10 rounded-full bg-gradient-to-br from-[#00DAEF] to-[#4f46e5] flex items-center justify-center shadow-[0_8px_24px_rgba(79,70,229,0.5)]'>
-              <ArrowRightOutlined className='text-white text-[16px]' />
-            </div>
-            <span className='text-[10px] text-white/40 tracking-widest'>Powered by Gyra</span>
+          <div className='text-[12px] text-white/40 leading-tight'>
+            <div className='text-white/60 font-medium'>Powered by Gyra</div>
+            <div className='text-white/30'>AI-native multi-agent orchestration</div>
           </div>
         </div>
       </aside>
 
       {/* ─── 右侧登录区:与品牌区共处同一深空画布 ─── */}
       <main className='relative z-10 flex-1 flex flex-col items-center justify-center px-6 py-10'>
-        <div className='relative z-10 w-full max-w-[400px] animate-rise'>
+        <div className='relative z-10 w-full max-w-[380px] animate-rise'>
           <ConfigProvider theme={darkTheme}>
           {/* 移动端 Logo */}
           <div className='lg:hidden flex items-center justify-center gap-2.5 mb-8'>
@@ -343,7 +321,7 @@ export default function LoginPage() {
           </div>
 
           {/* 登录卡片:深色玻璃拟态 */}
-          <div className='rounded-2xl border border-white/10 bg-[#12151f]/75 backdrop-blur-xl shadow-[0_24px_80px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] px-8 py-8'>
+          <div className='rounded-2xl border border-white/10 bg-[#12151f]/75 backdrop-blur-xl shadow-[0_24px_80px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] px-7 py-7'>
             <div className='mb-7'>
               <h2 className='text-[22px] font-semibold text-white tracking-tight'>
                 Welcome back

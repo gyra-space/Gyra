@@ -41,8 +41,8 @@ const ChatContentContainer = (props: { ctrl: AbortController; hideRightPanel?: b
   const isDoubleVis = useMemo(()=>{
     const layoutName = appInfo?.layout?.chat_layout?.name;
     const reuseName = appInfo?.layout?.chat_layout?.reuse_name;
-    return ['vis_window3', 'gyra_vis_window'].includes(layoutName) ||
-           ['vis_window3', 'gyra_vis_window'].includes(reuseName);
+    return ['vis_window3', 'gyra_vis_window'].includes(layoutName as string) ||
+           ['vis_window3', 'gyra_vis_window'].includes(reuseName as string);
   },[appInfo?.layout?.chat_layout?.name, appInfo?.layout?.chat_layout?.reuse_name]);
 
   return (

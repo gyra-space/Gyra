@@ -79,6 +79,8 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         self._panel_view: str = "execution"
         # 大厅入驻内容(通用 Exhibit 协议):交付文件 + 工具产出文件按 exhibit_id 幂等入驻
         self._lobby_exhibits: List[Dict[str, Any]] = []
+        # 异步子 agent 任务看板卡片项(与 SubagentBoard 看板同构,前端渲染子agent面板)
+        self._subagents: List[Dict[str, Any]] = []
 
     @property
     def reuse_name(self):
@@ -437,13 +439,23 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         return {"goal": goal or "任务计划", "steps": steps}
 
     def _build_view(self, plans_map: Optional[Dict[str, Any]], messages: List[Any]) -> Dict[str, Any]:
-        # 最新一条 assistant 文本 → summary;之前的阶段回复凝固为 execution 步骤
+        # 阶段回复凝固为 execution 步骤;仅当最新一条 assistant 文本在时序上是最后的输出时,
+        # 才作为底部 summary —— 若文本之后又产生了工具/任务步骤,该文本需按时序内联,
+        # 否则会出现「先说的话显示在工具卡片之后」的顺序颠倒
         narr_ids = list(self._scene_narrations.keys())
         summary: Optional[str] = None
         frozen_narr: List[Tuple[str, str]] = []  # (text, ts)
         if narr_ids:
-            summary = self._scene_narrations[narr_ids[-1]][0]
-            frozen_narr = [self._scene_narrations[mid] for mid in narr_ids[:-1]]
+            last_text, last_ts = self._scene_narrations[narr_ids[-1]]
+            item_ts_max = max(
+                (ts for _, ts in self._scene_items.values() if ts),
+                default=None,
+            )
+            if item_ts_max is not None and last_ts and last_ts < item_ts_max:
+                frozen_narr = [self._scene_narrations[mid] for mid in narr_ids]
+            else:
+                summary = last_text
+                frozen_narr = [self._scene_narrations[mid] for mid in narr_ids[:-1]]
 
         execution: List[Tuple[Dict[str, Any], str]] = list(self._scene_items.values())
         for text, ts in frozen_narr:
@@ -473,6 +485,7 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             "task_files": self._task_files,
             "panel_view": self._panel_view,
             "lobby_exhibits": self._lobby_exhibits,
+            "subagents": self._subagents,
         }
 
     def _render(self, plans_map: Optional[Dict[str, Any]], messages: List[Any]) -> str:
@@ -482,6 +495,28 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
     # ------------------------------------------------------------------
     # 交付文件收集(复用父类 manus converter 的文件收集能力)
     # ------------------------------------------------------------------
+    async def _collect_subagents(self, conv_id: Optional[str]) -> None:
+        """收集异步子 agent 任务看板卡片项。
+
+        从子 agent 协调器读取当前会话的 pending_subagents，产出与 SubagentBoard
+        看板同构的卡片项列表。coordinator 在 serve 进程全局注册，惰性导入避免
+        gyra-ext 与 gyra-serve 的编译期耦合；并发/恢复路径统一走该接口，
+        保证 live 推送与历史重建(vis_final)都能拿到最新子任务状态。
+        """
+        self._subagents = []
+        if not conv_id:
+            return
+        try:
+            from gyra_serve.agent.subagent_coordinator import get_subagent_coordinator
+
+            coordinator = get_subagent_coordinator()
+            if coordinator is None:
+                return
+            items = await coordinator.list_subagent_items(str(conv_id))
+            self._subagents = items if isinstance(items, list) else []
+        except Exception as e:  # noqa: BLE001 - 子agent看板缺失不影响主视图
+            logger.warning(f"[SceneWorkspace] collect subagents failed: {e}")
+
     async def _collect_scene_files(
         self,
         messages: List[Any],
@@ -616,6 +651,7 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             conv_id=conv_id,
             is_working=is_working,
         )
+        await self._collect_subagents(conv_id)
 
         return self._render(plans_map, messages or [])
 
@@ -632,6 +668,7 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         self._deliverable_files = []
         self._task_files = []
         self._lobby_exhibits = []
+        self._subagents = []
         self._panel_view = "execution"
         for msg in messages or []:
             self._ingest_message(msg)
@@ -648,6 +685,7 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             conv_id=conv_id,
             is_working=False,
         )
+        await self._collect_subagents(conv_id)
 
         return self._render(plans_map, messages or [])
 

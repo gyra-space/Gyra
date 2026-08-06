@@ -162,6 +162,7 @@ thirdparty
 
 #web
 # dependencies
+node_modules/
 /web/node_modules
 /web/yarn.lock
 

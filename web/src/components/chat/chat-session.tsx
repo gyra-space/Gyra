@@ -398,7 +398,7 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
           },
           ctrl, 
           chatId,
-          onMessage: message => {
+          onMessage: (message: any) => {
             setCanAbort(true);
             if (message) {
               // d-todo-list 围栏：提取到顶部固定面板，不进对话流
@@ -698,6 +698,10 @@ if (initMessage.model) {
       );
   };
 
+// resourceValue 在运行时可能是字符串或对象（调用方通过 typeof 区分），
+// 这里在 JSX 外先做类型收窄，避免在 JSX 内联 `as` 断言触发 SWC 解析错误。
+const resourceValueForContext = resourceValue as Record<string, unknown> | null;
+
 const sessionContent = (
     <ContextMetricsProvider convId={chatId}>
       <ChatContentContext.Provider
@@ -713,7 +717,7 @@ const sessionContent = (
           appInfo,
           temperatureValue,
           maxNewTokensValue,
-          resourceValue,
+          resourceValue: resourceValueForContext,
           modelValue,
           selectedSkills,
           setModelValue,

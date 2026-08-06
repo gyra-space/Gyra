@@ -1,9 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
+import { AgentAvatar } from '@/components/common/agent-avatar';
 
 interface AvatarProps {
   src: string;
   width?: string | number;
   className?: string;
+  /** Agent 名称，用于首字母头像回退 */
+  name?: string;
 }
 
 declare namespace NEXA_API {
@@ -20,24 +23,17 @@ declare namespace NEXA_API {
   }
 }
 
+/** 统一头像组件：已上传用图片，未上传/占位图用首字母头像 */
 const Avatar: React.FC<AvatarProps> = React.memo(
-  ({ src, width = '32px', className }) => {
-    const [avatarUrl, setAvatarUrl] = useState<string>(src);
-
+  ({ src, width = '32px', className, name }) => {
+    const size = typeof width === 'number' ? width : parseInt(width, 10) || 32;
     return (
-      <div style={{ width, height: width }} className={className}>
-        {avatarUrl && (
-          <img
-            src={src || '/agents/default_avatar.png'}
-            style={{
-              width,
-              height: width,
-              borderRadius: '50%',
-              objectFit: 'cover',
-            }}
-          />
-        )}
-      </div>
+      <AgentAvatar
+        icon={src}
+        name={name}
+        size={size}
+        className={className}
+      />
     );
   },
 );

@@ -187,3 +187,4 @@ export const parseResourceValue = (value: any): any[] => {
 
 export * from './constants';
 export * from './storage';
+export { STORAGE_INIT_MESSAGE_KET } from './constants/storage';

@@ -252,7 +252,7 @@ const ChatSider: React.FC<{
     if (list?.length > 0) {
       return list.map((item: IChatDialogueSchema) => ({
         ...item,
-        label: extractUserText(item.user_input) || item.select_param,
+        label: extractUserText(item.user_input as string) || item.select_param,
         key: item.conv_uid,
         icon: item.icon ? item.icon : <AppDefaultIcon scene={item.chat_mode} />,
         default: false,

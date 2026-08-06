@@ -679,14 +679,37 @@ async def chat_completions(
                                 )
 
                 if user_inputs:
+                    # 按当前 agent 模型能力 + 是否多媒体 agent 统一分流
+                    try:
+                        from gyra_serve.agent.file_io.file_type_config import (
+                            is_multimedia_agent,
+                            resolve_model_capabilities,
+                        )
+
+                        _caps = resolve_model_capabilities(dialogue.model_name)
+                        _prefer_direct_media = is_multimedia_agent(
+                            app_code=dialogue.app_code
+                        )
+                    except Exception:
+                        _caps, _prefer_direct_media = [], False
+
                     result = await process_chat_input_files(
                         user_inputs=user_inputs,
                         sandbox=None,
                         conv_id=dialogue.conv_uid,
+                        capabilities=_caps,
+                        prefer_direct_media=_prefer_direct_media,
                     )
                     sandbox_file_refs = result.sandbox_file_refs
+                    # 模型有能力直接消费的多媒体内容（image_url/audio/video）透传给
+                    # agent_chat 合并进用户消息，实现"支持则直接消费"。
+                    if result.multimodal_contents:
+                        dialogue.ext_info["multimodal_contents"] = (
+                            result.multimodal_contents
+                        )
                     logger.info(
-                        f"[v1/chat] Processed {len(sandbox_file_refs)} files from user input"
+                        f"[v1/chat] Processed {len(sandbox_file_refs)} sandbox files, "
+                        f"{len(result.multimodal_contents)} multimodal contents from user input"
                     )
                     # 打印 sandbox_file_refs 的详细信息
                     for i, ref in enumerate(sandbox_file_refs):

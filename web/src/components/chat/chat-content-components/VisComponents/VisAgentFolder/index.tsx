@@ -185,7 +185,7 @@ const VisAgentFolder: FC<{ data: VisAgentFolderData | AgentFolderItem }> = ({ da
         newItems.items = [...(newItems.items || []), task];
         return;
       }
-      const father = findNodeByUid(newItems, task.path);
+      const father = findNodeByUid(newItems, task.path || '');
       if (father) {
         if (!father.items) father.items = [];
         const exists = father.items.some((item) => item.uid === task.uid);
@@ -319,7 +319,6 @@ const VisAgentFolder: FC<{ data: VisAgentFolderData | AgentFolderItem }> = ({ da
   if (legacyData.explorer && !isTreeRoot(data as AgentFolderItem)) {
     return (
       <FolderContainer>
-        {/* @ts-expect-error GPTVis spread */}
         <GPTVis components={codeComponents} {...markdownPlugins}>
           {legacyData.explorer}
         </GPTVis>

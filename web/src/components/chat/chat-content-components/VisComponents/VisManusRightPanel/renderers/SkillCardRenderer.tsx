@@ -235,11 +235,11 @@ const SkillCardRenderer: FC<IProps> = ({
     } as SkillMeta;
   }, [outputs, skillName, skillDescription]);
 
-  if (expanded && skillData.files.length > 0) {
+  if (expanded && (skillData.files || []).length > 0) {
     return (
       <ExpandedView
         name={skillData.name}
-        files={skillData.files}
+        files={skillData.files || []}
         onCollapse={() => setExpanded(false)}
       />
     );
@@ -249,7 +249,7 @@ const SkillCardRenderer: FC<IProps> = ({
     <CompactView
       name={skillData.name}
       description={skillData.description}
-      fileCount={skillData.files.length}
+      fileCount={(skillData.files || []).length}
       onExpand={() => setExpanded(true)}
     />
   );

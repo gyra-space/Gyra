@@ -185,7 +185,7 @@ export default function AuditLogsPage() {
       width: 100,
       render: (decision: string) => (
         <Tag color={DECISION_COLORS[decision] || 'default'} icon={DECISION_ICONS[decision]}>
-          {t(`audit_decision_${decision}`)}
+          {t(`audit_decision_${decision}` as any)}
         </Tag>
       ),
     },
@@ -198,7 +198,7 @@ export default function AuditLogsPage() {
         <Tooltip title={t(`audit_risk_score`) + `: ${record.risk_score || 0}`}>
           <Badge 
             status={RISK_LEVEL_COLORS[level] === 'error' ? 'error' : RISK_LEVEL_COLORS[level] === 'warning' ? 'warning' : 'success'} 
-            text={t(`audit_risk_${level}`)}
+            text={t(`audit_risk_${level}` as any)}
           />
         </Tooltip>
       ),
@@ -473,13 +473,13 @@ export default function AuditLogsPage() {
               </Descriptions.Item>
               <Descriptions.Item label={t('audit_decision')} span={1}>
                 <Tag color={DECISION_COLORS[detailLog.decision]} icon={DECISION_ICONS[detailLog.decision]}>
-                  {t(`audit_decision_${detailLog.decision}`)}
+                  {t(`audit_decision_${detailLog.decision}` as any)}
                 </Tag>
               </Descriptions.Item>
               <Descriptions.Item label={t('audit_risk_level')} span={1}>
-                <Badge 
-                  status={RISK_LEVEL_COLORS[detailLog.risk_level] === 'error' ? 'error' : RISK_LEVEL_COLORS[detailLog.risk_level] === 'warning' ? 'warning' : 'success'} 
-                  text={t(`audit_risk_${detailLog.risk_level}`)}
+                <Badge
+                  status={RISK_LEVEL_COLORS[detailLog.risk_level || ''] === 'error' ? 'error' : RISK_LEVEL_COLORS[detailLog.risk_level || ''] === 'warning' ? 'warning' : 'success'}
+                  text={t(`audit_risk_${detailLog.risk_level}` as any)}
                 />
                 <Text type="secondary" className="ml-2">({t('audit_score')}: {detailLog.risk_score})</Text>
               </Descriptions.Item>

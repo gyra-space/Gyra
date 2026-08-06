@@ -6,7 +6,7 @@ import { IChatDialogueMessageSchema } from '@/types/chat';
 import React, { memo, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import ChatHeader from '../header/chat-header';
 import UnifiedChatInput from '../input/unified-chat-input';
-import AppDefaultIcon from '../../icons/app-default-icon';
+import { AgentAvatar } from '@/components/common/agent-avatar';
 import { Tooltip } from 'antd';
 import { LeftOutlined, DesktopOutlined, CloseOutlined } from '@ant-design/icons';
 import classNames from 'classnames';
@@ -220,21 +220,6 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
   const [overrideRunningWindow, setOverrideRunningWindow] = useState<string | null>(null);
   // 状态事件 badge 数据(由 SystemEventsBridge 从消息流中桥接出来)
   const [systemEvents, setSystemEvents] = useState<any>(null);
-  const [welcomeIconError, setWelcomeIconError] = useState(false);
-
-  useEffect(() => {
-    setWelcomeIconError(false);
-  }, [appInfo?.icon]);
-
-  const isDefaultWelcomeIcon = useMemo(() => {
-    const icon = appInfo?.icon;
-    return (
-      !icon ||
-      icon === 'smart-plugin' ||
-      icon === '/agents/default_avatar.png' ||
-      icon === '/agents/chat_avatar_default.png'
-    );
-  }, [appInfo?.icon]);
 
   useEffect(() => {
     const handler = (data: any) => setSystemEvents(data);
@@ -409,7 +394,7 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
         <div className={classNames(
           'flex flex-col h-full transition-all duration-300 ease-out',
           isRightPanelVisible
-            ? shareMode === 'report' ? 'hidden' : 'w-[38%] min-w-[340px]'
+            ? (shareMode as string) === 'report' ? 'hidden' : 'w-[38%] min-w-[340px]'
             : 'flex-1'
         )}>
           {/* Left header */}
@@ -440,23 +425,12 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
               <div className="h-full flex items-center justify-center px-6">
                 <div className="text-center max-w-md">
                   <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white flex items-center justify-center overflow-hidden shadow-sm border border-[#eeeff3]">
-                    {!isDefaultWelcomeIcon && !welcomeIconError ? (
-                      <img
-                        src={appInfo.icon}
-                        alt={appInfo.app_name}
-                        className="w-full h-full object-cover"
-                        onError={() => setWelcomeIconError(true)}
-                      />
-                    ) : appInfo?.icon === 'smart-plugin' && !welcomeIconError ? (
-                      <img
-                        src="/icons/colorful-plugin.png"
-                        alt={appInfo.app_name}
-                        className="w-full h-full object-cover"
-                        onError={() => setWelcomeIconError(true)}
-                      />
-                    ) : (
-                      <AppDefaultIcon scene={appInfo?.team_context?.chat_scene || 'chat_agent'} width={32} height={32} />
-                    )}
+                    <AgentAvatar
+                      icon={appInfo?.icon}
+                      name={appInfo?.app_name}
+                      size={56}
+                      rounded={false}
+                    />
                   </div>
                   <h3 className="text-[16px] font-medium text-[#3b4154] mb-1">{appInfo?.app_name || 'Agent 工作台'}</h3>
                   <p className="text-[#8a92a6] text-[13px] mb-6">

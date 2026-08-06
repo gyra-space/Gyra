@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useMemo, useContext, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { TFunction } from 'i18next';
 import { useRequest } from 'ahooks';
 import {
   Input,
@@ -353,7 +354,7 @@ export default function TabToolsManagement() {
         // 2. 先持久化到数据库
         console.log('[ToolBinding] updatedTools:', JSON.stringify(updatedTools, null, 2));
         console.log('[ToolBinding] appInfo.resource_tool before update:', appInfo?.resource_tool);
-        const updateResult = await fetchUpdateApp({ ...appInfo, resource_tool: updatedTools });
+        const updateResult = await fetchUpdateApp({ ...appInfo, resource_tool: updatedTools }) as any;
         console.log('[ToolBinding] updateResult:', updateResult);
         // 检查返回的 resource_tool
         const [, updateResponse] = updateResult || [];
@@ -504,7 +505,7 @@ export default function TabToolsManagement() {
       const response = await GET<null, { app_code: string; configs: ToolStreamingConfig[]; total: number }>(
         `/api/v1/streaming-config/apps/${appCode}`
       );
-      const data = response.data;
+      const data = response.data as unknown as { configs?: ToolStreamingConfig[]; total?: number; app_code?: string };
       if (data?.configs && Array.isArray(data.configs)) {
         const configMap: Record<string, ToolStreamingConfig> = {};
         data.configs.forEach((cfg: ToolStreamingConfig) => {
@@ -1094,7 +1095,7 @@ interface ToolItemProps {
   onToggle: () => void;
   onOpenStreamingConfig: () => void;
   hasStreamingConfig: boolean;
-  t: (key: string) => string;
+  t: TFunction;
 }
 
 function ToolItem({ tool, groupType, isToggling, onToggle, onOpenStreamingConfig, hasStreamingConfig, t }: ToolItemProps) {
@@ -1168,7 +1169,7 @@ function ToolItem({ tool, groupType, isToggling, onToggle, onOpenStreamingConfig
           {tool.tags.length > 0 && (
             <div className="flex gap-1 mt-2">
               {tool.tags.slice(0, 3).map((tag) => (
-                <Tag key={tag} className="text-xs" size="small">
+                <Tag key={tag} className="text-xs">
                   {tag}
                 </Tag>
               ))}

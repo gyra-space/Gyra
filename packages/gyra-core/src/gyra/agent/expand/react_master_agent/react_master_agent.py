@@ -450,17 +450,29 @@ class ReActMasterAgent(ConversableAgent):
                         )()
                         return result
 
-            # 创建适配器和 AsyncTaskManager
+            # 创建适配器，并把 subagent 任务提交到进程级统一单例（与 media 任务共用）。
+            # spec.delegate 打包已绑定 adapter 的委派协程，使单例无需 subagent_manager
+            # 也能跑 subagent 任务，实现两类任务统一查看 / 统一持久化 / 统一恢复。
             adapter = CoreV1SubagentAdapter(self)
             session_id = (
                 getattr(self.agent_context, "conv_id", "") if self.agent_context else ""
             )
 
-            self._async_task_manager = AsyncTaskManager(
-                subagent_manager=adapter,
-                max_concurrent=5,
-                parent_session_id=session_id,
-            )
+            self._async_task_manager = AsyncTaskManager.media_instance()
+
+            # 把统一单例纳入 AsyncTaskCoordinator 轮询，使 spawn_agent_task 提交的
+            # 后台子 Agent 任务也能被 #2(WAITING) / #3(resume) / #4(恢复) 覆盖。
+            try:
+                from gyra_serve.agent.async_task_coordinator import (
+                    get_async_task_coordinator,
+                )
+                coord = get_async_task_coordinator()
+                if coord is not None:
+                    coord.add_manager(self._async_task_manager)
+            except Exception as coord_err:  # noqa: BLE001 - serve 不可用时静默跳过
+                logger.warning(
+                    f"[ReActMasterAgent] register subagent manager to coordinator failed: {coord_err}"
+                )
 
             # 获取可用子 Agent 名称列表
             agent_names = []
@@ -481,9 +493,18 @@ class ReActMasterAgent(ConversableAgent):
                     agent_name=agent_name,
                     task_description=task,
                     timeout=timeout,
+                    conv_id=session_id,
                     depend_on=[d.strip() for d in depend_on.split(",") if d.strip()]
                     if depend_on
                     else [],
+                    # 统一单例下 subagent 任务经 delegate 委派（已绑定 adapter）
+                    delegate=lambda: adapter.delegate(
+                        subagent_name=agent_name,
+                        task=task,
+                        parent_session_id=session_id,
+                        context={},
+                        sync=True,
+                    ),
                 )
                 task_id = await atm.spawn(spec)
                 deps_info = f"\n依赖: {spec.depend_on}" if spec.depend_on else ""
@@ -659,15 +680,15 @@ class ReActMasterAgent(ConversableAgent):
         在 thinking() 中调用,将后台完成的媒体生成结果注入到 LLM 上下文。
         """
         try:
-            from gyra.agent.util.media_gen.media_job_registry import MediaJobRegistry
+            from gyra.agent.util.async_task_manager import AsyncTaskManager
 
-            mgr = MediaJobRegistry.instance()
+            mgr = AsyncTaskManager.media_instance()
             conv_id = (
                 getattr(self.agent_context, "conv_id", "")
                 if self.agent_context
                 else ""
             )
-            completed = mgr.get_completed(conv_id=conv_id, consume=True)
+            completed = mgr.get_completed_results(conv_id=conv_id, consume=True)
             if not completed:
                 return None
             notification = mgr.format_notifications(completed)
@@ -2404,6 +2425,22 @@ class ReActMasterAgent(ConversableAgent):
                     f"[LLM_RESPONSE] model={llm_model}, "
                     f"content_length={len(agent_llm_out.content) if agent_llm_out.content else 0}"
                 )
+
+                # PR 8: emit usage metric 到 in-memory buffer（供 Agent 空间上下文用量环形图）
+                # base_agent.thinking 有同名逻辑;本类重写了 thinking 的正常路径,需在此补发,
+                # 否则 usage 回调不触发,SSE 不推送 usage_metric,前端环形图不显示。
+                if agent_llm_out.metrics is not None:
+                    try:
+                        from gyra.agent.core.usage_metric import emit_usage_metric
+                        emit_usage_metric(
+                            conv_id=self.not_null_agent_context.conv_id,
+                            model_name=agent_llm_out.llm_name or "",
+                            prompt_tokens=agent_llm_out.metrics.prompt_tokens or 0,
+                            completion_tokens=agent_llm_out.metrics.completion_tokens or 0,
+                            role="main",
+                        )
+                    except Exception as _e:  # noqa: BLE001
+                        logger.debug(f"[usage] emit skipped: {_e}")
 
                 # ========== 应用 BuildResult 清理 ==========
                 if build_result and self.memory and hasattr(self.memory, "gpts_memory"):

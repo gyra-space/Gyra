@@ -302,6 +302,10 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                     team_mode="single_agent",
                     agent_name=request.agent or "simple_chat",
                 )
+            # 前端 agent 字段与 team_context.agent_name 可能不一致（如切换到多媒体 Agent），
+            # 以请求中的 agent 为准同步到 team_context，避免保存后回退为旧值
+            if request.agent:
+                team_context.agent_name = request.agent
             request.team_mode = TeamMode.SINGLE_AGENT.value
         elif not request.team_mode == TeamMode.NATIVE_APP.value:
             if request.agent:
@@ -1958,6 +1962,93 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
             session.merge(entity)
             session.commit()
             logger.info(f"Set app {app_code} published status to {published}")
+
+    # ------------------------------------------------------------------ #
+    # 多媒体 Agent 模板配置（ext_config.multimedia_agent）
+    # ------------------------------------------------------------------ #
+
+    def get_multimedia_agent_config(self, app_code: str) -> Dict[str, Any]:
+        """读取应用的多媒体 Agent 模板配置。
+
+        配置存于 ``ext_config.multimedia_agent``（JSON dict，字段与
+        ``MultimediaAgentConfig`` 对齐）。未配置时返回默认配置并标记 ``enabled=False``。
+
+        Args:
+            app_code: 应用代码
+        Returns:
+            Dict[str, Any]: 多媒体 Agent 配置（含 enabled 开关）
+        """
+        from gyra.agent.multimedia import MultimediaAgentConfig
+
+        # 配置保存在 app config 对象（ext_config），从 config 表当前构建配置读取，
+        # 不依赖 app_detail 表（app_detail 仅用于子 Agent，已废弃）。
+        ext_config = self._current_app_ext_config(app_code)
+        raw = ext_config.get("multimedia_agent") if isinstance(ext_config, dict) else None
+        if not raw:
+            default = MultimediaAgentConfig().model_dict()
+            default["enabled"] = False
+            return default
+
+        cfg = MultimediaAgentConfig.from_dict(raw)
+        result = cfg.model_dict()
+        result["enabled"] = bool(raw.get("enabled", True))
+        return result
+
+    def _current_app_ext_config(self, app_code: str) -> Dict[str, Any]:
+        """读取 app config 对象的 ext_config（优先未发布构建配置，回退发布配置）。
+
+        多媒体 Agent 等扩展配置统一存于 app config 的 ext_config，不落 app_detail 表。
+        """
+        try:
+            config_service = get_config_service()
+            temp = config_service.get_app_temp_code(app_code)
+            if temp is not None and getattr(temp, "ext_config", None):
+                return temp.ext_config or {}
+            app_resp = self.dao.get_one({"app_code": app_code})
+            if app_resp is not None and getattr(app_resp, "config_code", None):
+                pub = config_service.get_by_code(app_resp.config_code)
+                if pub is not None and getattr(pub, "ext_config", None):
+                    return pub.ext_config or {}
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[multimedia-agent] read ext_config failed: {e}")
+        return {}
+
+    async def save_multimedia_agent_config(
+        self, app_code: str, config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """保存应用的多媒体 Agent 模板配置到 ``ext_config.multimedia_agent``。
+
+        走标准 app edit 流程持久化到配置表 ext_config JSON。
+
+        Args:
+            app_code: 应用代码
+            config: 多媒体 Agent 配置 dict（与 MultimediaAgentConfig 字段对齐）
+        Returns:
+            Dict[str, Any]: 保存后的配置（含 enabled 开关）
+        """
+        from gyra.agent.multimedia import MultimediaAgentConfig
+
+        app = await self.app_detail(app_code)
+        if not app:
+            raise ValueError(f"应用不存在[{app_code}]")
+
+        cfg = MultimediaAgentConfig.from_dict(config or {})
+        saved = cfg.model_dict()
+        saved["enabled"] = bool((config or {}).get("enabled", True))
+
+        app_dict = app.to_dict()
+        ext_config = app_dict.get("ext_config") or {}
+        if not isinstance(ext_config, dict):
+            ext_config = {}
+        ext_config["multimedia_agent"] = saved
+
+        edit_request = ServeRequest(**{**app_dict, "ext_config": ext_config})
+        await self.edit(edit_request)
+        logger.info(
+            f"[multimedia-agent] saved config for app={app_code}: "
+            f"name={saved.get('name')}, enabled={saved.get('enabled')}"
+        )
+        return saved
 
 
 def _get_default_system_prompt() -> str:

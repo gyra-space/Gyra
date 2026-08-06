@@ -56,10 +56,8 @@ export const PermissionsEn = {
   permissions_remove_permission_error: 'Failed to remove permission',
   permissions_system_role_cannot_delete: 'System roles cannot be deleted',
   permissions_system_role_readonly: 'System roles are read-only and cannot be configured or edited',
-  permissions_name_required: 'Please enter a role name',
   permissions_name_placeholder: 'Please enter a role name',
   permissions_delete_confirm: 'Are you sure you want to delete this role?',
-  permissions_remove_permission_confirm: 'Are you sure you want to remove this permission?',
 
   // Status
   permissions_system_role: 'System Role',
@@ -223,7 +221,6 @@ export const PermissionsEn = {
   permissions_definition_library_hint: 'Select permissions from the permission definition library to assign to this role',
   permissions_definition_library_desc: 'Permission definitions allow you to create reusable permission templates',
   permissions_definition_library: 'Permission Templates',
-  permissions_definition_library_desc: 'Permission definitions allow you to create reusable permission templates',
   permissions_no_definitions: 'No permission definitions available. Please create some in the "Permission Definitions" tab first.',
   permissions_definition_assigned: 'Permission definitions assigned successfully',
   permissions_save_definition_selection: 'Save Permission Selection',
@@ -238,7 +235,6 @@ export const PermissionsEn = {
   permissions_user_groups: 'User Groups',
   permissions_user_groups_hint: 'User groups enable batch user permission management. When roles are assigned to a user group, all users in the group will inherit those roles.',
   permissions_manage_members: 'Manage Members',
-  permissions_manage_roles: 'Manage Roles',
   permissions_group_members: 'Group Members',
   permissions_group_roles: 'Group Roles',
   permissions_group_roles_hint: 'Assigning roles to a user group will make all users in that group inherit those roles.',

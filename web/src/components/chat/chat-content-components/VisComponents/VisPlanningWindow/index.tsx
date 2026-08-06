@@ -9,6 +9,7 @@ import {
   FieldTimeOutlined,
 } from '@ant-design/icons';
 import Avatar from '../../avatar';
+import { AgentAvatar } from '@/components/common/agent-avatar';
 import { VisPWCardWrapper } from './style';
 
 interface PlanningWindow {
@@ -233,7 +234,12 @@ const PlanCard: FC<{ plan: Plan }> = ({ plan }) => {
       <div className="bg-gradient-to-b from-indigo-50/50 via-white to-white px-3.5 pb-2.5 pt-3">
         <div className="flex items-center gap-2.5">
           <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border border-indigo-100 bg-white shadow-sm">
-            <Avatar src={plan.avatar || '/agents/robot.png'} width={28} />
+            <AgentAvatar
+              icon={plan.avatar}
+              name={plan.agent}
+              size={28}
+              rounded={false}
+            />
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">

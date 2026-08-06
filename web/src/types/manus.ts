@@ -134,7 +134,7 @@ export interface ManusDeliverableFile {
   download_url?: string;
   content?: string;
   object_path?: string;
-  render_type: 'iframe' | 'markdown' | 'code' | 'image' | 'pdf' | 'text' | 'video';
+  render_type: 'iframe' | 'markdown' | 'code' | 'image' | 'pdf' | 'text' | 'video' | 'archive' | 'download';
 }
 
 export interface ManusStepData {

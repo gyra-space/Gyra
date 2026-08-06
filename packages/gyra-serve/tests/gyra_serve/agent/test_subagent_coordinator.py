@@ -445,6 +445,47 @@ class TestRecoverMainWithLease:
         agent_chat.aggregation_chat.assert_not_awaited()
 
 
+# ---------------- list_subagent_items ----------------
+
+class TestListSubagentItems:
+    @pytest.mark.asyncio
+    async def test_returns_board_cards_with_authorization_status(self):
+        """把 pending_subagents 合成为看板卡片项(含待授权态)。"""
+        handles = [
+            SubAgentHandle("sub_1", "conv_main_1", SubAgentMode.ASYNC,
+                           SubAgentStatus.RUNNING, agent_name="multimedia",
+                           task="生成视频").to_dict(),
+            SubAgentHandle("sub_2", "conv_main_1", SubAgentMode.ASYNC,
+                           SubAgentStatus.DONE, result="ok").to_dict(),
+            SubAgentHandle("sub_3", "conv_main_1", SubAgentMode.ASYNC,
+                           SubAgentStatus.RUNNING, authorization="确认执行?").to_dict(),
+        ]
+        conv = _make_conv(extra={"pending_subagents": handles})
+        agent_chat = _make_agent_chat(conv)
+        coord = SubagentCoordinator(agent_chat=agent_chat)
+
+        items = await coord.list_subagent_items("conv_main_1")
+
+        assert len(items) == 3
+        assert items[0]["sub_conv_id"] == "sub_1"
+        assert items[0]["agent_name"] == "multimedia"
+        assert items[0]["task"] == "生成视频"
+        assert items[0]["status"] == "running"
+        assert items[0]["mode"] == "async"
+        # 待授权 → awaiting_authorization 高亮
+        assert items[2]["status"] == "awaiting_authorization"
+        assert items[2]["authorization"] == "确认执行?"
+
+    @pytest.mark.asyncio
+    async def test_no_pending_returns_empty(self):
+        conv = _make_conv(extra={})
+        agent_chat = _make_agent_chat(conv)
+        coord = SubagentCoordinator(agent_chat=agent_chat)
+
+        items = await coord.list_subagent_items("conv_main_1")
+        assert items == []
+
+
 # ---------------- 全局单例 ----------------
 
 class TestGlobalCoordinator:

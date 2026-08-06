@@ -103,6 +103,29 @@ class MediaGenProviderRegistry:
         return None
 
     @classmethod
+    def get_usable_model_names(cls, capability: str) -> List[str]:
+        """返回指定能力下所有可用（已配置且有凭证）的模型名列表。
+
+        供多媒体 Agent「可用模型候选池」校验候选是否可用。
+        """
+        try:
+            from gyra.agent.util.llm.model_config_cache import (
+                ModelConfigCache,
+                IMAGE_PROTOCOLS,
+                VIDEO_PROTOCOLS,
+            )
+        except Exception as e:
+            logger.debug(f"[MediaGenProviderRegistry] ModelConfigCache unavailable: {e}")
+            return []
+
+        protocols = VIDEO_PROTOCOLS if capability == "video" else IMAGE_PROTOCOLS
+        return [
+            m["model"]
+            for m in ModelConfigCache.get_media_models()
+            if m["protocol"] in protocols and cls._is_model_usable(m)
+        ]
+
+    @classmethod
     def register(
         cls,
         protocol: str,

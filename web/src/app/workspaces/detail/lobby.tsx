@@ -2,6 +2,7 @@
 
 import { Tag } from 'antd';
 import { useRequest } from 'ahooks';
+import { useState } from 'react';
 import { CloudServerOutlined, SendOutlined, DeploymentUnitOutlined } from '@ant-design/icons';
 import {
   apiInterceptors,
@@ -9,6 +10,7 @@ import {
   listDeliveries,
 } from '@/client/api';
 import { listEcpObjects } from '@/client/api/ecp';
+import { ObjectDetailDrawer } from '@/app/ecp/components/common';
 import { GrowthCard } from './growth-card';
 import { SpaceGuideCard } from './space-guide-card';
 import './lobby.css';
@@ -95,6 +97,9 @@ export function Lobby({
   );
   const semantics = semanticRes?.items ?? [];
 
+  // 语义资产详情抽屉:点击语义卡片打开(复用 ECP 控制台的对象详情视图)
+  const [selectedSemantic, setSelectedSemantic] = useState<any>(null);
+
   const recentDeliveries = (deliveries || []).slice(0, 3);
   const recentArtifacts = (artifacts || []).slice(0, 4);
   const recentSemantics = semantics.slice(0, 5);
@@ -156,7 +161,7 @@ export function Lobby({
                   onKeyDown={(e) => { if (e.key === 'Enter') onSelectDelivery?.(d); }}
                 >
                   <Tag>{d.category}</Tag>
-                  <span className="ws-lobby__delivery-channel">{d.channel}</span>
+                  <span className="ws-lobby__delivery-channel">{d.title || `delivery_${d.id}`}</span>
                   <span className="ws-lobby__delivery-status">{d.status}</span>
                 </div>
               ))}
@@ -179,7 +184,14 @@ export function Lobby({
                 />
               )}
               {recentSemantics.map((s: any) => (
-                <div key={s.id} className="ws-lobby__hosted-card">
+                <div
+                  key={s.id}
+                  className="ws-lobby__hosted-card"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelectedSemantic(s)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') setSelectedSemantic(s); }}
+                >
                   <span className="ws-lobby__hosted-title">{s.name || s.id}</span>
                   <Tag color="blue">{s.obj_type}</Tag>
                 </div>
@@ -188,6 +200,11 @@ export function Lobby({
           </section>
         </div>
       </div>
+      <ObjectDetailDrawer
+        obj={selectedSemantic}
+        open={!!selectedSemantic}
+        onClose={() => setSelectedSemantic(null)}
+      />
     </div>
   );
 }

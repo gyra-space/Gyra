@@ -18,7 +18,7 @@ export class V2SimplifiedVisParser {
         break;
 
       case 'vis_update':
-        this.handleVisUpdate(event.payload as SimplifiedVisComponent);
+        this.handleVisUpdate(event.payload as unknown as SimplifiedVisComponent);
         break;
 
       // 其他事件类型暂不处理VIS更新，可扩展

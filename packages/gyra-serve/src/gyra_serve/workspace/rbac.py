@@ -2,16 +2,15 @@
 
 P2 任务9: 收紧 25 个写端点的角色校验,viewer 理论上不能再 start_task 等。
 
-向后兼容:默认不启用。仅当环境变量 ``GYRA_RBAC_ENABLED`` (或 ``RBAC_ENABLED``)
-为真时校验;未启用时所有 ``require_permission`` 依赖直接放行,行为与无 RBAC 完全
-一致,存量调用零迁移。
+默认启用校验。环境变量 ``GYRA_RBAC_ENABLED`` (或 ``RBAC_ENABLED``) = false 可
+关闭(迁移/调试用);关闭时所有 ``require_permission`` 依赖直接放行,行为与无
+RBAC 完全一致。
 
 角色层次(与 workspace_member.role 字符串对齐):
-    OWNER > APPROVER > CONTRIBUTOR > VIEWER
-- OWNER:       全权限(空间所有者)
-- APPROVER:    启动任务 / 解决介入 / 发布资产 / 建剧本 / 背书 / coach / 升级
-- CONTRIBUTOR: 启动任务 / 发布资产 / 建剧本
-- VIEWER:      只读(无写权限)
+    OWNER > CONTRIBUTOR > VIEWER
+- OWNER:       管理 -- 全权限(空间所有者,创建者自动获得)
+- CONTRIBUTOR: 使用 -- 启动任务 / 发布资产 / 建剧本
+- VIEWER:      查看 -- 只读(无写权限)
 """
 import logging
 import os
@@ -29,9 +28,16 @@ class Role(str, Enum):
     """空间成员角色(值与 workspace_member.role 列存储字符串一致)。"""
 
     OWNER = "owner"
-    APPROVER = "approver"
     CONTRIBUTOR = "contributor"
     VIEWER = "viewer"
+
+
+# 角色 -> 中文显示名(供 API / 前端展示)。
+ROLE_LABELS: Dict[Role, str] = {
+    Role.OWNER: "管理",
+    Role.CONTRIBUTOR: "使用",
+    Role.VIEWER: "查看",
+}
 
 
 class Permission(str, Enum):
@@ -43,6 +49,7 @@ class Permission(str, Enum):
     UPDATE_WORKSPACE = "update_workspace"
     CREATE_PLAYBOOK = "create_playbook"
     DELETE_ASSET = "delete_asset"
+    DELETE_TASK = "delete_task"
     ATTEST = "attest"
     COACH = "coach"
     ESCALATE = "escalate"
@@ -50,29 +57,21 @@ class Permission(str, Enum):
 
 
 ROLE_PERMISSIONS: Dict[Role, set] = {
-    Role.OWNER: set(Permission),  # 所有权限
-    Role.APPROVER: {
-        Permission.START_TASK,
-        Permission.RESOLVE_INTERVENTION,
-        Permission.PUBLISH_ASSET,
-        Permission.CREATE_PLAYBOOK,
-        Permission.ATTEST,
-        Permission.COACH,
-        Permission.ESCALATE,
-        Permission.MANAGE_RESOURCE,
-    },
+    Role.OWNER: set(Permission),  # 所有权限(管理)
     Role.CONTRIBUTOR: {
         Permission.START_TASK,
         Permission.PUBLISH_ASSET,
         Permission.CREATE_PLAYBOOK,
     },
-    Role.VIEWER: set(),  # 无写权限
+    Role.VIEWER: set(),  # 无写权限(查看)
 }
 
 
 def _rbac_enabled() -> bool:
-    """RBAC 是否启用。环境变量 GYRA_RBAC_ENABLED / RBAC_ENABLED = true 时启用。"""
+    """RBAC 是否启用。默认启用;环境变量 GYRA_RBAC_ENABLED / RBAC_ENABLED = false 时关闭。"""
     val = os.environ.get("GYRA_RBAC_ENABLED") or os.environ.get("RBAC_ENABLED")
+    if val is None:
+        return True
     return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 

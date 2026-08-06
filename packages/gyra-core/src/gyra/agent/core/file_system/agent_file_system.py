@@ -1270,6 +1270,63 @@ class AgentFileSystem:
 
         logger.info(f"[AFSv3] Workspace synced: {len(files)} files ready")
 
+        # 恢复交付物到沙箱：异步/后台生成时沙箱不可用，交付物只留存于 AFS
+        # （文件服务/OSS），会话恢复时补回沙箱，保证主 agent 可直接访问。
+        try:
+            await self.restore_deliverables_to_sandbox()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AFSv3] restore deliverables on sync failed: {e}")
+
+    async def restore_deliverables_to_sandbox(self) -> int:
+        """把本会话已保存到 AFS（文件服务/OSS）的交付物文件还原到沙箱工作目录.
+
+        用于异步/后台生成后沙箱不可用、交付物只留存于 AFS 的场景；会话恢复
+        （sync_workspace）时调用，保证主 agent 能在沙箱里访问这些交付物。
+
+        Returns:
+            成功还原的文件数
+        """
+        if not self.sandbox:
+            return 0
+        try:
+            files = await self.metadata_storage.list_files(
+                self.conv_id, FileType.DELIVERABLE
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AFSv3] restore list deliverables failed: {e}")
+            return 0
+
+        work_dir = getattr(self.sandbox, "work_dir", "/home/ubuntu")
+        restored = 0
+        for meta in files:
+            try:
+                storage_uri = (
+                    meta.oss_url if meta.oss_url else f"local://{meta.local_path}"
+                )
+                content = await self._read_from_storage(storage_uri)
+                if content is None:
+                    logger.debug(
+                        f"[AFSv3] restore skip (read failed): {meta.file_key}"
+                    )
+                    continue
+                safe_key = self._sanitize_filename(meta.file_name)
+                if "." not in safe_key and meta.file_name and "." in meta.file_name:
+                    stem, _, ext = meta.file_name.rpartition(".")
+                    safe_key = f"{self._sanitize_filename(stem)}.{ext}"
+                sandbox_path = f"{work_dir}/{self.goal_id}/{safe_key}"
+                await self.sandbox.file.write(sandbox_path, content)
+                restored += 1
+                logger.info(f"[AFSv3] Restored deliverable to sandbox: {sandbox_path}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"[AFSv3] restore deliverable to sandbox failed: "
+                    f"{meta.file_key} err={e}"
+                )
+
+        if restored:
+            logger.info(f"[AFSv3] Restored {restored} deliverable(s) to sandbox")
+        return restored
+
     # ==================== 工具方法 ====================
 
     def get_storage_type(self) -> str:

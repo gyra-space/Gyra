@@ -1,7 +1,7 @@
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from gyra.component import SystemApp
 from gyra_serve.core import Result
@@ -118,38 +118,48 @@ async def list_models(
     return Result.succ(models)
 
 
-@router.get("/match")
-async def match_model(
-    media_types: str,
-    preferred_provider: Optional[str] = None,
-    service: MultimodalService = Depends(get_service),
+@router.get("/media-jobs")
+async def list_media_jobs(
+    conv_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
 ):
-    """根据媒体类型匹配合适的模型.
+    """列出异步任务（media 生成 / spawn_agent_task 子 Agent）。
+
+    数据来自 DB 持久化（gpts_async_tasks 表，经 AsyncTaskDao），跨实例 / 跨进程 / 重启后
+    仍可见，支撑分布式。每个任务包含状态、模型、描述、错误，以及完成后的 AFS 交付物
+    （预览/下载地址），便于用户在界面上查看进度与结果。
 
     Args:
-        media_types: 媒体类型列表，逗号分隔 (image, audio, video, document)
-        preferred_provider: 首选提供商
-
-    Returns:
-        匹配的模型信息
+        conv_id: 按会话过滤
+        status: 按状态过滤 (pending/running/completed/failed/timeout/cancelled)
+        limit: 返回条数上限
     """
-    from ..model_matcher import MediaType
+    try:
+        from gyra_serve.agent.db.async_task_db import AsyncTaskDao
 
-    types = [MediaType(t.strip()) for t in media_types.split(",") if t.strip()]
-    model_info = service.model_matcher.match_model_for_media_types(
-        media_types=types,
-        preferred_provider=preferred_provider,
-    )
-
-    if model_info:
-        return Result.succ(
-            {
-                "model_name": model_info.model_name,
-                "provider": model_info.provider,
-                "capabilities": [c.value for c in model_info.capabilities],
-            }
+        jobs = AsyncTaskDao().list(
+            conv_id=conv_id or "", status=status, limit=limit
         )
-    return Result.failed(msg="No matching model found")
+        return Result.succ(jobs)
+    except Exception as e:
+        logger.exception("list_media_jobs exception!")
+        return Result.failed(str(e))
+
+
+@router.get("/media-jobs/{job_id}")
+async def get_media_job(job_id: str):
+    """查询单个异步任务的详情（含交付物信息）。"""
+    try:
+        from gyra_serve.agent.db.async_task_db import AsyncTaskDao
+
+        job = AsyncTaskDao().get(job_id)
+        if job is None:
+            return Result.failed(msg=f"async task {job_id} not found")
+        return Result.succ(job)
+    except Exception as e:
+        logger.exception("get_media_job exception!")
+        return Result.failed(str(e))
 
 
 def init_endpoints(system_app: SystemApp, config: ServeConfig) -> None:

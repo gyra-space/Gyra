@@ -30,4 +30,5 @@ export type DetailContext =
   | 'delivery-detail'
   | 'ecp-proposal'
   | 'exhibit'
-  | 'flywheel';
+  | 'flywheel'
+  | 'subagent';

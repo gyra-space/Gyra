@@ -169,7 +169,7 @@ export default function TaskDetailPage() {
             <div className="flex items-center gap-2 text-sm text-gray-600">
               <MessageOutlined />
               <span className="font-medium">{isRunning ? (t('tasks.running_chat') || 'Task in progress') : (t('tasks.result_chat') || 'Task context')}</span>
-              <Tag size="small" color="default">{appCode}</Tag>
+              <Tag color="default">{appCode}</Tag>
             </div>
           </div>
           <div className="flex-1 relative bg-gray-50/30">

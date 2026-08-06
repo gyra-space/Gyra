@@ -532,8 +532,8 @@ export const markdownComponents = {
 };
 
 export const markdownPlugins = {
-  remarkPlugins: [remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkMermaidPlugin],
-  rehypePlugins: [rehypeRaw, [rehypeKatex, { output: 'htmlAndMathml' }]],
+  remarkPlugins: [remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkMermaidPlugin] as any,
+  rehypePlugins: [rehypeRaw, [rehypeKatex, { output: 'htmlAndMathml' }]] as any,
 };
 
 export default markdownComponents;

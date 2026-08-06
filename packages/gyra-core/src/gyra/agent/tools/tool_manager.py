@@ -201,6 +201,7 @@ class ToolManager:
     # 核心必选工具（无论是否沙箱都注入）
     BUILTIN_CORE_TOOLS: List[str] = [
         "ask_user",  # 用户交互（HIL）
+        "sleep",  # Agent Loop 休眠等待（异步非阻塞）
     ]
 
     # 基础文件和Shell工具（沙箱和本地共享，默认绑定）

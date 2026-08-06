@@ -1,4 +1,5 @@
 import Avatar from '../../avatar';
+import { AgentAvatar } from '@/components/common/agent-avatar';
 import { markdownComponents } from '../../config';
 // import { windowEmitter } from '@/PortalChat';
 import { DoubleRightOutlined } from '@ant-design/icons';
@@ -95,10 +96,11 @@ export const VisRunningWindow: FC<IProps> = ({ otherComponents, data }) => {
               style={{ display: 'inline', marginRight: '4px' }}
             />
           ) : (
-            <img
-              src={agent.avatar || '/agents/agent1.jpg'}
-              width={14}
-              style={{ display: 'inline', marginRight: '4px' }}
+            <AgentAvatar
+              icon={agent.avatar}
+              name={agent.agent_name}
+              size={14}
+              className="inline-block align-[-2px] mr-1"
             />
           )}
           {agent.agent_name}
@@ -276,9 +278,10 @@ export const VisRunningWindow: FC<IProps> = ({ otherComponents, data }) => {
                     width={25}
                   />
                 ) : (
-                  <Avatar
-                    src={agent.avatar || '/agents/default_avatar.png'}
-                    width={25}
+                  <AgentAvatar
+                    icon={agent.avatar}
+                    name={agent.agent_name}
+                    size={25}
                   />
                 )}
                 <span style={{ marginLeft: '8px' }}>{agent.agent_name}</span>

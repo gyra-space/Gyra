@@ -3,6 +3,7 @@ import {
   CreateAppParams,
   IAgent,
   IApp,
+  MultimediaAgentConfig,
   NativeAppScenesResponse,
   StrategyResponse,
   TeamMode,
@@ -189,6 +190,25 @@ export const getAgentDefaultPrompt = (agentName: string, language: string = 'en'
 export const getAgentList = () => {
   return GET<null, { version: string; agents: AgentTemplate[] }>(
     `/api/agent/list?version=v1`,
+  );
+};
+
+/**
+ * 读取应用的多媒体 Agent 模板配置（ext_config.multimedia_agent）
+ */
+export const getMultimediaAgentConfig = (appCode: string) => {
+  return GET<null, MultimediaAgentConfig>(
+    `/api/v1/app/building/multimedia-agent/${appCode}`,
+  );
+};
+
+/**
+ * 保存应用的多媒体 Agent 模板配置（ext_config.multimedia_agent）
+ */
+export const saveMultimediaAgentConfig = (appCode: string, config: MultimediaAgentConfig) => {
+  return POST<MultimediaAgentConfig, MultimediaAgentConfig>(
+    `/api/v1/app/building/multimedia-agent/${appCode}`,
+    config,
   );
 };
 

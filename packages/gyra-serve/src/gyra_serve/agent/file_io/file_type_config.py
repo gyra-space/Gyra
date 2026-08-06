@@ -16,7 +16,7 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
@@ -398,3 +398,155 @@ def is_model_direct_file(file_name: str, mime_type: Optional[str] = None) -> boo
 def is_sandbox_tool_file(file_name: str, mime_type: Optional[str] = None) -> bool:
     """Convenience function: check if file should be processed by sandbox tool"""
     return get_file_process_mode(file_name, mime_type) == FileProcessMode.SANDBOX_TOOL
+
+
+# ---------------------------------------------------------------------------
+# 统一分流决策（capability-aware）
+# ---------------------------------------------------------------------------
+# 两条分流路径（file_dispatch.detect_dispatch_type、sandbox_file_ref.process_user_input_file）
+# 都汇入这里的 decide_process_mode，消除规则不一致。判定依据：
+#   1. 非多媒体文件（文档/代码/压缩/数据/未知）→ 永远 SANDBOX_TOOL（工具消费）
+#   2. 多媒体文件 + 多媒体 agent（prefer_direct_media）→ MODEL_DIRECT
+#   3. 多媒体文件 + 模型能力标签包含所需模态 → MODEL_DIRECT（直接模型消费）
+#   4. 否则（模型不支持该模态）→ SANDBOX_TOOL（先入沙箱，由 agent 经工具/子 agent 委派）
+# ---------------------------------------------------------------------------
+
+# 文件模态 → 模型所需能力标签
+MODALITY_CAPABILITY = {
+    "image": "vision",
+    "audio": "audio",
+    "video": "video",
+}
+
+# 各模态的扩展名集合
+IMAGE_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico", ".tiff",
+}
+AUDIO_EXTENSIONS = {
+    ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".opus",
+}
+VIDEO_EXTENSIONS = {
+    ".mp4", ".avi", ".mov", ".wmv", ".flv", ".mkv", ".webm", ".m4v",
+}
+
+MODALITY_EXTENSIONS = {
+    "image": IMAGE_EXTENSIONS,
+    "audio": AUDIO_EXTENSIONS,
+    "video": VIDEO_EXTENSIONS,
+}
+
+
+def detect_file_modality(
+    file_name: str, mime_type: Optional[str] = None
+) -> Optional[str]:
+    """检测文件模态：返回 "image" / "audio" / "video"；非多媒体返回 None。"""
+    if not file_name and not mime_type:
+        return None
+
+    if file_name:
+        ext = file_name.lower()
+        if "." in ext:
+            base, _, suffix = ext.rpartition(".")
+            ext = "." + suffix
+        for modality, extensions in MODALITY_EXTENSIONS.items():
+            if ext in extensions:
+                return modality
+
+    if mime_type:
+        prefix = (mime_type or "").split("/")[0].lower()
+        if prefix in ("image", "audio", "video"):
+            return prefix
+
+    return None
+
+
+def decide_process_mode(
+    file_name: str,
+    mime_type: Optional[str] = None,
+    capabilities: Optional[List[str]] = None,
+    prefer_direct_media: bool = False,
+) -> FileProcessMode:
+    """统一分流决策：结合文件类型 + 当前 agent 模型能力。
+
+    Args:
+        file_name: 文件名。
+        mime_type: MIME 类型（可选）。
+        capabilities: 当前 agent 所用模型的能力标签列表，如 ["text", "vision"]。
+        prefer_direct_media: 是否为多媒体 agent（图片/视频直接消费）。
+
+    Returns:
+        FileProcessMode.MODEL_DIRECT 或 FileProcessMode.SANDBOX_TOOL。
+    """
+    modality = detect_file_modality(file_name, mime_type)
+    if modality is None:
+        return FileProcessMode.SANDBOX_TOOL
+
+    if prefer_direct_media:
+        return FileProcessMode.MODEL_DIRECT
+
+    need = MODALITY_CAPABILITY.get(modality)
+    caps = capabilities or []
+    if need and need in caps:
+        return FileProcessMode.MODEL_DIRECT
+
+    return FileProcessMode.SANDBOX_TOOL
+
+
+def resolve_model_capabilities(model_name: Optional[str]) -> List[str]:
+    """解析模型的多模态能力标签列表（供分流决策使用）。
+
+    复用全局/空间级 ModelConfigCache，空间绑定模型时自动生效。
+    """
+    if not model_name:
+        return []
+    try:
+        from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+        return list(ModelConfigCache.get_capabilities(model_name))
+    except Exception:  # noqa: BLE001 - 解析失败按无能力处理
+        return []
+
+
+def is_multimedia_agent(
+    gpt_app: Any = None,
+    app_ext_config: Optional[Dict[str, Any]] = None,
+    app_code: Optional[str] = None,
+) -> bool:
+    """判断某 agent/app 是否为多媒体 agent（ext_config.multimedia_agent.enabled）。
+
+    Args:
+        gpt_app: 已加载的 GptsApp 实例（agent_chat 内可用）。
+        app_ext_config: 已解析的 ext_config dict（可选）。
+        app_code: app 编码（可选，未给实例/配置时按编码查库兜底）。
+    """
+    cfg = app_ext_config
+    if not cfg and gpt_app is not None:
+        cfg = getattr(gpt_app, "ext_config", None)
+    gold = cfg
+
+    def _from_cfg(c):
+        if isinstance(c, str):
+            try:
+                import json as _json
+                c = _json.loads(c)
+            except Exception:  # noqa: BLE001
+                return False
+        if isinstance(c, dict):
+            raw = c.get("multimedia_agent")
+            return bool(raw and raw.get("enabled", True))
+        return False
+
+    if gold is not None:
+        return _from_cfg(gold)
+
+    if app_code:
+        try:
+            from gyra_serve.agent.db.gpts_app import GptsAppDao
+
+            app = GptsAppDao().app_detail(app_code)
+            if app is not None:
+                return _from_cfg(getattr(app, "ext_config", None))
+        except Exception:  # noqa: BLE001 - 查库失败按非多媒体处理
+            pass
+
+    return False

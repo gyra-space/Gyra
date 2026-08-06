@@ -309,7 +309,8 @@ class ConfigService {
 
   async getAvailableMediaModels(): Promise<AvailableMediaModels> {
     const response = await axios.get(`${API_BASE}/config/media-gen/available`);
-    return response.data.data;
+    // 该接口通过 JSONResponse(content=...) 直接返回 {video, image, defaults}，无 data 包装
+    return response.data;
   }
 
   async getCachedModels(): Promise<{ models: string[]; model_keys: string[]; total: number }> {

@@ -94,7 +94,7 @@ export const listAuditLogs = (params: AuditLogQueryParams) => {
   if (params.page) query.set('page', String(params.page));
   if (params.page_size) query.set('page_size', String(params.page_size));
   
-  return GET<null, AuditLogResponse<AuditLogListResponse>>(
+  return GET<null, AuditLogListResponse>(
     `${AUDIT_BASE}/logs?${query.toString()}`
   );
 };
@@ -123,7 +123,7 @@ export const getAuditStats = (params?: {
   const queryString = query.toString();
   const url = queryString ? `${AUDIT_BASE}/stats?${queryString}` : `${AUDIT_BASE}/stats`;
   
-  return GET<null, AuditLogResponse<AuthorizationAuditStats>>(url);
+  return GET<null, AuthorizationAuditStats>(url);
 };
 
 /**
@@ -141,7 +141,7 @@ export const getToolUsageStats = (params?: {
   const queryString = query.toString();
   const url = queryString ? `${AUDIT_BASE}/tools/usage?${queryString}` : `${AUDIT_BASE}/tools/usage`;
   
-  return GET<null, AuditLogResponse<ToolUsageStats[]>>(url);
+  return GET<null, ToolUsageStats[]>(url);
 };
 
 /**

@@ -101,7 +101,7 @@ export default function GroupManagement({ roles }: GroupManagementProps) {
 
       const roleMap: Record<number, string[]> = {};
       roleAssignments.forEach(([groupId, roleNames]) => {
-        roleMap[groupId] = roleNames;
+        roleMap[groupId] = roleNames as string[];
       });
 
       setAllUsersCache(users);

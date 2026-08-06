@@ -45,7 +45,6 @@ const TextBlock = memo(function TextBlock({
   components?: any;
 }) {
   return (
-    // @ts-expect-error GPTVis 组件类型与实际用法不完全匹配(全项目一致的处理方式)
     <GPTVis components={components ?? markdownComponents} {...markdownPlugins}>
       {body}
     </GPTVis>

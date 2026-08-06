@@ -62,6 +62,7 @@ const VisAgentPlanGroupCard: React.FC<{ data: GroupData }> = ({ data }) => {
   const expanded = manualExpanded ?? anyRunning;
 
   const toolMeta = getToolNameIcon(data.items?.[0]?.tool_name, data.title);
+  const chipColor = toolMeta?.color || '#64748b';
 
   /* 统一图标 tile:与 VisAgentPlanCard 的 task-icon-chip 同一视觉语言 */
   const chipClass =

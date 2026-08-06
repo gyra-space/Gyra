@@ -108,6 +108,19 @@ class PermissionDao:
         effect: str = "allow",
     ) -> Dict[str, Any]:
         with db.session() as s:
+            # 幂等：已存在则直接返回已有记录，避免唯一约束 (uk_role_perm) 冲突
+            existing = (
+                s.query(RolePermissionEntity)
+                .filter(
+                    RolePermissionEntity.role_id == role_id,
+                    RolePermissionEntity.resource_type == resource_type,
+                    RolePermissionEntity.resource_id == resource_id,
+                    RolePermissionEntity.action == action,
+                )
+                .first()
+            )
+            if existing:
+                return self._perm_row(existing)
             p = RolePermissionEntity(
                 role_id=role_id,
                 resource_type=resource_type,

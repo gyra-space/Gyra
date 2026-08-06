@@ -7,6 +7,7 @@ import { useRequest } from 'ahooks';
 import { GPTVis } from '@antv/gpt-vis';
 import dayjs from 'dayjs';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
+import ChatSession from '@/components/chat/chat-session';
 import { apiInterceptors, getArtifactInfo, getDeliveryInfo, listArtifacts, listDeliveries, listUsageCalls } from '@/client/api';
 import { transformFileUrl } from '@/utils';
 import { Lobby } from './lobby';
@@ -27,6 +28,8 @@ export interface SceneSpaceProps {
   activeTask?: any;
   workspaceId: number;
   workspaceCode: string;
+  /** 场景空间主 agent 的 app_code(子任务对话内联渲染时兜底) */
+  appCode?: string;
   playbooks?: { playbook_id: number; playbook_name: string }[];
   onBack: () => void;
   onSelectTask?: (taskId: number) => void;
@@ -472,6 +475,7 @@ export function SceneSpace({
   activeTask,
   workspaceId,
   workspaceCode,
+  appCode,
   playbooks,
   onBack,
   onSelectTask,
@@ -484,6 +488,8 @@ export function SceneSpace({
   // 点击任务卡片走 handlePreview(不进任务对话),activeTask 不会被填充;
   // 用列表已有的 previewItem 兜底,否则 Spin 永不结束
   const task = activeTask || (context === 'task-detail' ? previewItem : undefined);
+  // 异步子 agent 会话 ID(点击子 agent 卡片内联展开时使用)
+  const previewSubConvId = previewItem?.sub_conv_id || previewItem?.payload?.sub_conv_id;
 
   const { data: artifactsRes } = useRequest(
     async () => (taskId ? apiInterceptors(listArtifacts({ task_id: taskId })) : null),
@@ -541,6 +547,7 @@ export function SceneSpace({
     'ecp-proposal': '提案确认',
     'exhibit': '内容预览',
     'flywheel': '飞轮工作台',
+    'subagent': '子任务对话',
   };
 
   return (
@@ -644,6 +651,21 @@ export function SceneSpace({
               </div>
               <PayloadFields payload={previewItem?.payload || previewItem || {}} />
             </div>
+          )}
+        </div>
+      )}
+      {/* 异步子 agent 对话:内联嵌入 ChatSession(minimal)渲染子会话完整消息流 */}
+      {context === 'subagent' && (
+        <div className="ws-scene-space__body ws-scene-space__body--subagent">
+          {previewSubConvId ? (
+            <ChatSession
+              convUid={previewSubConvId}
+              appCode={previewItem?.payload?.app_code || appCode || 'chat_normal'}
+              workspaceId={workspaceId}
+              minimal
+            />
+          ) : (
+            <div className="ws-preview__empty">暂无子任务对话</div>
           )}
         </div>
       )}

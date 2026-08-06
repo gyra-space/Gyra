@@ -284,6 +284,7 @@ export interface EcpMissCluster {
   example_sql: string;
   reasonings: string[];
   last_seen?: string | null;
+  kind?: string;
 }
 
 export interface EcpMissReport {

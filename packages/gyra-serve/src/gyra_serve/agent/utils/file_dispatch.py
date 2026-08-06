@@ -58,23 +58,6 @@ def _get_original_file_name(
     return file_name
 
 
-IMAGE_EXTENSIONS = {
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".gif",
-    ".webp",
-    ".bmp",
-    ".svg",
-    ".ico",
-    ".tiff",
-}
-
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".opus"}
-
-VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".wmv", ".flv", ".mkv", ".webm", ".m4v"}
-
-
 class FileDispatchType(str, Enum):
     MULTIMODAL = "multimodal"
     SANDBOX = "sandbox"
@@ -121,22 +104,32 @@ def get_mime_type(file_name: str) -> str:
 
 
 def detect_dispatch_type(
-    file_name: str, mime_type: Optional[str] = None
+    file_name: str,
+    mime_type: Optional[str] = None,
+    capabilities: Optional[List[str]] = None,
+    prefer_direct_media: bool = False,
 ) -> FileDispatchType:
-    """检测文件分发类型.
+    """检测文件分发类型（统一决策，capability-aware）.
 
-    图片/音频/视频文件返回 MULTIMODAL，其他返回 SANDBOX。
+    图片/音频/视频且模型有能力（或多媒体 agent）→ MULTIMODAL；否则 → SANDBOX。
+    非多媒体文件（文档/代码/压缩/数据）→ 一律 SANDBOX。
     """
-    _, ext = os.path.splitext(file_name.lower())
+    from gyra_serve.agent.file_io.file_type_config import (
+        FileProcessMode,
+        decide_process_mode,
+    )
 
-    if ext in IMAGE_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in VIDEO_EXTENSIONS:
-        return FileDispatchType.MULTIMODAL
-
-    if mime_type:
-        if mime_type.startswith(("image/", "audio/", "video/")):
-            return FileDispatchType.MULTIMODAL
-
-    return FileDispatchType.SANDBOX
+    mode = decide_process_mode(
+        file_name,
+        mime_type,
+        capabilities=capabilities,
+        prefer_direct_media=prefer_direct_media,
+    )
+    return (
+        FileDispatchType.MULTIMODAL
+        if mode == FileProcessMode.MODEL_DIRECT
+        else FileDispatchType.SANDBOX
+    )
 
 
 def build_media_content(file_path: str, file_name: str, mime_type: str) -> MediaContent:
@@ -268,87 +261,6 @@ async def dispatch_file_to_sandbox(
 
     return None
 
-    try:
-        work_dir = sandbox_client.work_dir or "/home/ubuntu"
-        sandbox_path = f"{work_dir}/uploads/{file_name}"
-
-        if sandbox_client.file:
-            content = None
-
-            if file_content:
-                content = file_content
-            else:
-                # 处理不同类型的文件路径
-                if file_path.startswith("gyra-fs://"):
-                    # 使用 FileStorageClient 处理 gyra-fs:// 协议
-                    if file_storage_client:
-                        try:
-                            # 先尝试获取公开URL
-                            public_url = file_storage_client.get_public_url(file_path)
-                            if public_url and public_url.startswith("http"):
-                                # 使用公开URL下载
-                                import httpx
-
-                                async with httpx.AsyncClient() as client:
-                                    response = await client.get(public_url)
-                                    content = response.content
-                            else:
-                                # 直接读取文件内容
-                                file_obj = (
-                                    file_storage_client.storage_system.load_by_uri(
-                                        file_path
-                                    )
-                                )
-                                if file_obj:
-                                    content = file_obj.read()
-                                    file_obj.close()
-                        except Exception as e:
-                            logger.warning(f"Failed to read gyra-fs file: {e}")
-                    else:
-                        logger.warning(
-                            "FileStorageClient not available for gyra-fs:// URI"
-                        )
-                elif file_path.startswith("http://") or file_path.startswith(
-                    "https://"
-                ):
-                    # HTTP URL，使用httpx下载
-                    import httpx
-
-                    async with httpx.AsyncClient() as client:
-                        response = await client.get(file_path)
-                        content = response.content
-                else:
-                    # 本地文件路径
-                    if os.path.exists(file_path):
-                        with open(file_path, "rb") as f:
-                            content = f.read()
-                    else:
-                        logger.warning(f"File not found: {file_path}")
-                        return None
-
-            if content is None:
-                logger.warning(f"Failed to get content for file: {file_name}")
-                return None
-
-            # 处理内容格式
-            if isinstance(content, bytes):
-                try:
-                    content = content.decode("utf-8")
-                except UnicodeDecodeError:
-                    import base64
-
-                    content = base64.b64encode(content).decode("utf-8")
-                    logger.info(f"Binary file encoded as base64: {file_name}")
-
-            await sandbox_client.file.create(sandbox_path, content, overwrite=True)
-            logger.info(f"Wrote file to sandbox: {sandbox_path}")
-            return sandbox_path
-
-    except Exception as e:
-        logger.warning(f"Failed to write file to sandbox: {e}")
-
-    return None
-
 
 async def save_file_metadata_to_gpts_memory(
     file_info: DispatchedFileInfo,
@@ -451,6 +363,8 @@ async def process_uploaded_files(
     sandbox_client=None,
     system_app=None,
     file_storage_client=None,
+    model_name: Optional[str] = None,
+    prefer_direct_media: bool = False,
 ) -> tuple[List[MediaContent], List[DispatchedFileInfo]]:
     """处理上传的文件，根据类型分流.
 
@@ -460,10 +374,15 @@ async def process_uploaded_files(
         sandbox_client: 沙箱客户端
         system_app: 系统应用实例
         file_storage_client: 文件存储客户端（可选，用于处理 gyra-fs:// 协议）
+        model_name: 当前 agent 所用模型名（用于按模型能力决定是否直接消费）
+        prefer_direct_media: 是否为多媒体 agent（图片/视频直接消费）
 
     Returns:
         tuple: (多模态内容列表, 所有文件信息列表)
     """
+    from gyra_serve.agent.file_io.file_type_config import resolve_model_capabilities
+
+    capabilities = resolve_model_capabilities(model_name)
     media_contents: List[MediaContent] = []
     all_file_infos: List[DispatchedFileInfo] = []
     sandbox_files: List[DispatchedFileInfo] = []
@@ -500,7 +419,12 @@ async def process_uploaded_files(
                 file_name = original_name
 
         mime_type = get_mime_type(file_name)
-        dispatch_type = detect_dispatch_type(file_name, mime_type)
+        dispatch_type = detect_dispatch_type(
+            file_name,
+            mime_type,
+            capabilities=capabilities,
+            prefer_direct_media=prefer_direct_media,
+        )
 
         file_info = DispatchedFileInfo(
             file_id=file_id,

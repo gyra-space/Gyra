@@ -317,6 +317,12 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
         # Unschedule first
         self._unschedule_job(job_id)
 
+        # Remove execution logs for this job
+        try:
+            self.dao.delete_logs_by_job(job_id)
+        except Exception as e:  # pragma: no cover - best effort cleanup
+            logger.warning(f"Failed to delete logs for job {job_id}: {e}")
+
         # Remove from database
         with self.dao.session() as session:
             result = session.query(CronJobEntity).filter(
@@ -345,7 +351,7 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
             return False
 
         # Execute the job
-        asyncio.create_task(self._execute_job_safe(job_id))
+        asyncio.create_task(self._execute_job_safe(job_id, trigger="manual"))
         return True
 
     async def _recover_jobs(self) -> None:
@@ -522,13 +528,15 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
         except Exception as e:
             logger.warning(f"Failed to update next run time: {e}")
 
-    async def _execute_job_safe(self, job_id: str) -> None:
+    async def _execute_job_safe(self, job_id: str, trigger: str = "scheduled") -> None:
         """Execute a job with error handling and state updates.
 
         Args:
             job_id: The job ID to execute.
+            trigger: Trigger source (scheduled/manual) used for the log record.
         """
         start_time = time.time()
+        run_at_ms = int(start_time * 1000)
         job = await self.get_job(job_id)
 
         if not job:
@@ -539,6 +547,12 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
         async with self._lock.acquire(f"cron:{job_id}") as acquired:
             if not acquired:
                 logger.info(f"Job {job_id} is already running on another instance")
+                self._record_log(
+                    job_id,
+                    run_at_ms=run_at_ms,
+                    status="skipped",
+                    trigger=trigger,
+                )
                 return
 
             # Update running state
@@ -557,6 +571,14 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
                     duration_ms=duration_ms,
                     error=None if success else "Execution failed",
                 )
+                self._record_log(
+                    job_id,
+                    run_at_ms=run_at_ms,
+                    status="ok" if success else "error",
+                    duration_ms=duration_ms,
+                    error=None if success else "Execution failed",
+                    trigger=trigger,
+                )
 
                 # Handle delete_after_run
                 if success and job.delete_after_run:
@@ -572,11 +594,26 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
                     duration_ms=duration_ms,
                     error=str(e),
                 )
+                self._record_log(
+                    job_id,
+                    run_at_ms=run_at_ms,
+                    status="error",
+                    duration_ms=duration_ms,
+                    error=str(e),
+                    trigger=trigger,
+                )
                 logger.error(f"Job {job_id} execution failed: {e}")
 
         # Update next run time
         if job.enabled:
             self._update_next_run_time_by_id(job_id)
+
+    def _record_log(self, job_id: str, **kwargs) -> None:
+        """Persist an execution log (best effort, never blocks scheduling)."""
+        try:
+            self.dao.record_log(job_id, **kwargs)
+        except Exception as e:  # pragma: no cover - logging must not break runs
+            logger.warning(f"Failed to record cron log for job {job_id}: {e}")
 
     async def _execute_job(self, job: CronJob) -> bool:
         """Execute a job based on its payload kind.

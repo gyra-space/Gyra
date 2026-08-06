@@ -1,7 +1,7 @@
 -- ============================================================
 -- MySQL DDL Script for Gyra
 -- Version: 0.3.0
--- Generated: 2026-08-05T23:41:04.747515
+-- Generated: 2026-08-06T22:23:06.835925
 -- ============================================================
 
 SET NAMES utf8mb4;
@@ -59,8 +59,8 @@ CREATE TABLE IF NOT EXISTS `server_app_artifact` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `ix_server_app_artifact_task_id` (`task_id`),
-  KEY `ix_server_app_artifact_workspace_id` (`workspace_id`)
+  KEY `ix_server_app_artifact_workspace_id` (`workspace_id`),
+  KEY `ix_server_app_artifact_task_id` (`task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_artifact_version
@@ -73,8 +73,8 @@ CREATE TABLE IF NOT EXISTS `server_app_artifact_version` (
   `created_by` VARCHAR(128) NULL,
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_artifact_version` (`artifact_id`, `version`),
-  KEY `ix_server_app_artifact_version_artifact_id` (`artifact_id`)
+  KEY `ix_server_app_artifact_version_artifact_id` (`artifact_id`),
+  UNIQUE KEY `uk_artifact_version` (`artifact_id`, `version`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gyra_serve_cron_job
@@ -107,6 +107,20 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_cron_job` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Table: gyra_serve_cron_job_log
+CREATE TABLE IF NOT EXISTS `gyra_serve_cron_job_log` (
+  `id` VARCHAR(64) NOT NULL AUTO_INCREMENT COMMENT 'Log unique identifier',
+  `job_id` VARCHAR(64) NOT NULL COMMENT 'Cron job id',
+  `run_at_ms` INT NOT NULL COMMENT 'Run start time in ms',
+  `status` VARCHAR(32) NOT NULL COMMENT 'Execution status (ok/error/skipped)',
+  `duration_ms` INT NULL COMMENT 'Execution duration in ms',
+  `error` TEXT NULL COMMENT 'Error message if failed',
+  `trigger` VARCHAR(32) NULL DEFAULT scheduled COMMENT 'Trigger source (scheduled/manual)',
+  `gmt_create` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record creation time',
+  PRIMARY KEY (`id`),
+  KEY `ix_gyra_serve_cron_job_log_job_id` (`job_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Table: gyra_serve_flow
 CREATE TABLE IF NOT EXISTS `gyra_serve_flow` (
   `id` INT NOT NULL AUTO_INCREMENT COMMENT 'Auto increment id',
@@ -132,9 +146,9 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_flow` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_uid` (`uid`),
   KEY `ix_gyra_serve_flow_user_name` (`user_name`),
+  KEY `ix_gyra_serve_flow_sys_code` (`sys_code`),
   KEY `ix_gyra_serve_flow_name` (`name`),
   KEY `ix_gyra_serve_flow_uid` (`uid`),
-  KEY `ix_gyra_serve_flow_sys_code` (`sys_code`),
   KEY `ix_gyra_serve_flow_dag_id` (`dag_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -158,10 +172,10 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_variables` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record creation time',
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record update time',
   PRIMARY KEY (`id`),
-  KEY `ix_gyra_serve_variables_key_info` (`key_info`),
   KEY `ix_gyra_serve_variables_user_name` (`user_name`),
   KEY `ix_gyra_serve_variables_name` (`name`),
-  KEY `ix_gyra_serve_variables_sys_code` (`sys_code`)
+  KEY `ix_gyra_serve_variables_sys_code` (`sys_code`),
+  KEY `ix_gyra_serve_variables_key_info` (`key_info`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: connect_config
@@ -185,10 +199,10 @@ CREATE TABLE IF NOT EXISTS `connect_config` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_db` (`db_name`),
   KEY `idx_q_owner_workspace` (`owner_workspace_id`),
-  KEY `ix_connect_config_user_id` (`user_id`),
-  KEY `ix_connect_config_sys_code` (`sys_code`),
   KEY `ix_connect_config_user_name` (`user_name`),
-  KEY `idx_q_db_type` (`db_type`)
+  KEY `idx_q_db_type` (`db_type`),
+  KEY `ix_connect_config_sys_code` (`sys_code`),
+  KEY `ix_connect_config_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: db_spec

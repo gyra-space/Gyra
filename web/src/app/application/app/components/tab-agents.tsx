@@ -1,9 +1,9 @@
 'use client';
 import { getResourceV2, getAppList, apiInterceptors } from '@/client/api';
 import { AppContext } from '@/contexts';
-import { CheckCircleFilled, SearchOutlined, UsergroupAddOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons';
+import { CheckCircleFilled, SearchOutlined, UsergroupAddOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, SettingOutlined, PictureOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { Input, Spin, Tag, Tooltip, Modal, InputNumber, Checkbox, Button, Collapse } from 'antd';
+import { Input, Spin, Tag, Tooltip, Modal, InputNumber, Checkbox, Button, Collapse, Switch } from 'antd';
 import Image from 'next/image';
 import { useContext, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -88,6 +88,21 @@ export default function TabAgents() {
   const resourceAgents = useMemo(() => {
     return appInfo?.resource_agent || [];
   }, [appInfo?.resource_agent]);
+
+  // 多媒体 Agent 模板（来自 ext_config.multimedia_agent，作为可关联的子 Agent 显示）
+  const multimediaAgent = useMemo(() => {
+    const cfg = appInfo?.ext_config?.multimedia_agent;
+    return cfg || null;
+  }, [appInfo?.ext_config?.multimedia_agent]);
+
+  const handleToggleMultimedia = (checked: boolean) => {
+    const ext = { ...(appInfo?.ext_config || {}) };
+    ext.multimedia_agent = {
+      ...(multimediaAgent || {}),
+      enabled: checked,
+    };
+    fetchUpdateApp({ ...appInfo, ext_config: ext });
+  };
 
   const enabledAgentKeys = useMemo(() => {
     return resourceAgents.map((item: ResourceAgent) => {
@@ -235,6 +250,42 @@ export default function TabAgents() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-3 custom-scrollbar">
+        {/* 多媒体 Agent 模板（可关联的子 Agent 条目） */}
+        {multimediaAgent && (
+          <div className={`mb-3 flex items-center justify-between p-3 rounded-xl border transition-all duration-200 ${
+            multimediaAgent.enabled
+              ? 'border-fuchsia-200/80 bg-fuchsia-50/30 shadow-sm'
+              : 'border-gray-100/80 bg-gray-50/20'
+          }`}>
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${multimediaAgent.enabled ? 'bg-fuchsia-100' : 'bg-gray-100'}`}>
+                <PictureOutlined className={`text-sm ${multimediaAgent.enabled ? 'text-fuchsia-500' : 'text-gray-400'}`} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-medium text-gray-700 truncate">
+                    {multimediaAgent.name || 'multimedia_agent'}
+                  </span>
+                  <Tag className="mr-0 text-[10px] rounded-md border-0 font-medium px-1.5" color="magenta">
+                    Multimedia
+                  </Tag>
+                </div>
+                <div className="text-[11px] text-gray-400 truncate mt-0.5">
+                  {multimediaAgent.description || '只使用多媒体生成模型的通用 Agent 模板'}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Switch
+                size="small"
+                checked={multimediaAgent.enabled !== false}
+                onChange={handleToggleMultimedia}
+                checkedChildren="已关联"
+                unCheckedChildren="未关联"
+              />
+            </div>
+          </div>
+        )}
         <Spin spinning={loading}>
           {filteredAgents.length > 0 ? (
             <div className="grid grid-cols-1 gap-2">

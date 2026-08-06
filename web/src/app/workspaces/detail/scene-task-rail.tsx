@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Dropdown, Form, Input, Modal } from 'antd';
 import { CheckOutlined, CommentOutlined, LinkOutlined, MoreOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -406,6 +406,23 @@ export function SceneTaskRail({
     });
   }, [merged, tab, filter]);
 
+  // 滚动分页:任务多时,底部哨兵进入视口即自动追加一页(替代手动“加载更多”)
+  const hasMore = filtered.length > visibleCount;
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!hasMore) return;
+    const el = loadMoreRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) setVisibleCount((n) => n + PAGE_SIZE);
+      },
+      { rootMargin: '120px' },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [hasMore]);
+
   // 渐进渲染 + 时间分段:在 visible 窗口内插入段头(数据已按 updatedAt 倒序)
   const grouped = useMemo(() => {
     const shown = filtered.slice(0, visibleCount);
@@ -782,15 +799,9 @@ export function SceneTaskRail({
             </div>
           );
         })}
-        {filtered.length > visibleCount && (
-          <div
-            className="ws-rail-more"
-            role="button"
-            tabIndex={0}
-            onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
-            onKeyDown={(e) => { if (e.key === 'Enter') setVisibleCount((n) => n + PAGE_SIZE); }}
-          >
-            加载更多(还有 {filtered.length - visibleCount} 条)
+        {hasMore && (
+          <div ref={loadMoreRef} className="ws-rail-more">
+            加载中(还有 {filtered.length - visibleCount} 条)...
           </div>
         )}
       </div>

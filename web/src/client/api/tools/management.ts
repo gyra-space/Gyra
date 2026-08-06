@@ -4,6 +4,7 @@
  * 支持工具分组管理和 Agent 工具绑定配置
  */
 
+import { AxiosResponse } from 'axios';
 import { GET, POST } from '../index';
 
 const TOOLS_BASE = '/api/tools';
@@ -120,7 +121,7 @@ export const getToolGroups = (params?: {
   if (params?.lang) query.set('lang', params.lang);
   if (params?.sandbox_enabled !== undefined) query.set('sandbox_enabled', String(params.sandbox_enabled));
   
-  return GET<null, { success: boolean; data: ToolGroup[] }>(
+  return GET<null, ToolGroup[]>(
     `${TOOLS_BASE}/groups?${query.toString()}`
   );
 };
@@ -148,22 +149,30 @@ export const updateToolBinding = (data: ToolBindingUpdateRequest) => {
   return POST<ToolBindingUpdateRequest, { success: boolean; message?: string }>(
     `${TOOLS_BASE}/binding/update`,
     data
-  );
+  ) as unknown as Promise<AxiosResponse<{ success: boolean; message?: string }>>;
 };
 
 /**
  * 批量更新工具绑定状态
  */
 export const batchUpdateToolBindings = (data: BatchToolBindingUpdateRequest) => {
-  return POST<BatchToolBindingUpdateRequest, { 
-    success: boolean; 
+  return POST<BatchToolBindingUpdateRequest, {
+    success: boolean;
     data?: {
       results: Array<{ tool_id: string; success: boolean }>;
       total: number;
       success_count: number;
     };
     message?: string;
-  }>(`${TOOLS_BASE}/binding/batch-update`, data);
+  }>(`${TOOLS_BASE}/binding/batch-update`, data) as unknown as Promise<AxiosResponse<{
+    success: boolean;
+    data?: {
+      results: Array<{ tool_id: string; success: boolean }>;
+      total: number;
+      success_count: number;
+    };
+    message?: string;
+  }>>;
 };
 
 /**

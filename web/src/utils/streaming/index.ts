@@ -42,8 +42,7 @@
  */
 
 // Types
-export {
-  StreamingEventType,
+export type {
   BaseStreamingMessage,
   ToolCallStartMessage,
   ToolCallEndMessage,
@@ -58,8 +57,13 @@ export {
   BuilderEvent,
   EventListener,
   StreamingRendererProps,
-  ChunkStrategy,
   StreamingConfig,
+} from './types';
+
+// Runtime values (enums / consts)
+export {
+  StreamingEventType,
+  ChunkStrategy,
   DEFAULT_STREAMING_CONFIG,
 } from './types';
 

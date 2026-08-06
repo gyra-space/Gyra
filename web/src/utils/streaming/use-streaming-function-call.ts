@@ -288,7 +288,7 @@ export function useStreamingParam(
     const unsubscribe = builderRef.current.subscribe((event) => {
       if (event.callId === callId && event.paramName === paramName) {
         const newState = builderRef.current.getParamState(callId, paramName);
-        setState(newState);
+        setState(newState ?? null);
       }
     });
     

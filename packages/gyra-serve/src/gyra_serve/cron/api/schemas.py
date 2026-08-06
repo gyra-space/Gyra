@@ -252,12 +252,53 @@ class ServerResponse(BaseModel):
         return model_to_dict(self, **kwargs)
 
 
-class CronStatusResponse(BaseModel):
-    """Response schema for scheduler status."""
+class CronJobLogSchema(BaseModel):
+    """Response schema for a single cron job execution log."""
 
     model_config = ConfigDict(
-        title=f"CronStatusResponse for {SERVE_APP_NAME_HUMP}", protected_namespaces=()
+        title=f"CronJobLog for {SERVE_APP_NAME_HUMP}", protected_namespaces=()
     )
+
+    id: str = Field(
+        ...,
+        description="Log unique identifier",
+    )
+    job_id: str = Field(
+        ...,
+        description="Owning cron job id",
+    )
+    run_at_ms: int = Field(
+        ...,
+        description="Run start time in milliseconds",
+    )
+    status: str = Field(
+        ...,
+        description="Execution status (ok/error/skipped)",
+    )
+    duration_ms: Optional[int] = Field(
+        default=None,
+        description="Execution duration in milliseconds",
+    )
+    error: Optional[str] = Field(
+        default=None,
+        description="Error message if the execution failed",
+    )
+    trigger: str = Field(
+        default="scheduled",
+        description="Trigger source (scheduled/manual)",
+    )
+    gmt_create: Optional[str] = Field(
+        default=None,
+        description="Record creation time",
+    )
+
+    def to_dict(self, **kwargs) -> Dict[str, Any]:
+        """Convert the model to a dictionary."""
+        return model_to_dict(self, **kwargs)
+
+
+class CronStatusResponse(BaseModel):
+    """Response schema for scheduler status."""
 
     enabled: bool = Field(
         ...,

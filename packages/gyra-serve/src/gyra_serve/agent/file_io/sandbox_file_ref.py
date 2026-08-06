@@ -217,6 +217,8 @@ async def process_user_input_file(
     sandbox: Optional["SandboxBase"] = None,
     conv_id: Optional[str] = None,
     local_upload_dir: Optional[str] = None,
+    capabilities: Optional[List[str]] = None,
+    prefer_direct_media: bool = False,
 ) -> Tuple[Optional[dict], Optional[SandboxFileRef], Optional[str]]:
     """Process a single user input file
 
@@ -238,7 +240,7 @@ async def process_user_input_file(
     """
     from .file_type_config import (
         FileProcessMode,
-        get_file_process_mode,
+        decide_process_mode,
     )
 
     input_type = user_input.get("type")
@@ -296,9 +298,14 @@ async def process_user_input_file(
         logger.warning(f"[FileIO] No file_name available, skipping file")
         return None, None, "No file_name available"
 
-    # Use dynamic configuration to determine processing mode
+    # Use unified capability-aware decision to determine processing mode
     file_ext = detect_file_type(file_name)
-    process_mode = get_file_process_mode(file_name, mime_type)
+    process_mode = decide_process_mode(
+        file_name,
+        mime_type,
+        capabilities=capabilities,
+        prefer_direct_media=prefer_direct_media,
+    )
 
     if process_mode == FileProcessMode.MODEL_DIRECT:
         # Model direct consumption: as multimodal message
@@ -306,14 +313,26 @@ async def process_user_input_file(
         # 由 Agent 工具消费,避免把非图硬塞模型导致 400 / 乱码。
         if input_type == "image_url" and looks_like_image(file_name, mime_type):
             image_url_data = user_input.get("image_url", {})
-            return (
-                {
-                    "type": "image_url",
-                    "image_url": image_url_data,
-                },
-                None,
-                None,
+            content = {
+                "type": "image_url",
+                "image_url": image_url_data,
+            }
+            # model_direct 图片除了直接进主 agent 模型消费，还要物化一份稳定引用
+            # （沙箱路径 + URL），供主 agent 理解后转发给多媒体子 agent 作为
+            # 首帧/参考图（图生视频）。process_mode 标记为 model_direct，便于上层区分。
+            upload_dir = get_default_upload_dir(sandbox)
+            direct_ref = SandboxFileRef(
+                file_name=file_name,
+                url=image_url_data.get("url", ""),
+                full_url=image_url_data.get("full_url"),
+                file_type=file_ext,
+                process_mode="model_direct",
+                sandbox_path=f"{upload_dir}/{file_name}",
+                mime_type=mime_type,
+                file_size=file_size,
+                file_id=image_url_data.get("file_id"),
             )
+            return content, direct_ref, None
         else:
             logger.warning(
                 f"[FileIO] File {file_name} (mime={mime_type}) not confirmed as "
@@ -374,6 +393,8 @@ async def process_chat_input_files(
     sandbox: Optional["SandboxBase"] = None,
     conv_id: Optional[str] = None,
     local_upload_dir: Optional[str] = None,
+    capabilities: Optional[List[str]] = None,
+    prefer_direct_media: bool = False,
 ) -> FileProcessResult:
     """Process user input files from chat request
 
@@ -386,6 +407,8 @@ async def process_chat_input_files(
         sandbox: Sandbox instance (optional)
         conv_id: Conversation ID
         local_upload_dir: Local upload directory (for local sandbox)
+        capabilities: 当前 agent 所用模型的能力标签（用于统一分流决策）
+        prefer_direct_media: 是否为多媒体 agent（图片/视频直接消费）
 
     Returns:
         FileProcessResult containing multimodal contents and sandbox file refs
@@ -395,7 +418,12 @@ async def process_chat_input_files(
     for user_input in user_inputs:
         try:
             content, sandbox_ref, error = await process_user_input_file(
-                user_input, sandbox, conv_id, local_upload_dir
+                user_input,
+                sandbox,
+                conv_id,
+                local_upload_dir,
+                capabilities=capabilities,
+                prefer_direct_media=prefer_direct_media,
             )
             if content is not None:
                 result.multimodal_contents.append(content)

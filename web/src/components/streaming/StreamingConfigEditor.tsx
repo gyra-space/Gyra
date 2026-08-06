@@ -304,7 +304,7 @@ export const StreamingConfigEditor: React.FC<StreamingConfigEditorProps> = ({
       const response = await GET<null, { tools?: AvailableTool[] }>(
         `/api/v1/streaming-config/tools/available?app_code=${appCode}`
       );
-      setAvailableTools(response.data?.tools || []);
+      setAvailableTools((response.data as unknown as { tools?: AvailableTool[] })?.tools || []);
     } catch (error) {
       console.error('Failed to load available tools:', error);
       // 使用内置工具列表作为后备
@@ -348,7 +348,7 @@ export const StreamingConfigEditor: React.FC<StreamingConfigEditorProps> = ({
       const response = await GET<null, { configs?: ToolConfig[] }>(
         `/api/v1/streaming-config/apps/${appCode}`
       );
-      setConfigs(response.data?.configs || []);
+      setConfigs((response.data as unknown as { configs?: ToolConfig[] })?.configs || []);
     } catch (error) {
       console.error('Failed to load configs:', error);
     } finally {
@@ -568,12 +568,12 @@ export const StreamingConfigEditor: React.FC<StreamingConfigEditorProps> = ({
                     placeholder="添加新工具配置"
                     style={{ width: 250 }}
                     onChange={(value) => {
-                      setSelectedTool(value);
+                      setSelectedTool(value ?? null);
                       // 创建新配置
                       const tool = availableTools.find((t) => t.tool_name === value);
                       if (tool) {
                         const newConfig: ToolConfig = {
-                          tool_name: value,
+                          tool_name: value as unknown as string,
                           tool_display_name: tool.tool_display_name,
                           tool_description: tool.description,
                           param_configs: [],

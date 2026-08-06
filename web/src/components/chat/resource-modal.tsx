@@ -76,7 +76,7 @@ export const ResourceModal: React.FC<ResourceModalProps> = ({
     const [, res] = await apiInterceptors(
       getMCPList({ filter: '' }, { page: '1', page_size: '100' })
     );
-    return (res?.items || []) as any[];
+    return ((res as any)?.items || []) as any[];
   });
 
   const toggleResource = (resource: SelectedResource) => {

@@ -666,7 +666,7 @@ export const visComponentsRender: { [key: string]: (props: { children: React.Rea
       const data = parseFirstJson(content);
       return (
         <ErrorBoundary resetKeys={[content]} fallbackRender={({ error }) => <VisParseError content={content} error={error} componentName="drsk-deliverable" />}>
-          <VisDeliverable data={data} />
+          <VisDeliverable DeliverableData={data} />
         </ErrorBoundary>
       );
     } catch (e) {

@@ -21,6 +21,19 @@ class FakeAppResource:
     pass
 
 
+class FakeMultimediaAppResource:
+    """模拟带 app_code 的多媒体 AppResource：按 app_code 返回各自配置。"""
+
+    def __init__(self, app_code, app_name, app_desc="", multimedia_cfg=None):
+        self.app_code = app_code
+        self.app_name = app_name
+        self.app_desc = app_desc
+        self._multimedia_cfg = multimedia_cfg
+
+    def get_multimedia_config(self):
+        return self._multimedia_cfg
+
+
 def _make_factory(resource_map=None, sandbox_manager=None):
     return ToolContextFactory(
         agent_id="agent-1",
@@ -92,3 +105,121 @@ def test_no_resource_injected_for_unrelated_tool():
     ctx = factory.build(tc, tool=None)
     assert ctx.get_resource("db_resource") is None
     assert ctx.get_resource("knowledge_retriever") is None
+
+
+# ---------------------------------------------------------------------------
+# 多媒体子 Agent 按 app_code 寻址（多实例各自独立）
+# ---------------------------------------------------------------------------
+
+
+def _multimedia_factory():
+    return ToolContextFactory(
+        agent_id="agent-1",
+        conv_id="conv-1",
+        resource_map={
+            "AppResource": [
+                FakeMultimediaAppResource(
+                    app_code="app-cartoon",
+                    app_name="卡通风格",
+                    app_desc="生成卡通图片",
+                    multimedia_cfg={
+                        "name": "卡通风格",
+                        "default_image_model": "img-cartoon",
+                        "default_video_model": "vid-cartoon",
+                        "enabled": True,
+                    },
+                ),
+                FakeMultimediaAppResource(
+                    app_code="app-real",
+                    app_name="真人风格",
+                    app_desc="生成写实图片",
+                    multimedia_cfg={
+                        "name": "真人风格",
+                        "default_image_model": "img-real",
+                        "default_video_model": "vid-real",
+                        "enabled": True,
+                    },
+                ),
+            ]
+        },
+    )
+
+
+def test_resolve_multimedia_by_app_code():
+    """按 app_code 解析到对应多媒体 app 的配置（多实例互不覆盖）。"""
+    factory = _multimedia_factory()
+    cfg_a, code_a, name_a, desc_a = factory._resolve_multimedia("app-cartoon")
+    assert cfg_a["default_image_model"] == "img-cartoon"
+    assert code_a == "app-cartoon"
+    assert name_a == "卡通风格"
+    assert desc_a == "生成卡通图片"
+
+    cfg_b, code_b, name_b, _ = factory._resolve_multimedia("app-real")
+    assert cfg_b["default_image_model"] == "img-real"
+    assert code_b == "app-real"
+    assert name_b == "真人风格"
+
+    # 未命中 app_code → 返回 None
+    assert factory._resolve_multimedia("unknown-app")[0] is None
+
+
+def test_resolve_multimedia_by_app_name():
+    """也支持按 app_name 匹配（与 CoreV1 子 agent 委派一致）。"""
+    factory = _multimedia_factory()
+    cfg, code, name, _ = factory._resolve_multimedia("卡通风格")
+    assert cfg is not None
+    assert code == "app-cartoon"
+
+
+def test_build_delegate_by_app_code_constructs_independent_instances():
+    """按 app_code 动态构造绑定各自配置的多媒体 agent 委派协程。"""
+    from gyra.agent.multimedia import MultimediaAgent
+
+    factory = _multimedia_factory()
+    delegate_a = factory._build_subagent_delegate_factory(
+        subagent_name="app-cartoon", task="一只猫", conv_id="c1"
+    )
+    delegate_b = factory._build_subagent_delegate_factory(
+        subagent_name="app-real", task="一只猫", conv_id="c1"
+    )
+    # 两个 app_code 都能构造出多媒体委派（互不湮灭）
+    assert delegate_a is not None
+    assert delegate_b is not None
+    assert delegate_a is not delegate_b
+
+
+def test_build_delegate_empty_name_returns_none():
+    factory = _multimedia_factory()
+    assert factory._build_subagent_delegate_factory(subagent_name="") is None
+
+
+def test_build_delegate_unknown_returns_none_for_non_multimedia():
+    """非多媒体 app（无 get_multimedia_config）→ 无委派，回退普通子 agent。"""
+    factory = _make_factory(resource_map={"AppResource": [FakeAppResource()]})
+    assert (
+        factory._build_subagent_delegate_factory(subagent_name="some-app", task="t")
+        is None
+    )
+
+
+def test_build_delegate_resolver_injection():
+    """注入 multimedia_resolver 时优先按 app_code 解析。"""
+    resolver_calls = []
+
+    def resolver(app_code):
+        resolver_calls.append(app_code)
+        if app_code == "app-x":
+            return {"name": "X", "default_image_model": "img-x", "enabled": True}
+        return None
+
+    factory = ToolContextFactory(
+        agent_id="a1",
+        conv_id="c1",
+        resource_map={"AppResource": [FakeAppResource()]},
+        multimedia_resolver=resolver,
+    )
+    delegate = factory._build_subagent_delegate_factory(
+        subagent_name="app-x", task="t", conv_id="c1"
+    )
+    assert delegate is not None
+    assert resolver_calls == ["app-x"]

@@ -22,6 +22,8 @@ export interface ISubagentBoardData {
 interface IProps {
   otherComponents?: any;
   data: ISubagentBoardData;
+  /** 覆盖默认「新标签打开子会话」行为:场景空间用它内联展开子对话。 */
+  onOpenSubagent?: (subConvId: string) => void;
 }
 
 const STATUS_LABEL: Record<SubagentItemData['status'], string> = {
@@ -34,7 +36,7 @@ const STATUS_LABEL: Record<SubagentItemData['status'], string> = {
 
 const isTerminal = (s: string) => s === 'done' || s === 'failed';
 
-const VisSubagentBoard: React.FC<IProps> = ({ data }) => {
+const VisSubagentBoard: React.FC<IProps> = ({ data, onOpenSubagent }) => {
   const items: SubagentItemData[] = data.items || [];
   const [expanded, setExpanded] = useState(true);
 
@@ -54,9 +56,12 @@ const VisSubagentBoard: React.FC<IProps> = ({ data }) => {
   const hasAuth = items.some((i) => i.status === 'awaiting_authorization');
 
   const openSubagent = (subConvId: string) => {
-    // 新标签页打开子会话，复用 chat 页面完整渲染子任务对话流（含 VIS/消息流）。
-    // 未来可改为右面板内联展开：VisManusRightPanel CLICK_FOLDER handler 加 sub_conv_id
-    // 分支 + useChatPolling(sub_conv_id) 集成（sub_conv_id 不在 steps_map，当前会落空）。
+    // 场景空间传入 onOpenSubagent 时内联展开子对话(中间面板);否则默认新标签
+    // 打开子会话,复用 chat 页面完整渲染子任务对话流(含 VIS/消息流)。
+    if (onOpenSubagent) {
+      onOpenSubagent(subConvId);
+      return;
+    }
     window.open(`/chat?app_code=chat_normal&conv_uid=${subConvId}`, '_blank');
   };
 

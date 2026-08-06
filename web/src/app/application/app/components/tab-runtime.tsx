@@ -245,7 +245,6 @@ export default function TabRuntime() {
           }
         }}
         ghost
-        disabled={!config.work_log_compression.enabled}
       >
         <Panel 
           header={

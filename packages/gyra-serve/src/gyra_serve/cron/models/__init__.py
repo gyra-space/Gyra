@@ -1,5 +1,5 @@
 """Cron models module."""
 
-from .models import CronJobEntity, ServeDao
+from .models import CronJobEntity, CronJobLogEntity, ServeDao
 
-__all__ = ["CronJobEntity", "ServeDao"]
+__all__ = ["CronJobEntity", "CronJobLogEntity", "ServeDao"]

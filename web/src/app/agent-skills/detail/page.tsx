@@ -456,7 +456,7 @@ export default function SkillDetailPage() {
   const fileTree = buildFileTree(files);
 
   // Render file tree item
-  const renderTreeNode = (node: FileNode) => ({
+  const renderTreeNode = (node: FileNode): any => ({
     title: (
       <span className="flex items-center justify-between pr-2 group w-full">
         <span className="flex items-center gap-2 flex-1 min-w-0">
@@ -593,7 +593,7 @@ export default function SkillDetailPage() {
                 {skillData?.repo_url && (
                   <>
                     <Text type="secondary">•</Text>
-                    <Tag color="green" size="small">Git</Tag>
+                    <Tag color="green">Git</Tag>
                   </>
                 )}
               </div>
@@ -610,10 +610,9 @@ export default function SkillDetailPage() {
               type="file"
               ref={fileInputRef}
               style={{ display: 'none' }}
-              webkitdirectory="true"
-              directory="true"
               multiple
               onChange={handleFolderUpload}
+              {...({ webkitdirectory: 'true', directory: 'true' } as any)}
             />
             <Button
               icon={<UploadOutlined />}
@@ -624,7 +623,7 @@ export default function SkillDetailPage() {
             </Button>
             <Button
               icon={<PlusOutlined />}
-              onClick={() => createFileForm.resetFields() || setIsCreateFileModalVisible(true)}
+              onClick={() => { createFileForm.resetFields(); setIsCreateFileModalVisible(true); }}
             >
               New File
             </Button>
@@ -718,7 +717,7 @@ export default function SkillDetailPage() {
                   <InfoCircleOutlined />
                   Metadata
                   {metadataChanged && (
-                    <Tag color="orange" size="small">Modified</Tag>
+                    <Tag color="orange">Modified</Tag>
                   )}
                 </span>
               ),
@@ -866,7 +865,7 @@ export default function SkillDetailPage() {
         title="Create New File"
         open={isCreateFileModalVisible}
         onOk={handleCreateFile}
-        onCancel={() => createFileForm.resetFields() || setIsCreateFileModalVisible(false)}
+        onCancel={() => { createFileForm.resetFields(); setIsCreateFileModalVisible(false); }}
       >
         <Form form={createFileForm} layout="vertical">
           <Form.Item

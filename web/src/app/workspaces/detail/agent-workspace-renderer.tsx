@@ -26,6 +26,7 @@ import {
 import { Tooltip } from 'antd';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
 import { transformFileUrl } from '@/utils';
+import VisSubagentBoard from '@/components/chat/chat-content-components/VisComponents/VisSubagentBoard';
 import type {
   WorkspaceDeliverableFile,
   WorkspaceExecutionStep,
@@ -465,9 +466,11 @@ export interface AgentWorkspaceRendererProps {
   onDeliverableClick?: (file: WorkspaceDeliverableFile) => void;
   /** 点击任务卡片:进入任务对话 */
   onTaskClick?: (taskId: number) => void;
+  /** 点击异步子 agent 卡片:在中间容器内联展开子会话(不传则默认新标签) */
+  onSubagentClick?: (subConvId: string) => void;
 }
 
-export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, onTaskClick }: AgentWorkspaceRendererProps) {
+export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, onTaskClick, onSubagentClick }: AgentWorkspaceRendererProps) {
   const deliverable_files = view.deliverable_files ?? [];
   const task_files = view.task_files ?? [];
   const hasDeliverables = deliverable_files.length > 0;
@@ -496,6 +499,10 @@ export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, 
   return (
     <div className="ws-agent-renderer">
       {view.planning && <PlanningCard planning={view.planning} />}
+      {/* 异步子 agent 任务看板:点击卡片内联/新标签打开子会话 */}
+      {view.subagents && view.subagents.length > 0 && (
+        <VisSubagentBoard data={{ items: view.subagents }} onOpenSubagent={onSubagentClick} />
+      )}
       {view.execution.map((step) => {
         if (step.type === 'user') {
           return <UserBubble key={step.id} text={step.output || ''} />;

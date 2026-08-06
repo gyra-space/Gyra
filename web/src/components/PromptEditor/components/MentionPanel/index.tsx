@@ -5,6 +5,7 @@ import { PlusOutlined } from '@ant-design/icons';
 import { Rect } from '@codemirror/view';
 import { Button, Flex, Popover, Space, Tabs, Typography } from 'antd';
 import React from 'react';
+import { AgentAvatar } from '@/components/common/agent-avatar';
 import { MentionPanelWrapper } from './style';
 
 interface MentionPanelProps {
@@ -77,11 +78,20 @@ const ListItem = ({ item, actionText, onActionClick, type }: ListItemProps) => {
       gap={4}
     >
       <div className="content_item_left">
-        <img
-         //  @ts-ignore
-          src={item?.avatar || iconMap[type]}
-          className="content_item_icon"
-        />
+        {type === 'agent' ? (
+          <AgentAvatar
+            icon={item?.avatar}
+            name={item?.title}
+            size={24}
+            className="content_item_icon_item"
+          />
+        ) : (
+          <img
+           //  @ts-ignore
+            src={item?.avatar || iconMap[type]}
+            className="content_item_icon"
+          />
+        )}
         <Typography.Text ellipsis={{ tooltip: item.title }}>
           <span className="content_item_title">
             {/* 使用字段需要根据实际数据调整 */}

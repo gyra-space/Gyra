@@ -15,6 +15,7 @@ from gyra_serve.core import Result
 from ..config import SERVE_SERVICE_COMPONENT_NAME, ServeConfig
 from ..service.service import Service
 from .schemas import (
+    CronJobLogSchema,
     CronStatusResponse,
     CronValidateRequest,
     ServeRequest,
@@ -176,6 +177,30 @@ async def get_job(
     if not response:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
     return Result.succ(response)
+
+
+@router.get(
+    "/jobs/{job_id}/logs",
+    response_model=Result[List[CronJobLogSchema]],
+    dependencies=[Depends(check_api_key)],
+)
+async def get_job_logs(
+    job_id: str,
+    limit: int = Query(default=50, ge=1, le=200, description="Max logs to return"),
+    service: Service = Depends(get_service),
+) -> Result[List[CronJobLogSchema]]:
+    """List the execution logs (success/failure history) for a cron job.
+
+    Args:
+        job_id: The job ID.
+        limit: Maximum number of logs to return.
+        service: The cron service.
+
+    Returns:
+        List of execution logs, newest first.
+    """
+    logs = service.dao.list_logs(job_id, limit=limit)
+    return Result.succ([CronJobLogSchema(**log) for log in logs])
 
 
 @router.patch(

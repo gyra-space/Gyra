@@ -71,11 +71,18 @@ class HomeWorkspaceRequest(BaseModel):
     user_id: int
 
 
+class SetHomeWorkspaceRequest(BaseModel):
+    """Set a workspace as the user's default (primary) home workspace."""
+
+    workspace_id: int
+    user_id: int
+
+
 # ------------------------ Workspace Member ------------------------
 class WorkspaceMemberRequest(BaseModel):
     workspace_id: int
     user_id: int
-    role: str = Field("contributor", description="owner/contributor/approver/viewer")
+    role: str = Field("contributor", description="owner(管理)/contributor(使用)/viewer(查看)")
 
 
 class WorkspaceMemberResponse(BaseModel):

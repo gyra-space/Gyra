@@ -16,14 +16,19 @@ import {
   type JobTypeParam,
 } from '@/client/api/job';
 import {
+  listAsyncTasks,
+  type AsyncTask,
+} from '@/client/api/async-task';
+import {
   DeleteOutlined,
+  DownloadOutlined,
   PlayCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
   StopOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { App, Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Switch, Table, Tag, Typography } from 'antd';
+import { App, Button, Card, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Switch, Table, Tag, Tabs, Tooltip, Typography } from 'antd';
 import moment from 'moment';
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -46,7 +51,7 @@ function resolveParam(prop: JobTypeParam, $defs?: Record<string, any>): JobTypeP
   // $ref like "#/$defs/ExtractMode"
   if ((prop as any).$ref && $defs) {
     const ref = (prop as any).$ref as string;
-    const name = ref.split('/').pop();
+    const name = ref.split('/').pop() || '';
     const def = $defs[name];
     if (def) return resolveParam(def, $defs);
   }
@@ -107,6 +112,102 @@ function ParamField({
       <Input placeholder={placeholder} />
     </Form.Item>
   );
+}
+
+const ASYNC_STATUS_COLOR: Record<string, string> = {
+  pending: 'default',
+  running: 'processing',
+  completed: 'success',
+  failed: 'error',
+  timeout: 'warning',
+  cancelled: 'default',
+};
+
+/** Render an async task's AFS deliverable (artifact) as a download link if present. */
+function AsyncArtifactLink({ artifact }: { artifact?: AsyncTask['artifact'] }) {
+  if (!artifact || !artifact.url) return <Text type="secondary">-</Text>;
+  return (
+    <Tooltip title={artifact.name || '交付物'}>
+      <Button
+        size="small"
+        type="link"
+        icon={<DownloadOutlined />}
+        href={artifact.url}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {artifact.name || '下载'}
+      </Button>
+    </Tooltip>
+  );
+}
+
+/** Async tasks (media generation / spawn_agent_task subagent) merged into the task engine page. */
+function AsyncTasksTable() {
+  const [filters, setFilters] = useState<{ status?: string; conv_id?: string }>({});
+
+  const {
+    data: tasks,
+    loading,
+    refresh,
+    error,
+  } = useRequest(
+    async () => {
+      const [err, res] = await apiInterceptors(listAsyncTasks(filters));
+      if (err) return [];
+      return res || [];
+    },
+    { refreshDeps: [JSON.stringify(filters)] },
+  );
+
+  const columns = [
+    { title: 'Task ID', dataIndex: 'task_id', key: 'task_id', width: 200, ellipsis: true,
+      render: (v: string) => <Text code className="text-xs">{v}</Text> },
+    { title: 'Kind', dataIndex: 'kind', key: 'kind', width: 110,
+      render: (v: string) => <Tag color={v === 'video' ? 'cyan' : v === 'image' ? 'geekblue' : 'purple'}>{v || '-'}</Tag> },
+    { title: 'Model', dataIndex: 'model', key: 'model', width: 180, ellipsis: true,
+      render: (v?: string) => v ? <Text code className="text-xs">{v}</Text> : '-' },
+    { title: 'Description', dataIndex: 'description', key: 'description', ellipsis: true },
+    { title: 'Status', dataIndex: 'status', key: 'status', width: 120,
+      render: (s: string) => <Tag color={ASYNC_STATUS_COLOR[s] || 'default'}>{s}</Tag> },
+    { title: 'Artifact', dataIndex: 'artifact', key: 'artifact', width: 140,
+      render: (_: any, r: AsyncTask) => <AsyncArtifactLink artifact={r.artifact} /> },
+    { title: 'Created', dataIndex: 'created_at', key: 'created_at', width: 160,
+      render: (v?: string) => v ? moment(v).format('YYYY-MM-DD HH:mm:ss') : '-' },
+    { title: 'Operation', key: 'op', width: 90, fixed: 'right' as const,
+      render: (_: any, r: AsyncTask) => (
+        <Button size="small" icon={<ReloadOutlined />} onClick={refresh}>refresh</Button>
+      ) },
+  ];
+
+  return (
+    <Card>
+      <Space className="mb-4" style={{ width: '100%' }} wrap>
+        <Select
+          placeholder="status"
+          allowClear
+          style={{ width: 140 }}
+          options={['pending', 'running', 'completed', 'failed', 'timeout', 'cancelled'].map(s => ({ label: s, value: s }))}
+          onChange={v => setFilters(f => ({ ...f, status: v }))}
+        />
+        <Button icon={<ReloadOutlined />} onClick={refresh}>refresh</Button>
+      </Space>
+      <Table
+        rowKey="task_id"
+        size="small"
+        loading={loading}
+        dataSource={tasks}
+        columns={columns}
+        scroll={{ x: 1100 }}
+        locale={{ emptyText: error ? <TypeText msg={error?.message || '加载失败'} /> : <Empty /> }}
+        pagination={{ pageSize: 20, showSizeChanger: false }}
+      />
+    </Card>
+  );
+}
+
+function TypeText({ msg }: { msg: string }) {
+  return <Text type="danger">{msg}</Text>;
 }
 
 export default function JobsPage() {
@@ -237,52 +338,70 @@ export default function JobsPage() {
 
   return (
     <div className="p-4">
-      <Title level={3}>Jobs</Title>
+      <Title level={3}>任务引擎</Title>
 
-      <Space className="mb-4" style={{ width: '100%' }} wrap>
-        <Select
-          placeholder="job type"
-          allowClear
-          style={{ width: 200 }}
-          options={(jobTypes || []).map(jt => ({ label: jt.job_type, value: jt.job_type }))}
-          onChange={v => setFilters(f => ({ ...f, job_type: v }))}
-        />
-        <Select
-          placeholder="status"
-          allowClear
-          style={{ width: 140 }}
-          options={['pending', 'running', 'done', 'failed'].map(s => ({ label: s, value: s }))}
-          onChange={v => setFilters(f => ({ ...f, status: v }))}
-        />
-        <Input
-          placeholder="space slug"
-          allowClear
-          style={{ width: 180 }}
-          onChange={e => setFilters(f => ({ ...f, space_slug: e.target.value || undefined }))}
-        />
-        <Button icon={<ReloadOutlined />} onClick={runRefresh}>refresh</Button>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setSelectedType(undefined); setCreateOpen(true); }}>new job</Button>
-      </Space>
+      <Tabs
+        defaultActiveKey="jobs"
+        items={[
+          {
+            key: 'jobs',
+            label: '任务引擎',
+            children: (
+              <>
+                <Space className="mb-4" style={{ width: '100%' }} wrap>
+                  <Select
+                    placeholder="job type"
+                    allowClear
+                    style={{ width: 200 }}
+                    options={(jobTypes || []).map(jt => ({ label: jt.job_type, value: jt.job_type }))}
+                    onChange={v => setFilters(f => ({ ...f, job_type: v }))}
+                  />
+                  <Select
+                    placeholder="status"
+                    allowClear
+                    style={{ width: 140 }}
+                    options={['pending', 'running', 'done', 'failed'].map(s => ({ label: s, value: s }))}
+                    onChange={v => setFilters(f => ({ ...f, status: v }))}
+                  />
+                  <Input
+                    placeholder="space slug"
+                    allowClear
+                    style={{ width: 180 }}
+                    onChange={e => setFilters(f => ({ ...f, space_slug: e.target.value || undefined }))}
+                  />
+                  <Button icon={<ReloadOutlined />} onClick={runRefresh}>refresh</Button>
+                  <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setSelectedType(undefined); setCreateOpen(true); }}>new job</Button>
+                </Space>
 
-      <Space className="mb-4" size="large">
-        <Statistic title="Total" value={stats?.total ?? 0} loading={statsLoading} />
-        <Statistic title="Pending" value={stats?.by_status?.pending ?? 0} />
-        <Statistic title="Running" value={stats?.by_status?.running ?? 0} />
-        <Statistic title="Done" value={stats?.by_status?.done ?? 0} />
-        <Statistic title="Failed" value={stats?.by_status?.failed ?? 0} />
-      </Space>
+                <Space className="mb-4" size="large">
+                  <Statistic title="Total" value={stats?.total ?? 0} loading={statsLoading} />
+                  <Statistic title="Pending" value={stats?.by_status?.pending ?? 0} />
+                  <Statistic title="Running" value={stats?.by_status?.running ?? 0} />
+                  <Statistic title="Done" value={stats?.by_status?.done ?? 0} />
+                  <Statistic title="Failed" value={stats?.by_status?.failed ?? 0} />
+                </Space>
 
-      <Card>
-        <Table
-          rowKey="id"
-          size="small"
-          loading={jobsLoading}
-          dataSource={jobs?.items || []}
-          columns={columns}
-          scroll={{ x: 1500 }}
-          pagination={{ total: jobs?.total ?? 0, pageSize: 20, showSizeChanger: false }}
-        />
-      </Card>
+                <Card>
+                  <Table
+                    rowKey="id"
+                    size="small"
+                    loading={jobsLoading}
+                    dataSource={jobs?.items || []}
+                    columns={columns}
+                    scroll={{ x: 1500 }}
+                    pagination={{ total: jobs?.total ?? 0, pageSize: 20, showSizeChanger: false }}
+                  />
+                </Card>
+              </>
+            ),
+          },
+          {
+            key: 'async',
+            label: '异步任务',
+            children: <AsyncTasksTable />,
+          },
+        ]}
+      />
 
       <Modal
         title="New Job"

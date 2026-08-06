@@ -93,6 +93,56 @@ export interface HomeSceneConfig {
 }
 
 /**
+ * 多媒体 Agent 模板配置
+ *
+ * 多媒体 Agent 是一个「只使用多媒体生成模型」的轻量 Agent 模板：不跑 LLM 推理
+ * 循环，而是把任务描述 + 固定配置确定性映射到媒体生成 provider。可被场景空间 /
+ * 其它主 Agent 通过 agent 交互（同步）或异步子任务（spawn_agent_task）调用。
+ */
+export interface MultimediaAgentConfig {
+  /** 是否启用该模板 */
+  enabled?: boolean;
+  /** Agent 名称（供 spawn_agent_task / 寻址） */
+  name?: string;
+  /** Agent 描述 */
+  description?: string;
+  /** 是否启用图片生成能力 */
+  capability_image?: boolean;
+  /** 是否启用视频生成能力 */
+  capability_video?: boolean;
+  /** 可用图片模型候选池（白名单，空则用全局） */
+  image_models?: string[];
+  /** 可用视频模型候选池（白名单，空则用全局） */
+  video_models?: string[];
+  /** 默认图片模型名 */
+  default_image_model?: string;
+  /** 默认视频模型名 */
+  default_video_model?: string;
+  /** 预设风格 prompt（追加到任务描述前） */
+  style_prompt?: string;
+  /** 预设场景 prompt（追加到任务描述后） */
+  scene_prompt?: string;
+  /** 预设反向提示词 */
+  negative_prompt?: string;
+  /** 默认图片尺寸 */
+  default_image_size?: string;
+  /** 默认视频分辨率 */
+  default_video_resolution?: string;
+  /** 默认视频宽高比 */
+  default_video_aspect_ratio?: string;
+  /** 默认视频时长（秒） */
+  default_video_duration?: number;
+  /** 落盘文件名前缀 */
+  file_prefix?: string;
+  /** 视频等长耗时任务的超时秒数 */
+  timeout?: number;
+  /** 默认是否异步（后台执行 + 完成后自动通知） */
+  async_default?: boolean;
+  /** 固定 provider 参数覆盖 */
+  fixed_params?: Record<string, any>;
+}
+
+/**
  * 扩展配置 - 分布式执行设置
  */
 export interface ExtConfig {
@@ -102,6 +152,8 @@ export interface ExtConfig {
   subagents?: SubagentConfig[];
   /** 首页场景入驻配置 */
   home_scene?: HomeSceneConfig;
+  /** 多媒体 Agent 模板配置 */
+  multimedia_agent?: MultimediaAgentConfig;
 }
 
 // =============================================================================
@@ -421,6 +473,14 @@ export type IApp = {
     name: string;
     value: string;
   }>;
+  /**
+   * 工具资源绑定
+   */
+  resource_tool?: Array<{ type: string; name: string; value: string }>;
+  /**
+   * 知识库资源绑定
+   */
+  resource_knowledge?: Array<{ type: string; name: string; value: string }>;
   /**
    * Agent 运行时配置
    */
