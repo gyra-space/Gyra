@@ -309,6 +309,9 @@ Multi-Agent collaborating to handle a complex task — from one query to a deliv
 <p align="center">
   <img src="./assets/scene_demo_new.jpg" width="100%" />
 </p>
+<p align="center">
+  <img src="./assets/scene_demo_media.jpg" width="100%" />
+</p>
 
 ### Citation
 If you find this repository helpful, please cite:
