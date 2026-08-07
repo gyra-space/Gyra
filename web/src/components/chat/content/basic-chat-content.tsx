@@ -108,11 +108,11 @@ const BasicChatContent: React.FC<BasicChatContentProps> = ({ ctrl, workspaceId }
 
       <div className="flex-shrink-0 pt-2 pb-2 px-3">
         <div className="w-full">
-          {/* Composer Dock：tab 栏内嵌输入框卡片顶部，无缝一体 */}
+          {/* Composer Dock：独立卡片附着在输入框上方 */}
+          <DockPanel widgets={dockWidgets || {}} />
           <UnifiedChatInput
             ctrl={ctrl}
             showFloatingActions={hasMessages}
-            topSlot={<DockPanel widgets={dockWidgets || {}} embedded />}
           />
         </div>
       </div>

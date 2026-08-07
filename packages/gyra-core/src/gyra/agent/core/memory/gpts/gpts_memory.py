@@ -1763,9 +1763,9 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
                 except Exception as e:
                     logger.error(f"Failed to load files from DB storage: {e}")
             else:
-                files = await blocking_func_to_async(
-                    self._executor, self._file_memory.get_by_conv_id, conv_id
-                )
+                # get_by_conv_id 是 async（见 file_base 接口），直接 await，
+                # 不能用 blocking_func_to_async 包装（否则抛 "is not blocking function"）
+                files = await self._file_memory.get_by_conv_id(conv_id)
                 async with await self._get_conv_lock(conv_id):
                     for f in files:
                         cache.files[f.file_id] = f

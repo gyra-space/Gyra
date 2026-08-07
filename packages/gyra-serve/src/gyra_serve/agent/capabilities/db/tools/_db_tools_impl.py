@@ -178,6 +178,54 @@ def _resolve_db_from_agent(db_name: str, kwargs: Dict, context=None) -> tuple:
     return None, None
 
 
+def _auto_resolve_datasource(agent: Any, context: Any = None) -> Tuple[Any, Optional[str]]:
+    """调用方未传 datasource_id/db_name 时,从 agent 绑定的唯一 DB 资源兜底解析。
+
+    顺序:V2 ToolContext db_resource -> agent.capability_pack 的 DBCapability
+    -> agent.resource_map 的 DBResource。返回 (datasource_id, db_name),均可能为 None。
+
+    动态选择(chat 输入)的 DB 资源即使没把 <datasource_id> 注入 prompt,工具也能
+    从 agent 绑定的资源自动取到,不必依赖 LLM 回传 ID。
+    """
+    # V2 ToolContext
+    if context is not None and hasattr(context, "get_resource"):
+        db_resource = context.get_resource("db_resource")
+        if db_resource is not None:
+            ds_id = getattr(db_resource, "_datasource_id", None)
+            db_n = getattr(db_resource, "_db_name", None) or getattr(
+                db_resource, "db_name", None
+            )
+            if ds_id or db_n:
+                return ds_id, db_n
+
+    if not agent:
+        return None, None
+
+    # capability_pack: 任一 db: capability
+    cap_pack = getattr(agent, "capability_pack", None)
+    if cap_pack is not None:
+        for c in getattr(cap_pack, "sub_resources", []) or []:
+            if getattr(c, "capability_id", "").startswith("db:"):
+                ds_id = getattr(c, "datasource_id", None)
+                db_n = getattr(c, "db_name", None)
+                if ds_id or db_n:
+                    return ds_id, db_n
+
+    # resource_map: 任一 DBResource
+    resource_map = getattr(agent, "resource_map", None)
+    if resource_map:
+        from gyra.agent.resource.database import DBResource
+
+        for resources in resource_map.values():
+            for r in resources or []:
+                if isinstance(r, DBResource):
+                    ds_id = getattr(r, "_datasource_id", None)
+                    db_n = getattr(r, "_db_name", None) or getattr(r, "db_name", None)
+                    if ds_id or db_n:
+                        return ds_id, db_n
+    return None, None
+
+
 @tool(
     "get_table_spec",
     description=(
@@ -251,6 +299,16 @@ async def get_table_spec(
         context: Tool context (injected by system)
         **kwargs: Additional context (agent, etc.)
     """
+    # Auto-resolve from agent's bound DB resource when neither is provided
+    # (动态选择的 DB 资源可能未把 datasource_id 注入 prompt,这里兜底)
+    if not datasource_id and not db_name:
+        _ds_id, _db_name = _auto_resolve_datasource(
+            kwargs.get("agent"), context
+        )
+        if _ds_id:
+            datasource_id = _ds_id
+        if _db_name:
+            db_name = _db_name
     # Validate: must provide either datasource_id or db_name
     if not datasource_id and not db_name:
         return "错误: 必须提供 datasource_id 或 db_name 参数"

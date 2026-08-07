@@ -26,6 +26,18 @@ class MediaGenResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+class MediaPollTimeoutError(TimeoutError):
+    """媒体生成任务已提交成功、但本地轮询超时。
+
+    与生成失败不同：provider 侧任务通常仍在运行，**不应重新提交**（重复扣费）。
+    携带 ``submission`` 时调用方可把同一 task 转后台继续轮询+下载。
+    """
+
+    def __init__(self, message: str, submission: Optional["MediaSubmission"] = None):
+        super().__init__(message)
+        self.submission = submission
+
+
 @dataclass
 class MediaSubmission:
     """A submitted async media-generation task, resumable for completion.

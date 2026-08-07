@@ -88,7 +88,14 @@ class SeedanceVideoProvider(MediaGenProvider):
                 - timeout: Max wait time in seconds (default 600).
         """
         submission = await self.submit_video(prompt, model, **kwargs)
-        return await submission.complete()
+        try:
+            return await submission.complete()
+        except TimeoutError as e:
+            # 提交已成功仅轮询超时：携带 submission 上抛，由调用方转后台续等
+            # 同一 task（provider 侧仍在运行，重复提交会重复扣费）
+            from .base import MediaPollTimeoutError
+
+            raise MediaPollTimeoutError(str(e), submission=submission) from e
 
     async def submit_video(
         self,

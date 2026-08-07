@@ -63,6 +63,12 @@ class AsyncTaskEntity(Model):
     artifact = Column(
         Text, nullable=True, comment="Deliverable artifact metadata (JSON)"
     )
+    detail = Column(
+        Text,
+        nullable=True,
+        comment="Request/response detail (JSON): provider task_id, prompt, "
+        "params, provider raw URLs; for post-restart task/result lookup",
+    )
 
     created_at = Column(
         DateTime, name="gmt_create", default=datetime.utcnow, comment="create time"
@@ -103,6 +109,7 @@ class AsyncTaskDao(BaseDao):
             "error": e.error,
             "result_preview": e.result_preview,
             "artifact": json.loads(e.artifact) if e.artifact else None,
+            "detail": json.loads(e.detail) if e.detail else None,
             "created_at": _iso(e.created_at),
             "started_at": _iso(e.started_at),
             "completed_at": _iso(e.completed_at),
@@ -147,6 +154,16 @@ class AsyncTaskDao(BaseDao):
                 if record.get("artifact")
                 else None
             )
+            if record.get("detail"):
+                # detail 只在有新值时覆盖，避免完成态写回时丢掉请求侧信息
+                merged = {}
+                if existing.detail:
+                    try:
+                        merged = json.loads(existing.detail)
+                    except (json.JSONDecodeError, TypeError):
+                        merged = {}
+                merged.update(record["detail"])
+                existing.detail = json.dumps(merged, ensure_ascii=False)
             existing.created_at = _dt(record.get("created_at")) or existing.created_at
             existing.started_at = _dt(record.get("started_at"))
             existing.completed_at = _dt(record.get("completed_at"))

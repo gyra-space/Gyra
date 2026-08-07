@@ -358,7 +358,14 @@ class ResourceFacade:
             root = resource_root
         elif agent is not None:
             cap_pack = getattr(agent, "capability_pack", None)
-            root = cap_pack if cap_pack is not None else getattr(agent, "resource", None)
+            # 优先 capability_pack,但仅当它确有子资源;否则回退 agent.resource。
+            # 动态选择(chat 输入)的资源先入 agent.resource,若 cap_pack 为空包
+            # (非 None 但 sub_resources 为空)时仍用 cap_pack 会跳过动态资源,
+            # 导致资源上下文(如 <database>)不注入。
+            if cap_pack is not None and getattr(cap_pack, "sub_resources", None):
+                root = cap_pack
+            else:
+                root = getattr(agent, "resource", None)
         else:
             root = None
 

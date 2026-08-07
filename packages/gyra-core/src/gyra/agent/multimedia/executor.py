@@ -222,6 +222,24 @@ class MultimediaExecutor:
                 tool_name=self._tool_name(kind),
             )
         except TimeoutError as e:
+            # 提交已成功、仅本地轮询超时：转后台继续等待同一 provider task，
+            # 不重复提交（重复扣费）。无 submission 的 provider 维持原报错。
+            submission = getattr(e, "submission", None)
+            if submission is not None:
+                logger.info(
+                    f"[multimedia-executor] poll timed out after submit; "
+                    f"continue polling provider task {submission.task_id} in background"
+                )
+                return await self._run_async(
+                    kind=kind,
+                    model=model,
+                    prompt=final_prompt,
+                    description=request.description
+                    or (f"AI 生成内容: {request.prompt[:50]}"),
+                    request=request,
+                    submission=submission,
+                    resumed_after_timeout=str(e),
+                )
             return ToolResult.fail(
                 error=f"生成超时: {e}", tool_name=self._tool_name(kind)
             )
@@ -377,8 +395,14 @@ class MultimediaExecutor:
         description: str,
         request: MultimediaRequest,
         submission: Any,
+        resumed_after_timeout: str = "",
     ) -> Any:
-        """提交异步任务到 AsyncTaskManager，立即返回 PENDING ToolResult。"""
+        """提交异步任务到 AsyncTaskManager，立即返回 PENDING ToolResult。
+
+        Args:
+            resumed_after_timeout: 非空表示该任务此前已提交成功、本地轮询超时后
+                转后台续等（同一 provider task，不重复提交）；值为原超时信息。
+        """
         from gyra.agent.tools.result import ResultStatus, ToolResult
         from gyra.agent.util.async_task_manager import (
             AsyncTaskManager,
@@ -403,12 +427,25 @@ class MultimediaExecutor:
             )
 
         task_id = "atask_" + uuid.uuid4().hex[:8]
+        provider_task_id = getattr(submission, "task_id", "") or ""
         spec = AsyncTaskSpec(
             task_id=task_id,
             conv_id=request.conv_id or self.conv_id,
             kind=kind,
             model=model,
             task_description=description,
+            context={
+                # 请求侧信息落库（gpts_async_tasks.detail）：重启/中断后可按
+                # provider task_id 找回任务与下载地址
+                "provider": getattr(submission, "provider", "") or "",
+                "provider_task_id": provider_task_id,
+                "prompt": prompt[:2000],
+                "gen_kwargs": {
+                    k: v for k, v in (getattr(submission, "metadata", {}) or {}).items()
+                    if isinstance(v, (str, int, float, bool))
+                },
+                **({"resumed_after_timeout": resumed_after_timeout} if resumed_after_timeout else {}),
+            },
             resume=_resume,
             deliver=_deliver,
             timeout=self.config.timeout,
@@ -417,17 +454,26 @@ class MultimediaExecutor:
         mgr = AsyncTaskManager.media_instance()
         job_id = await mgr.spawn(spec)
 
+        if resumed_after_timeout:
+            note = (
+                f"⚠️ 前台等待超时，但生成任务已成功提交、后台仍在继续"
+                f"（同一任务，不会重复扣费）。\n"
+            )
+        else:
+            note = ""
         return ToolResult(
             success=True,
             status=ResultStatus.PENDING,
             tool_name=self._tool_name(kind),
             output=(
+                f"{note}"
                 f"⏳ 已提交{('视频' if kind == KIND_VIDEO else '图片')}"
                 f"生成到后台执行。\n"
                 f"- job_id: {job_id}\n"
                 f"- 模型: {model}\n"
+                f"- provider 任务ID: {provider_task_id}\n"
                 f"- 预计耗时: {spec.poll_hint}\n\n"
-                f"完成后会自动通知。"
+                f"完成后会自动通知，请勿重复提交生成请求。"
             ),
             metadata={
                 "job_id": job_id,
@@ -466,6 +512,9 @@ class MultimediaExecutor:
         extension = file_name.rsplit(".", 1)[1] if "." in file_name else result.format
         file_key = file_name.rsplit(".", 1)[0]
 
+        # 强制交付：afs 为 None 或保存失败时不得谎报“✅ 成功”
+        save_ok = False
+        save_error = "afs 不可用(为 None)，未注入文件存储"
         if afs is not None:
             try:
                 from gyra.agent.core.memory.gpts.file_base import FileType
@@ -486,6 +535,7 @@ class MultimediaExecutor:
                         **(result.metadata or {}),
                     },
                 )
+                save_ok = True
                 if file_metadata:
                     preview_url = file_metadata.preview_url
                     try:
@@ -514,6 +564,21 @@ class MultimediaExecutor:
                 logger.warning(
                     f"[multimedia-executor] AFS save failed: {e}", exc_info=True
                 )
+                save_error = str(e)
+
+        # 强制交付：保存未成功(afs 为 None 或 save 抛异常)直接 fail，不输出“✅ 成功”
+        if not save_ok:
+            label = "图片" if kind == KIND_IMAGE else "视频"
+            meta = result.metadata or {}
+            raw_url = meta.get("video_url") or meta.get("image_url")
+            hint = f"原始链接: {raw_url}" if raw_url else "(无原始链接，内容可能无法恢复)"
+            return ToolResult.fail(
+                error=f"{label}生成成功但未落盘: {save_error}。{hint}",
+                tool_name=self._tool_name(kind),
+                # media 元数据（含原始链接/provider task_id）随结果落库，
+                # 交付失败也能找回下载地址
+                metadata={"media": meta},
+            )
 
         # 组装输出文本
         label = "图片" if kind == KIND_IMAGE else "视频"
@@ -555,6 +620,8 @@ class MultimediaExecutor:
             output="\n".join(parts),
             tool_name=self._tool_name(kind),
             artifacts=artifacts,
+            # media 元数据（含原始链接/provider task_id）随结果落库
+            metadata={"media": meta},
         )
 
 

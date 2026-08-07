@@ -63,11 +63,9 @@ interface DockPanelProps {
   widgets: Record<string, DockWidget>;
   /** 仅 manus 布局传入；callsite 已完成 is_running && isProcessing 兜底合并。 */
   systemEvents?: SystemEventsData | null;
-  /** 内嵌进输入框卡片顶部（经 UnifiedChatInput topSlot）：去掉自带卡片外壳，与输入框无缝一体。 */
-  embedded?: boolean;
 }
 
-const DockPanel: React.FC<DockPanelProps> = ({ widgets, systemEvents, embedded = false }) => {
+const DockPanel: React.FC<DockPanelProps> = ({ widgets, systemEvents }) => {
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const prevActiveRef = useRef(false);
@@ -130,14 +128,8 @@ const DockPanel: React.FC<DockPanelProps> = ({ widgets, systemEvents, embedded =
   const activeTab = tabs.find(t => t.key === currentKey);
 
   return (
-    <div
-      className={classNames(
-        'w-full overflow-hidden',
-        embedded
-          ? ''
-          : 'mb-2 rounded-lg border border-[#e5e7eb] dark:border-gray-700 bg-white dark:bg-[#232734] shadow-[0_1px_2px_rgba(0,0,0,0.04)]',
-      )}
-    >      {/* 单行 tab 栏 */}
+    <div className="w-full overflow-hidden mb-2 rounded-2xl border border-[#e5e7eb] dark:border-gray-700 bg-white dark:bg-[#232734] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+      {/* 单行 tab 栏 */}
       <div className="flex items-center h-9 px-2 gap-1">
         {tabs.map(tab => {
           const isActive = tab.key === currentKey;

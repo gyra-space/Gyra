@@ -235,6 +235,21 @@ class AsyncTaskState(BaseModel):
                         "url": getattr(a, "url", None),
                         "mime_type": getattr(a, "mime_type", None),
                     }
+        # detail：请求侧（spec.context：provider task_id / prompt / 参数）
+        # + 响应侧（provider 原始链接 / task_id / 分辨率等 media 元数据），
+        # 供重启/中断后按 provider task_id 找回任务与下载地址。
+        detail: Dict[str, Any] = dict(self.spec.context or {})
+        result_meta = getattr(self.result, "metadata", None) or {}
+        media_meta = result_meta.get("media") if isinstance(result_meta, dict) else None
+        if not media_meta and artifact is not None:
+            arts = getattr(self.result, "artifacts", None) or []
+            media_meta = getattr(arts[0], "metadata", None) if arts else None
+        if isinstance(media_meta, dict) and media_meta:
+            detail["provider_response"] = {
+                k: v
+                for k, v in media_meta.items()
+                if isinstance(v, (str, int, float, bool))
+            }
         return {
             "task_id": self.spec.task_id,
             "conv_id": self.spec.conv_id or "",
@@ -248,6 +263,7 @@ class AsyncTaskState(BaseModel):
             "error": self.error,
             "result_preview": result_preview,
             "artifact": artifact,
+            "detail": detail or None,
         }
 
 

@@ -29,6 +29,7 @@ _AGENT_START_PROMPT = """\
   - agent_id: 目标子 Agent 的唯一标识（必填，自模板 spawn 暂未实现）
   - input: 任务目标指令内容（必填）
   - mode: "sync"（默认，等待子 Agent 完成）或 "async"（后台运行，全完成后回调主 resume；单进程异步优先，分布式调度未来演进）
+  - **视频生成等长耗时任务必须用 mode="async"**（或传 media.kind="video" 自动走异步），避免主 Agent 被同步阻塞数分钟。异步时主会话进入 WAITING，子 Agent 后台完成后自动触发主 resume。
   - background: 相关背景知识（可选）
 """
 
@@ -482,13 +483,21 @@ class SubAgent(AgentAction, FunctionTool):
                 extra_info["media"] = tool_call.args.get("media")
 
             # 解析 mode：优先 mode 参数，回退到 deprecated sync 参数
-            mode = tool_call.args.get("mode")
-            if not mode:
-                sync_flag = tool_call.args.get("sync")
-                if sync_flag is False:
+            explicit_mode = tool_call.args.get("mode")
+            sync_flag = tool_call.args.get("sync")
+            if explicit_mode:
+                mode = explicit_mode
+            elif sync_flag is False:
+                mode = "async"
+            else:
+                mode = "sync"
+
+            # 视频生成耗时长：调用方未显式指定 mode/sync 时，传 media.kind="video"
+            # 自动走异步，避免主 Agent 同步阻塞（主会话 WAITING，子 Agent 后台完成后 resume）
+            if not explicit_mode and sync_flag is None:
+                media = tool_call.args.get("media") or {}
+                if isinstance(media, dict) and media.get("kind") == "video":
                     mode = "async"
-                else:
-                    mode = "sync"
 
             return cls(action_uid=tool_call.tool_call_id,
                        action_input=AgentActionInput(agent_name=tool_call.args.get("agent_id"),

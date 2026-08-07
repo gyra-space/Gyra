@@ -74,7 +74,7 @@ class MultimediaAgentConfig(BaseModel):
     file_prefix: str = Field(default="generated_media", description="落盘文件名前缀")
 
     # ---- 执行 ----
-    timeout: int = Field(default=600, description="视频等长耗时任务的超时秒数")
+    timeout: int = Field(default=1800, description="视频等长耗时任务的超时秒数")
     async_default: bool = Field(
         default=False, description="默认是否异步（后台执行 + 完成后自动通知）"
     )

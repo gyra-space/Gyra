@@ -325,6 +325,16 @@ class PostgreSQLConnector(RDBMSConnector):
                 (field[0], field[1], field[2], field[3], field[4]) for field in fields
             ]
 
+    def quote_identifier(self, identifier: str) -> str:
+        """Quote a table or column identifier for PostgreSQL.
+
+        PostgreSQL uses double quotes for identifiers; the MySQL-style
+        backticks inherited from the base connector raise a syntax error
+        (``syntax error at or near "`"``), which silently broke schema
+        learning queries (row count, sample data, value distribution).
+        """
+        return f'"{identifier}"'
+
     def get_indexes(self, table_name: str) -> List[Dict]:
         """Get table indexes about specified table.
 

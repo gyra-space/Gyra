@@ -99,8 +99,22 @@ const VisSubagentBoard: React.FC<IProps> = ({ data, onOpenSubagent, embedded = f
                 {item.status === 'awaiting_authorization' && <span className="dot awaiting" />}
               </div>
               <div className="item-content">
-                <div className={`item-title ${item.status}`}>
-                  {item.agent_name || item.sub_conv_id.slice(0, 8)}
+                <div className="item-title-row">
+                  <span className={`item-title ${item.status}`}>
+                    {item.agent_name || item.sub_conv_id.slice(0, 8)}
+                  </span>
+                  {item.mode && (
+                    <span
+                      className={`item-mode mode-${item.mode}`}
+                      title={
+                        item.mode === 'async'
+                          ? '异步：主 Agent 不等待，子 Agent 后台运行，全部完成后触发主恢复'
+                          : '同步：主 Agent 等待子 Agent 完成后继续'
+                      }
+                    >
+                      {item.mode === 'async' ? '异步' : '同步'}
+                    </span>
+                  )}
                 </div>
                 {item.task && (
                   <div className="item-task" title={item.task}>{item.task}</div>

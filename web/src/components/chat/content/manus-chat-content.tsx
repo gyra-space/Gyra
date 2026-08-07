@@ -477,23 +477,20 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
           {showInput && (
             <div className={classNames("flex-shrink-0 pb-4 pt-2 px-4", !isRightPanelVisible && "max-w-3xl mx-auto w-full")}>
               <div className="w-full">
-                {/* Composer Dock：tab 栏内嵌输入框卡片顶部，无缝一体（状态事件 / todo_list / subagent_board）。
+                {/* Composer Dock：独立卡片附着在输入框上方，展开/收起不改变输入框大小。
                     is_running 与流式状态联动兜底:流结束后即使后端未推终态,
                     也不再显示"转圈"。 */}
+                <DockPanel
+                  widgets={dockWidgets || {}}
+                  systemEvents={
+                    systemEvents
+                      ? { ...systemEvents, is_running: !!systemEvents.is_running && isProcessing }
+                      : null
+                  }
+                />
                 <UnifiedChatInput
                   ctrl={ctrl}
                   showFloatingActions={hasMessages}
-                  topSlot={
-                    <DockPanel
-                      widgets={dockWidgets || {}}
-                      systemEvents={
-                        systemEvents
-                          ? { ...systemEvents, is_running: !!systemEvents.is_running && isProcessing }
-                          : null
-                      }
-                      embedded
-                    />
-                  }
                 />
               </div>
             </div>

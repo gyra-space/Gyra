@@ -151,11 +151,21 @@ export const VisSubagentBoardWrap = styled.div`
         flex: 1;
         min-width: 0;
 
+        .item-title-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          min-width: 0;
+        }
+
         .item-title {
           font-size: 14px;
           color: #262626;
           line-height: 20px;
           font-weight: 500;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
 
           &.done {
             color: #8c8c8c;
@@ -164,6 +174,26 @@ export const VisSubagentBoardWrap = styled.div`
           &.failed {
             color: #ef4444;
             text-decoration: line-through;
+          }
+        }
+
+        .item-mode {
+          flex-shrink: 0;
+          font-size: 11px;
+          line-height: 1;
+          padding: 2px 5px;
+          border-radius: 4px;
+          font-weight: 500;
+          cursor: help;
+
+          &.mode-async {
+            color: #4f46e5;
+            background: #eef2ff;
+          }
+
+          &.mode-sync {
+            color: #096dd9;
+            background: #e6f7ff;
           }
         }
 
