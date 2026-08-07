@@ -486,6 +486,41 @@ class TestListSubagentItems:
         assert items == []
 
 
+# ---------------- build_subagent_board_widget ----------------
+
+class TestBuildSubagentBoardWidget:
+    def test_builds_dock_protocol_widget(self):
+        """build_subagent_board_widget 应产出 Composer Dock 协议 widget。"""
+        from gyra_serve.agent.subagent_coordinator import build_subagent_board_widget
+
+        items = [
+            {"sub_conv_id": "sub_1", "agent_name": "a1", "status": "running"},
+            {"sub_conv_id": "sub_2", "agent_name": "a2", "status": "done"},
+            {"sub_conv_id": "sub_3", "agent_name": "a3", "status": "failed"},
+        ]
+        w = build_subagent_board_widget(items, "conv_main_1")
+        assert w["id"] == "subagent_board_conv_main_1"
+        assert w["type"] == "subagent_board"
+        assert w["kind"] == "replace"
+        p = w["payload"]
+        assert p["uid"] == "subagent_board_conv_main_1"
+        assert p["type"] == "all"
+        assert p["total_count"] == 3
+        # done + failed 计入 completed
+        assert p["completed_count"] == 2
+        assert p["items"] is items
+
+    def test_empty_items_builds_widget(self):
+        """空 items 也产出合法 widget，completed_count=0。"""
+        from gyra_serve.agent.subagent_coordinator import build_subagent_board_widget
+
+        w = build_subagent_board_widget([], "conv_main_1")
+        assert w["type"] == "subagent_board"
+        assert w["payload"]["items"] == []
+        assert w["payload"]["total_count"] == 0
+        assert w["payload"]["completed_count"] == 0
+
+
 # ---------------- 全局单例 ----------------
 
 class TestGlobalCoordinator:

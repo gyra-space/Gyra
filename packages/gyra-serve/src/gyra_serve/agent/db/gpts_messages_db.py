@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import logging
 from datetime import datetime
 from typing import List, Optional
 
@@ -24,6 +25,8 @@ from gyra.agent.core.schema import MessageMetrics
 from gyra.agent.core.types import AgentReviewInfo
 from gyra.storage.metadata import BaseDao, Model
 from gyra.util.json_utils import serialize
+
+logger = logging.getLogger(__name__)
 
 
 class GptsMessagesEntity(Model):
@@ -354,9 +357,22 @@ class GptsMessagesDao(BaseDao):
         #     print(f"[DEBUG SQL] {compiled}")
         # except Exception as e:
         #     print(f"[WARN] Failed to compile SQL for debug: {e}")
-        old_message: Optional[GptsMessagesEntity] = message_qry.one_or_none()
+        old_messages: List[GptsMessagesEntity] = message_qry.all()
 
-        if old_message:
+        if old_messages:
+            # message_id 应唯一，但 append 的 delete+insert 在并发下会产生重复行；
+            # 保留首行、删除多余行（自愈），否则 one_or_none 会抛 MultipleResultsFound
+            if len(old_messages) > 1:
+                logger.warning(
+                    f"[update_message] message_id={entity.message_id} 存在 "
+                    f"{len(old_messages)} 条重复记录，去重后更新"
+                )
+                for dup in old_messages[1:]:
+                    session.delete(dup)
+                session.flush()
+                message_qry = message_qry.filter(
+                    GptsMessagesEntity.id == old_messages[0].id
+                )
             message_qry.update(
                 {
                     GptsMessagesEntity.conv_id: entity.conv_id,

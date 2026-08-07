@@ -109,3 +109,38 @@ def test_build_todolist_fence_correct_tag_and_status_mapping():
     # 不应出现未映射的 in_progress/cancelled
     assert '"status":"in_progress"' not in fence
     assert '"status":"cancelled"' not in fence
+
+
+def test_build_todo_widget_dock_protocol():
+    """build_todo_widget 应产出 Composer Dock 协议 widget（替代围栏字符串）。"""
+    from gyra.agent.tools.builtin.todo.todo_reminder import build_todo_widget
+
+    todos = [
+        TodoItem(id="1", content="任务A", status=TodoStatus.COMPLETED.value),
+        TodoItem(id="2", content="任务B", status=TodoStatus.IN_PROGRESS.value),
+        TodoItem(id="3", content="任务C", status=TodoStatus.PENDING.value),
+    ]
+    w = build_todo_widget(todos, "conv_c1")
+    # 信封字段
+    assert w["id"] == "todo_list_conv_c1"
+    assert w["type"] == "todo_list"
+    assert w["kind"] == "replace"
+    # payload 供前端 VisTodoList 直接消费
+    p = w["payload"]
+    assert p["uid"] == "todo_list_conv_c1"
+    assert p["type"] == "all"
+    assert p["total_count"] == 3
+    assert [i["status"] for i in p["items"]] == ["completed", "working", "pending"]
+    assert [i["title"] for i in p["items"]] == ["任务A", "任务B", "任务C"]
+    # current_index 指向 IN_PROGRESS
+    assert p["current_index"] == 1
+
+
+def test_build_todo_widget_empty():
+    """空 todo 列表也应产出合法 widget（items 为空）。"""
+    from gyra.agent.tools.builtin.todo.todo_reminder import build_todo_widget
+
+    w = build_todo_widget([], "conv_c1")
+    assert w["type"] == "todo_list"
+    assert w["payload"]["items"] == []
+    assert w["payload"]["total_count"] == 0

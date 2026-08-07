@@ -516,6 +516,48 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         history = self._object_dao.version_history(object_id, ws)
         return history[0] if history else None
 
+    def get_version(
+        self, object_id: str, version: int, workspace_id: Optional[str] = None
+    ) -> Optional[SemanticObjectVO]:
+        """Fetch one exact version (any status) — for the debug preview dispatch."""
+        return self._object_dao.get_version(
+            object_id, version, self._ws(workspace_id)
+        )
+
+    # ------------------------------------------------------- debug preview(试跑)
+    def preview_query(
+        self,
+        object_id: str,
+        version: int,
+        workspace_id: Optional[str] = None,
+        filters: Optional[List[dict]] = None,
+        group_by: Optional[List[str]] = None,
+        time_range: Optional[dict] = None,
+        limit: int = 20,
+    ) -> dict:
+        """确认页调试验证(DB 类):按提案版本只读 dry-run,返回 real data + SQL。
+
+        纯读、不落库、不改状态;结果 trust=preview(永不 verified)——仅供确认人
+        在确认前核对真实数据,不产生可信数字。
+        """
+        from .executor import preview_query as _preview_query
+
+        return _preview_query(
+            object_id, version, self._ws(workspace_id),
+            filters=filters, group_by=group_by, time_range=time_range, limit=limit,
+        )
+
+    async def preview_canon(
+        self,
+        object_id: str,
+        version: int,
+        workspace_id: Optional[str] = None,
+    ) -> dict:
+        """确认页调试验证(文档类:claim/terminology/policy):anchor 回放校验出处。"""
+        from .executor import preview_canon as _preview_canon
+
+        return await _preview_canon(object_id, version, self._ws(workspace_id))
+
     def version_history(
         self, object_id: str, workspace_id: Optional[str] = None
     ) -> List[SemanticObjectVO]:

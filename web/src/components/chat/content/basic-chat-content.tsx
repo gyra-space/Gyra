@@ -5,6 +5,7 @@ import { ChatContentContext } from '@/contexts';
 import { IChatDialogueMessageSchema } from '@/types/chat';
 import React, { memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import ChatHeader from '../header/chat-header';
+import DockPanel from '@/components/chat/dock/dock-panel';
 import ChatContent from './chat-content';
 import { TaskCreatedCard, TaskCreatedCardPayload } from '../task-created-card';
 
@@ -35,7 +36,7 @@ function getTaskCreatedPayload(item: IChatDialogueMessageSchema): TaskCreatedCar
 
 const BasicChatContent: React.FC<BasicChatContentProps> = ({ ctrl, workspaceId }) => {
   const scrollableRef = useRef<HTMLDivElement>(null);
-  const { history, replyLoading } = useContext(ChatContentContext);
+  const { history, replyLoading, dockWidgets } = useContext(ChatContentContext);
   const [jsonModalOpen, setJsonModalOpen] = useState(false);
   const [jsonValue, setJsonValue] = useState<string>('');
 
@@ -107,7 +108,12 @@ const BasicChatContent: React.FC<BasicChatContentProps> = ({ ctrl, workspaceId }
 
       <div className="flex-shrink-0 pt-2 pb-2 px-3">
         <div className="w-full">
-          <UnifiedChatInput ctrl={ctrl} showFloatingActions={hasMessages} />
+          {/* Composer Dock：tab 栏内嵌输入框卡片顶部，无缝一体 */}
+          <UnifiedChatInput
+            ctrl={ctrl}
+            showFloatingActions={hasMessages}
+            topSlot={<DockPanel widgets={dockWidgets || {}} embedded />}
+          />
         </div>
       </div>
     </div>

@@ -280,3 +280,40 @@ class WorkspaceConfigUpdateRequest(BaseModel):
 
     workspace_id: Optional[str] = None
     proposal_agent_id: Optional[str] = None
+
+
+class DebugPreviewRequest(BaseModel):
+    """确认页调试验证(dry-run)请求参数。
+
+    filters: [{ dim_id | dim, values: [label...], mode: include|exclude }]
+    group_by: [dim_id...]
+    time_range: { range: "start~end", column: "ts" (可选,缺省取实体 role=time 字段) }
+    仅 metric 使用上述参数;entity/dimension/relation 无需参数即试跑。
+    """
+
+    model_config = ConfigDict(title="EcpDebugPreviewRequest")
+
+    workspace_id: Optional[str] = None
+    filters: Optional[List[Dict[str, Any]]] = None
+    group_by: Optional[List[str]] = None
+    time_range: Optional[Dict[str, Any]] = None
+    limit: int = Field(default=20, ge=1, le=200)
+
+
+class DebugPreviewVO(BaseModel):
+    """调试验证结果。trust=preview(永不 verified);ok=false 时 error 说明原因。"""
+
+    model_config = ConfigDict(title="EcpDebugPreviewResult")
+
+    trust: str = "preview"  # preview | none
+    ok: bool = False
+    error: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list)
+    columns: List[str] = Field(default_factory=list)
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    row_count: int = 0
+    sql: Optional[str] = None
+    # 文档类(claim/terminology/policy)出处校验结果
+    anchor_verified: Optional[bool] = None
+    quote: Optional[str] = None
+    lineage: Optional[Dict[str, Any]] = None

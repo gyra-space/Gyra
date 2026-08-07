@@ -39,7 +39,8 @@ def make_default_acting_fn(
         # 2. 失败跟踪
         if failure_tracker.is_blocked(tool_name):
             return V2ToolResult.fail(
-                error=f"工具 {tool_name} 连续失败超过阈值，已阻止", tool_name=tool_name
+                error=failure_tracker.format_failure_message(tool_name, include_count=True),
+                tool_name=tool_name
             )
 
         # 3. 解析工具
@@ -72,7 +73,9 @@ def make_default_acting_fn(
         try:
             result: V2ToolResult = await tool.execute(tool_input, context=ctx)
         except Exception as e:
-            failure_tracker.record_failure(tool_name)
+            failure_tracker.record_failure(
+                tool_name, error=str(e), params=tool_input
+            )
             if hook_manager is not None:
                 await hook_manager.trigger(
                     "post_tool_use",
@@ -81,7 +84,9 @@ def make_default_acting_fn(
             return V2ToolResult.fail(error=f"执行异常: {e}", tool_name=tool_name)
 
         if not result.success:
-            failure_tracker.record_failure(tool_name)
+            failure_tracker.record_failure(
+                tool_name, error=str(result.error) if result.error else "execution failed", params=tool_input
+            )
         else:
             failure_tracker.reset(tool_name)
 

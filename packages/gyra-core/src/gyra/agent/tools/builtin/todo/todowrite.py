@@ -234,10 +234,10 @@ class TodowriteTool(ToolBase):
     async def _push_todolist_vis(
         self, context: Optional[Any], todos: List[Any]
     ) -> None:
-        """推送 TodoList 可视化到前端.
+        """将 TodoList 作为 dock widget 推入输入区 Dock（Composer Dock 协议）。
 
-        修复 vis_tag 断点：用 build_todolist_fence 生成正确的 d-todo-list 围栏，
-        再用 push_message 推送（BAIZE 仍用 push_message，V2 切换后改 EventStream）。
+        取代旧的 d-todo-list 围栏字符串：构造结构化 widget 后调
+        gpts_memory.push_dock_widget，前端凭 type 注册表渲染，无需字符串拦截。
         """
         try:
             agent = getattr(context, "agent", None) or context
@@ -255,20 +255,11 @@ class TodowriteTool(ToolBase):
             if not gpts_memory:
                 return
 
-            from gyra.agent.tools.builtin.todo.todo_reminder import (
-                build_todolist_fence,
-            )
+            from gyra.agent.tools.builtin.todo.todo_reminder import build_todo_widget
 
-            fence = build_todolist_fence(todos, conv_id)
-            if not fence:
-                return
-
-            await gpts_memory.push_message(
-                conv_id=conv_id,
-                stream_msg=fence,
-                incr_type="all",
-            )
-            logger.debug(f"Pushed todolist vis with {len(todos)} items")
+            widget = build_todo_widget(todos, conv_id)
+            await gpts_memory.push_dock_widget(conv_id=conv_id, widget=widget)
+            logger.debug(f"Pushed todolist dock widget with {len(todos)} items")
 
         except Exception as e:
-            logger.warning(f"Failed to push todolist vis: {e}")
+            logger.warning(f"Failed to push todolist dock widget: {e}")

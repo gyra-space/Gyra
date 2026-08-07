@@ -11,6 +11,7 @@
 """
 
 from typing import List, Optional, Dict, Any
+import threading
 
 from gyra.agent import AgentSystemMessage
 from gyra.agent.core.memory.gpts import (
@@ -161,15 +162,33 @@ class MetaGyrasPlansMemory(GptsPlansMemory):
 
 
 class MetaGyrasMessageMemory(GptsMessageMemory):
+    # append 是 delete+insert 两步（跨 session 非原子），且常经 execute_no_wait
+    # 并发触发（流式更新 + 最终更新同 message_id），按 message_id 加进程内锁
+    # 消除重复行（DB 无唯一约束，多进程部署仍有极小概率，单进程可根除）
+    _append_locks: Dict[str, threading.Lock] = {}
+    _append_locks_guard: threading.Lock = threading.Lock()
+
+    @classmethod
+    def _lock_for(cls, message_id: str) -> threading.Lock:
+        with cls._append_locks_guard:
+            # 上限保护：超限时整体清理（旧 message 的并发窗口早已过去）
+            if len(cls._append_locks) > 10000:
+                cls._append_locks.clear()
+            return cls._append_locks.setdefault(message_id, threading.Lock())
+
     def __init__(self):
         self.gpts_message = GptsMessagesDao()
 
     def append(self, message: GptsMessage):
-        self.gpts_message.delete_by_msg_id(message_id=message.message_id)
-        self.gpts_message.append(message.to_dict())
+        with self._lock_for(message.message_id):
+            self.gpts_message.delete_by_msg_id(message_id=message.message_id)
+            self.gpts_message.append(message.to_dict())
 
     def update(self, message: GptsMessage) -> None:
-        self.gpts_message.update_message(message)
+        # 与 append 共用同一把锁：update 的“查无则插”与 append 的“删后插”
+        # 并发时会产生重复行（update 检查时尚无记录 → 双方都 insert）
+        with self._lock_for(message.message_id):
+            self.gpts_message.update_message(message)
 
     def get_by_session_id(self, session_id: str) -> Optional[List[GptsMessage]]:
         return self.gpts_message.get_by_conv_session_id(session_id)

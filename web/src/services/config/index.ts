@@ -277,6 +277,23 @@ class ConfigService {
     return response.data.data;
   }
 
+  async getAgentLLMConfig(): Promise<AgentLLMConfig> {
+    const response = await axios.get(`${API_BASE}/config/agent-llm`);
+    return response.data.data;
+  }
+
+  async saveAgentLLM(agentLLM: AgentLLMConfig): Promise<{
+    success: boolean;
+    data: AgentLLMConfig;
+    saved_to_database: boolean;
+    models_registered: number;
+  }> {
+    const response = await axios.post(`${API_BASE}/config/agent-llm`, {
+      agent_llm: agentLLM,
+    });
+    return response.data;
+  }
+
   async updateModelConfig(config: Partial<ModelConfig>): Promise<ModelConfig> {
     const response = await axios.post(`${API_BASE}/config/model`, config);
     return response.data.data;

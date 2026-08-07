@@ -112,7 +112,7 @@ class TestAsyncSubagentE2E:
         # 跟踪两个 sub_conv_id
         sub_conv_ids = []
 
-        async def mock_start_app(user_input=None, sender=None, conv_uid=None, parent_depth=None):
+        async def mock_start_app(user_input=None, sender=None, conv_uid=None, parent_depth=None, extra_info=None):
             sub_conv_ids.append(conv_uid)
             return MagicMock(content=f"result from {conv_uid}")
 

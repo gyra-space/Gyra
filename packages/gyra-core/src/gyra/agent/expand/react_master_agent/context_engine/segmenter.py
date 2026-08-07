@@ -4,7 +4,7 @@
 （``{session}_{N}``），ask_user 追问回复也各自新建 conv_id。因此 conv_id 本身
 就是确定的轮次边界，**不做语义猜测**。
 
-当前轮 user 单元 = 锚点（逐字）；历史轮 user 单元参与分层（可被压入 cold）。
+所有 user 单元一视同仁参与分层（可被压入 cold）；段按 (rounds, created_at) 纯时序排序。
 """
 
 from typing import List
@@ -32,15 +32,8 @@ class Segmenter:
                 segments.append(seg)
             seg.units.append(unit)
 
-        # 按段首单元的 (rounds, created_at) 排序，保持轮次顺序
+        # 按段首单元的 (rounds, created_at) 纯时序排序
         segments.sort(key=lambda s: s.sort_key)
-
-        # 保证 current_conv 段排在最后（锚点轮永远在末尾）
-        current = timeline.current_conv_id
-        if current:
-            cur_segs = [s for s in segments if s.conv_id == current]
-            other = [s for s in segments if s.conv_id != current]
-            segments = other + cur_segs
 
         return segments
 

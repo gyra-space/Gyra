@@ -249,6 +249,35 @@ class TestParseAction:
         assert action is not None
         assert action.action_input.mode == "sync"
 
+    def test_parse_action_captures_media_into_extra_info(self):
+        """父 Agent 传入的 media 结构化参数写入 action_input.extra_info['media']。"""
+        media = {
+            "kind": "video",
+            "resolution": "1080p",
+            "duration": 8,
+            "aspect_ratio": "16:9",
+        }
+        tc = self._make_tool_call(
+            "agent_start",
+            agent_id="media_app",
+            input="生成一段海浪视频",
+            media=media,
+        )
+        action = SubAgent.parse_action(tc)
+        assert action is not None
+        assert action.action_input.extra_info is not None
+        assert action.action_input.extra_info["media"] == media
+
+    def test_parse_action_without_media_keeps_extra_info_none_or_background(self):
+        """未传 media 时，extra_info 不包含 media 键（保持原有 background 语义）。"""
+        tc = self._make_tool_call(
+            "agent_start", agent_id="sub_a", input="do X", background="bg info"
+        )
+        action = SubAgent.parse_action(tc)
+        assert action is not None
+        assert action.action_input.extra_info == {"background": "bg info"}
+        assert "media" not in action.action_input.extra_info
+
 
 # ---------------- SubAgent.run async 分支 ----------------
 

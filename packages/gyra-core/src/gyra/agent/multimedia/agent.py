@@ -213,6 +213,15 @@ class MultimediaAgent(ConversableAgent):
         elif messages:
             task = (messages[-1].content or "").strip()
 
+        # 父 Agent 通过 SubAgent 的 media 参数透传的多媒体生成参数（kind/model/size/
+        # resolution/duration/aspect_ratio 等），未传字段回退到 Agent 配置默认值
+        media_params: Dict[str, Any] = {}
+        if received_message is not None and getattr(received_message, "context", None):
+            ctx = received_message.context or {}
+            _media = ctx.get("media") or {}
+            if isinstance(_media, dict):
+                media_params = dict(_media)
+
         # 主 Agent 运行时读取 app 的多媒体配置（若已绑定）
         if getattr(self, "ext_config", None) is not None:
             self._config = self._resolve_config()
@@ -221,7 +230,10 @@ class MultimediaAgent(ConversableAgent):
         # 确保 AFS 已初始化，使生成文件作为交付物落盘
         afs = await self._ensure_agent_file_system()
 
-        request = self._build_request(task, {"wait": True, "afs": afs})
+        params = dict(media_params)
+        params["wait"] = True
+        params["afs"] = afs
+        request = self._build_request(task, params)
         result = await self._executor.run(request)
 
         if result is None:

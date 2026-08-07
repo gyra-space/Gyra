@@ -260,3 +260,94 @@ async def test_high_risk_remote_no_prompt(monkeypatch):
     assert result.success
     client.shell.exec_command.assert_awaited_once()
     assert called["approval"] is False
+
+
+# --- heredoc bodies are not path-validated ---
+
+
+def test_heredoc_with_slash_literal_allowed():
+    """Regression: a Python heredoc with ``if '/' in repo:`` was rejected
+    because ``'/'`` tokenises to the bare path ``/`` (root). Heredoc bodies are
+    program stdin, not path arguments, so they must not be path-validated.
+    """
+    command = (
+        "python3 << 'EOF'\n"
+        "import re\n"
+        "if '/' in repo and not repo.startswith('orgs/'):\n"
+        "    pass\n"
+        "EOF"
+    )
+    validate_shell_command(command, "/home/ubuntu")  # no raise
+
+
+def test_heredoc_body_not_path_validated():
+    """A path-like token inside a heredoc body is stdin/code, not an escape.
+
+    Consistent with ``python3 -c`` (code execution is permitted in the local
+    sandbox; OS-level isolation is the real boundary, per LocalShellClient).
+    """
+    command = "python3 << 'EOF'\nopen('/etc/passwd')\nEOF"
+    validate_shell_command(command, "/home/ubuntu")  # no raise
+
+
+def test_heredoc_does_not_mask_following_escape():
+    """Commands after a closed heredoc are still path-validated."""
+    command = "python3 << 'EOF'\nprint(1)\nEOF\ncat /etc/passwd"
+    with pytest.raises(PermissionError):
+        validate_shell_command(command, "/home/ubuntu")
+
+
+def test_heredoc_unquoted_and_dash_delimiters():
+    """<<- (tab-stripped) and unquoted delimiters are recognised."""
+    validate_shell_command("cat << EOF\nbody\nEOF", "/home/ubuntu")
+    validate_shell_command("cat <<- EOF\n\tbody\nEOF", "/home/ubuntu")
+
+
+def test_here_string_not_treated_as_heredoc():
+    """``<<<`` here-string must not be misread as a heredoc start."""
+    validate_shell_command("cat <<< x", "/home/ubuntu")
+
+
+def test_bitshift_in_quoted_c_not_misread_as_heredoc():
+    """``<<`` inside a quoted ``python3 -c`` arg is not a heredoc start; a
+    following escape on the next line must still be caught (quote-awareness)."""
+    command = 'python3 -c "x = a << b"\ncat /etc/passwd'
+    with pytest.raises(PermissionError):
+        validate_shell_command(command, "/home/ubuntu")
+
+
+# --- command-line regex patterns are not misread as paths ---
+
+
+def test_command_line_regex_with_leading_slash_allowed():
+    """Regression: ``grep '/[^/"]*/[^/"]*"'`` and ``awk '/^[0-9]+/'`` were
+    blocked because the pattern starts with '/' and was misread as an absolute
+    path. Tokens with regex metacharacters are now treated as patterns and
+    skipped by the path fence.
+    """
+    validate_shell_command(r"""grep '/[^/"]*/[^/"]*"' f.txt""", "/home/ubuntu")
+    validate_shell_command(r"""awk '/^[0-9]+/' f.txt""", "/home/ubuntu")
+
+
+def test_bare_slash_token_still_blocked():
+    """A bare '/' is still blocked -- it is the same signal that catches
+    ``rm -rf /`` and ``cat f; rm -rf /`` injections (which is_high_risk_command
+    misses because the binary is ``cat``), so it cannot be skipped without
+    opening an injection hole. Pass a real argument instead of '/'.
+    """
+    with pytest.raises(PermissionError):
+        validate_shell_command("echo '/'", "/home/ubuntu")
+
+
+def test_glob_token_skipped_but_specific_path_blocked():
+    """Trade-off: a metachar token like ``/etc/*`` is skipped (treated as a
+    pattern), so glob-style escapes are no longer caught by the path fence.
+    Specific existing paths and ``rm -rf /`` are still blocked. The fence is
+    defense-in-depth (``python3 -c`` bypasses it); OS-level isolation is the
+    real boundary.
+    """
+    validate_shell_command("cat /etc/*", "/home/ubuntu")  # no raise (pattern)
+    with pytest.raises(PermissionError):
+        validate_shell_command("cat /etc/passwd", "/home/ubuntu")
+    with pytest.raises(PermissionError):
+        validate_shell_command("cat file; rm -rf /", "/home/ubuntu")

@@ -74,17 +74,12 @@ async def build_todo_reminder(memory: Any, conv_id: str) -> Optional[str]:
     return "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>"
 
 
-def build_todolist_fence(todos: List[Any], conv_id: str) -> Optional[str]:
-    """构建 d-todo-list VIS 围栏字符串。
-
-    修复 vis_tag 断点：用 TodoList Vis 实例（vis_tag=d-todo-list）生成正确围栏，
-    而非依赖 render_protocol.sync_display(vis_tag=...)（Vis.sync_display 忽略 vis_tag
-    kwarg，取 self.vis_tag()，且原调用返回值被丢弃）。
+def _build_todo_payload(todos: List[Any], conv_id: str) -> dict:
+    """把 todo 列表构造成 dock 风格的 payload（前端 VisTodoList 直接消费）。
 
     同时把 file_base.TodoStatus 映射到 gyra_todo_list.TodoStatus
     （in_progress->working, cancelled->failed）。
     """
-    from gyra.vis import Vis
     from gyra.agent.core.memory.gpts import TodoStatus
 
     _STATUS_MAP = {
@@ -106,7 +101,7 @@ def build_todolist_fence(todos: List[Any], conv_id: str) -> Optional[str]:
                 "index": i,
             }
         )
-    vis_content = {
+    return {
         "uid": f"todo_list_{conv_id}",
         "type": "all",
         "mission": "",
@@ -114,6 +109,32 @@ def build_todolist_fence(todos: List[Any], conv_id: str) -> Optional[str]:
         "current_index": current_index,
         "total_count": len(todos),
     }
+
+
+def build_todo_widget(todos: List[Any], conv_id: str) -> dict:
+    """构建输入区 Dock 的 todo_list widget（Composer Dock 协议）。
+
+    取代旧的 d-todo-list 围栏字符串：生产者直接调 gpts_memory.push_dock_widget
+    投递本 widget，前端凭 type 注册表渲染，不再需要字符串拦截。
+    """
+    return {
+        "id": f"todo_list_{conv_id}",
+        "type": "todo_list",
+        "kind": "replace",
+        "payload": _build_todo_payload(todos, conv_id),
+    }
+
+
+def build_todolist_fence(todos: List[Any], conv_id: str) -> Optional[str]:
+    """构建 d-todo-list VIS 围栏字符串（向后兼容保留，新代码请走 build_todo_widget）。
+
+    修复 vis_tag 断点：用 TodoList Vis 实例（vis_tag=d-todo-list）生成正确围栏，
+    而非依赖 render_protocol.sync_display(vis_tag=...)（Vis.sync_display 忽略 vis_tag
+    kwarg，取 self.vis_tag()，且原调用返回值被丢弃）。
+    """
+    from gyra.vis import Vis
+
+    vis_content = _build_todo_payload(todos, conv_id)
     vis = Vis.of("todo_list")
     if vis is None:
         return None

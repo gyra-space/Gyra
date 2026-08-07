@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional, Tuple, Type, cast
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Type, cast
 from urllib.parse import quote
 from urllib.parse import quote_plus as urlquote
 
@@ -325,14 +325,14 @@ class PostgreSQLConnector(RDBMSConnector):
                 (field[0], field[1], field[2], field[3], field[4]) for field in fields
             ]
 
-    def get_indexes(self, table_name):
-        """Get table indexes about specified table."""
-        with self.session_scope() as session:
-            cursor = session.execute(
-                text(
-                    f"SELECT indexname, indexdef FROM pg_indexes WHERE "
-                    f"tablename = '{table_name}'"
-                )
-            )
-            indexes = cursor.fetchall()
-            return [(index[0], index[1]) for index in indexes]
+    def get_indexes(self, table_name: str) -> List[Dict]:
+        """Get table indexes about specified table.
+
+        Delegates to the SQLAlchemy inspector so the result matches the
+        base connector contract (list of dicts with ``name``,
+        ``column_names`` and ``unique``). Returning raw tuples broke
+        callers expecting dicts, e.g. schema learning failed with
+        ``'tuple' object has no attribute 'get'``.
+        """
+        schema = self._schema or "public"
+        return self._inspector.get_indexes(table_name, schema=schema)

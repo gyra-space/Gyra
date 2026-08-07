@@ -10,6 +10,14 @@ export const VisSubagentBoardWrap = styled.div`
   overflow: hidden;
   margin: 4px 0;
 
+  /* dock tab 容器内嵌：去掉卡片外壳装饰，由 tab 栏承担 header 职责 */
+  &.embedded {
+    border: none;
+    border-radius: 0;
+    margin: 0;
+    background-color: transparent;
+  }
+
   .board-header {
     display: flex;
     align-items: center;

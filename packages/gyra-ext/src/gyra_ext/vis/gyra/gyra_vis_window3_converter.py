@@ -2002,6 +2002,41 @@ class GyraIncrVisWindow3Converter(GyraVisIncrConverter):
 
         return "\n".join(task_items_vis) + "\n" + foot_vis
 
+    async def _planning_vis_replay(
+        self,
+        messages: List["GptsMessage"],
+        senders_map: Optional[Dict[str, "ConversableAgent"]] = None,
+    ) -> str:
+        """从消息流回放左面板执行过程（重算兜底）。
+
+        正常终态由 _planning_vis_all 依赖内存任务树（task_manager）渲染；
+        服务中断/历史重算时任务树已丢失，但消息的 thinking/action_report
+        已持久化到 gpts_messages。逐条复用 _gen_plan_items 生成与流式一致
+        的过程记录（drsk-content / d-agent-plan），扁平拼接（与实时路径中
+        无父节点的子节点直接平铺的既有行为一致）。
+        """
+        vis_parts: List[str] = []
+        output_message: Optional["GptsMessage"] = None
+        for msg in messages:
+            if msg.role == HUMAN_ROLE:
+                continue
+            if msg.receiver == HUMAN_ROLE:
+                output_message = msg
+            item_vis = await self._gen_plan_items(
+                gpt_msg=msg, senders_map=senders_map
+            )
+            if item_vis:
+                vis_parts.append(item_vis)
+
+        # 最终结论：正常路径由 output_message_id 定位，重算时取最后一条
+        # 回复用户的消息
+        if output_message:
+            conclusion_vis = await self._render_final_conclusion(output_message)
+            if conclusion_vis:
+                vis_parts.append(conclusion_vis)
+
+        return "\n".join(vis_parts)
+
     async def _running_vis_all(
         self,
         messages: List["GptsMessage"],
@@ -2239,6 +2274,12 @@ class GyraIncrVisWindow3Converter(GyraVisIncrConverter):
             output_message_id=output_message_id,
             senders_map=senders_map,
         )
+
+        # 重算路径兜底（query_chat 历史轮询 / 中断会话恢复）：任务树只存在于
+        # 内存、随进程消失，_planning_vis_all 拿不到 input 消息会返回空，
+        # 导致历史只剩交付卡片。此时从已持久化的消息流直接回放执行过程。
+        if not all_plans_view and messages:
+            all_plans_view = await self._planning_vis_replay(messages, senders_map)
 
         all_running_view = await self._running_vis_all(
             messages=messages,

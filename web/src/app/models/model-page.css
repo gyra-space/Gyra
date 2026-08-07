@@ -679,3 +679,26 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* === Tabs（模型配置 / 服务状态）=== */
+.model-tabs {
+  margin-top: 8px;
+}
+
+.model-tabs .ant-tabs-nav {
+  margin-bottom: 20px;
+}
+
+.model-config-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 0;
+}
+
+.model-config-panel {
+  background: var(--model-surface);
+  border: 1px solid var(--model-border-subtle);
+  border-radius: var(--model-radius);
+  padding: 24px;
+}

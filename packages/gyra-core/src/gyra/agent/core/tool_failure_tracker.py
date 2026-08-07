@@ -26,6 +26,7 @@ class FailureRecord:
     error: str
     timestamp: float  # time.monotonic()，用于 cooldown 计算
     wall_time: float = 0.0  # time.time()，用于日志展示
+    params: Optional[Dict[str, Any]] = None  # 记录失败时的参数
 
 
 @dataclass
@@ -52,7 +53,9 @@ class ToolFailureTracker:
     )
     _disabled_until: Dict[str, float] = field(default_factory=dict)
 
-    def record_failure(self, tool_name: str, error: str) -> None:
+    def record_failure(
+        self, tool_name: str, error: str, params: Optional[Dict[str, Any]] = None
+    ) -> None:
         """记录一次失败。若达到阈值，设置 cooldown 截止时间。"""
         if not tool_name:
             return
@@ -64,12 +67,26 @@ class ToolFailureTracker:
                 error=error,
                 timestamp=now_mono,
                 wall_time=now_wall,
+                params=params,
             )
         )
         failure_count = len(self._failures[tool_name])
+
+        # 构建日志信息
+        params_str = ""
+        if params:
+            # 只显示关键参数，避免日志过长
+            key_params = {
+                k: str(v)[:50] + "..." if len(str(v)) > 50 else v
+                for k, v in params.items()
+                if k in ["url", "query", "path", "id", "name", "sql", "code"]
+            }
+            if key_params:
+                params_str = f" params={key_params}"
+
         logger.warning(
             f"[failure-tracker] conv={self.conv_id} tool={tool_name} "
-            f"failed ({failure_count}/{self.max_consecutive_failures}): {error}"
+            f"failed ({failure_count}/{self.max_consecutive_failures}): {error}{params_str}"
         )
         if failure_count >= self.max_consecutive_failures:
             self._disabled_until[tool_name] = now_mono + self.cooldown_seconds
@@ -125,6 +142,38 @@ class ToolFailureTracker:
         """返回工具的最近一次失败记录（无则 None）。"""
         records = self._failures.get(tool_name, [])
         return records[-1] if records else None
+
+    def format_failure_message(self, tool_name: str, include_count: bool = True) -> str:
+        """格式化失败提示信息，简洁展示工具、参数和错误。
+
+        Args:
+            tool_name: 工具名称
+            include_count: 是否包含失败次数（终止时显示，提醒时可省略）
+        """
+        last_failure = self.get_last_failure(tool_name)
+        if not last_failure:
+            return f"工具 [{tool_name}] 执行失败"
+
+        parts = [f"工具 [{tool_name}]"]
+        if include_count:
+            parts[0] += f" 连续失败 {self.get_failure_count(tool_name)} 次"
+
+        # 添加参数信息
+        if last_failure.params:
+            params_display = []
+            for k, v in last_failure.params.items():
+                # 截断过长的值
+                value_str = str(v)
+                if len(value_str) > 100:
+                    value_str = value_str[:100] + "..."
+                params_display.append(f"{k}={value_str}")
+            if params_display:
+                parts.append(f"参数: {', '.join(params_display)}")
+
+        # 添加错误信息
+        parts.append(f"错误: {last_failure.error}")
+
+        return "\n".join(parts)
 
     def reset(self, tool_name: Optional[str] = None) -> None:
         """手动重置。tool_name=None 重置所有。"""

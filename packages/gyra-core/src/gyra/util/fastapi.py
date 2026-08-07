@@ -143,6 +143,10 @@ async def lifespan(app: FastAPI):
     import sys
     print(f"[lifespan] Called, handlers count: {len(_GLOBAL_STARTUP_HANDLERS)}", file=sys.stderr, flush=True)
     global _HAS_STARTUP, _HAS_SHUTDOWN
+    # 预热 tiktoken tokenizer（后台线程，不阻塞启动；首次可能联网加载 BPE 文件）
+    from gyra.agent.core.usage_metric import warmup_tokenizer
+    import threading
+    threading.Thread(target=warmup_tokenizer, name="tokenizer-warmup", daemon=True).start()
     for handler in _GLOBAL_STARTUP_HANDLERS:
         print(f"[lifespan] Calling handler: {handler}", file=sys.stderr, flush=True)
         await handler()

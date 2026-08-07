@@ -518,7 +518,7 @@ class AsyncTaskManager:
                             state.spec.delegate(),
                             timeout=state.spec.timeout,
                         )
-                    else:
+                    elif self._subagent_manager is not None:
                         result = await asyncio.wait_for(
                             self._subagent_manager.delegate(
                                 subagent_name=state.spec.agent_name,
@@ -528,6 +528,12 @@ class AsyncTaskManager:
                                 sync=True,
                             ),
                             timeout=state.spec.timeout,
+                        )
+                    else:
+                        raise RuntimeError(
+                            f"subagent 任务缺少委派协程（spec.delegate 为空且 "
+                            f"subagent_manager 未配置），无法委派给 "
+                            f"'{state.spec.agent_name}'"
                         )
                     if getattr(result, "success", False):
                         state.status = AsyncTaskStatus.COMPLETED

@@ -21,15 +21,16 @@ def test_segment_by_conv_id():
     assert len(segs[1].units) == 1
 
 
-def test_current_conv_segment_last():
-    # c2 较早出现但 c1 是 current → c1 段应排最后
+def test_segments_sorted_chronologically_no_current_forcing():
+    # current 是较老的 c1，但时序最新的 c2 应排末尾（不再强制 current 到末尾）
     msgs = [
-        FakeMsg("c2", "human", "m1", content="q2", rounds=1, created_at=1.0),
-        FakeMsg("c1", "human", "m2", content="q1", rounds=2, created_at=2.0),
+        FakeMsg("c1", "human", "m1", content="q1", rounds=1, created_at=1.0),
+        FakeMsg("c2", "human", "m2", content="q2", rounds=2, created_at=2.0),
     ]
     tl = TimelineAssembler().assemble(msgs, {"c1": [], "c2": []}, "c1", "s")
     segs = Segmenter().segment(tl)
-    assert segs[-1].conv_id == "c1"
+    assert [s.conv_id for s in segs] == ["c1", "c2"]
+    assert segs[-1].conv_id == "c2"  # 时序最新者末尾，而非 current(c1)
 
 
 def test_flatten_roundtrip():

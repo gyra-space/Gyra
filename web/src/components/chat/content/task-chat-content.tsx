@@ -8,6 +8,7 @@ import { useDetailPanel } from "./chat-detail-content";
 import ChatDetailContent from "./chat-detail-content";
 import ChatHeader from "../header/chat-header";
 import UnifiedChatInput from "../input/unified-chat-input";
+import DockPanel from "@/components/chat/dock/dock-panel";
 import { Button, Tooltip } from 'antd';
 import { RightOutlined } from '@ant-design/icons';
 import classNames from 'classnames';
@@ -26,7 +27,7 @@ const isMessageTooLarge = (msg: IChatDialogueMessageSchema): boolean => {
 
 const TaskChatContent: React.FC<TaskChatContentProps> = ({ ctrl }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { history, replyLoading } = useContext(ChatContentContext);
+  const { history, replyLoading, dockWidgets } = useContext(ChatContentContext);
 
   const { runningWindowData } = useDetailPanel(history);
   const [isRunningWindowVisible, setIsRunningWindowVisible] = useState(false);
@@ -135,7 +136,12 @@ const TaskChatContent: React.FC<TaskChatContentProps> = ({ ctrl }) => {
 
         <div className="flex-shrink-0 pb-3 pt-1 px-3">
           <div className="w-full">
-            <UnifiedChatInput ctrl={ctrl} showFloatingActions={hasMessages} />
+            {/* Composer Dock：tab 栏内嵌输入框卡片顶部，无缝一体 */}
+            <UnifiedChatInput
+              ctrl={ctrl}
+              showFloatingActions={hasMessages}
+              topSlot={<DockPanel widgets={dockWidgets || {}} embedded />}
+            />
           </div>
         </div>
       </div>

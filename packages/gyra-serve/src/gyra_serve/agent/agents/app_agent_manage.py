@@ -72,7 +72,7 @@ class AppManager(BaseComponent, ABC):
     async def get_app(self, app_code) -> GptsApp:
         """get app"""
         app_service = AppService.get_instance(CFG.SYSTEM_APP)
-        return await app_service.sync_app_detail(app_code)
+        return await app_service.app_detail(app_code)
 
     async def create_app_agent(
             self,
@@ -94,7 +94,17 @@ class AppManager(BaseComponent, ABC):
         multimedia_ext = getattr(gpts_app, "ext_config", None)
         if not isinstance(multimedia_ext, dict):
             multimedia_ext = None
-        for record in gpts_app.details:
+        details = gpts_app.details
+        if not details and TeamMode(gpts_app.team_mode) == TeamMode.SINGLE_AGENT:
+            # v2 单 Agent 应用没有 app_detail 明细行，Agent 由应用自身配置
+            # （app.agent / team_context.agent_name）描述。作为子 Agent 被调用时
+            # （AppResource._start_app 路径）details 为空会导致 employees 为空、
+            # create_agent_of_gpts_app 取 employees[0] 抛 IndexError，
+            # 此处按应用自身配置合成一条明细，与直接对话路径（agent_chat）对齐。
+            record = self._build_self_detail(gpts_app)
+            if record is not None:
+                details = [record]
+        for record in details:
             agent = await create_agent_from_gpt_detail(
                 record, llm_provider, context, agent_memory
             )
@@ -116,6 +126,44 @@ class AppManager(BaseComponent, ABC):
         )
         # app_agent.name_prefix = gpts_app.app_name
         return app_agent
+
+    @staticmethod
+    def _build_self_detail(gpts_app: GptsApp) -> Optional[GptsAppDetail]:
+        """为无明细行的单 Agent 应用，按应用自身配置合成一条 GptsAppDetail。
+
+        Agent 名取 app.agent，缺省回退 team_context.agent_name（历史数据经
+        resolve_agent_name 解析别名）；LLM 策略取 app.llm_config，缺省 Default。
+        应用未声明 Agent 时返回 None。
+        """
+        from gyra.agent.core.agent_alias import resolve_agent_name
+
+        agent_name = getattr(gpts_app, "agent", None)
+        if not agent_name:
+            tc = gpts_app.team_context
+            if isinstance(tc, dict):
+                agent_name = tc.get("agent_name")
+            elif tc is not None:
+                agent_name = getattr(tc, "agent_name", None)
+        if not agent_name:
+            logger.warning(
+                f"[app-agent] single_agent app {gpts_app.app_code} 未声明 Agent，无法构建"
+            )
+            return None
+        app_llm = getattr(gpts_app, "llm_config", None)
+        return GptsAppDetail(
+            app_code=gpts_app.app_code,
+            app_name=gpts_app.app_name,
+            type="agent",
+            agent_name=resolve_agent_name(agent_name),
+            agent_role=gpts_app.app_code,
+            agent_icon=gpts_app.icon,
+            agent_describe=gpts_app.app_describe,
+            resources=gpts_app.all_resources or gpts_app.resources,
+            llm_strategy=(
+                getattr(app_llm, "llm_strategy", None) or LLMStrategyType.Default.value
+            ),
+            llm_strategy_value=getattr(app_llm, "llm_strategy_value", None),
+        )
 
     async def create_agent_by_app_code(
             self,
@@ -224,15 +272,25 @@ async def create_agent_of_gpts_app(
         llm_strategy=LLMStrategyType.Default,
     )
 
-    team_context = gpts_app.team_context
-
     team_mode = TeamMode(gpts_app.team_mode)
     if team_mode == TeamMode.SINGLE_AGENT:
+        if not employees:
+            raise ValueError(
+                f"APP {gpts_app.app_code}({gpts_app.app_name}) 没有可用的 Agent！"
+            )
         agent_of_app: ConversableAgent = employees[0]
     else:
         if TeamMode.AUTO_PLAN == team_mode:
             agent_manager = get_agent_manager()
-            auto_team_ctx = AutoTeamContext(**json.loads(gpts_app.team_context))
+            # team_context 可能是 dict（sync_app_detail 序列化后）、
+            # AutoTeamContext 对象或 JSON 字符串，统一解析后访问 teamleader
+            tc = gpts_app.team_context
+            if isinstance(tc, dict):
+                auto_team_ctx = AutoTeamContext(**tc)
+            elif isinstance(tc, AutoTeamContext):
+                auto_team_ctx = tc
+            else:
+                auto_team_ctx = AutoTeamContext(**json.loads(tc))
             manager_cls: Type[ManagerAgent] = agent_manager.get_team_leader_by_name(
                 auto_team_ctx.teamleader
             )

@@ -1,8 +1,11 @@
 .ws-scene-shell {
   --ws-rail-w: 260px;
-  --ws-agent-w: 380px;
+  /* agent 宽度随视口动态:clamp(最小, 视口比例, 最大),保证大屏时 agent 更宽 */
+  --ws-agent-w: clamp(360px, 24vw, 480px);
+  /* space(大厅内容区)最小宽度,避免被 agent/rail 挤压 */
+  --ws-space-min: clamp(480px, 42vw, 820px);
   display: grid;
-  grid-template-columns: var(--ws-rail-w) minmax(0, 1fr) var(--ws-agent-w);
+  grid-template-columns: var(--ws-rail-w) minmax(var(--ws-space-min), 1fr) var(--ws-agent-w);
   gap: 8px;
   flex: 1 1 auto;
   min-height: 0;
@@ -35,11 +38,26 @@
   min-width: 0;
 }
 
-/* 宽屏加大两侧栏 */
+/* 宽屏加大两侧栏,agent 随视口继续放大但设上限,同时保证 space 有足够宽度 */
 @media (min-width: 1600px) {
   .ws-scene-shell {
     --ws-rail-w: 300px;
-    --ws-agent-w: 440px;
+    --ws-agent-w: clamp(440px, 26vw, 620px);
+    --ws-space-min: clamp(520px, 44vw, 960px);
+  }
+}
+
+/* 笔记本等小屏(<1536px):三栏整体密度缩放 0.92,字体/卡片/间距等比缩小换取内容空间,
+   与 /chat manus 布局(.manus-chat-root)的小屏 zoom 策略一致;
+   zoom 只缩放 px 长度,grid/% 布局不受影响 */
+@media (max-width: 1535px) {
+  .ws-scene-shell {
+    zoom: 0.92;
+  }
+  /* 内嵌 ChatSession(子 agent 对话)的 manus 根节点自带小屏 zoom:0.9,
+     场景壳已整体缩放,此处复原避免嵌套双重缩放(0,2,0 优先级高于 .manus-chat-root 的 0,1,0) */
+  .ws-scene-shell .manus-chat-root {
+    zoom: 1;
   }
 }
 

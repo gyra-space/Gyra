@@ -11,7 +11,7 @@
       作用：cold 集合只在攒够整批时变化 → 重整频率=每批一次。
 
 守恒律：任一单元要么 hot/warm 输出、要么进 cold handoff、要么是被剪枝的冗余副本。
-锚点永不淘汰：当前轮 user 输入逐字保留（强制 HOT）。
+user 单元一视同仁：参与统一分层与 cold 重整（语义保留），不再特殊钉死；仅 preserve_tools 强制不沉 cold。
 """
 
 import logging
@@ -99,7 +99,7 @@ class BudgetLayerer:
         self.config = config or LayerBudgetConfig()
 
     def layer(
-        self, segments: List[Segment], context_window: int, current_conv_id: str = ""
+        self, segments: List[Segment], context_window: int
     ) -> LayerPlan:
         cfg = self.config
         budgets = cfg.budgets(context_window)
@@ -112,14 +112,14 @@ class BudgetLayerer:
         cum = 0
         for u in reversed(flat):
             cum += max(1, u.tokens)
-            forced = self._is_preserved(u) or self._is_anchor(u, current_conv_id)
+            forced = self._is_preserved(u)
             if cum <= budgets["hot"]:
                 hot.insert(0, u)
             elif cum <= budgets["hot"] + budgets["warm"]:
                 warm.insert(0, u)
             else:
                 if forced:
-                    # 锚点 / preserve_tools 永不沉 cold，强制提到 warm
+                    # preserve_tools 永不沉 cold，强制提到 warm
                     warm.insert(0, u)
                 else:
                     cold.insert(0, u)
@@ -301,13 +301,6 @@ class BudgetLayerer:
     def _effective_tokens(self, u: TimelineUnit) -> int:
         """渲染后的有效 token（剪枝后的 warm 单元更小）。粗略用原 tokens。"""
         return u.tokens
-
-    def _is_anchor(self, u: TimelineUnit, current_conv_id: str) -> bool:
-        return (
-            u.kind == UnitKind.USER
-            and current_conv_id
-            and u.conv_id == current_conv_id
-        )
 
     def _is_preserved(self, u: TimelineUnit) -> bool:
         patterns = self.config.preserve_tools_patterns

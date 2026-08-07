@@ -1,0 +1,76 @@
+"""AgentLLM（模型/LLM）配置的数据库持久化。
+
+模型/LLM 配置以数据库为准（分布式部署多节点共享同一份配置），同时保留本地
+gyra.json 作为备份。读取时优先使用数据库中的配置，数据库无记录时回退到文件。
+
+存储格式为前端使用的 agent_llm 结构（providers/models），与
+``gyra_core.config.schema.AgentLLMConfig`` 保持一致。
+"""
+
+import logging
+from typing import Any, Dict, Optional
+
+from gyra_core.config.schema import AgentLLMConfig
+
+logger = logging.getLogger(__name__)
+
+_AGENT_LLM_CONFIG_KEY = "agent_llm"
+_AGENT_LLM_CONFIG_TYPE = "agent_llm"
+
+
+def _dao():
+    from gyra_app.feature_plugins.system_config_dao import SystemConfigDao
+
+    return SystemConfigDao()
+
+
+def load_agent_llm_dict() -> Optional[Dict[str, Any]]:
+    """从数据库读取 agent_llm 配置（前端格式 providers/models），无记录返回 None。"""
+    try:
+        data = _dao().get_config(_AGENT_LLM_CONFIG_KEY, _AGENT_LLM_CONFIG_TYPE)
+        if data and isinstance(data, dict):
+            return data
+    except Exception as e:  # pragma: no cover - best-effort DB read
+        logger.warning(f"Failed to load agent_llm from database: {e}")
+    return None
+
+
+def save_agent_llm_dict(
+    agent_llm: Dict[str, Any], description: Optional[str] = None
+) -> bool:
+    """将 agent_llm 配置写入数据库（upsert，数据库为准）。"""
+    try:
+        _dao().set_config(
+            _AGENT_LLM_CONFIG_KEY,
+            agent_llm,
+            _AGENT_LLM_CONFIG_TYPE,
+            description=description or "Agent LLM 模型/Provider 配置（数据库为准）",
+        )
+        return True
+    except Exception as e:
+        logger.exception(f"Failed to save agent_llm to database: {e}")
+        return False
+
+
+def apply_agent_llm_dict(config) -> bool:
+    """若数据库存在 agent_llm 配置，则覆盖 ``config.agent_llm``（数据库为准）。
+
+    Args:
+        config: AppConfig 实例（会被原地修改）
+
+    Returns:
+        是否成功从数据库覆盖。数据库无记录或解析失败时返回 False。
+    """
+    data = load_agent_llm_dict()
+    if not data:
+        return False
+    try:
+        config.agent_llm = AgentLLMConfig(**data)
+        logger.info(
+            "agent_llm overlaid from database: %d providers",
+            len(config.agent_llm.providers),
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to apply agent_llm from database: {e}")
+        return False

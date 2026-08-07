@@ -9,7 +9,7 @@ from concurrent.futures import Executor
 from typing import List, Optional, cast
 
 import pandas as pd
-from fastapi import APIRouter, Body, Depends, File, Query, UploadFile, BackgroundTasks
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, BackgroundTasks
 from fastapi.responses import StreamingResponse
 
 from gyra._private.config import Config
@@ -375,7 +375,7 @@ async def chat_query(
         if result is None:
             return Result.failed(code="E0103", msg=f"会话 {conv_id} 不存在")
 
-        vis_final, user_answer, current_vis_render, is_final, state = result
+        vis_final, user_answer, current_vis_render, is_final, state, dock = result
         return Result.succ(
             {
                 "conv_id": conv_id,
@@ -384,11 +384,38 @@ async def chat_query(
                 "vis_final": vis_final,
                 "user_answer": user_answer,
                 "vis_render": current_vis_render,
+                "dock": dock,
             }
         )
     except Exception as e:
         logger.exception("查询会话异常!")
         return Result.failed(code="E0104", msg=f"查询会话失败: {str(e)}")
+
+
+@router.get("/unified/vis/step_detail")
+async def vis_step_detail(
+    conv_id: str,
+    step_id: str,
+    user_token: UserRequest = Depends(get_user_from_headers),
+):
+    """按 step_id 查询单个执行步骤详情。
+
+    vis_manus 布局左侧步骤点击时按需拉取(lazy_loading 模式),返回该步骤的
+    active_step / outputs,前端 buildRunningWindowFromStepDetail 据此切换右侧面板。
+    直接返回 step_data(顶层 active_step / outputs),与前端 raw fetch 约定一致。
+    """
+    logger.info(f"vis_step_detail: conv_id={conv_id}, step_id={step_id}")
+    try:
+        result = await multi_agents.query_step_detail(conv_id=conv_id, step_uid=step_id)
+        step_data = result.get("step_data") if isinstance(result, dict) else None
+        if not step_data:
+            raise HTTPException(status_code=404, detail=f"步骤 {step_id} 详情不存在")
+        return step_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("查询步骤详情异常!")
+        raise HTTPException(status_code=500, detail=f"查询步骤详情失败: {str(e)}")
 
 
 def _assemble_scene_resources(ext_info, conv_uid: str):

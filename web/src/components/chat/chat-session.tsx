@@ -17,9 +17,8 @@ import { ChatContext, ChatContentContext, SelectedSkill, ContextMetricsProvider 
 import HomeChat from '@/components/chat/content/home-chat';
 import { useTranslation } from 'react-i18next';
 import { clearAllEventListeners } from '@/utils/event-emitter';
-import { parseFirstJson } from '@/utils/json';
-import type { ITodoListData } from '@/components/chat/chat-content-components/VisComponents/VisTodoList';
-import type { ISubagentBoardData } from '@/components/chat/chat-content-components/VisComponents/VisSubagentBoard';
+import { applyDockFrame } from '@/components/chat/dock/apply-dock-frame';
+import type { DockFrame, DockWidget } from '@/components/chat/dock/dock-types';
 
 const { Content } = Layout;
 
@@ -93,8 +92,8 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
   const [selectedSkills, setSelectedSkills] = useState<SelectedSkill[]>([]);
   const [currentConvSessionId, setCurrentConvSessionId] = useState<string>(chatId);
   const [sseActive, setSseActive] = useState(false);
-  const [todoList, setTodoList] = useState<ITodoListData | null>(null);
-  const [subagentBoard, setSubagentBoard] = useState<ISubagentBoardData | null>(null);
+  // Composer Dock 协议：输入框上方固定区域 widget map（by id），SSE 与轮询共用合并
+  const [dockWidgets, setDockWidgets] = useState<Record<string, DockWidget>>({});
   const chatInputRef = useRef<HTMLInputElement | null>(null);
   const { chat, ctrl } = useChat({
     app_code: app_code || '',
@@ -122,6 +121,12 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
     enabled: !isChatDefault && !sseActive,
     interval: 2500,
     visRender: currentVisRender || undefined,
+    onPoll: (response) => {
+      // 轮询链路：回放 dock 帧，与 SSE onDock 共用同一份合并逻辑
+      if (response?.dock) {
+        setDockWidgets(prev => applyDockFrame(prev, response.dock));
+      }
+    },
     onComplete: () => {
       setIsPollingMode(false);
       setReplyLoading(false);
@@ -401,30 +406,6 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
           onMessage: (message: any) => {
             setCanAbort(true);
             if (message) {
-              // d-todo-list 围栏：提取到顶部固定面板，不进对话流
-              if (typeof message === 'string' && message.includes('```d-todo-list')) {
-                const todoMatch = message.match(/```d-todo-list\n([\s\S]*?)\n```/);
-                if (todoMatch) {
-                  try {
-                    setTodoList?.(parseFirstJson(todoMatch[1]));
-                  } catch {
-                    // ignore parse error
-                  }
-                }
-                return;
-              }
-              // d-subagent-board 围栏：提取子任务状态到顶部固定面板，不进对话流
-              if (typeof message === 'string' && message.includes('```d-subagent-board')) {
-                const boardMatch = message.match(/```d-subagent-board\n([\s\S]*?)\n```/);
-                if (boardMatch) {
-                  try {
-                    setSubagentBoard?.(parseFirstJson(boardMatch[1]));
-                  } catch {
-                    // ignore parse error
-                  }
-                }
-                return;
-              }
               // Check if message is metadata containing conv_session_id
               if (typeof message === 'object' && message.type === 'metadata') {
                 if (message.conv_session_id) {
@@ -447,6 +428,10 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
               }
               setHistory([...tempHistory]);
             }
+          },
+          onDock: (frame: DockFrame) => {
+            // Composer Dock 协议：SSE 链路，输入框上方固定区域 widget 增量合并
+            setDockWidgets(prev => applyDockFrame(prev, frame));
           },
           onDone: () => {
             setSseActive(false);
@@ -533,6 +518,7 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
     );
     if (res?.conv_uid) {
       setHistory([]);
+      setDockWidgets({});
       order.current = 1;
       router.push(`/chat/?app_code=${app_code}&conv_uid=${res.conv_uid}`);
     }
@@ -551,6 +537,7 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
       // Memory cleanup: clear old history and event listeners before loading new conversation
       // This prevents memory buildup when switching between large conversations
       setHistory([]);
+      setDockWidgets({});
       clearAllEventListeners();
       await getHistory();
     }
@@ -560,6 +547,7 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
     if (isChatDefault) {
       order.current = 1;
       setHistory([]);
+      setDockWidgets({});
     }
   }, [isChatDefault]);
   
@@ -741,10 +729,7 @@ const sessionContent = (
           chatInParams,
           isPollingMode,
           onNewChat,
-          todoList,
-          setTodoList,
-          subagentBoard,
-          setSubagentBoard,
+          dockWidgets,
         }}
       >
         {props.inputSlot

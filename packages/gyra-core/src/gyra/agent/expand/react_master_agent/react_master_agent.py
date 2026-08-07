@@ -24,6 +24,7 @@ from gyra.agent import (
     ProfileConfig,
 )
 from gyra.agent.core.base_agent import ConversableAgent, ContextHelper
+from gyra.agent.core.base_team import Team
 from gyra.agent.core.base_parser import SchemaType
 from gyra.agent.core.role import AgentRunMode
 from gyra.agent.core.schema import Status
@@ -76,7 +77,7 @@ from gyra.agent.core.memory.gpts.system_event import (
     SystemEventManager,
     SystemEventType,
 )
-from ...resource import BaseTool, RetrieverResource, FunctionTool, ToolPack
+from ...resource import BaseTool, RetrieverResource, FunctionTool, ToolPack, ToolParameter
 from ...resource.agent_skills import AgentSkillResource
 from ...resource.app import AppResource
 from ..actions.agent_action import AgentStart
@@ -140,7 +141,7 @@ def _get_sandbox_system_info(sandbox_client: SandboxBase) -> str:
         return "Ubuntu 24.04 linux/amd64（已联网），用户：ubuntu（拥有免密 sudo 权限）"
 
 
-class ReActMasterAgent(ConversableAgent):
+class ReActMasterAgent(ConversableAgent, Team):
     """
     ReActMaster Agent - 最佳实践的 ReAct 范式 Agent
 
@@ -170,6 +171,8 @@ class ReActMasterAgent(ConversableAgent):
     # 基础配置
     max_retry_count: int = 300
     run_mode: AgentRunMode = AgentRunMode.LOOP
+    # 标准 Team Agent：支持 hire 子 Agent（.agents），子 Agent 以团队成员形式派发
+    is_team: bool = True
 
     profile: ProfileConfig = Field(
         default_factory=lambda: ProfileConfig(
@@ -240,7 +243,7 @@ class ReActMasterAgent(ConversableAgent):
 
     # 工具失败追踪：记录每个工具的连续失败次数
     _tool_failure_counts: Dict[str, int] = PrivateAttr(default_factory=lambda: {})
-    _max_tool_failure_count: int = PrivateAttr(default=3)  # 同一工具最大失败次数
+    _max_tool_failure_count: int = PrivateAttr(default=5)  # 同一工具最大失败次数（前3次提醒，5次终止）
     # PR 7: ToolFailureTracker 接入 — 在 V1 内联计数基础上加 cooldown + record_success
     # _tool_failure_counts 保留作为 snapshot 向后兼容字段，由 tracker 反映
     _failure_tracker: Optional[Any] = PrivateAttr(default=None)
@@ -280,6 +283,7 @@ class ReActMasterAgent(ConversableAgent):
 
     def __init__(self, **kwargs):
         """Initialize ReActMaster Agent."""
+        Team.__init__(self, **kwargs)
         super().__init__(**kwargs)
         self._init_actions([AgentStart, KnowledgeSearch, SqlAction, ToolAction])
         self._initialize_components()
@@ -339,14 +343,15 @@ class ReActMasterAgent(ConversableAgent):
         """
         注入异步任务工具到 available_system_tools。
 
-        条件：存在 AppResource（表示有可委派的子 Agent）且有 agents 属性。
+        条件：存在 AppResource（表示有可委派的子 Agent）或已 hire 子 Agent。
         创建 AsyncTaskManager 并注册 4 个 FunctionTool 包装。
+
+        注意：不能在 self.agents 为空时直接放弃注入——agent_chat 在 build()
+        （触发本方法）之后才 hire 子 Agent，此时提前返回会让未绑定 delegate 的
+        内置 SpawnAgentTaskTool 被分发，报 'NoneType' object has no attribute
+        'delegate'。委派适配器在调用时才解析 self.agents，注入不依赖 hire 时机。
         """
         try:
-            # 检查是否有子 Agent 可委派
-            if not hasattr(self, "agents") or not self.agents:
-                return
-
             # 检查 resource_map 是否有 AppResource
             # RFC-006 Phase B5:优先 capability_pack(新协议),fallback 旧 resource_map。
             has_app_resource = False
@@ -358,7 +363,7 @@ class ReActMasterAgent(ConversableAgent):
                         has_app_resource = True
                         break
 
-            if not has_app_resource:
+            if not has_app_resource and not getattr(self, "agents", None):
                 return
 
             from ...util.async_task_manager import AsyncTaskManager, AsyncTaskSpec
@@ -476,12 +481,26 @@ class ReActMasterAgent(ConversableAgent):
 
             # 获取可用子 Agent 名称列表
             agent_names = []
-            for agent in self.agents:
+            for agent in self.agents or []:
                 name = agent.name or getattr(
                     getattr(agent, "agent_context", None), "agent_app_code", None
                 )
                 if name:
                     agent_names.append(name)
+            if not agent_names:
+                # build 时子 Agent 尚未 hire（agent_chat 在 build 后 hire），
+                # 从 AppResource 兜底取可委派子 Agent 名称，供工具描述展示
+                for k, v in (self.resource_map or {}).items():
+                    for item in v or []:
+                        if not isinstance(item, AppResource):
+                            continue
+                        name = (
+                            getattr(item, "app_name", None)
+                            or getattr(item, "name", None)
+                            or getattr(item, "app_code", None)
+                        )
+                        if name:
+                            agent_names.append(name)
 
             # 创建 FunctionTool 包装
             atm = self._async_task_manager
@@ -2040,33 +2059,58 @@ class ReActMasterAgent(ConversableAgent):
     def _estimate_context_tokens(
         self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """估算实际上下文窗口的 token 使用情况"""
-        CHARS_PER_TOKEN = 4
-        message_tokens = 0
+        """估算实际上下文窗口的 token 使用情况。
+
+        计算规则（优先级从上到下）：
+        1. 实时计算：优先用 tiktoken 精确切分（真实 token 数）；
+        2. 兜底推算：tokenizer 不可用/失败时按「字符数/4」估算。
+
+        返回的明细用于环形图/详情抽屉分层展示：
+        - system_tokens: system 消息占用
+        - conversation_tokens: 非 system 消息占用（历史 + 当前用户消息）
+        - tool_tokens: 工具列表占用
+        """
+        from gyra.agent.core.usage_metric import count_tokens
+
+        system_tokens = 0
+        conversation_tokens = 0
         tool_tokens = 0
 
         for msg in messages:
             content = msg.get("content", "")
             if isinstance(content, str):
-                msg_chars = len(content)
+                chunk = content
             else:
-                msg_chars = len(str(content))
+                try:
+                    chunk = json.dumps(content, ensure_ascii=False)
+                except Exception:  # noqa: BLE001
+                    chunk = str(content)
 
             tool_calls = msg.get("tool_calls", [])
             if tool_calls:
-                msg_chars += len(json.dumps(tool_calls))
+                try:
+                    chunk += json.dumps(tool_calls, ensure_ascii=False)
+                except Exception:  # noqa: BLE001
+                    chunk += str(tool_calls)
 
-            msg_token_estimate = max(1, msg_chars // CHARS_PER_TOKEN)
-            message_tokens += msg_token_estimate
+            msg_token_estimate = count_tokens(chunk)
+            if msg.get("role") == "system":
+                system_tokens += msg_token_estimate
+            else:
+                conversation_tokens += msg_token_estimate
 
         if tools:
-            tools_json = json.dumps(tools)
-            tool_chars = len(tools_json)
-            tool_tokens = max(1, tool_chars // CHARS_PER_TOKEN)
+            try:
+                tool_tokens = count_tokens(json.dumps(tools, ensure_ascii=False))
+            except Exception:  # noqa: BLE001
+                tool_tokens = count_tokens(str(tools))
 
+        message_tokens = system_tokens + conversation_tokens
         return {
             "total_tokens": message_tokens + tool_tokens,
             "message_tokens": message_tokens,
+            "system_tokens": system_tokens,
+            "conversation_tokens": conversation_tokens,
             "tool_tokens": tool_tokens,
         }
 
@@ -2332,6 +2376,36 @@ class ReActMasterAgent(ConversableAgent):
                     f"history_layers: {history_layer_tokens}"
                 )
 
+                # 当前上下文空间占用（实时环形图）：把**当前这一轮真正加载进上下文的
+                # message+tool 占用**推给 SSE。注意不是累计 token 消耗。
+                # 明细分类：system / history / 当前用户消息 / 工具列表 / 分层 hot-warm-cold
+                # 计算规则：本轮增量用 tiktoken 实时计算，tokenizer 不可用则兜底字符/4。
+                try:
+                    from gyra.agent.core.usage_metric import (
+                        count_tokens,
+                        emit_context_usage,
+                    )
+
+                    _cur_user_tokens = count_tokens(current_user_content or "")
+                    _history_tokens = max(
+                        0,
+                        context_stats["conversation_tokens"] - _cur_user_tokens,
+                    )
+                    emit_context_usage(
+                        conv_id=self.not_null_agent_context.conv_id,
+                        total_tokens=context_stats["total_tokens"],
+                        context_window=context_window,
+                        prompt_tokens=context_stats["message_tokens"],
+                        completion_tokens=context_stats["tool_tokens"],
+                        model_name=llm_model or "",
+                        system_prompt_tokens=context_stats["system_tokens"],
+                        history_tokens=_history_tokens,
+                        user_message_tokens=_cur_user_tokens,
+                        layer_tokens=history_layer_tokens,
+                    )
+                except Exception as _ctx_err:  # noqa: BLE001
+                    logger.debug(f"[usage] context emit skipped: {_ctx_err}")
+
                 prev_thinking = ""
                 prev_content = ""
                 agent_llm_out = None
@@ -2426,21 +2500,45 @@ class ReActMasterAgent(ConversableAgent):
                     f"content_length={len(agent_llm_out.content) if agent_llm_out.content else 0}"
                 )
 
-                # PR 8: emit usage metric 到 in-memory buffer（供 Agent 空间上下文用量环形图）
-                # base_agent.thinking 有同名逻辑;本类重写了 thinking 的正常路径,需在此补发,
-                # 否则 usage 回调不触发,SSE 不推送 usage_metric,前端环形图不显示。
-                if agent_llm_out.metrics is not None:
-                    try:
-                        from gyra.agent.core.usage_metric import emit_usage_metric
-                        emit_usage_metric(
-                            conv_id=self.not_null_agent_context.conv_id,
-                            model_name=agent_llm_out.llm_name or "",
-                            prompt_tokens=agent_llm_out.metrics.prompt_tokens or 0,
-                            completion_tokens=agent_llm_out.metrics.completion_tokens or 0,
-                            role="main",
+                # 推理服务已返回权威 token 数：用它校正当前上下文占用（服务计算 > 实时估算）。
+                # 若服务返回了 prompt_tokens，按「服务值/本地方案估值」比例缩放各明细段，
+                # 使 system/history/user/tools/layers 与权威总额保持一致。
+                try:
+                    if agent_llm_out is not None and agent_llm_out.metrics is not None:
+                        from gyra.agent.core.usage_metric import emit_context_usage
+
+                        svc_prompt = int(
+                            getattr(agent_llm_out.metrics, "prompt_tokens", 0) or 0
                         )
-                    except Exception as _e:  # noqa: BLE001
-                        logger.debug(f"[usage] emit skipped: {_e}")
+                        est_total = context_stats["total_tokens"]
+                        if svc_prompt > 0 and est_total > 0:
+                            _scale = svc_prompt / est_total
+                            _sc = lambda v: int(round(v * _scale))  # noqa: E731
+                            emit_context_usage(
+                                conv_id=self.not_null_agent_context.conv_id,
+                                total_tokens=svc_prompt,
+                                context_window=context_window,
+                                prompt_tokens=_sc(context_stats["message_tokens"]),
+                                completion_tokens=_sc(context_stats["tool_tokens"]),
+                                model_name=llm_model or "",
+                                system_prompt_tokens=_sc(
+                                    context_stats["system_tokens"]
+                                ),
+                                history_tokens=_sc(
+                                    max(
+                                        0,
+                                        context_stats["conversation_tokens"]
+                                        - _cur_user_tokens,
+                                    )
+                                ),
+                                user_message_tokens=_sc(_cur_user_tokens),
+                                layer_tokens={
+                                    k: _sc(v)
+                                    for k, v in history_layer_tokens.items()
+                                },
+                            )
+                except Exception as _svc_err:  # noqa: BLE001
+                    logger.debug(f"[usage] service-corrected emit skipped: {_svc_err}")
 
                 # ========== 应用 BuildResult 清理 ==========
                 if build_result and self.memory and hasattr(self.memory, "gpts_memory"):
@@ -2553,9 +2651,14 @@ class ReActMasterAgent(ConversableAgent):
                     logger.warning(
                         f"🚫 Tool '{tool_name_to_check}' is blocked due to consecutive failures. Skipping execution."
                     )
+                    # 获取失败追踪器用于格式化消息
+                    tracker = self._get_failure_tracker()
+                    failure_msg = tracker.format_failure_message(
+                        tool_name_to_check, include_count=True
+                    )
                     # 直接创建失败结果，跳过执行
                     blocked_output = ActionOutput(
-                        content=f"工具 [{tool_name_to_check}] 连续失败超过 {self._max_tool_failure_count} 次，已终止执行。请尝试使用其他工具或修改参数后重试。",
+                        content=failure_msg,
                         name=real_action.name
                         if hasattr(real_action, "name")
                         else tool_name_to_check,
@@ -2564,7 +2667,7 @@ class ReActMasterAgent(ConversableAgent):
                         is_exe_success=False,
                         state=Status.FAILED.value,
                         have_retry=False,
-                        view=f"❌ **工具执行被阻止**\n\n工具 `{tool_name_to_check}` 已连续失败多次，系统已自动终止该工具的执行。\n\n请尝试使用其他工具或修改参数后重试。",
+                        view=f"❌ **工具执行被阻止**\n\n{failure_msg}",
                     )
                     act_outs.append(blocked_output)
                     continue
@@ -2719,23 +2822,39 @@ class ReActMasterAgent(ConversableAgent):
 
                 if isinstance(result, Exception):
                     logger.exception(f"Action execution failed: {result}")
-                    # 从 action 中提取工具名称
-                    tool_name_for_tracking = getattr(real_action, "action_input", None)
-                    if tool_name_for_tracking and hasattr(
-                        tool_name_for_tracking, "tool_name"
-                    ):
-                        tool_name_for_tracking = tool_name_for_tracking.tool_name
+                    # 从 action 中提取工具名称和参数
+                    tool_name_for_tracking = None
+                    tool_params = None
+
+                    action_input = getattr(real_action, "action_input", None)
+                    if action_input and hasattr(action_input, "tool_name"):
+                        tool_name_for_tracking = action_input.tool_name
+                        # 提取参数
+                        if hasattr(action_input, "__dict__"):
+                            tool_params = {
+                                k: v
+                                for k, v in action_input.__dict__.items()
+                                if k != "tool_name" and not k.startswith("_")
+                            }
                     else:
                         tool_name_for_tracking = real_action.name
 
                     # 检查工具失败次数
                     should_stop = self._check_and_record_tool_failure(
-                        tool_name_for_tracking, error=str(result)
+                        tool_name_for_tracking, error=str(result), params=tool_params
                     )
 
+                    # 获取失败追踪器用于格式化消息
+                    tracker = self._get_failure_tracker()
+                    failure_count = tracker.get_failure_count(tool_name_for_tracking)
+
                     # 创建完整的失败 ActionOutput
+                    # 前3次只提醒，不终止
+                    failure_msg = tracker.format_failure_message(
+                        tool_name_for_tracking, include_count=False
+                    )
                     failed_output = ActionOutput(
-                        content=f"工具执行失败: {str(result)}",
+                        content=failure_msg,
                         name=real_action.name,
                         action=tool_name_for_tracking,
                         action_name=tool_name_for_tracking,
@@ -2745,8 +2864,11 @@ class ReActMasterAgent(ConversableAgent):
                     )
 
                     if should_stop:
-                        failed_output.content = f"工具 [{tool_name_for_tracking}] 连续失败超过 {self._max_tool_failure_count} 次，已终止执行。错误: {str(result)}"
-                        failed_output.view = f"❌ **工具执行失败**\n\n工具 `{tool_name_for_tracking}` 已连续失败多次，系统已自动终止该工具的执行。\n\n**错误信息**: {str(result)}\n\n请尝试使用其他工具或修改参数后重试。"
+                        # 5次以上终止，显示完整信息
+                        failed_output.content = tracker.format_failure_message(
+                            tool_name_for_tracking, include_count=True
+                        )
+                        failed_output.view = f"❌ **工具执行失败**\n\n{failed_output.content}"
 
                     act_outs.append(failed_output)
 
@@ -2801,10 +2923,15 @@ class ReActMasterAgent(ConversableAgent):
                             should_stop = self._check_and_record_tool_failure(
                                 tool_name,
                                 error=result.content if hasattr(result, "content") else None,
+                                params=tool_args if tool_args else None,
                             )
                             if should_stop:
-                                result.content = f"工具 [{tool_name}] 连续失败超过 {self._max_tool_failure_count} 次，已终止执行。\n\n{result.content or ''}"
-                                result.view = f"❌ **工具执行失败**\n\n工具 `{tool_name}` 已连续失败多次，系统已自动终止该工具的执行。\n\n{result.view or result.content or ''}"
+                                # 5次以上终止，显示完整信息
+                                tracker = self._get_failure_tracker()
+                                result.content = tracker.format_failure_message(
+                                    tool_name, include_count=True
+                                )
+                                result.view = f"❌ **工具执行失败**\n\n{result.content}"
 
                         # ========== 集成：记录到 WorkLog ==========
                         # 重要：只有真正的工具调用才应该记录到 WorkLog
@@ -3073,7 +3200,7 @@ class ReActMasterAgent(ConversableAgent):
         return action_out
 
     def _check_and_record_tool_failure(
-        self, tool_name: str, error: Optional[str] = None
+        self, tool_name: str, error: Optional[str] = None, params: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
         记录工具失败并检查是否应停止执行
@@ -3084,7 +3211,7 @@ class ReActMasterAgent(ConversableAgent):
         if not tool_name:
             return False
         tracker = self._get_failure_tracker()
-        tracker.record_failure(tool_name, error or "tool execution failed")
+        tracker.record_failure(tool_name, error or "tool execution failed", params=params)
         # 同步旧字段（向后兼容 snapshot 读取）
         self._tool_failure_counts[tool_name] = tracker.get_failure_count(tool_name)
         return tracker.is_disabled(tool_name)

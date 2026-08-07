@@ -316,12 +316,20 @@ def register_embedding_model(
 @router.get("/current")
 async def get_current_config():
     try:
+        from gyra_app.config_storage.agent_llm_db_storage import load_agent_llm_dict
+
         manager = get_config_manager()
         config = manager.get()
+        data = config.model_dump(mode="json")
+        # 模型/LLM 配置以数据库为准（分布式多节点共享）：
+        # 若数据库存在 agent_llm，则覆盖返回，保证前端始终读到数据库配置。
+        db_agent_llm = load_agent_llm_dict()
+        if db_agent_llm:
+            data["agent_llm"] = db_agent_llm
         return JSONResponse(
             content={
                 "success": True,
-                "data": config.model_dump(mode="json"),
+                "data": data,
                 "config_path": manager.get_config_path(),
             }
         )
@@ -343,6 +351,87 @@ async def get_config_path():
             },
         }
     )
+
+
+@router.get("/agent-llm")
+async def get_agent_llm_config(
+    user: UserRequest = Depends(require_permission("model", "read")),
+):
+    """获取模型/LLM 配置（数据库为准，无则回退配置文件）。
+
+    返回前端格式的 agent_llm（providers/models），与模型管理页表单一致。
+    """
+    from gyra_app.config_storage.agent_llm_db_storage import load_agent_llm_dict
+
+    db_data = load_agent_llm_dict()
+    if db_data:
+        return JSONResponse(
+            content={"success": True, "data": db_data, "source": "database"}
+        )
+
+    manager = get_config_manager()
+    config = manager.get()
+    agent_llm = getattr(config, "agent_llm", None)
+    if agent_llm is None:
+        return JSONResponse(
+            content={
+                "success": True,
+                "data": {"temperature": 0.5, "providers": []},
+                "source": "file",
+            }
+        )
+    return JSONResponse(
+        content={
+            "success": True,
+            "data": agent_llm.model_dump(mode="json"),
+            "source": "file",
+        }
+    )
+
+
+@router.post("/agent-llm")
+async def update_agent_llm_config(
+    request: Dict[str, Any],
+    user: UserRequest = Depends(require_permission("model", "manage")),
+):
+    """保存模型/LLM 配置到数据库（分布式共享），并同步到运行时/ModelConfigCache。
+
+    请求体为前端格式 agent_llm（{temperature, providers:[...]}），或
+    {"agent_llm": {...}} 包装形式。
+    """
+    from gyra_app.config_storage.agent_llm_db_storage import save_agent_llm_dict
+
+    try:
+        from gyra_core.config.schema import AgentLLMConfig
+
+        agent_llm_payload = request.get("agent_llm", request)
+        if not isinstance(agent_llm_payload, dict):
+            raise HTTPException(status_code=400, detail="agent_llm 必须为对象")
+
+        parsed = AgentLLMConfig(**agent_llm_payload)
+        db_saved = save_agent_llm_dict(parsed.model_dump(mode="json"))
+
+        # 同步到内存 config / system_app / ModelConfigCache，立即生效
+        manager = get_config_manager()
+        config = manager.get()
+        config.agent_llm = parsed
+        sync_status = _sync_agent_llm_to_system_config(config)
+        models_registered = _refresh_model_config_cache(config)
+
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "模型/LLM 配置已保存到数据库",
+                "data": parsed.model_dump(mode="json"),
+                "saved_to_database": db_saved,
+                "models_registered": models_registered,
+                "sync_status": sync_status,
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/schema")
@@ -1363,9 +1452,10 @@ def _refresh_model_config_cache(config: AppConfig) -> int:
 
 @router.post("/import")
 async def import_config(config_data: Dict[str, Any]):
-    """导入配置并保存到文件"""
+    """导入配置并保存到文件（agent_llm 同时持久化到数据库，分布式共享）"""
     try:
         from gyra_core.config import AppConfig
+        from gyra_app.config_storage.agent_llm_db_storage import save_agent_llm_dict
 
         config = AppConfig(**config_data)
 
@@ -1373,6 +1463,12 @@ async def import_config(config_data: Dict[str, Any]):
         manager._config = config
 
         saved = save_config_with_error_handling(manager, "配置")
+
+        # 模型/LLM 配置同步持久化到数据库（分布式部署多节点共享同一份配置）
+        db_saved = False
+        agent_llm = getattr(config, "agent_llm", None)
+        if agent_llm is not None:
+            db_saved = save_agent_llm_dict(agent_llm.model_dump(mode="json"))
 
         sync_status = _sync_config_to_system_app(config)
 
@@ -1384,6 +1480,7 @@ async def import_config(config_data: Dict[str, Any]):
                 "message": "配置已导入" + ("并保存" if saved else "（保存失败）"),
                 "data": config.model_dump(mode="json"),
                 "saved_to_file": saved,
+                "saved_to_database": db_saved,
                 "config_path": manager.get_config_path(),
                 "models_registered": models_registered,
                 "sync_status": sync_status,

@@ -14,6 +14,7 @@ import {
   CloudServerOutlined,
   CheckOutlined,
   MobileOutlined,
+  EyeOutlined,
 } from '@ant-design/icons';
 import {
   apiInterceptors,
@@ -33,6 +34,7 @@ import {
 import { confirmEcpObject } from '@/client/api/ecp';
 import { getUserId } from '@/utils/storage';
 import { MobileAgentView } from './agent-view';
+import MobileProposalDetail from './proposal-detail';
 import { PullToRefresh } from '../pull-to-refresh';
 
 const INBOX_SOURCE_LABEL: Record<string, string> = {
@@ -81,6 +83,7 @@ export default function MobileWorkspace() {
   const [tab, setTab] = useState<MobileTab>('overview');
   const [convUid, setConvUid] = useState<string>('');
   const [approveItem, setApproveItem] = useState<InboxItem | null>(null);
+  const [proposalItem, setProposalItem] = useState<InboxItem | null>(null);
   const [comment, setComment] = useState('');
   const [acting, setActing] = useState<'approve' | 'reject' | null>(null);
 
@@ -310,11 +313,16 @@ export default function MobileWorkspace() {
                   tabIndex={0}
                   onClick={() => {
                     if (item.source_type === 'intervention') setApproveItem(item);
+                    if (item.source_type === 'ecp_proposal') setProposalItem(item);
                   }}
                   onKeyDown={(e) => {
                     if ((e.key === 'Enter' || e.key === ' ') && item.source_type === 'intervention') {
                       e.preventDefault();
                       setApproveItem(item);
+                    }
+                    if ((e.key === 'Enter' || e.key === ' ') && item.source_type === 'ecp_proposal') {
+                      e.preventDefault();
+                      setProposalItem(item);
                     }
                   }}
                 >
@@ -329,13 +337,25 @@ export default function MobileWorkspace() {
                     {item.source_type !== 'intervention' && (
                       <div className="ms-notif__actions">
                         {item.source_type === 'ecp_proposal' && (
-                          <button
-                            type="button"
-                            className="ms-notif__act ms-notif__act--primary"
-                            onClick={(e) => quickDone(item, e)}
-                          >
-                            <CheckOutlined /> 确认生效
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              className="ms-notif__act"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setProposalItem(item);
+                              }}
+                            >
+                              <EyeOutlined /> 查看详情
+                            </button>
+                            <button
+                              type="button"
+                              className="ms-notif__act ms-notif__act--primary"
+                              onClick={(e) => quickDone(item, e)}
+                            >
+                              <CheckOutlined /> 确认生效
+                            </button>
+                          </>
                         )}
                         {item.source_type === 'manual' && (
                           <button
@@ -517,6 +537,12 @@ export default function MobileWorkspace() {
           </div>
         </div>
       </Modal>
+
+      <MobileProposalDetail
+        item={proposalItem}
+        onClose={() => setProposalItem(null)}
+        onResolved={() => refreshInbox?.()}
+      />
     </>
   );
 }

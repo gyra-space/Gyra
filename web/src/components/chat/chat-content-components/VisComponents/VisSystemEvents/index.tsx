@@ -23,7 +23,7 @@ interface SystemEvent {
   };
 }
 
-interface SystemEventsData {
+export interface SystemEventsData {
   is_running: boolean;
   current_action?: string;
   current_phase: 'preparation' | 'execution' | 'completion';
@@ -35,6 +35,8 @@ interface SystemEventsData {
 
 interface VisSystemEventsProps {
   data: SystemEventsData;
+  /** dock tab 容器内嵌渲染：只渲染事件列表，无卡片外壳/header。 */
+  embedded?: boolean;
 }
 
 const formatDuration = (ms?: number): string => {
@@ -98,7 +100,7 @@ const MiniRingChart: FC<{ data: RingDataItem[]; size?: number }> = ({ data, size
   );
 };
 
-export const VisSystemEvents: FC<VisSystemEventsProps> = ({ data }) => {
+export const VisSystemEvents: FC<VisSystemEventsProps> = ({ data, embedded = false }) => {
   const { is_running, current_phase, recent_events, total_count, total_duration_ms } = data;
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -145,6 +147,74 @@ export const VisSystemEvents: FC<VisSystemEventsProps> = ({ data }) => {
   const accentColor = getAccentColor();
   const statusText = getStatusText();
   const displayEvents = isExpanded ? (recent_events || []) : (recent_events?.slice(0, 1) || []);
+
+  const renderEvents = (events: SystemEvent[]) =>
+    events.map((event, index) => {
+      const eventHasError = event.status === 'failed';
+      const eventColor = eventHasError ? '#dc2626' : '#6b7280';
+      const hasDescription = event.description && event.description.trim();
+      const hasRingData = event.metadata?.ring_data && event.metadata.ring_data.length > 0;
+      const isTokenBudget = event.event_type === 'token_budget_summary';
+
+      return (
+        <div
+          key={event.event_id}
+          title={hasDescription ? event.description : undefined}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            padding: '5px 0',
+            fontSize: '12px',
+            color: eventColor,
+            borderBottom: index < events.length - 1 ? '1px solid #f3f4f6' : 'none',
+            cursor: hasDescription ? 'help' : 'default',
+          }}
+        >
+          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isTokenBudget ? 500 : 400 }}>
+              {event.title}
+            </span>
+            {hasDescription && (
+              <span style={{
+                color: '#9ca3af',
+                fontSize: '11px',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                flexShrink: 1,
+              }}>
+                {event.description}
+              </span>
+            )}
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+            {event.duration_ms !== undefined && (
+              <span style={{ color: '#9ca3af' }}>
+                {formatDuration(event.duration_ms)}
+              </span>
+            )}
+            {hasRingData && (
+              <MiniRingChart data={event.metadata!.ring_data!} size={24} />
+            )}
+          </span>
+        </div>
+      );
+    });
+
+  // dock tab 容器内嵌：只渲染完整事件列表，滚动由外层固定高容器承担
+  if (embedded) {
+    const events = recent_events || [];
+    if (events.length === 0) {
+      return (
+        <div style={{ padding: '16px 12px', textAlign: 'center', color: '#bfbfbf', fontSize: '13px' }}>
+          暂无事件
+        </div>
+      );
+    }
+    return <div style={{ padding: '4px 12px' }}>{renderEvents(events)}</div>;
+  }
 
   return (
     <div
@@ -243,59 +313,7 @@ export const VisSystemEvents: FC<VisSystemEventsProps> = ({ data }) => {
               paddingRight: '4px',
             }}
           >
-            {displayEvents.map((event, index) => {
-              const eventHasError = event.status === 'failed';
-              const eventColor = eventHasError ? '#dc2626' : '#6b7280';
-              const hasDescription = event.description && event.description.trim();
-              const hasRingData = event.metadata?.ring_data && event.metadata.ring_data.length > 0;
-              const isTokenBudget = event.event_type === 'token_budget_summary';
-
-              return (
-                <div
-                  key={event.event_id}
-                  title={hasDescription ? event.description : undefined}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '12px',
-                    padding: '5px 0',
-                    fontSize: '12px',
-                    color: eventColor,
-                    borderBottom: index < displayEvents.length - 1 ? '1px solid #f3f4f6' : 'none',
-                    cursor: hasDescription ? 'help' : 'default',
-                  }}
-                >
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isTokenBudget ? 500 : 400 }}>
-                      {event.title}
-                    </span>
-                    {hasDescription && (
-                      <span style={{
-                        color: '#9ca3af',
-                        fontSize: '11px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        flexShrink: 1,
-                      }}>
-                        {event.description}
-                      </span>
-                    )}
-                  </span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                    {event.duration_ms !== undefined && (
-                      <span style={{ color: '#9ca3af' }}>
-                        {formatDuration(event.duration_ms)}
-                      </span>
-                    )}
-                    {hasRingData && (
-                      <MiniRingChart data={event.metadata!.ring_data!} size={24} />
-                    )}
-                  </span>
-                </div>
-              );
-            })}
+            {renderEvents(displayEvents)}
           </div>
         )}
       </div>

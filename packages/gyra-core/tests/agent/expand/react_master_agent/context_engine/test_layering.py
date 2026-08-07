@@ -55,7 +55,7 @@ def _seg(units, conv="c1"):
 def test_pass1_newest_to_oldest_budget():
     # window 大，全部进 hot
     units = [_user(0), _call(1, "fa"), _call(2, "fb")]
-    plan = BudgetLayerer(LayerBudgetConfig()).layer(_seg(units), 100000, "c1")
+    plan = BudgetLayerer(LayerBudgetConfig()).layer(_seg(units), 100000)
     assert len(plan.hot) == 3
     assert not plan.warm
     assert not plan.cold
@@ -66,7 +66,7 @@ def test_oldest_goes_cold_when_budget_small():
     units = [_call(i, f"f{i}", tokens=100) for i in range(20)]
     cfg = LayerBudgetConfig(hot_ratio=0.2, warm_ratio=0.1, cold_ratio=0.5, cold_batch_units=4)
     # history window 已是传入值（engine 才乘 0.85），这里直接给 1000
-    plan = BudgetLayerer(cfg).layer(_seg(units), 1000, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg(units), 1000)
     assert plan.cold  # 有 cold 批次
     # 最新的在 hot
     assert plan.hot[-1].seq == 19
@@ -84,19 +84,20 @@ def test_preserve_tools_never_cold():
     preserved = _call(0, "view", args={"path": "x/skill.md"}, tokens=100)
     fillers = [_call(i, f"f{i}", tokens=100) for i in range(1, 20)]
     units = [preserved] + fillers
-    plan = BudgetLayerer(cfg).layer(_seg(units), 800, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg(units), 800)
     cold_ids = {u.message_id for b in plan.cold for u in b}
     assert preserved.message_id not in cold_ids  # 强制不沉 cold
 
 
-def test_anchor_user_never_cold():
-    cfg = LayerBudgetConfig(hot_ratio=0.05, warm_ratio=0.05, cold_ratio=0.5, cold_batch_units=4)
+def test_user_unit_can_go_cold():
+    # user 单元不再被锚点保护：最老的 user 在预算不足时照常沉 cold（与其他单元一致）
+    cfg = LayerBudgetConfig(hot_ratio=0.2, warm_ratio=0.2, cold_ratio=0.5, cold_batch_units=8)
     anchor = _user(0, conv="c1", tokens=100)
     fillers = [_call(i, f"f{i}", tokens=100) for i in range(1, 20)]
     units = [anchor] + fillers
-    plan = BudgetLayerer(cfg).layer(_seg(units), 800, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg(units), 1000)
     cold_ids = {u.message_id for b in plan.cold for u in b}
-    assert anchor.message_id not in cold_ids
+    assert anchor.message_id in cold_ids
 
 
 def test_pass2_dedup_duplicate_tools():
@@ -106,7 +107,7 @@ def test_pass2_dedup_duplicate_tools():
     u2 = _call(1, "fa", args={"q": "x"}, tokens=10)
     cfg = LayerBudgetConfig(hot_ratio=0.1, warm_ratio=0.8, cold_ratio=0.05)
     # window 1000 → hot=100（容纳 pad），warm=800（容纳 u1/u2）
-    plan = BudgetLayerer(cfg).layer(_seg([u1, u2, pad]), 1000, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg([u1, u2, pad]), 1000)
     all_warm_bindings = [b for u in plan.warm for b in (u.calls or [])]
     pruned = [b for b in all_warm_bindings if b.pruned]
     assert any(b.tool_call_id == "tc0" for b in pruned)
@@ -116,7 +117,7 @@ def test_pass2_empty_result_pruned():
     pad = _call(9, "pad", tokens=100)
     u1 = _call(0, "fa", result="ok", tokens=10)
     cfg = LayerBudgetConfig(hot_ratio=0.1, warm_ratio=0.8, cold_ratio=0.05)
-    plan = BudgetLayerer(cfg).layer(_seg([u1, pad]), 1000, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg([u1, pad]), 1000)
     bindings = [b for u in plan.warm for b in (u.calls or []) if b.tool_name == "fa"]
     assert bindings and bindings[0].pruned
 
@@ -126,7 +127,7 @@ def test_pass2_preserve_tools_not_pruned():
     pad = _call(9, "pad", tokens=100)
     u1 = _call(0, "view", result="ok", tokens=10)
     cfg = LayerBudgetConfig(hot_ratio=0.1, warm_ratio=0.8, cold_ratio=0.05)
-    plan = BudgetLayerer(cfg).layer(_seg([u1, pad]), 1000, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg([u1, pad]), 1000)
     bindings = [b for u in plan.warm for b in (u.calls or []) if b.tool_name == "view"]
     assert bindings and not bindings[0].pruned
 
@@ -137,7 +138,7 @@ def test_pass2_superseded_write_marked():
     w = _call(0, "write", args={"path": "p"}, result="written", tokens=10)
     r = _call(1, "read", args={"path": "p"}, result="content", tokens=10)
     cfg = LayerBudgetConfig(hot_ratio=0.1, warm_ratio=0.8, cold_ratio=0.05)
-    plan = BudgetLayerer(cfg).layer(_seg([w, r, pad]), 1000, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg([w, r, pad]), 1000)
     write_bindings = [
         b for u in plan.warm for b in (u.calls or []) if b.tool_name == "write"
     ]
@@ -148,7 +149,7 @@ def test_pass3_cold_batch_quantization():
     # 10 个 cold 单元，batch=4 → 8 个成 2 批，余 2 回 warm
     units = [_call(i, f"f{i}", tokens=100) for i in range(10)]
     cfg = LayerBudgetConfig(hot_ratio=0.001, warm_ratio=0.001, cold_ratio=0.9, cold_batch_units=4)
-    plan = BudgetLayerer(cfg).layer(_seg(units), 100, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg(units), 100)
     total_cold = sum(len(b) for b in plan.cold)
     # cold 总数应是 4 的整数倍
     assert total_cold % 4 == 0
@@ -158,7 +159,7 @@ def test_pass4_single_rebalance_no_infinite_loop():
     # 仅验证 layer() 能正常返回（单次再平衡不死循环）
     units = [_call(i, f"f{i}", tokens=50) for i in range(30)]
     cfg = LayerBudgetConfig(hot_ratio=0.2, warm_ratio=0.2, cold_ratio=0.2, cold_batch_units=4)
-    plan = BudgetLayerer(cfg).layer(_seg(units), 1000, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg(units), 1000)
     # 守恒律：每个单元都有归属
     total = len(plan.hot) + len(plan.warm) + sum(len(b) for b in plan.cold)
     assert total == 30
@@ -167,7 +168,7 @@ def test_pass4_single_rebalance_no_infinite_loop():
 def test_cleanup_hints_contain_cold_ids():
     units = [_call(i, f"f{i}", tokens=100) for i in range(12)]
     cfg = LayerBudgetConfig(hot_ratio=0.05, warm_ratio=0.05, cold_ratio=0.8, cold_batch_units=4)
-    plan = BudgetLayerer(cfg).layer(_seg(units), 400, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg(units), 400)
     assert plan.cold_unit_message_ids
     # cold ids 都是真实 message_id（m*）
     assert all(i.startswith("m") for i in plan.cold_unit_message_ids)
@@ -177,6 +178,6 @@ def test_conservation_law():
     # 守恒律：hot + warm + cold 单元数 = 输入单元数（剪枝只打标不删单元）
     units = [_user(0)] + [_call(i, f"f{i}", tokens=50) for i in range(1, 25)]
     cfg = LayerBudgetConfig(hot_ratio=0.2, warm_ratio=0.2, cold_ratio=0.3, cold_batch_units=4)
-    plan = BudgetLayerer(cfg).layer(_seg(units), 1000, "c1")
+    plan = BudgetLayerer(cfg).layer(_seg(units), 1000)
     total = len(plan.hot) + len(plan.warm) + sum(len(b) for b in plan.cold)
     assert total == len(units)

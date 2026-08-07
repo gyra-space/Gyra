@@ -35,4 +35,4 @@ def test_different_tools_independent():
 
 def test_default_max_failures():
     tracker = ToolFailureTracker()
-    assert tracker._max_failures == 3
+    assert tracker._max_failures == 5  # 前3次提醒，5次终止

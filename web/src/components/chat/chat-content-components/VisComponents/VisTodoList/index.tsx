@@ -20,9 +20,11 @@ export interface ITodoListData {
 interface IProps {
   otherComponents?: any;
   data: ITodoListData;
+  /** dock tab 容器内嵌渲染：跳过卡片外壳装饰与 header，恒展开列表。 */
+  embedded?: boolean;
 }
 
-const VisTodoList: React.FC<IProps> = ({ data }) => {
+const VisTodoList: React.FC<IProps> = ({ data, embedded = false }) => {
   const items: TodoItemData[] = data.items || [];
   const [expanded, setExpanded] = useState(true);
 
@@ -48,19 +50,21 @@ const VisTodoList: React.FC<IProps> = ({ data }) => {
   const isFailed = (status: string) => status === 'failed';
 
   return (
-    <VisTodoListWrap>
-      <div className="todolist-header" onClick={toggleExpand} style={{ cursor: 'pointer' }}>
-        <div className="header-left">
-          <UnorderedListOutlined className="header-icon" />
-          <span className="header-title">{allCompleted ? '任务完成' : '待办'}</span>
-          <span className="header-progress">{progress.completed}/{progress.total}</span>
+    <VisTodoListWrap className={embedded ? 'embedded' : undefined}>
+      {!embedded && (
+        <div className="todolist-header" onClick={toggleExpand} style={{ cursor: 'pointer' }}>
+          <div className="header-left">
+            <UnorderedListOutlined className="header-icon" />
+            <span className="header-title">{allCompleted ? '任务完成' : '待办'}</span>
+            <span className="header-progress">{progress.completed}/{progress.total}</span>
+          </div>
+          <div className="header-expand">
+            {expanded ? <UpOutlined /> : <DownOutlined />}
+          </div>
         </div>
-        <div className="header-expand">
-          {expanded ? <UpOutlined /> : <DownOutlined />}
-        </div>
-      </div>
+      )}
 
-      {expanded && (
+      {(embedded || expanded) && (
         <div className="todolist-items">
           {items.map((item) => (
             <div

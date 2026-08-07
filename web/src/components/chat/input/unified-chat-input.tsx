@@ -235,11 +235,14 @@ const ModelParamsModal: React.FC<ModelParamsModalProps> = ({
 interface UnifiedChatInputProps {
   ctrl: AbortController;
   showFloatingActions?: boolean;
+  /** 输入卡片顶部内嵌区域（如 dock tab 栏），与输入框共享边框、无缝衔接。 */
+  topSlot?: React.ReactNode;
 }
 
 const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   ctrl,
   showFloatingActions = true,
+  topSlot,
 }) => {
   const { t } = useTranslation();
   const { message } = App.useApp();
@@ -1870,6 +1873,13 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
         }}
         onDrop={handleDrop}
       >
+        {/* 顶部内嵌区域（dock tab 栏等），与输入框一体 */}
+        {topSlot && (
+          <div className="border-b border-[#f0f1f5] dark:border-gray-700">
+            {topSlot}
+          </div>
+        )}
+
         {/* 已选资源预览 - 仅展示上传的文件附件，技能和数据源等绑定资源通过底部工具栏图标提示 */}
         <ResourceItemsDisplay />
 

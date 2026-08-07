@@ -20,6 +20,8 @@ from ..api.schemas import (
     ConfirmRequest,
     ConfirmerCreateRequest,
     ConfirmerVO,
+    DebugPreviewRequest,
+    DebugPreviewVO,
     DeprecateRequest,
     GenerateProposalsRequest,
     GenerateProposalsVO,
@@ -280,6 +282,49 @@ async def version_history(
     service: Service = Depends(get_service),
 ) -> Result[List[SemanticObjectVO]]:
     return Result.succ(service.version_history(object_id, workspace_id=workspace_id))
+
+
+@router.post(
+    "/objects/{object_id}/versions/{version}/debug",
+    response_model=Result[DebugPreviewVO],
+)
+async def debug_preview(
+    object_id: str,
+    version: int,
+    request: DebugPreviewRequest,
+    service: Service = Depends(get_service),
+) -> Result[DebugPreviewVO]:
+    """确认页调试验证:按提案版本只读 dry-run(试跑真实数据)。
+
+    纯读、不落库、不改状态;结果 trust=preview,**永不** verified——仅供确认人
+    在确认前核对提案的计算规则/口径是否拿到预期数据。文档类(claim/
+    terminology/policy)走 anchor 出处校验;其余(metric/entity/dimension/
+    relation)按 payload 组装 SQL 试跑。
+    """
+    from ..service.executor import DocBindingExecutor
+
+    obj = service.get_version(object_id, version, request.workspace_id)
+    if not obj:
+        return Result.failed(msg=f"对象 {object_id}@v{version} 不存在")
+    try:
+        if obj.obj_type in DocBindingExecutor._DOC_TYPES:
+            vo = await service.preview_canon(
+                object_id, version, workspace_id=request.workspace_id
+            )
+        else:
+            vo = service.preview_query(
+                object_id=object_id,
+                version=version,
+                workspace_id=request.workspace_id,
+                filters=request.filters,
+                group_by=request.group_by,
+                time_range=request.time_range,
+                limit=request.limit,
+            )
+        return Result.succ(vo)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[ecp] debug preview failed: {e}")
+        return Result.failed(msg=f"试跑失败: {e}")
 
 
 @router.get("/catalog", response_model=Result[List[CatalogEntryVO]])

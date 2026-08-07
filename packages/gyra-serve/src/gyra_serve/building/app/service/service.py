@@ -904,6 +904,121 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
     async def app_list(self, query: GptsAppQuery, parse_llm_strategy: bool = False):
         return await self.async_app_list(query, parse_llm_strategy)
 
+    def sync_app_list(self, query: GptsAppQuery, parse_llm_strategy: bool = False):
+        """同步版本 app_list。
+
+        供同步上下文使用（如 GptAppResource 构建子 Agent 资源时经
+        AppManager.get_gyras 调用），过滤逻辑与 async_app_list 保持一致。
+        """
+        from sqlalchemy import select, func
+
+        with self.dao.session(commit=False) as session:
+            stmt = select(ServeEntity)
+
+            if query.name_filter:
+                stmt = stmt.where(ServeEntity.app_name.like(f"%{query.name_filter}%"))
+
+            if not (query.ignore_user and query.ignore_user.lower() == "true"):
+                if query.user_code:
+                    stmt = stmt.where(
+                        or_(
+                            ServeEntity.user_code == query.user_code,
+                            ServeEntity.admins.like(f"%{query.user_code}%"),
+                        )
+                    )
+                if query.sys_code:
+                    stmt = stmt.where(ServeEntity.sys_code == query.sys_code)
+
+            if query.team_mode:
+                stmt = stmt.where(ServeEntity.team_mode == query.team_mode)
+
+            if query.published is not None:
+                if query.published:
+                    stmt = stmt.where(
+                        or_(
+                            ServeEntity.published == "true",
+                            ServeEntity.published == "1",
+                            ServeEntity.published == 1,
+                        )
+                    )
+                else:
+                    stmt = stmt.where(
+                        or_(
+                            ServeEntity.published == "false",
+                            ServeEntity.published == "0",
+                            ServeEntity.published == 0,
+                        )
+                    )
+
+            if query.app_codes:
+                stmt = stmt.where(ServeEntity.app_code.in_(query.app_codes))
+
+            count_stmt = select(func.count()).select_from(stmt.subquery())
+            total_count = session.execute(count_stmt).scalar()
+
+            stmt = stmt.order_by(ServeEntity.id.desc())
+            stmt = stmt.offset((query.page - 1) * query.page_size).limit(
+                query.page_size
+            )
+
+            result = session.execute(stmt)
+            results = result.scalars().all()
+
+        if results is not None:
+            apps: List = []
+            for app_entity in results:
+                app_info = self.dao.to_response(app_entity)
+                apps.append(app_info)
+
+            # Batch query ext_config from config table for all apps
+            if apps:
+                try:
+                    from gyra_serve.building.config.models.models import (
+                        ServeEntity as AppConfigEntity,
+                    )
+
+                    app_codes = [a.app_code for a in apps if a.app_code]
+                    with self.dao.session(commit=False) as config_session:
+                        config_stmt = (
+                            select(
+                                AppConfigEntity.app_code,
+                                AppConfigEntity.ext_config,
+                            )
+                            .where(AppConfigEntity.app_code.in_(app_codes))
+                            .order_by(
+                                AppConfigEntity.app_code,
+                                AppConfigEntity.is_published.asc(),  # temp first
+                                AppConfigEntity.id.desc(),
+                            )
+                        )
+                        config_rows = config_session.execute(config_stmt).all()
+
+                        ext_config_map: Dict = {}
+                        for row in config_rows:
+                            if row.app_code not in ext_config_map and row.ext_config:
+                                try:
+                                    ext_config_map[row.app_code] = json.loads(
+                                        row.ext_config
+                                    )
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+
+                        for app_info in apps:
+                            if app_info.app_code in ext_config_map:
+                                app_info.ext_config = ext_config_map[app_info.app_code]
+                except Exception as e:
+                    logger.warning(f"Failed to batch load ext_config for app list: {e}")
+
+            app_resp = GptsAppResponse()
+            app_resp.total_count = total_count
+            app_resp.app_list = apps
+            app_resp.current_page = query.page
+            app_resp.page_size = query.page_size
+            app_resp.total_page = (total_count + query.page_size - 1) // query.page_size
+            return app_resp
+
+        return GptsAppResponse()
+
     def app_to_details(
         self, main_app_code: str, main_app_name: str, app_codes: List[str]
     ):
@@ -972,19 +1087,25 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
             app_code = (None,)
             if isinstance(item.value, str):
                 value_dict = json.loads(item.value)
-                app_code = value_dict.get("app_code")
+                # 兼容前端资源选择器统一用 key 字段存储 app_code 的格式
+                app_code = value_dict.get("app_code") or value_dict.get("key")
             elif isinstance(item.value, dict):
-                app_code = item.value.get("app_code")
+                app_code = item.value.get("app_code") or item.value.get("key")
             else:
                 logger.warning("不支持的AgentAppResource内容1！")
             if not app_code:
                 logger.warning(f"AgentAppResource{item.value}没有找到AppCode！")
                 continue
             _query_start = time.time()
-            item_info = self.get(ServeRequest(app_code=app_code))
+            # ServeRequest.published 默认 False,get 会附加 published=False 过滤,
+            # 导致已发布(published=1)的关联 app 查不到;显式传 None 只按 app_code 查询
+            item_info = self.get(ServeRequest(app_code=app_code, published=None))
             logger.info(
                 f"[APP_DETAIL][PERF] _resource_to_app_detail 查询关联app[{app_code}]耗时: {(time.time() - _query_start) * 1000:.2f}ms"
             )
+            if not item_info:
+                logger.warning(f"AgentAppResource[{app_code}]关联的App不存在,跳过！")
+                continue
             details.append(
                 GptsAppDetail(
                     app_code=app_info.app_code,

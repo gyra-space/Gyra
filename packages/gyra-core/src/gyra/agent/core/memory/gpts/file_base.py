@@ -110,7 +110,9 @@ class AgentFileMetadata:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "AgentFileMetadata":
-        """从字典创建."""
+        """从字典创建（容忍存储层多余字段，如 DB 主键 id）。"""
+        valid = {f.name for f in dataclasses.fields(AgentFileMetadata)}
+        d = {k: v for k, v in d.items() if k in valid}
         # 处理datetime反序列化
         for key in ["created_at", "updated_at", "expires_at"]:
             if d.get(key) and isinstance(d[key], str):
@@ -578,11 +580,10 @@ class WorkEntry:
 
     @classmethod
     def from_dict(cls, data: Dict) -> "WorkEntry":
-        """从字典反序列化."""
+        """从字典反序列化（容忍存储层多余字段，如 DB 主键 id）。"""
         status_data = data.pop("status", WorkLogStatus.ACTIVE.value)
-        if isinstance(status_data, str):
-            pass
-        return cls(status=status_data, **data)
+        valid = {f.name for f in dataclasses.fields(cls)} - {"status"}
+        return cls(status=status_data, **{k: v for k, v in data.items() if k in valid})
 
     def to_action_output(self) -> "ActionOutput":
         """

@@ -91,6 +91,59 @@ export const getEcpObjectVersions = (id: string, workspace_id?: string) =>
     { workspace_id },
   );
 
+// =============================================================================
+// Debug preview (确认页调试验证, trust=preview 只读 dry-run)
+// =============================================================================
+
+export interface EcpDebugFilter {
+  /** 维度 id(dim_id 或 dim 均可) */
+  dim_id?: string;
+  dim?: string;
+  /** 值字典 label(或原始 code) */
+  values?: string[];
+  values_label?: string[];
+  mode?: 'include' | 'exclude';
+}
+
+export interface EcpDebugTimeRange {
+  /** "start~end",如 "2024-01-01~2024-12-31" */
+  range?: string;
+  /** 时间列,可选;缺省取实体 role=time 字段 */
+  column?: string;
+}
+
+export interface EcpDebugRequest {
+  workspace_id?: string;
+  filters?: EcpDebugFilter[];
+  group_by?: string[];
+  time_range?: EcpDebugTimeRange;
+  limit?: number;
+}
+
+export interface EcpDebugPreview {
+  trust: 'preview' | 'none';
+  ok: boolean;
+  error?: string | null;
+  warnings: string[];
+  columns: string[];
+  rows: Array<Record<string, any>>;
+  row_count: number;
+  sql?: string | null;
+  anchor_verified?: boolean | null;
+  quote?: string | null;
+  lineage?: Record<string, any> | null;
+}
+
+export const debugEcpObject = (
+  id: string,
+  version: number,
+  data: EcpDebugRequest,
+) =>
+  POST<EcpDebugRequest, EcpDebugPreview>(
+    `${API_PREFIX}/objects/${encodeURIComponent(id)}/versions/${version}/debug`,
+    data,
+  );
+
 export const confirmEcpObject = (
   id: string,
   version: number,

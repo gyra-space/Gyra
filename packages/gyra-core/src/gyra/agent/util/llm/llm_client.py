@@ -26,6 +26,30 @@ logger = logging.getLogger(__name__)
 REASONING_EFFORT_VALUES = {"minimal", "low", "medium", "high"}
 
 
+def _usage_to_metrics(usage: Optional[Dict[str, Any]]) -> Optional[ModelInferenceMetrics]:
+    """把 provider 返回的 usage dict 转成 ModelInferenceMetrics。
+
+    provider 层只填充 usage(如 {prompt_tokens, completion_tokens, total_tokens}),
+    从不填充 model_output.metrics。若不在此处补齐,上层 agent 的
+    `if agent_llm_out.metrics is not None` 守卫永远不成立,导致 emit_usage_metric
+    不触发、SSE 不推送 usage_metric,前端上下文用量环形图无数据。
+    """
+    if not usage:
+        return None
+    try:
+        prompt = int(usage.get("prompt_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or 0)
+        total = int(usage.get("total_tokens") or (prompt + completion))
+        return ModelInferenceMetrics(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[usage] usage_to_metrics failed: {e}")
+        return None
+
+
 def _repr_content(content: Any, max_chars: int = 2000) -> Any:
     """将消息 content 转为可打印形式,超长做轻量截断(标注原始长度)。
 
@@ -730,7 +754,9 @@ class AIWrapper:
                     yield AgentLLMOut(
                         thinking_content=thinking_text,
                         content=content_text,
-                        metrics=model_output.metrics,
+                        metrics=(
+                            model_output.metrics or _usage_to_metrics(_usage_last)
+                        ),
                         llm_name=llm_model,
                         llm_context=llm_context,
                         tool_calls=model_output.tool_calls,
@@ -771,7 +797,9 @@ class AIWrapper:
                 yield AgentLLMOut(
                     thinking_content=thinking_text,
                     content=content_text,
-                    metrics=model_output.metrics,
+                    metrics=(
+                        model_output.metrics or _usage_to_metrics(_usage_last)
+                    ),
                     llm_name=llm_model,
                     llm_context=llm_context,
                     tool_calls=model_output.tool_calls,

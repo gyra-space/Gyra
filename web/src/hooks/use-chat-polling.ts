@@ -39,9 +39,15 @@ export function useChatPolling({
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
-  // onPoll 用 ref 承载,避免它进入 checkStatus 依赖导致频繁重建/重复请求
+  // 回调用 ref 承载,避免进入 checkStatus/startPolling 依赖导致频繁重建/重复请求。
+  // 调用方(如 chat-session)传内联函数,每次渲染新身份 -> startPolling 重建 ->
+  // convId effect 重跑 -> 每帧发起一次 /chat/query,页面疯狂刷新无法渲染。
   const onPollRef = useRef(onPoll);
   onPollRef.current = onPoll;
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   const checkStatus = useCallback(async (): Promise<ChatQueryResponse | null> => {
     if (!convId) return null;
@@ -72,10 +78,10 @@ export function useChatPolling({
       if (mountedRef.current) {
         setState('UNKNOWN');
       }
-      onError?.(error as Error);
+      onErrorRef.current?.(error as Error);
       return null;
     }
-  }, [convId, visRender, onError]);
+  }, [convId, visRender]);
 
   const startPolling = useCallback(() => {
     if (!convId || !enabled) return;
@@ -101,11 +107,11 @@ export function useChatPolling({
             intervalRef.current = null;
           }
           setIsPolling(false);
-          onComplete?.(status);
+          onCompleteRef.current?.(status);
         }
       }, interval);
     });
-  }, [convId, enabled, checkStatus, interval, onComplete]);
+  }, [convId, enabled, checkStatus, interval]);
 
   const stopPolling = useCallback(() => {
     if (intervalRef.current) {

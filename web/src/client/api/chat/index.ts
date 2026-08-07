@@ -7,6 +7,7 @@ import {
   StopTopicParams,
 } from '@/types/chat';
 import { GET, POST } from '../index';
+import type { DockFrame } from '@/components/chat/dock/dock-types';
 
 /**
  * 查询推荐问题
@@ -56,6 +57,8 @@ export type ChatQueryResponse = {
   vis_final: string;
   user_answer: string;
   vis_render: string;
+  /** Composer Dock 协议：输入框上方固定区域渲染数据（todo_list / subagent_board 等）。 */
+  dock?: DockFrame;
 };
 
 export const queryChatStatus = (convId: string, visRender?: string) => {

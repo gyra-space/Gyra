@@ -16,6 +16,16 @@ dependencies = [
     "httpx>=0.24.0",
     "aiosqlite>=0.20.0",
     "pyyaml>=6.0",
+    # Database drivers (installed by default so all DB types work out of the box)
+    "psycopg2-binary",  # PostgreSQL / GaussDB / openGauss
+    "oracledb>=1.4.0,<4",  # Oracle; <4 keeps Instant Client 11.2 compat
+    "duckdb",  # DuckDB / Excel / CSV
+    "duckdb-engine==0.17.0",
+    "clickhouse-connect",  # ClickHouse
+    "vertica-python",  # Vertica
+    "pymssql",  # MSSQL
+    "pyhive",  # Hive
+    "thrift",  # Hive RPC transport (pyhive runtime dependency; no kerberos SASL)
 ]
 
 [project.urls]
@@ -52,27 +62,18 @@ graph_rag = [
     "dbgpt-tugraph-plugins>=0.1.1",
     "neo4j"
 ]
+# Database drivers below have been moved to core [project.dependencies] so all
+# DB types work out of the box. These extras are kept (empty) for backward
+# compatibility with `pip install '.[datasource_postgres]'` style usage.
 datasource_mysql = [
-    # mysqlclient 2.2.x have pkg-config issue on 3.10+
-    # If you want to install psycopg2 and mysqlclient in ubuntu, you should install
-    # libpq-dev and libmysqlclient-dev first.
+    # mysqlclient requires mysql_config at build time: install mysql-client
+    # (macOS: brew install mysql-client) or libmysqlclient-dev (ubuntu).
+    # Kept optional because MySQL works out of the box via pymysql (in core).
     "mysqlclient==2.1.0",
 ]
-datasource_postgres = [
-    # "psycopg2", # In production, you can install psycopg2 instead of psycopg2-binary
-    "psycopg2-binary",
-]
-datasource_oracle = [
-    # Pin <4: python-oracledb 4.x thick mode requires Oracle Client >= 19.1,
-    # which breaks deployments still using Instant Client 11.2 (needed for
-    # connecting to Oracle 11g and earlier database servers).
-    "oracledb>=1.4.0,<4",
-]
-
-datasource_duckdb = [
-    "duckdb",
-    "duckdb-engine==0.17.0",
-]
+datasource_postgres = []
+datasource_oracle = []
+datasource_duckdb = []
 # datasource_doris = ["pydoris>=1.0.2,<2.0.0"]
 storage_milvus = ["pymilvus"]
 storage_weaviate = ["weaviate-client"]

@@ -12,12 +12,66 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from gyra.agent.core.model_pricing import get_pricing
 
 logger = logging.getLogger(__name__)
+
+# 本地缓存 tiktoken 词表：优先读取代码目录下捆绑的 cl100k_base 词表，避免运行时联网下载。
+# 若外部已显式设置 TIKTOKEN_CACHE_DIR，则尊重外部配置（setdefault 不覆盖）。
+_TIKTOKEN_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "assets", "tiktoken_cache"
+)
+try:
+    os.makedirs(_TIKTOKEN_CACHE_DIR, exist_ok=True)
+except OSError:  # noqa: BLE001
+    pass
+os.environ.setdefault("TIKTOKEN_CACHE_DIR", _TIKTOKEN_CACHE_DIR)
+
+# 缓存 tiktoken encoding，避免每次调用重复初始化/下载
+_tiktoken_encoding = None
+
+
+def count_tokens(text: str) -> int:
+    """实时计算一段文本的 token 数。
+
+    计算规则（优先级从上到下）：
+    1. 若 tiktoken 可用，用 cl100k_base 精确切分（真实 token 数）；
+    2. tokenizer 不可用/失败时，兜底按「字符数/4」推算。
+    """
+    if not text:
+        return 0
+    global _tiktoken_encoding
+    try:
+        if _tiktoken_encoding is None:
+            import tiktoken
+
+            _tiktoken_encoding = tiktoken.get_encoding("cl100k_base")
+        return max(1, len(_tiktoken_encoding.encode(text)))
+    except Exception:  # noqa: BLE001
+        return max(1, len(text) // 4)
+
+
+def warmup_tokenizer() -> bool:
+    """预热 tiktoken tokenizer（best-effort）。
+
+    首次 get_encoding 需要加载/下载 BPE 文件（可能联网），预热可把这一
+    一次性成本挪到启动阶段，避免首个请求在热路径上同步等待。失败时静默
+    返回 False，运行期 count_tokens 仍会退化到「字符/4」兜底。
+    """
+    global _tiktoken_encoding
+    try:
+        if _tiktoken_encoding is None:
+            import tiktoken
+
+            _tiktoken_encoding = tiktoken.get_encoding("cl100k_base")
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("[usage] tokenizer warmup skipped")
+        return False
 
 
 @dataclass
@@ -145,6 +199,71 @@ def emit_usage_metric(
         logger.warning(
             f"[usage] emit failed conv={conv_id} model={model_name}: {e}"
         )
+
+
+def emit_context_usage(
+    conv_id: str,
+    total_tokens: int,
+    context_window: int = 0,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    model_name: str = "",
+    system_prompt_tokens: int = 0,
+    history_tokens: int = 0,
+    user_message_tokens: int = 0,
+    layer_tokens: Optional[Dict[str, int]] = None,
+) -> None:
+    """推送**当前上下文空间占用**快照到已注册回调（供环形图展示当前占用）。
+
+    注意与 emit_usage_metric 的区别：
+    - emit_usage_metric: 累计 LLM 调用 token 消耗（prompt+completion 累加），用于
+      会话级用量/成本统计。
+    - emit_context_usage: 反映**当前这一轮真正加载进上下文的 message+tool 占用**，
+      是「当前上下文窗口已用/占比」而非累计消耗。非累计，每次为独立快照。
+
+    除整体占用外，还携带明细分类（供前端环形图 tooltip 与详情抽屉展示）：
+    - prompt_tokens: 全部消息 token（system + history + 当前用户消息）
+    - completion_tokens: 工具列表 token
+    - system_prompt_tokens / history_tokens / user_message_tokens: 消息内部分类
+    - layer_tokens: 分层 hot/warm/cold 的 token 占用
+
+    明细统一写入 by_model["__context_detail__"]，由回调读取后透传给 SSE payload。
+    若传入 context_window>0 一并写入，否则回调按 last_model_name 自行估算。
+    """
+    if not conv_id:
+        return
+    try:
+        usage = ConversationUsage(conv_id=conv_id)
+        usage.total_tokens = int(total_tokens or 0)
+        usage.total_prompt_tokens = int(prompt_tokens or 0)
+        usage.total_completion_tokens = int(completion_tokens or 0)
+        usage.total_llm_calls = 1
+        usage.last_model_name = model_name or ""
+        if context_window and context_window > 0:
+            usage.by_model["__context_window__"] = int(context_window)
+        usage.by_model["__context_detail__"] = {
+            "prompt": int(prompt_tokens or 0),
+            "completion": int(completion_tokens or 0),
+            "system": int(system_prompt_tokens or 0),
+            "history": int(history_tokens or 0),
+            "user_msg": int(user_message_tokens or 0),
+            "tools": int(completion_tokens or 0),
+            "layers": {
+                "hot": int((layer_tokens or {}).get("hot") or 0),
+                "warm": int((layer_tokens or {}).get("warm") or 0),
+                "cold": int((layer_tokens or {}).get("cold") or 0),
+            },
+        }
+        callback = _usage_callbacks.get(conv_id)
+        if callback is not None:
+            try:
+                callback(usage)
+            except Exception as cb_err:  # noqa: BLE001
+                logger.warning(
+                    f"[usage] context callback failed conv={conv_id}: {cb_err}"
+                )
+    except Exception as e:
+        logger.warning(f"[usage] emit_context failed conv={conv_id}: {e}")
 
 
 def get_in_memory_usage(conv_id: str) -> Optional[ConversationUsage]:

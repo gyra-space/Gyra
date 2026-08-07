@@ -171,30 +171,19 @@ class SubagentCoordinator:
     async def _emit_board_event(
         self, main_conv_id: str, handles: List[SubAgentHandle]
     ) -> None:
-        """状态变更时推 d-subagent-board 围栏到主会话（全量重写，仿 d-todo-list 模式）。
+        """状态变更时推 subagent_board dock widget 到主会话（全量重写）。
 
         在 register/done/failed 的 _write_pending 之后调用，把当前所有子任务状态
-        合成一帧 d-subagent-board VIS 围栏，经 str 透传通道推送到主会话消息队列，
-        前端 onMessage 拦截围栏后更新顶部固定面板。
+        合成一个 subagent_board dock widget，经 gpts_memory.push_dock_widget
+        推送到主会话，前端按 type 注册表渲染（Composer Dock 协议）。
         """
         try:
-            from gyra.vis.base import Vis
-
-            vis = Vis.of("subagent_board")
-            if vis is None:
-                return
             items = await self.list_subagent_items(main_conv_id)
-            completed = sum(1 for it in items if it["status"] in ("done", "failed"))
-            content = {
-                "uid": f"subagent_board_{main_conv_id}",
-                "type": "all",
-                "items": items,
-                "total_count": len(items),
-                "completed_count": completed,
-            }
-            fence = vis.sync_display(content=content)
-            await self._agent_chat.memory.push_message(
-                conv_id=main_conv_id, stream_msg=fence, incr_type="all"
+            if not self._agent_chat.memory:
+                return
+            widget = build_subagent_board_widget(items, main_conv_id)
+            await self._agent_chat.memory.push_dock_widget(
+                conv_id=main_conv_id, widget=widget
             )
         except Exception as e:
             logger.warning(
@@ -417,3 +406,24 @@ def set_subagent_coordinator(coordinator: Optional["SubagentCoordinator"]) -> No
 def get_subagent_coordinator() -> Optional["SubagentCoordinator"]:
     """获取全局 coordinator。未注册返回 None。"""
     return _global_coordinator
+
+
+def build_subagent_board_widget(items: List[Dict[str, Any]], main_conv_id: str) -> dict:
+    """构建输入区 Dock 的 subagent_board widget（Composer Dock 协议）。
+
+    取代旧的 d-subagent-board 围栏字符串：生产者直接调 gpts_memory.push_dock_widget
+    投递本 widget，前端按 type 注册表渲染，不再需要字符串拦截。
+    """
+    completed = sum(1 for it in items if it["status"] in ("done", "failed"))
+    return {
+        "id": f"subagent_board_{main_conv_id}",
+        "type": "subagent_board",
+        "kind": "replace",
+        "payload": {
+            "uid": f"subagent_board_{main_conv_id}",
+            "type": "all",
+            "items": items,
+            "total_count": len(items),
+            "completed_count": completed,
+        },
+    }

@@ -150,6 +150,12 @@ class SpawnAgentTaskTool(ToolBase):
             conv_id = ""
             if context is not None:
                 conv_id = getattr(context, "conversation_id", "") or ""
+                if not conv_id:
+                    # v1 框架下 tool_action 约定 context 即 agent 本身，
+                    # 从 agent.agent_context 取 conv_id；缺失会导致
+                    # AsyncTaskCoordinator 无法按会话跟踪该任务（台账卡 running）
+                    agent_ctx = getattr(context, "agent_context", None)
+                    conv_id = getattr(agent_ctx, "conv_id", "") or ""
 
             # 统一单例下 subagent 任务需经 delegate 委派；若 context 提供
             # subagent_delegate_factory，则用其构造委派协程（否则回退 manager 内置
@@ -267,6 +273,12 @@ class CheckTasksTool(ToolBase):
                 if hasattr(context, "get_resource")
                 else None
             )
+        if not manager:
+            # 与 spawn_agent_task 一致回退进程级统一单例：
+            # 任务提交到该单例，查询/等待/取消必须查同一实例
+            from ....util.async_task_manager import AsyncTaskManager
+
+            manager = AsyncTaskManager.media_instance()
 
         if not manager:
             return ToolResult.fail(
@@ -338,6 +350,12 @@ class WaitTasksTool(ToolBase):
                 if hasattr(context, "get_resource")
                 else None
             )
+        if not manager:
+            # 与 spawn_agent_task 一致回退进程级统一单例：
+            # 任务提交到该单例，查询/等待/取消必须查同一实例
+            from ....util.async_task_manager import AsyncTaskManager
+
+            manager = AsyncTaskManager.media_instance()
 
         if not manager:
             return ToolResult.fail(
@@ -427,6 +445,12 @@ class CancelTaskTool(ToolBase):
                 if hasattr(context, "get_resource")
                 else None
             )
+        if not manager:
+            # 与 spawn_agent_task 一致回退进程级统一单例：
+            # 任务提交到该单例，查询/等待/取消必须查同一实例
+            from ....util.async_task_manager import AsyncTaskManager
+
+            manager = AsyncTaskManager.media_instance()
 
         if not manager:
             return ToolResult.fail(

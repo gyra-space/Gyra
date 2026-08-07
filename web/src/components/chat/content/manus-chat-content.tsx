@@ -12,9 +12,7 @@ import { LeftOutlined, DesktopOutlined, CloseOutlined } from '@ant-design/icons'
 import classNames from 'classnames';
 import { ee, EVENTS } from '@/utils/event-emitter';
 import markdownComponents, { markdownPlugins } from '@/components/chat/chat-content-components/config';
-import VisSystemEvents from '@/components/chat/chat-content-components/VisComponents/VisSystemEvents';
-import VisTodoList from '@/components/chat/chat-content-components/VisComponents/VisTodoList';
-import VisSubagentBoard from '@/components/chat/chat-content-components/VisComponents/VisSubagentBoard';
+import DockPanel from '@/components/chat/dock/dock-panel';
 import { GPTVis } from '@antv/gpt-vis';
 import { useSearchParams } from 'next/navigation';
 
@@ -89,9 +87,11 @@ function useRunningWindows(
   stepRunningWindowMap: Map<string, string>;
   isLazyLoading: boolean;
   metaWindow: { total_steps?: number; visible_steps?: number; evicted_steps?: number } | null;
+  latestActiveStepId: string | null;
 } {
   return useMemo(() => {
     let latestRunningWindow = '';
+    let latestActiveStepId: string | null = null;
     const fileMap = new Map<string, string>();
     const stepMap = new Map<string, string>();
     let isLazyLoading = false;
@@ -135,6 +135,10 @@ function useRunningWindows(
             if (data.lazy_loading) {
               isLazyLoading = true;
             }
+            // 跟踪最新 active step id,供流式阶段判断「新步骤开始」(同步骤的增量 chunk 不应清 override)
+            if (data.active_step?.id) {
+              latestActiveStepId = data.active_step.id;
+            }
 
             // Index deliverable files
             for (const f of data.deliverable_files || []) {
@@ -167,6 +171,7 @@ function useRunningWindows(
       stepRunningWindowMap: stepMap,
       isLazyLoading,
       metaWindow,
+      latestActiveStepId,
     };
   }, [showMessages]);
 }
@@ -215,7 +220,7 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
   const searchParams = useSearchParams();
   const shareMode = (searchParams?.get('share_mode') as ShareMode) || null;
   const isSharedView = !!shareMode;
-  const { history, replyLoading, todoList, subagentBoard, appInfo, handleChat } = useContext(ChatContentContext);
+  const { history, replyLoading, dockWidgets, appInfo, handleChat } = useContext(ChatContentContext);
   const [userClosedPanel, setUserClosedPanel] = useState(false);
   const [overrideRunningWindow, setOverrideRunningWindow] = useState<string | null>(null);
   // 状态事件 badge 数据(由 SystemEventsBridge 从消息流中桥接出来)
@@ -245,7 +250,7 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
     }));
   }, [history]);
 
-  const { latestRunningWindow, latestHasData, fileRunningWindowMap, stepRunningWindowMap, isLazyLoading, metaWindow } = useRunningWindows(showMessages);
+  const { latestRunningWindow, latestHasData, fileRunningWindowMap, stepRunningWindowMap, isLazyLoading, metaWindow, latestActiveStepId } = useRunningWindows(showMessages);
 
   // The running window shown in right panel: override (from deliverable click) or latest
   const displayRunningWindow = overrideRunningWindow || latestRunningWindow;
@@ -353,19 +358,24 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
     };
   }, [stepRunningWindowMap, displayRunningWindow, isLazyLoading]);
 
-  // When new streaming data arrives, auto-open panel and reset override
+  // 流式数据到达时:自动展开右面板;但手动 override 只在「新步骤开始(active step id 变化)」时清。
+  // 之前每个增量 chunk 都清 override,导致流式阶段点步骤右侧不变(被下个 chunk 立即覆盖)。
   const prevLatestRef = useRef(latestRunningWindow);
+  const prevActiveStepRef = useRef<string | null>(null);
   useEffect(() => {
-    if (prevLatestRef.current !== latestRunningWindow) {
-      prevLatestRef.current = latestRunningWindow;
+    if (prevActiveStepRef.current !== latestActiveStepId) {
+      prevActiveStepRef.current = latestActiveStepId;
       if (replyLoading) {
         setOverrideRunningWindow(null);
       }
+    }
+    if (prevLatestRef.current !== latestRunningWindow) {
+      prevLatestRef.current = latestRunningWindow;
       if (latestHasData) {
         setUserClosedPanel(false);
       }
     }
-  }, [latestRunningWindow, latestHasData, replyLoading]);
+  }, [latestActiveStepId, latestRunningWindow, latestHasData, replyLoading]);
 
   // Auto-scroll
   useEffect(() => {
@@ -388,13 +398,22 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
   const showInput = !isSharedView;
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-[#f7f7f8] dark:bg-[#151622]">
+    // 小屏(<1536px)整体 zoom:0.9:字体/组件等比缩小换取内容空间;zoom 只缩放 px 长度,
+    // % 布局不受影响(已验证 h-full 容器无空隙)。
+    // 用注入 <style> 而非 tailwind arbitrary class:本项目 tailwind important:true,
+    // 场景空间(scene-workspace.css)需要用普通选择器复原嵌套场景下的双重缩放。
+    <div className="manus-chat-root flex h-full w-full overflow-hidden bg-[#f7f7f8] dark:bg-[#151622]">
+      <style dangerouslySetInnerHTML={{ __html: `
+        @media (max-width: 1535px) {
+          .manus-chat-root { zoom: 0.9; }
+        }
+      `}} />
       {/* ═══ Left panel — conversation on canvas ═══ */}
       {showLeftPanel && (
         <div className={classNames(
           'flex flex-col h-full transition-all duration-300 ease-out',
           isRightPanelVisible
-            ? (shareMode as string) === 'report' ? 'hidden' : 'w-[38%] min-w-[340px]'
+            ? (shareMode as string) === 'report' ? 'hidden' : 'w-[44%] min-w-[300px] 2xl:w-[38%] 2xl:min-w-[340px]'
             : 'flex-1'
         )}>
           {/* Left header */}
@@ -457,28 +476,25 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
           </div>
           {showInput && (
             <div className={classNames("flex-shrink-0 pb-4 pt-2 px-4", !isRightPanelVisible && "max-w-3xl mx-auto w-full")}>
-              {/* 状态事件 badge 区 — 固定在输入框上方。
-                  is_running 与流式状态联动兜底:流结束后即使后端未推终态,
-                  也不再显示"转圈"。 */}
-              {systemEvents && (
-                <div className="w-full mb-2">
-                  <VisSystemEvents
-                    data={{ ...systemEvents, is_running: !!systemEvents.is_running && isProcessing }}
-                  />
-                </div>
-              )}
-              {todoList && todoList.items && todoList.items.length > 0 && (
-                <div className="w-full mb-2">
-                  <VisTodoList data={todoList} />
-                </div>
-              )}
-              {subagentBoard && subagentBoard.items && subagentBoard.items.length > 0 && (
-                <div className="w-full mb-2">
-                  <VisSubagentBoard data={subagentBoard} />
-                </div>
-              )}
               <div className="w-full">
-                <UnifiedChatInput ctrl={ctrl} showFloatingActions={hasMessages} />
+                {/* Composer Dock：tab 栏内嵌输入框卡片顶部，无缝一体（状态事件 / todo_list / subagent_board）。
+                    is_running 与流式状态联动兜底:流结束后即使后端未推终态,
+                    也不再显示"转圈"。 */}
+                <UnifiedChatInput
+                  ctrl={ctrl}
+                  showFloatingActions={hasMessages}
+                  topSlot={
+                    <DockPanel
+                      widgets={dockWidgets || {}}
+                      systemEvents={
+                        systemEvents
+                          ? { ...systemEvents, is_running: !!systemEvents.is_running && isProcessing }
+                          : null
+                      }
+                      embedded
+                    />
+                  }
+                />
               </div>
             </div>
           )}
@@ -490,7 +506,7 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
         <div
           className={classNames(
             'h-full transition-all duration-300 ease-out pt-2 pr-2 pb-2',
-            shareMode === 'report' ? 'flex-1 pl-2' : 'w-[62%] min-w-[480px]'
+            shareMode === 'report' ? 'flex-1 pl-2' : 'w-[56%] min-w-[400px] 2xl:w-[62%] 2xl:min-w-[480px]'
           )}
         >
           <div

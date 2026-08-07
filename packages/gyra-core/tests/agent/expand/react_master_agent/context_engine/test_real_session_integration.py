@@ -185,7 +185,7 @@ async def test_real_memory_multiturn_context_preserved():
 
 @pytest.mark.asyncio
 async def test_real_memory_long_session_triggers_cold_handoff():
-    """长会话触发 cold 压缩，产出单条 handoff，且不丢当前轮。"""
+    """长会话触发 cold 压缩，产出单条 handoff（当前轮不再特殊保留，统一参与压缩）。"""
     memory = GptsMemory()
     session = "sess_real_4"
 

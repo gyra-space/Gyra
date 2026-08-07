@@ -45,6 +45,16 @@ def _require_model_manage():
 
 def _load_agent_llm_config() -> Optional[Dict[str, Any]]:
     """Load agent_llm configuration from the canonical sources."""
+    # 数据库为准：模型/LLM 配置存储在数据库中（分布式多节点共享）。
+    try:
+        from gyra_app.config_storage.agent_llm_db_storage import load_agent_llm_dict
+
+        db_data = load_agent_llm_dict()
+        if db_data:
+            return _normalize_agent_llm(db_data)
+    except Exception as e:
+        logger.warning(f"Failed to load agent_llm from database: {e}")
+
     # Prefer the JSON config manager (matches what the UI edits).
     try:
         from gyra_core.config import ConfigManager

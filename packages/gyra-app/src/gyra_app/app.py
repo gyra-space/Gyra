@@ -463,6 +463,33 @@ def _sync_feature_plugins_from_db():
         logger.warning("Failed to sync feature_plugins from database: %s", e)
 
 
+def _sync_agent_llm_from_db():
+    """Overlay agent_llm (模型/LLM 配置) from the database before startup sync.
+
+    Model/LLM config is stored in the database as the source of truth so that
+    distributed deployments share the same configuration. This must run before
+    ``_sync_app_config_to_system_app`` so the DB value is picked up for
+    system_app.config and ModelConfigCache.
+    """
+    try:
+        from gyra_core.config import ConfigManager
+        from gyra_app.config_storage.agent_llm_db_storage import (
+            apply_agent_llm_dict,
+        )
+
+        cfg = ConfigManager.get()
+        if cfg is None:
+            return
+        applied = apply_agent_llm_dict(cfg)
+        if applied:
+            logger.info(
+                "AgentLLM config synced from database "
+                "(%d providers)", len(cfg.agent_llm.providers)
+            )
+    except Exception as e:
+        logger.warning("Failed to sync agent_llm from database: %s", e)
+
+
 def _sync_app_config_to_system_app():
     """Sync JSON config (agent_llm, default_model, etc.) to system_app.config on startup.
 
@@ -742,6 +769,7 @@ def initialize_app(param: ApplicationConfig, app: FastAPI, system_app: SystemApp
 
     _sync_oauth2_config_from_db()
     _sync_feature_plugins_from_db()
+    _sync_agent_llm_from_db()
 
     _sync_app_config_to_system_app()
 

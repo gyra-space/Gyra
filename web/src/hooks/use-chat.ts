@@ -7,6 +7,7 @@ import { App } from 'antd';
 import { useCallback, useState } from 'react';
 import { VisParser } from '@/utils/parse-vis';
 import type { UsageMetrics } from '@/types/context-metrics';
+import type { DockFrame } from '@/components/chat/dock/dock-types';
 
 export type WorkspaceEventType =
   | 'task_created'
@@ -38,6 +39,8 @@ type ChatParams = {
   onDone?: () => void;
   onError?: (content: string, error?: Error) => void;
   onWorkspaceEvent?: (event: WorkspaceEvent) => void;
+  /** Composer Dock 协议：输入框上方固定区域渲染数据帧。 */
+  onDock?: (frame: DockFrame) => void;
 };
 
 export function parseChunkData(
@@ -64,7 +67,7 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
   const [usageMetrics, setUsageMetrics] = useState<UsageMetrics | null>(null);
 
   const chatV1 = useCallback(
-    async ({ data, onMessage, onClose, onDone, onError, onWorkspaceEvent, ctrl }: ChatParams) => {
+    async ({ data, onMessage, onClose, onDone, onError, onWorkspaceEvent, onDock, ctrl }: ChatParams) => {
       ctrl && setCtrl(ctrl);
       if (!data?.user_input && !data?.doc_id) {
         message.warning(i18n.t('no_context_tip'));
@@ -154,6 +157,12 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
                   onWorkspaceEvent?.(vis as WorkspaceEvent);
                   return;
                 }
+              }
+
+              // Composer Dock 协议：输入框上方固定区域数据帧，原样回调由上层合并渲染
+              if (parsedData?.dock) {
+                onDock?.(parsedData.dock);
+                return;
               }
 
               if (!isIncremental) {

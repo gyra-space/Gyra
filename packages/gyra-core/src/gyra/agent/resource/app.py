@@ -86,8 +86,7 @@ class AppResource(Resource[ResourceParameters]):
                 for app in apps
             ]
 
-            app_code: str = dataclasses.field(
-                metadata={
+            app_code: str = dataclasses.field(                metadata={
                     "help": _("App code"),
                     "valid_values": valid_values,
                 },
@@ -139,8 +138,17 @@ class AppResource(Resource[ResourceParameters]):
             ) -> ResourceParameters:
                 """Create a new instance from a dictionary."""
                 copied_data = data.copy()
-                if "app_code" not in copied_data and "value" in copied_data:
-                    copied_data["app_code"] = copied_data.pop("value")
+                if "app_code" not in copied_data:
+                    if "value" in copied_data:
+                        copied_data["app_code"] = copied_data.pop("value")
+                    elif "key" in copied_data:
+                        # 兼容前端资源选择器统一用 key 字段存储 app_code 的格式
+                        copied_data["app_code"] = copied_data.pop("key")
+                if "app_name" not in copied_data and "name" in copied_data:
+                    # 前端资源选择器用 name 字段存储 app 名称
+                    copied_data["app_name"] = copied_data["name"]
+                if "app_describe" not in copied_data and "description" in copied_data:
+                    copied_data["app_describe"] = copied_data["description"]
                 if "name" not in copied_data:
                     copied_data["name"] = copied_data["app_name"]
                 return super().from_dict(

@@ -282,12 +282,32 @@ class DorisConnector(RDBMSConnector):
             results = cursor.fetchall()
             return [x[0] for x in results]
 
-    def get_indexes(self, table_name):
-        """Get table indexes about specified table."""
+    def get_indexes(self, table_name: str) -> List[Dict]:
+        """Get table indexes about specified table.
+
+        Returns a list of dicts (name, column_names, unique) matching the
+        base connector contract. ``SHOW INDEX`` yields one row per indexed
+        column, so rows are grouped by index name.
+        """
         with self.session_scope() as session:
             cursor = session.execute(text(f"SHOW INDEX FROM {table_name}"))
-            indexes = cursor.fetchall()
-            return [(index[2], index[4]) for index in indexes]
+            rows = cursor.fetchall()
+
+        # SHOW INDEX columns: Table, Non_unique, Key_name, Seq_in_index,
+        # Column_name, ...  -> group columns by Key_name.
+        by_name: Dict[str, Dict] = {}
+        for row in rows:
+            key_name = row[2]
+            entry = by_name.get(key_name)
+            if entry is None:
+                entry = {
+                    "name": key_name,
+                    "column_names": [],
+                    "unique": row[1] == 0,
+                }
+                by_name[key_name] = entry
+            entry["column_names"].append(row[4])
+        return list(by_name.values())
 
     def get_table_info(self, table_names: Optional[List[str]] = None) -> str:
         """Get information about specified tables."""

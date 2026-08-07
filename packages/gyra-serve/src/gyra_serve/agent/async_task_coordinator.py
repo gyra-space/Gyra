@@ -226,7 +226,35 @@ class AsyncTaskCoordinator:
                 continue
         # 兜底看台账
         items = await self._read_pending(conv_id)
+        # 交叉校验自愈：台账里的非终态条目若在 manager 中已到终态（如任务
+        # conv_id 缺失导致 _poll_completed 漏消费），就地回写终态，避免
+        # 台账永久卡 running 使会话永远 WAITING、后续追问全走 resume 路径。
+        changed = False
+        for it in items:
+            if self._is_terminal(it.get("status", "")):
+                continue
+            status = self._find_task_status(it.get("task_id", ""))
+            if status and self._is_terminal(status):
+                it["status"] = status
+                it["finished_at"] = time.time()
+                changed = True
+        if changed:
+            await self._write_pending(conv_id, items)
         return any(not self._is_terminal(i.get("status", "")) for i in items)
+
+    def _find_task_status(self, task_id: str) -> str:
+        """跨已注册 manager 按 task_id 查任务状态；未找到返回 ""。"""
+        if not task_id:
+            return ""
+        for mgr in list(self._managers):
+            try:
+                statuses = mgr.get_all_status()
+            except Exception:  # noqa: BLE001
+                continue
+            summary = statuses.get(task_id)
+            if summary:
+                return summary.get("status", "")
+        return ""
 
     async def _update_pending_terminal(
         self, conv_id: str, states: List[Any]

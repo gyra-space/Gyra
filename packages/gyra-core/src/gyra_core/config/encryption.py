@@ -146,18 +146,36 @@ def get_secrets_file_path() -> Path:
 
 
 def load_secrets() -> Dict[str, str]:
-    """从加密文件加载密钥"""
+    """从加密存储加载密钥（数据库为准，无则回退本地加密文件）"""
     global _secrets_cache
 
     if _secrets_cache:
         return _secrets_cache
 
+    encryption = SecretsEncryption()
+
+    # 数据库为准：先尝试从数据库读取加密密钥（分布式多节点共享）。
+    try:
+        from gyra_app.config_storage.secrets_db_storage import load_encrypted_secrets
+
+        db_data = load_encrypted_secrets()
+        if db_data:
+            _secrets_cache = {}
+            for name, encrypted_value in db_data.items():
+                if encrypted_value:
+                    decrypted = encryption.decrypt(str(encrypted_value))
+                    if decrypted:
+                        _secrets_cache[name] = decrypted
+            return _secrets_cache
+    except Exception as e:
+        logger.warning(f"Failed to load secrets from database, fallback to file: {e}")
+
+    # 回退：本地加密文件（迁移路径，首次保存后会写入数据库）。
     secrets_file = get_secrets_file_path()
     if not secrets_file.exists():
         return {}
 
     try:
-        encryption = SecretsEncryption()
         content = secrets_file.read_text()
 
         import json
@@ -178,7 +196,7 @@ def load_secrets() -> Dict[str, str]:
 
 
 def save_secrets(secrets: Dict[str, str]) -> bool:
-    """保存密钥到加密文件"""
+    """保存密钥到加密存储（数据库为准，同时写本地文件备份）"""
     global _secrets_cache
 
     try:
@@ -189,17 +207,34 @@ def save_secrets(secrets: Dict[str, str]) -> bool:
             if value:
                 data[name] = encryption.encrypt(value)
 
-        secrets_file = get_secrets_file_path()
-        secrets_file.parent.mkdir(parents=True, exist_ok=True)
+        # 数据库为准（分布式共享）
+        db_saved = False
+        try:
+            from gyra_app.config_storage.secrets_db_storage import (
+                save_encrypted_secrets,
+            )
 
-        import json
+            db_saved = save_encrypted_secrets(data)
+        except Exception as e:
+            logger.warning(f"Failed to save secrets to database: {e}")
 
-        secrets_file.write_text(json.dumps(data, indent=2))
-        secrets_file.chmod(0o600)
+        # 写本地文件作为备份（不影响数据库保存结果）
+        file_saved = False
+        try:
+            secrets_file = get_secrets_file_path()
+            secrets_file.parent.mkdir(parents=True, exist_ok=True)
+
+            import json
+
+            secrets_file.write_text(json.dumps(data, indent=2))
+            secrets_file.chmod(0o600)
+            file_saved = True
+            logger.info(f"Saved {len(secrets)} secrets backup to {secrets_file}")
+        except Exception as e:
+            logger.error(f"Failed to save secrets backup file: {e}")
 
         _secrets_cache = secrets.copy()
-        logger.info(f"Saved {len(secrets)} secrets to {secrets_file}")
-        return True
+        return db_saved or file_saved
     except Exception as e:
         logger.error(f"Failed to save secrets: {e}")
         return False

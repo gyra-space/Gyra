@@ -32,7 +32,7 @@ from gyra.agent import (
     ShortTermMemory,
 )
 from gyra.agent.core.agent_alias import AgentAliasManager, resolve_agent_name
-from gyra.agent.core.base_team import ManagerAgent
+from gyra.agent.core.base_team import ManagerAgent, Team
 from gyra.agent.core.memory.gpts import GptsMessage
 from gyra.agent.core.plan.react.team_react_plan import AutoTeamContext
 from gyra.agent.core.sandbox_manager import SandboxManager
@@ -264,6 +264,18 @@ def format_workspace_event(event_type: str, payload: dict) -> str:
 def _format_vis_msg(msg: str):
     content = json.dumps({"vis": msg}, default=serialize, ensure_ascii=False)
     return f"data:{content} \n"
+
+
+def _serialize_stream_chunk(chunk: Any) -> str:
+    """把通道里读到的 chunk 序列化成 SSE data 帧。
+
+    - dock 帧（dict 且含 "dock" 键）：已是顶层 `{"dock": ...}` 信封，按原样输出，
+      不再包一层 `{"vis": ...}`（Composer Dock 协议）。
+    - 其余 chunk：包成 `{"vis": ...}` 信封（对话流渲染，保持原逻辑）。
+    """
+    if isinstance(chunk, dict) and "dock" in chunk:
+        return orjson.dumps(chunk).decode("utf-8")
+    return orjson.dumps({"vis": chunk}).decode("utf-8")
 
 
 async def _register_memory_curator_cron(system_app: Any, space_slug: str) -> None:
@@ -1632,7 +1644,7 @@ class AgentChat(BaseComponent, ABC):
                     last_chunk_time = current_ms()
                     if chunk and len(chunk) > 0:
                         try:
-                            content = orjson.dumps({"vis": chunk}).decode("utf-8")
+                            content = _serialize_stream_chunk(chunk)
                             if WRITE_TO_FILE:
                                 file_handle.write(content)
                                 file_handle.write("\n")
@@ -1681,11 +1693,7 @@ class AgentChat(BaseComponent, ABC):
                         if not first_chunk_time:
                             yield task, "", agent_conv_id
                         try:
-                            content = json.dumps(
-                                {"vis": chunk},
-                                default=serialize,
-                                ensure_ascii=False,
-                            )
+                            content = _serialize_stream_chunk(chunk)
                             if WRITE_TO_FILE:
                                 file_handle.write(content)
                                 file_handle.write("\n")
@@ -2082,6 +2090,17 @@ class AgentChat(BaseComponent, ABC):
                         .bind(ExtConfigHolder(ext_config=app.ext_config))
                         .bind(scheduler)
                         .build()
+                    )
+
+                # 标准 Team Agent 场景：将已构建的子 Agent 雇佣到主 Agent（.agents），
+                # 使子 Agent 以团队成员形式派发（send/receive、async 委派等）。
+                # 注意：仅当主 Agent 为 Team 且 employees 非空时雇佣，避免 len==1 时
+                # 把子 Agent 又 hire 到自己（self-reference）。
+                if isinstance(recipient, Team) and employees:
+                    recipient.hire(employees)
+                    logger.info(
+                        f"[AgentChat] hired {len(employees)} sub-agent(s) into "
+                        f"{recipient.name}: {[a.agent_context.agent_app_code or a.name for a in employees]}"
                     )
 
                 # 诊断日志：检查 resource_map
@@ -2528,9 +2547,15 @@ class AgentChat(BaseComponent, ABC):
             elif TeamMode.AUTO_PLAN == team_mode:
                 agent_manager = get_agent_manager()
                 auto_team_ctx = app.team_context
+                # team_context 可能是 dict（sync_app_detail 序列化后）或 AutoTeamContext 对象
+                teamleader = (
+                    auto_team_ctx.get("teamleader")
+                    if isinstance(auto_team_ctx, dict)
+                    else getattr(auto_team_ctx, "teamleader", None)
+                )
 
                 manager_cls: Type[ConversableAgent] = agent_manager.get_by_name(
-                    auto_team_ctx.teamleader
+                    teamleader
                 )
                 manager = manager_cls()
 
@@ -3475,12 +3500,18 @@ class AgentChat(BaseComponent, ABC):
 
                 def _push_usage_metric_sse(usage):
                     try:
-                        context_window = get_context_window(usage.last_model_name)
+                        # 优先使用快照显式携带的 context_window；否则按模型名估算
+                        context_window = usage.by_model.get("__context_window__")
+                        if not context_window:
+                            context_window = get_context_window(usage.last_model_name)
+                        context_window = int(context_window or 0)
                         ratio = (
                             usage.total_tokens / context_window
                             if context_window > 0
                             else 0.0
                         )
+                        # 明细分类（分层/工具占比等），由 emit_context_usage 写入
+                        detail = usage.by_model.get("__context_detail__") or {}
                         cache.channel.put_nowait(
                             {
                                 "type": "usage_metric",
@@ -3490,6 +3521,12 @@ class AgentChat(BaseComponent, ABC):
                                     "completion": usage.total_completion_tokens,
                                     "context_window": context_window,
                                     "ratio": ratio,
+                                    "system": detail.get("system") or 0,
+                                    "history": detail.get("history") or 0,
+                                    "user_msg": detail.get("user_msg") or 0,
+                                    "tools": detail.get("tools") or 0,
+                                    "layers": detail.get("layers")
+                                    or {"hot": 0, "warm": 0, "cold": 0},
                                 },
                             }
                         )
@@ -3974,6 +4011,9 @@ class AgentChat(BaseComponent, ABC):
         gpts_memory = GptsMemory(
             plans_memory=MetaGyrasPlansMemory(),
             message_memory=MetaGyrasMessageMemory(),
+            todo_db_storage=MetaGyrasTodoStorage(),
+            # 重算 vis_final 需要交付/任务文件列表，回源 DB 文件元数据
+            file_metadata_db_storage=MetaGyrasFileMetadataStorage(),
         )
         try:
             gpts_conversation: GptsConversationsEntity = (
@@ -4025,15 +4065,51 @@ class AgentChat(BaseComponent, ABC):
             #     logger.warning(f"查询会话时，恢复agent对象异常！{str(e)}")
 
             # 返回对应协议的最终消息内容
+            # 6th 返回值：dock 帧（Composer Dock 协议），从专用表回放 todo 等
+            # 输入区 widget，重开会话时可恢复 todo 面板。
+            dock = await self._build_dock_frame(gpts_memory, conv_id)
             return (
                 await gpts_memory.vis_final(conv_id),
                 await gpts_memory.user_answer(conv_id),
                 current_vis_render,
                 is_final,
                 gpts_conversation.state,
+                dock,
             )
         finally:
             await gpts_memory.clear(conv_id)
+
+    async def _build_dock_frame(self, gpts_memory: GptsMemory, conv_id: str) -> dict:
+        """从领域存储回放输入区 Dock widget，组装成统一 dock 帧。
+
+        目前回放 todo_list 与 subagent_board；后续新增 widget 在此追加即可。
+        无任何 widget 时返回空帧 `{"version": 1, "widgets": []}`。
+        """
+        widgets: List[dict] = []
+        try:
+            from gyra.agent.tools.builtin.todo.todo_reminder import build_todo_widget
+
+            todos = await gpts_memory.read_todos(conv_id)
+            if todos:
+                widgets.append(build_todo_widget(todos, conv_id))
+        except Exception as e:
+            logger.warning(f"[dock] build todo widget failed: {e}")
+
+        try:
+            from gyra_serve.agent.subagent_coordinator import (
+                build_subagent_board_widget,
+                get_subagent_coordinator,
+            )
+
+            coordinator = get_subagent_coordinator()
+            if coordinator is not None:
+                items = await coordinator.list_subagent_items(conv_id)
+                if items:
+                    widgets.append(build_subagent_board_widget(items, conv_id))
+        except Exception as e:
+            logger.warning(f"[dock] build subagent_board widget failed: {e}")
+
+        return {"version": 1, "widgets": widgets}
 
     async def query_step_detail(
         self, conv_id: str, step_uid: str,

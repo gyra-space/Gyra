@@ -19,8 +19,8 @@ class GptAppResource(AppResource):
 
         self._app_code = app_code
         self._app_name = kwargs.get("app_name")
-        self._app_icon = kwargs.get("app_icon")
-        self._app_desc = kwargs.get("app_desc")
+        self._app_icon = kwargs.get("app_icon") or kwargs.get("icon")
+        self._app_desc = kwargs.get("app_desc") or kwargs.get("app_describe")
 
     @property
     def app_code(self) -> str:
@@ -86,6 +86,7 @@ class GptAppResource(AppResource):
         sender: ConversableAgent,
         conv_uid: Optional[str] = None,
         parent_depth: Optional[int] = None,
+        extra_info: Optional[dict] = None,
     ) -> AgentMessage:
         """Start App By AppResource.
 
@@ -93,9 +94,12 @@ class GptAppResource(AppResource):
             parent_depth: 父 agent 的 subagent_depth。传入时，子 agent 的
                 AgentContext.extra["subagent_depth"] = parent_depth + 1。
                 None 时不写入（保持默认 0）。
+            extra_info: 父 agent 传来的附加元数据。其中的 ``media``（dict）会写入
+                子 agent 收到的 ``AgentMessage.context``，供多媒体 Agent 读取生成参数
+                （kind/model/size/resolution/duration 等）。
         """
         conv_uid = str(uuid.uuid4()) if conv_uid is None else conv_uid
-        gpts_app = get_app_manager().get_app(self._app_code)
+        gpts_app = await get_app_manager().get_app(self._app_code)
 
         child_context: Optional[AgentContext] = None
         if parent_depth is not None:
@@ -129,6 +133,7 @@ class GptAppResource(AppResource):
             current_goal=user_input,
             context={
                 "conv_uid": conv_uid,
+                **(extra_info or {}),
             },
             rounds=0,
         )

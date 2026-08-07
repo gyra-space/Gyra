@@ -18,6 +18,7 @@ from ...core.subagent_handle import MAX_SUBAGENT_DEPTH, SubagentDepthExceededErr
 
 from gyra.agent.resource import ToolParameter, FunctionTool
 from gyra.agent.tools.context import ToolContext
+from gyra.agent.resource.app import AppResource
 from ...core.schema import Status, ActionInferenceMetrics
 
 _AGENT_START_PROMPT = """\
@@ -69,6 +70,103 @@ class AgentAction(Action[AgentActionInput]):
             "action_report": init_action_outs
         }, )
 
+    def _resolve_app_code(self, sender, agent_name: str) -> Optional[str]:
+        """在 sender 的 app 资源中按名称或 code 解析目标子 Agent 的 app_code。
+
+        优先新协议 capability_pack（AppCapability），fallback 旧 resource_map
+        （GptAppResource/AppResource）。单 Agent（BAIZE）无 `.agents` 团队成员，
+        子 Agent 以此派发。找不到返回 None。
+        """
+        # 新协议：capability_pack.sub_resources 中的 AppCapability
+        pack = getattr(sender, "capability_pack", None)
+        if pack is not None and hasattr(pack, "sub_resources"):
+            for cap in pack.sub_resources:
+                cid = getattr(cap, "capability_id", "") or ""
+                if not cid.startswith("app"):
+                    continue
+                code = getattr(cap, "_app_code", "") or ""
+                name = getattr(cap, "_app_name", "") or ""
+                if agent_name in (code, name):
+                    return code
+        # 旧协议：resource_map 中的 AppResource
+        for resources in (getattr(sender, "resource_map", None) or {}).values():
+            for res in resources or []:
+                if not isinstance(res, AppResource):
+                    continue
+                code = getattr(res, "app_code", "") or ""
+                name = getattr(res, "app_name", "") or getattr(res, "name", "") or ""
+                if agent_name in (code, name):
+                    return code
+        return None
+
+    async def _dispatch_to_app(
+        self,
+        *,
+        sender,
+        agent_context,
+        memory,
+        current_message,
+        message,
+        app_code: str,
+        action_input,
+        metrics,
+        action_id,
+    ) -> ActionOutput:
+        """单 Agent 场景下经 GptAppResource 同步派发到子 Agent app。
+
+        与 async 分支的 GptAppResource._start_app 路径一致：创建目标 app 的 agent
+        实例并 generate_reply（含 subagent_depth 传播），返回归一化 ActionOutput。
+        """
+        try:
+            from gyra_serve.agent.resource.app import GptAppResource
+
+            parent_depth = 0
+            if agent_context is not None:
+                parent_extra = agent_context.extra or {}
+                parent_depth = parent_extra.get("subagent_depth", 0) or 0
+
+            app_resource = GptAppResource(name=app_code, app_code=app_code)
+            answer = await app_resource._start_app(
+                user_input=message.content,
+                sender=sender,
+                parent_depth=parent_depth,
+                extra_info=action_input.extra_info,
+            )
+
+            metrics.end_time_ms = time.time_ns() // 1_000_000
+            content = answer.content if answer else "Not Have Answer！"
+            logger.info(
+                f"[ACTION]---------->   Agent Action [{sender.name}] --> [{app_code}] (app resource): {content}"
+            )
+            return ActionOutput.from_dict({
+                "action_id": action_id or self.action_uid,
+                "is_exe_success": True,
+                "thoughts": action_input.thought,
+                "action": self.name,
+                "name": self.name,
+                "state": Status.TODO.value,
+                "action_input": action_input.to_dict(),
+                "content": content,
+                "observations": content,
+                "ask_user": False,
+                "ask_type": AskUserType.NESTED_AGENT,
+                "metrics": metrics,
+            })
+        except Exception as e:
+            logger.exception(f"Agent Action (app resource) Run Failed!{e}")
+            metrics.end_time_ms = time.time_ns() // 1_000_000
+            return ActionOutput.from_dict({
+                "action_id": self.action_uid,
+                "is_exe_success": False,
+                "thoughts": action_input.thought,
+                "action": action_input.agent_name,
+                "name": self.name,
+                "state": Status.FAILED.value,
+                "action_input": action_input.content,
+                "content": f"Agent启动异常！{str(e)}",
+                "metrics": metrics,
+            })
+
     async def run(
         self,
         ai_message: str = None,
@@ -95,17 +193,24 @@ class AgentAction(Action[AgentActionInput]):
             if parent_depth >= MAX_SUBAGENT_DEPTH:
                 raise SubagentDepthExceededError(parent_depth, MAX_SUBAGENT_DEPTH)
 
+            # 团队成员（V1 团队派发）。单 Agent（如 BAIZE/ReActMasterAgent）没有
+            # .agents 属性，子 Agent 以 app 资源形式存在，下方走 app 资源派发兜底。
+            teammates = getattr(sender, "agents", None) or []
             logger.warning(
-                f"[AgentAction] sender.agents: {[f'{a.name}({a.agent_context.agent_app_code})' for a in sender.agents]}")
+                f"[AgentAction] sender.agents: {[f'{a.name}({a.agent_context.agent_app_code})' for a in teammates]}")
             logger.warning(f"[AgentAction] Looking for agent with agent_name={action_input.agent_name}")
             recipient = next(
-                (agent for agent in sender.agents if
+                (agent for agent in teammates if
                  agent.name == action_input.agent_name or agent.agent_context.agent_app_code == action_input.agent_name),
                 None,
             )
-            if not recipient:
+            # 团队成员未命中时，尝试从 sender 的 app 资源（capability_pack / resource_map）解析
+            target_app_code = (
+                None if recipient else self._resolve_app_code(sender, action_input.agent_name)
+            )
+            if not recipient and not target_app_code:
                 logger.error(
-                    f"[AgentAction] recipient can't be empty! sender.agents={[(a.name, a.agent_context.agent_app_code) for a in sender.agents]}, trying to find={action_input.agent_name}")
+                    f"[AgentAction] recipient can't be empty! sender.agents={[(a.name, a.agent_context.agent_app_code) for a in teammates]}, trying to find={action_input.agent_name}")
                 raise RuntimeError("recipient can't be empty")
 
             received_message = (
@@ -155,6 +260,20 @@ class AgentAction(Action[AgentActionInput]):
             # 这样 B Agent 的任务节点会有唯一的 node_id，且不同于 parent_id (goal_id)
             message.context = (message.context or {}) | (action_input.extra_info or {})
 
+            # 单 Agent（BAIZE）场景：无团队成员，子 Agent 以 app 资源派发（等价 async 分支）
+            if not recipient and target_app_code:
+                return await self._dispatch_to_app(
+                    sender=sender,
+                    agent_context=agent_context,
+                    memory=memory,
+                    current_message=current_message,
+                    message=message,
+                    app_code=target_app_code,
+                    action_input=action_input,
+                    metrics=metrics,
+                    action_id=action_id,
+                )
+
             logger.info(f"[ACTION]---------->   Agent Action [{sender.name}] --> [{recipient.name}]")
 
             # 深度传播：把 parent_depth+1 写入 recipient.agent_context.extra
@@ -191,7 +310,7 @@ class AgentAction(Action[AgentActionInput]):
                 "action": self.name,
                 "name": self.name,
                 "state": Status.TODO.value,
-                "action_input": action_input.dict,
+                "action_input": action_input.to_dict(),
                 "content": answer.content if answer else "Not Have Answer！",
                 "observations": answer.content if answer else "Not Have Answer！",
                 "ask_user": ask_user,
@@ -275,6 +394,19 @@ class SubAgent(AgentAction, FunctionTool):
                 description="和目标任务相关的背景知识信息。",
                 required=False
             ),
+            "media": ToolParameter(
+                type="object",
+                name="media",
+                description=(
+                    "可选的多媒体生成参数（仅当目标子 Agent 是多媒体 Agent 时生效）。"
+                    "支持字段：kind('image'|'video')、model(模型名)、size(图片尺寸，如 1024x1024)、"
+                    "resolution(视频分辨率，如 1080p)、aspect_ratio(视频宽高比，如 16:9)、"
+                    "duration(视频时长，秒)、quality、reference_images(参考图 URL 列表)、"
+                    "image_url(首帧/参考图)、image_url_last(尾帧) 及其它 provider 参数。"
+                    "未传字段将回退到子 Agent 配置的默认值。"
+                ),
+                required=False
+            ),
         }
 
     def execute(self, *args, **kwargs):
@@ -345,6 +477,9 @@ class SubAgent(AgentAction, FunctionTool):
                 extra_info: Dict = {
                     "background": tool_call.args.get("background")
                 }
+            if tool_call.args.get("media"):
+                extra_info = extra_info or {}
+                extra_info["media"] = tool_call.args.get("media")
 
             # 解析 mode：优先 mode 参数，回退到 deprecated sync 参数
             mode = tool_call.args.get("mode")
@@ -476,6 +611,7 @@ class SubAgent(AgentAction, FunctionTool):
                     sub_conv_id=sub_conv_id,
                     main_conv_id=main_conv_id,
                     parent_depth=parent_depth,
+                    extra_info=action_input.extra_info,
                 )
             )
 
@@ -490,7 +626,7 @@ class SubAgent(AgentAction, FunctionTool):
                 "action": self.name,
                 "name": self.name,
                 "state": Status.RUNNING.value,
-                "action_input": action_input.dict,
+                "action_input": action_input.to_dict(),
                 "content": (
                     f"子 Agent 已后台启动 (sub_conv_id={sub_conv_id})，"
                     f"主会话将在所有子 Agent 完成后自动 resume。"
@@ -526,6 +662,7 @@ class SubAgent(AgentAction, FunctionTool):
         sub_conv_id: str,
         main_conv_id: str,
         parent_depth: int,
+        extra_info: Optional[Dict] = None,
     ) -> None:
         """后台跑子 agent，完成后回调 coordinator.on_subagent_done/failed。
 
@@ -539,6 +676,7 @@ class SubAgent(AgentAction, FunctionTool):
                 sender=sender,
                 conv_uid=sub_conv_id,
                 parent_depth=parent_depth,
+                extra_info=extra_info,
             )
             content = getattr(answer, "content", None) or ""
             try:

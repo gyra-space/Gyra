@@ -1040,6 +1040,8 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
                 input_message_id=cache.input_message_id,
                 output_message_id=cache.output_message_id,
                 event_manager=cache.event_manager,
+                # 重算路径无 agent 实例，转换器据此直接访问文件/todo 等存储
+                gpts_memory=self,
             )
             logger.info(f"[vis_final] final_view长度={len(final_view) if final_view else 0}, 内容前200字符={final_view[:200] if final_view else 'None'}")
             return final_view
@@ -1499,6 +1501,26 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
             logger.warning(f"Queue full for {conv_id}, dropping message")
         except Exception as e:
             logger.exception(f"Error pushing message: {e}")
+
+    async def push_dock_widget(self, conv_id: str, widget: dict) -> None:
+        """把 dock widget 封装成统一帧推入输入区 Dock（走到 SSE 通道）。
+
+        SSE 消费端（agent_chat 的 drain loop）识别 dict 且含 "dock" 键时，
+        按原样输出为顶层 `{"dock": ...}` 信封，不再包一层 `{"vis": ...}`。
+
+        Args:
+            conv_id: 会话 id
+            widget: 结构化 widget，形如
+                {"id": "...", "type": "todo_list", "kind": "replace", "payload": {...}}
+        """
+        cache = await self._get_cache(conv_id)
+        if not cache or cache.stop_flag:
+            return
+        frame = {"dock": {"version": 1, "widgets": [widget]}}
+        try:
+            cache.channel.put_nowait(frame)
+        except asyncio.QueueFull:
+            logger.warning(f"Queue full for {conv_id}, dropping dock widget")
 
     async def get_messages(self, conv_id: str) -> List[GptsMessage]:
         cache = await self._get_or_create_cache(conv_id)

@@ -1,7 +1,7 @@
 'use client';
 
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
-import { Input, Popover, Tooltip } from 'antd';
+import { Input, Popover, Tooltip, Drawer, Progress, Statistic, Row, Col } from 'antd';
 import {
   AppstoreOutlined,
   ArrowUpOutlined,
@@ -28,10 +28,8 @@ import {
   formatTokens,
   getUsageColor,
   getUsageLevel,
-  usageMetricsToContextMetrics,
   type UsageMetrics,
 } from '@/types/context-metrics';
-import { ContextMetricsDisplay } from '@/components/chat/chat-content-components/ContextMetricsDisplay';
 import type { AgentWorkspaceInputHandle, PlaybookCommand, SkillRef } from './agent-workspace-types';
 
 /** 选了剧本时必须输入任务目标;没选剧本按原逻辑(有文本或有资源即可)。 */
@@ -66,12 +64,24 @@ function ContextUsageRing({
   const circumference = 2 * Math.PI * r;
   const dash = circumference * ratio;
   const pct = (ratio * 100).toFixed(1);
+  const layers = metrics.layers ?? { hot: 0, warm: 0, cold: 0 };
+  const layerTotal = layers.hot + layers.warm + layers.cold;
   return (
     <Tooltip
       title={
         <div className="text-xs leading-5">
           <div>上下文空间 {formatTokens(metrics.total)} / {formatTokens(metrics.context_window)} tokens ({pct}%)</div>
-          <div className="text-gray-400">输入 {formatTokens(metrics.prompt)} · 输出 {formatTokens(metrics.completion)}</div>
+          <div className="text-gray-400">消息 {formatTokens(metrics.prompt)} · 工具 {formatTokens(metrics.tools ?? metrics.completion)}</div>
+          {typeof metrics.system === 'number' && (
+            <div className="text-gray-400">
+              System {formatTokens(metrics.system)} · 历史 {formatTokens(metrics.history ?? 0)} · 本条 {formatTokens(metrics.user_msg ?? 0)}
+            </div>
+          )}
+          {layerTotal > 0 && (
+            <div className="text-gray-400">
+              分层 Hot {formatTokens(layers.hot)} · Warm {formatTokens(layers.warm)} · Cold {formatTokens(layers.cold)}
+            </div>
+          )}
           {onClick && <div className="text-indigo-400 mt-1">点击查看详情</div>}
         </div>
       }
@@ -106,6 +116,123 @@ function ContextUsageRing({
         </svg>
       </div>
     </Tooltip>
+  );
+}
+
+/**
+ * 上下文空间占用明细抽屉:点击环形图打开,展示构成占比与分层(hot/warm/cold)占比。
+ */
+function ContextUsageDetail({
+  metrics,
+  open,
+  onOpenChange,
+}: {
+  metrics: UsageMetrics | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  if (!metrics) return null;
+  const { context_window: contextWindow, total } = metrics;
+  const ratio = Math.min(Math.max(metrics.ratio ?? 0, 0), 1);
+  const level = getUsageLevel(ratio);
+  const color = getUsageColor(level);
+  const system = metrics.system ?? 0;
+  const history = metrics.history ?? 0;
+  const userMsg = metrics.user_msg ?? 0;
+  const tools = metrics.tools ?? metrics.completion ?? 0;
+  const layers = metrics.layers ?? { hot: 0, warm: 0, cold: 0 };
+  const layerTotal = layers.hot + layers.warm + layers.cold;
+
+  const pct = (n: number) => (total > 0 ? ((n / total) * 100).toFixed(1) : '0.0');
+  const layerPct = (n: number) =>
+    layerTotal > 0 ? ((n / layerTotal) * 100).toFixed(1) : '0.0';
+
+  const segData = [
+    { label: 'System 提示', value: system, color: '#6366f1' },
+    { label: '历史消息', value: history, color: '#0ea5e9' },
+    { label: '当前用户消息', value: userMsg, color: '#22c55e' },
+    { label: '工具列表', value: tools, color: '#f59e0b' },
+  ];
+
+  const layerData = [
+    { label: 'Hot（近期关键）', value: layers.hot, color: '#f43f5e' },
+    { label: 'Warm（次重要）', value: layers.warm, color: '#f59e0b' },
+    { label: 'Cold（压缩历史）', value: layers.cold, color: '#94a3b8' },
+  ];
+
+  return (
+    <Drawer
+      title="上下文空间占用明细"
+      placement="right"
+      width={480}
+      open={open}
+      onClose={() => onOpenChange(false)}
+    >
+      {/* 总览 */}
+      <div className="mb-6">
+        <div className="text-sm font-medium mb-2">总览</div>
+        <Row gutter={16}>
+          <Col span={12}>
+            <Statistic
+              title="上下文使用"
+              value={Math.round(ratio * 100)}
+              suffix="%"
+              valueStyle={{ color }}
+            />
+          </Col>
+          <Col span={12}>
+            <Statistic
+              title="已用 / 窗口"
+              value={formatTokens(total)}
+              suffix={` / ${formatTokens(contextWindow)}`}
+            />
+          </Col>
+        </Row>
+        <Progress percent={Math.round(ratio * 100)} strokeColor={color} className="mt-2" />
+      </div>
+
+      {/* 构成占比 */}
+      <div className="mb-6">
+        <div className="text-sm font-medium mb-3">构成占比（占已用占比）</div>
+        {segData.map((s) => (
+          <div key={s.label} className="flex items-center gap-2 mb-2">
+            <span className="w-3 h-3 rounded-full shrink-0" style={{ background: s.color }} />
+            <span className="text-xs w-24 text-gray-600 dark:text-gray-300">{s.label}</span>
+            <Progress
+              percent={Number(pct(s.value))}
+              size="small"
+              strokeColor={s.color}
+              style={{ width: 120 }}
+              showInfo={false}
+            />
+            <span className="text-xs text-gray-500">
+              {formatTokens(s.value)}（{pct(s.value)}%）
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* 分层占比 */}
+      <div className="mb-6">
+        <div className="text-sm font-medium mb-3">分层占比（hot/warm/cold）</div>
+        {layerData.map((l) => (
+          <div key={l.label} className="flex items-center gap-2 mb-2">
+            <span className="w-3 h-3 rounded-full shrink-0" style={{ background: l.color }} />
+            <span className="text-xs w-24 text-gray-600 dark:text-gray-300">{l.label}</span>
+            <Progress
+              percent={Number(layerPct(l.value))}
+              size="small"
+              strokeColor={l.color}
+              style={{ width: 120 }}
+              showInfo={false}
+            />
+            <span className="text-xs text-gray-500">
+              {formatTokens(l.value)}（{layerPct(l.value)}%）
+            </span>
+          </div>
+        ))}
+      </div>
+    </Drawer>
   );
 }
 
@@ -152,7 +279,6 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const [plusPanel, setPlusPanel] = useState<'root' | 'playbook' | 'skill'>('root');
     // 上下文用量详情抽屉开关
     const [usageDrawerOpen, setUsageDrawerOpen] = useState(false);
-    const contextMetrics = usageMetrics ? usageMetricsToContextMetrics(usageMetrics) : null;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -725,15 +851,11 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                 metrics={usageMetrics ?? null}
                 onClick={() => setUsageDrawerOpen(true)}
               />
-              {contextMetrics && (
-                <ContextMetricsDisplay
-                  metrics={contextMetrics}
-                  compact={false}
-                  showDetails={true}
-                  open={usageDrawerOpen}
-                  onOpenChange={setUsageDrawerOpen}
-                />
-              )}
+              <ContextUsageDetail
+                metrics={usageMetrics ?? null}
+                open={usageDrawerOpen}
+                onOpenChange={setUsageDrawerOpen}
+              />
               <button
                 className={classNames(
                   'w-9 h-9 flex items-center justify-center transition-all !border-0 flex-shrink-0 rounded-full',

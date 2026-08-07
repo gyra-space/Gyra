@@ -151,7 +151,12 @@ export default function TabAgents() {
       const newAgent: ResourceAgent = {
         type: 'app',
         name: agent.label || agent.name,
-        value: JSON.stringify({ key: agent.key || agent.name, name: agent.label || agent.name, ...agent }),
+        value: JSON.stringify({
+          key: agent.key || agent.name,
+          name: agent.label || agent.name,
+          ...agent,
+          app_code: agent.key || agent.app_code,
+        }),
         distributed_config: DEFAULT_DISTRIBUTED_CONFIG,
       };
       fetchUpdateApp({ ...appInfo, resource_agent: [...resourceAgents, newAgent] });

@@ -59,7 +59,6 @@ import {
 import AgentAuthorizationConfig from '@/components/config/AgentAuthorizationConfig';
 import ToolManagementPanel from '@/components/config/ToolManagementPanel';
 import OAuth2ConfigSection from '@/components/config/OAuth2ConfigSection';
-import LLMSettingsSection from '@/components/config/LLMSettingsSection';
 import FeaturePluginsSection from '@/components/config/FeaturePluginsSection';
 import type { AuthorizationConfig } from '@/types/authorization';
 import type { ToolMetadata } from '@/types/tool';
@@ -392,7 +391,7 @@ function VisualConfig({
   return (
     <div className="space-y-4">
       <Collapse
-        defaultActiveKey={['system', 'web', 'model', 'agents', 'file-service', 'sandbox', 'memory-storage']}
+        defaultActiveKey={['system', 'web', 'agents', 'file-service', 'sandbox', 'memory-storage']}
         ghost
         items={[
           {
@@ -404,16 +403,6 @@ function VisualConfig({
             key: 'web',
             label: <span className="font-semibold"><CloudServerOutlined /> Web服务配置</span>,
             children: <WebServiceConfigSection config={config} onChange={onConfigChange} />,
-          },
-          {
-            key: 'model',
-            label: <span className="font-semibold"><ApiOutlined /> LLM 配置</span>,
-            children: (
-              <DefaultModelConfigSection
-                config={config}
-                onChange={onConfigChange}
-              />
-            ),
           },
           {
             key: 'media-gen',
@@ -707,16 +696,6 @@ function WebServiceConfigSection({
       </Form.Item>
     </Form>
   );
-}
-
-function DefaultModelConfigSection({
-  config,
-  onChange,
-}: {
-  config: AppConfig;
-  onChange: () => void;
-}) {
-  return <LLMSettingsSection config={config} onChange={onChange} />;
 }
 
 function MediaGenConfigSection({

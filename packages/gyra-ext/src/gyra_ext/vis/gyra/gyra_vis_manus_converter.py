@@ -1801,8 +1801,9 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         return task_files, deliverable_files
 
     async def _collect_files_from_gpts_memory(
-        self, conv_id: str, senders_map: Optional[Dict[str, "ConversableAgent"]] = None, 
-        main_agent_name: Optional[str] = None
+        self, conv_id: str, senders_map: Optional[Dict[str, "ConversableAgent"]] = None,
+        main_agent_name: Optional[str] = None,
+        gpts_memory: Optional[Any] = None,
     ) -> tuple:
         """从 gpts_memory.list_files 获取文件信息（BAIZE agent 主路径）
 
@@ -1810,6 +1811,8 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             conv_id: 会话ID
             senders_map: Agent映射
             main_agent_name: 主Agent名称
+            gpts_memory: vis_final 透传的 GptsMemory 实例（重算路径无 agent
+                实例时据此直接访问文件存储）
 
         Returns:
             (task_files: List[ManusTaskFileItem], deliverable_files: List[ManusDeliverableFile])
@@ -1821,8 +1824,7 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             from gyra.agent.core.memory.gpts import GptsMemory
             from gyra.agent.core.memory.gpts.file_base import FileType
 
-            gpts_memory = None
-            if senders_map and main_agent_name:
+            if gpts_memory is None and senders_map and main_agent_name:
                 main_agent = senders_map.get(main_agent_name)
                 if main_agent and hasattr(main_agent, "memory") and hasattr(main_agent.memory, "gpts_memory"):
                     gpts_memory = main_agent.memory.gpts_memory
@@ -2024,9 +2026,11 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         task_files: List[ManusTaskFileItem] = []
         deliverable_files: List[ManusDeliverableFile] = []
 
-        if conv_id and senders_map and main_agent_name:
+        if conv_id:
+            # gpts_memory 由 vis_final 透传（重算路径无 agent 实例时据此回源 DB）
             task_files, deliverable_files = await self._collect_files_from_gpts_memory(
-                conv_id, senders_map, main_agent_name
+                conv_id, senders_map, main_agent_name,
+                gpts_memory=kwargs.get("gpts_memory"),
             )
 
         # Fallback: 从 messages 的 action_report 收集

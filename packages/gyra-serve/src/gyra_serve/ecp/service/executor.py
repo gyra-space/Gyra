@@ -496,3 +496,315 @@ def execute_metric_query(
         daos, metric_id, workspace_id,
         group_by=group_by, filters=filters, time_range=time_range,
     )
+
+
+# =============================================================================
+# Preview (调试验证) mode — 只读 dry-run of PROPOSED computation rules.
+#
+# 与 gated 路径(execute_metric_query)共用同一确定性组装/执行,但**不**走
+# confirmed-only 门禁:按提案自身 payload 解析其引用(entity/dimension/relation
+# 的最新版本,不论状态),只读执行,返回 trust=preview(永不 verified)。
+# 纯读、不落库、不改状态 —— 确认人可在确认前先核对真实数据。
+# =============================================================================
+
+
+def _preview_fail(message: str, sql: Optional[str] = None,
+                  warnings: Optional[List[str]] = None) -> Dict[str, Any]:
+    return {
+        "trust": "none", "ok": False, "error": message,
+        "warnings": warnings or [], "columns": [], "rows": [],
+        "row_count": 0, "sql": sql,
+    }
+
+
+def _preview_connector(datasource_id: int):
+    from gyra._private.config import Config
+    from gyra_serve.datasource.manages.connect_config_db import ConnectConfigDao
+
+    config = ConnectConfigDao().get_one({"id": datasource_id})
+    db_name = getattr(config, "db_name", None)
+    if not db_name:
+        raise GateError(f"数据源 {datasource_id} 不存在", code="BINDING_INVALID")
+    return Config().local_db_manager.get_connector(db_name)
+
+
+def _preview_limit(sql: str, limit: int) -> str:
+    try:
+        return sqlglot.parse_one(sql).limit(limit).sql()
+    except Exception:  # noqa: BLE001
+        return f"SELECT * FROM ({sql}) AS _t LIMIT {limit}"
+
+
+def _preview_run(sql: str, datasource_id: int, obj: Any,
+                 warnings: Optional[List[str]] = None) -> Dict[str, Any]:
+    """只读执行并统一返回 preview 结果(trust=preview)。"""
+    result: Dict[str, Any] = {
+        "trust": "preview", "ok": True, "warnings": warnings or [],
+        "error": None, "sql": sql,
+        "lineage": {
+            "obj_id": getattr(obj, "id", None),
+            "version": getattr(obj, "version", None),
+            "obj_type": getattr(obj, "obj_type", None),
+            "mode": "preview",
+            "executed_at": datetime.now().isoformat(),
+        },
+    }
+    try:
+        connector = _preview_connector(datasource_id)
+    except Exception as e:  # noqa: BLE001
+        result.update(trust="none", ok=False, error=f"数据源不可用: {e}")
+        return result
+    try:
+        raw = connector.run(sql)
+    except Exception as e:  # noqa: BLE001
+        result.update(trust="none", ok=False, error=f"执行失败: {e}")
+        return result
+    columns, rows = [], []
+    if raw:
+        columns = list(raw[0])
+        rows = [dict(zip(columns, r)) for r in raw[1:]]
+    result.update(columns=columns, rows=rows, row_count=len(rows))
+    return result
+
+
+def _resolve_ref(daos, ref_id: Optional[str], workspace_id: str) -> Optional[Any]:
+    """取一个对象的最新版本(不论状态),用于 preview 解析提案引用。"""
+    if not ref_id:
+        return None
+    hist = daos.objects.version_history(ref_id, workspace_id)
+    return hist[0] if hist else None
+
+
+def _preview_dim_condition(dim: Any, f: Dict[str, Any]) -> tuple:
+    """筛选 label→code 映射;值字典缺失时把 label 当原始 code(fallback)。"""
+    payload = dim.payload or {}
+    col = payload.get("column")
+    if not col:
+        return None, f"筛选维度 {dim.id} 缺少 column"
+    labels = f.get("values") or f.get("values_label") or []
+    mode = (f.get("mode") or "include").lower()
+    codes: List[str] = []
+    for v in payload.get("values") or []:
+        for lbl in labels:
+            if lbl == v.get("label") or lbl in (v.get("aliases") or []):
+                codes.extend(str(c) for c in (v.get("codes") or []))
+    if not codes:
+        codes = [str(l) for l in labels]  # 值字典为空 → 原始 code
+    if not codes:
+        return None, f"筛选维度 {dim.id} 无有效值"
+    quoted = ", ".join(f"'{c}'" for c in sorted(set(codes)))
+    op = "NOT IN" if mode == "exclude" else "IN"
+    return f"{col} {op} ({quoted})", None
+
+
+def _assemble_preview_sql(mp: Dict[str, Any], ep: Dict[str, Any],
+                          binding: Dict[str, Any], group_cols: List[str],
+                          dim_conditions: List[str],
+                          time_range: Optional[Dict[str, Any]],
+                          limit: int) -> str:
+    """复用 DbBindingExecutor 的确定性组装,再套 LIMIT。"""
+    executor = DbBindingExecutor()
+    sql = executor._assemble_sql(mp, ep, binding, group_cols, dim_conditions, time_range)
+    return _preview_limit(sql, limit)
+
+
+def _preview_metric(daos, obj, mp: Dict[str, Any], ws: str,
+                    filters, group_by, time_range, limit) -> Dict[str, Any]:
+    warnings: List[str] = []
+    entity = _resolve_ref(daos, mp.get("entity"), ws)
+    if not entity:
+        return _preview_fail(f"指标引用的实体 {mp.get('entity')} 不存在")
+    ep = entity.payload or {}
+    binding = ep.get("binding") or {}
+    table = binding.get("table")
+    ds_id = binding.get("datasource_id")
+    if not table or not ds_id:
+        return _preview_fail(f"实体 {entity.id} 缺少 binding.table/datasource_id,无法组装")
+    expression = mp.get("expression")
+    if not expression:
+        return _preview_fail("指标缺少 expression")
+
+    group_cols: List[str] = []
+    grain = mp.get("grain") or []
+    for dim_id in group_by or []:
+        dim = _resolve_ref(daos, dim_id, ws)
+        if not dim:
+            warnings.append(f"分组维度 {dim_id} 未找到,已忽略")
+            continue
+        col = (dim.payload or {}).get("column")
+        if not col:
+            warnings.append(f"分组维度 {dim_id} 缺少 column,已忽略")
+            continue
+        if grain and col not in grain and (dim.name or "").lower() not in [
+            g.lower() for g in grain
+        ]:
+            warnings.append(f"分组维度 {dim_id} 不在指标粒度 {grain} 内(试跑仍执行)")
+        group_cols.append(col)
+
+    dim_conditions: List[str] = []
+    for f in filters or []:
+        dim_id = f.get("dim_id") or f.get("dim")
+        dim = _resolve_ref(daos, dim_id, ws)
+        if not dim:
+            warnings.append(f"筛选维度 {dim_id} 未找到,已忽略")
+            continue
+        cond, warn = _preview_dim_condition(dim, f)
+        if cond:
+            dim_conditions.append(cond)
+        elif warn:
+            warnings.append(warn)
+
+    sql = _assemble_preview_sql(mp, ep, binding, group_cols, dim_conditions, time_range, limit)
+    return _preview_run(sql, ds_id, obj, warnings)
+
+
+def _preview_entity(daos, obj, payload: Dict[str, Any], ws: str, limit: int) -> Dict[str, Any]:
+    binding = payload.get("binding") or {}
+    table = binding.get("table")
+    ds_id = binding.get("datasource_id")
+    if not table or not ds_id:
+        return _preview_fail("实体缺少 binding.table/datasource_id")
+    sql = f"SELECT * FROM {table}"
+    conds = payload.get("default_filters") or []
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    return _preview_run(_preview_limit(sql, limit), ds_id, obj)
+
+
+def _preview_dimension(daos, obj, payload: Dict[str, Any], ws: str, limit: int) -> Dict[str, Any]:
+    col = payload.get("column")
+    if not col:
+        return _preview_fail("维度缺少 column")
+    entity = _resolve_ref(daos, payload.get("entity"), ws)
+    if not entity:
+        return _preview_fail("维度引用的实体不存在(无法定位表)")
+    binding = (entity.payload or {}).get("binding") or {}
+    table = binding.get("table")
+    ds_id = binding.get("datasource_id")
+    if not table or not ds_id:
+        return _preview_fail(f"实体 {entity.id} 缺少 binding.table/datasource_id")
+    sql = f"SELECT DISTINCT {col} AS {col} FROM {table}"
+    conds = (entity.payload or {}).get("default_filters") or []
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    result = _preview_run(_preview_limit(sql, limit), ds_id, obj)
+    if not result.get("ok"):
+        return result
+    actual = {str(r[col]) for r in result["rows"] if r.get(col) is not None}
+    proposed = set()
+    for v in payload.get("values") or []:
+        proposed.update(str(c) for c in (v.get("codes") or []))
+    missing = sorted(proposed - actual)
+    extra = sorted(actual - proposed)
+    if missing:
+        result["warnings"].append(f"值字典 {len(missing)} 个 code 未在表中出现: {missing[:10]}")
+    else:
+        result["warnings"].append("值字典全部落在真实值中")
+    if extra:
+        result["warnings"].append(f"表中有 {len(extra)} 个未收录值: {extra[:10]}")
+    return result
+
+
+def _preview_relation(daos, obj, payload: Dict[str, Any], ws: str, limit: int) -> Dict[str, Any]:
+    src = _resolve_ref(daos, payload.get("from"), ws)
+    dst = _resolve_ref(daos, payload.get("to"), ws)
+    if not src or not dst:
+        return _preview_fail("relation 端点实体不存在")
+    sb = (src.payload or {}).get("binding") or {}
+    db = (dst.payload or {}).get("binding") or {}
+    if sb.get("datasource_id") != db.get("datasource_id"):
+        return _preview_fail("跨数据源 join 暂不支持试跑")
+    path = payload.get("path")
+    if not path:
+        return _preview_fail("relation 缺少 path(join 条件)")
+    import re
+
+    m = re.fullmatch(r"\s*([\w.]+)\s*=\s*([\w.]+)\s*", str(path))
+    if not m:
+        return _preview_fail(f"无法解析 join path: {path}")
+    left, right = m.group(1), m.group(2)
+    def _parts(ident: str):
+        tbl, _, col = ident.partition(".")
+        return tbl, col
+    lt, lc = _parts(left)
+    rt, rc = _parts(right)
+    if not lc or not rc:
+        return _preview_fail(f"join 条件需形如 表.列 = 表.列: {path}")
+    sql = (
+        f"SELECT a.{lc} AS fk_from, b.{rc} AS fk_to "
+        f"FROM {lt} a JOIN {rt} b ON a.{lc} = b.{rc}"
+    )
+    return _preview_run(_preview_limit(sql, limit), sb.get("datasource_id"), obj)
+
+
+def preview_payload(daos, obj: Any, workspace_id: str,
+                    filters: Optional[List[Dict[str, Any]]] = None,
+                    group_by: Optional[List[str]] = None,
+                    time_range: Optional[Dict[str, Any]] = None,
+                    limit: int = 20) -> Dict[str, Any]:
+    """基于提案 payload 试跑(调试验证)。obj 可为任意状态(proposed 优先)。"""
+    obj_type = obj.obj_type
+    payload = obj.payload or {}
+    if obj_type == "metric":
+        return _preview_metric(daos, obj, payload, workspace_id, filters, group_by, time_range, limit)
+    if obj_type == "entity":
+        return _preview_entity(daos, obj, payload, workspace_id, limit)
+    if obj_type == "dimension":
+        return _preview_dimension(daos, obj, payload, workspace_id, limit)
+    if obj_type == "relation":
+        return _preview_relation(daos, obj, payload, workspace_id, limit)
+    return _preview_fail(f"对象类型 {obj_type} 不支持试跑")
+
+
+def preview_query(
+    object_id: str,
+    version: int,
+    workspace_id: str,
+    filters: Optional[List[Dict[str, Any]]] = None,
+    group_by: Optional[List[str]] = None,
+    time_range: Optional[Dict[str, Any]] = None,
+    limit: int = 20,
+) -> Dict[str, Any]:
+    """确认页调试验证入口(DB 类):按提案版本试跑,返回 real data + SQL + warnings。"""
+    daos = _ExecutorDaos()
+    obj = daos.objects.get_version(object_id, version, workspace_id)
+    if not obj:
+        return _preview_fail(f"对象 {object_id}@v{version} 不存在")
+    return preview_payload(daos, obj, workspace_id, filters, group_by, time_range, limit)
+
+
+async def preview_canon(
+    object_id: str,
+    version: int,
+    workspace_id: str,
+) -> Dict[str, Any]:
+    """确认页调试验证入口(文档类):anchor 回放,校验 source_quote ∈ 原文。"""
+    daos = _ExecutorDaos()
+    obj = daos.objects.get_version(object_id, version, workspace_id)
+    if not obj:
+        return _preview_fail(f"对象 {object_id}@v{version} 不存在")
+    if obj.obj_type not in DocBindingExecutor._DOC_TYPES:
+        return _preview_fail(f"类型 {obj.obj_type} 非文档类,不支持出处校验")
+    p = obj.payload or {}
+    binding = p.get("binding") or {}
+    quote = p.get("source_quote")
+    warnings: List[str] = []
+    original = await DocBindingExecutor._default_doc_fetcher(
+        binding.get("space", ""), binding.get("doc_id", "")
+    )
+    anchor_verified = None
+    if original is None:
+        warnings.append("基础设施不可用或文档缺失,无法校验出处")
+    else:
+        anchor_verified = bool(quote and quote in original)
+        if not anchor_verified:
+            warnings.append("锚点漂移:原文中未找到冻结摘录(文档可能已改版)")
+    return {
+        "trust": "preview", "ok": True, "error": None,
+        "warnings": warnings, "columns": [], "rows": [], "row_count": 0,
+        "sql": None, "anchor_verified": anchor_verified, "quote": quote,
+        "lineage": {
+            "obj_id": object_id, "version": version, "obj_type": obj.obj_type,
+            "mode": "preview", "executed_at": datetime.now().isoformat(),
+        },
+    }

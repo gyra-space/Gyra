@@ -24,6 +24,8 @@ interface IProps {
   data: ISubagentBoardData;
   /** 覆盖默认「新标签打开子会话」行为:场景空间用它内联展开子对话。 */
   onOpenSubagent?: (subConvId: string) => void;
+  /** dock tab 容器内嵌渲染：跳过卡片外壳装饰与 header，恒展开列表。 */
+  embedded?: boolean;
 }
 
 const STATUS_LABEL: Record<SubagentItemData['status'], string> = {
@@ -36,7 +38,7 @@ const STATUS_LABEL: Record<SubagentItemData['status'], string> = {
 
 const isTerminal = (s: string) => s === 'done' || s === 'failed';
 
-const VisSubagentBoard: React.FC<IProps> = ({ data, onOpenSubagent }) => {
+const VisSubagentBoard: React.FC<IProps> = ({ data, onOpenSubagent, embedded = false }) => {
   const items: SubagentItemData[] = data.items || [];
   const [expanded, setExpanded] = useState(true);
 
@@ -66,20 +68,22 @@ const VisSubagentBoard: React.FC<IProps> = ({ data, onOpenSubagent }) => {
   };
 
   return (
-    <VisSubagentBoardWrap>
-      <div className="board-header" onClick={toggleExpand}>
-        <div className="header-left">
-          <AppstoreOutlined className="header-icon" />
-          <span className="header-title">{allCompleted ? '子任务完成' : '子任务'}</span>
-          <span className="header-progress">{progress.completed}/{progress.total}</span>
-          {hasAuth && <span className="header-auth-badge">待授权</span>}
+    <VisSubagentBoardWrap className={embedded ? 'embedded' : undefined}>
+      {!embedded && (
+        <div className="board-header" onClick={toggleExpand}>
+          <div className="header-left">
+            <AppstoreOutlined className="header-icon" />
+            <span className="header-title">{allCompleted ? '子任务完成' : '子任务'}</span>
+            <span className="header-progress">{progress.completed}/{progress.total}</span>
+            {hasAuth && <span className="header-auth-badge">待授权</span>}
+          </div>
+          <div className="header-expand">
+            {expanded ? <UpOutlined /> : <DownOutlined />}
+          </div>
         </div>
-        <div className="header-expand">
-          {expanded ? <UpOutlined /> : <DownOutlined />}
-        </div>
-      </div>
+      )}
 
-      {expanded && (
+      {(embedded || expanded) && (
         <div className="board-items">
           {items.map((item) => (
             <div

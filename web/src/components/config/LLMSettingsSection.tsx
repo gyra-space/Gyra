@@ -420,16 +420,17 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
         },
       };
 
-      await configService.importConfig(nextConfig);
+      // 模型/LLM 配置持久化到数据库（分布式共享），并同步到运行时/ModelConfigCache
+      await configService.saveAgentLLM(nextConfig.agent_llm);
       // 若保存过程中写入了新的 API Key，刷新 key 状态
       await loadLLMKeys();
       try {
         await configService.refreshModelCache();
         // 刷新后重新加载模型列表
         await loadSupportedModels();
-        message.success("LLM 配置已保存并生效，模型缓存已刷新");
+        message.success("LLM 配置已保存到数据库并生效，模型缓存已刷新");
       } catch {
-        message.success("LLM 配置已保存并生效");
+        message.success("LLM 配置已保存到数据库并生效");
       }
       
       onChange();

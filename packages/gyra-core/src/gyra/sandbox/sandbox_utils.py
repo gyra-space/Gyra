@@ -6,7 +6,7 @@ import os
 import posixpath
 import re
 import shlex
-from typing import List, Optional, TYPE_CHECKING, Set
+from typing import List, Optional, Tuple, TYPE_CHECKING, Set
 
 
 # ---------------------------------------------------------------------------
@@ -17,6 +17,12 @@ from typing import List, Optional, TYPE_CHECKING, Set
 _HIGH_RISK_BINARY = {"dd", "shutdown", "reboot", "halt", "poweroff"}
 _BLOCK_DEVICE_WRITE_RE = re.compile(r"of=/dev/|>\s*/dev/")
 _FORK_BOMB_RE = re.compile(r":\s*\(\s*\)\s*\{.*:.*\|.*:.*\}")
+
+# Characters that essentially never appear in a clean file-path argument but do
+# appear in regex patterns / shell strings. A token containing any of them is
+# treated as a pattern/string, not a path, and skipped by the path fence --
+# otherwise ``grep '/[^/"]*/'`` is misread as an absolute path and rejected.
+_NON_PATH_CHARS = frozenset("*?[]^(){}+|'`$<>" + '"')
 
 def _tokenize_command(command: str) -> List[str]:
     """Split the shell command into arguments."""
@@ -55,6 +61,10 @@ def _validate_tokens(
             raise PermissionError("禁止访问 home 目录")
         if any(part == ".." for part in token.split("/")):
             raise PermissionError("命令参数尝试跳出工作空间目录，已被禁止")
+        if any(ch in _NON_PATH_CHARS for ch in token):
+            # regex / shell pattern, not a file path -> skip the path fence
+            idx += 1
+            continue
         if token.startswith("/"):
             combined = token
         else:
@@ -80,6 +90,112 @@ def _within_roots(candidate: str, roots: List[str]) -> bool:
         ):
             return True
     return False
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Remove heredoc bodies from *command* before path validation.
+
+    A heredoc (``<< DELIM`` ... ``DELIM``) feeds lines to a program on stdin;
+    those lines are not file path arguments and must not be path-validated --
+    otherwise a Python snippet such as ``if '/' in repo:`` is rejected because
+    ``'/'`` tokenises to the bare path ``/``. Only the body lines are removed;
+    the command structure (including the ``<< DELIM`` marker and the closing
+    delimiter) is preserved so real argument validation is unchanged.
+
+    Quote-aware: ``<<`` inside a quoted string (e.g. a bit-shift in
+    ``python3 -c "a << b"``) is not treated as a heredoc start. Here-strings
+    (``<<<``) are not heredocs and are left intact.
+    """
+    lines = command.split("\n")
+    kept: List[str] = []
+    pending: List[Tuple[str, bool]] = []   # open heredocs: (delimiter, tab_strip)
+    quote: Optional[str] = None            # quote char carried across lines
+
+    for line in lines:
+        if pending:
+            delim, tab_strip = pending[0]
+            candidate = line.lstrip("\t") if tab_strip else line
+            if candidate == delim:
+                pending.pop(0)
+                kept.append(line)
+            # heredoc body line -> dropped from validation
+            continue
+
+        kept.append(line)
+        starts, quote = _find_heredoc_starts(line, quote)
+        pending.extend(starts)
+    return "\n".join(kept)
+
+
+def _find_heredoc_starts(
+    line: str, quote: Optional[str]
+) -> Tuple[List[Tuple[str, bool]], Optional[str]]:
+    """Scan *line* for heredoc starts outside quoted regions.
+
+    Returns the ``(delimiter, tab_stripped)`` starts found and the quote state
+    at end of line (carried to the next line so a quoted string spanning lines
+    keeps an embedded ``<<`` from being misread as a heredoc).
+    """
+    starts: List[Tuple[str, bool]] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if quote is not None:
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "<" and i + 1 < n and line[i + 1] == "<":
+            parsed = _parse_heredoc_op(line, i)
+            if parsed is not None:
+                delim, tab_strip, end = parsed
+                starts.append((delim, tab_strip))
+                i = end
+                continue
+        i += 1
+    return starts, quote
+
+
+def _parse_heredoc_op(line: str, pos: int) -> Optional[Tuple[str, bool, int]]:
+    """Parse a heredoc start at *pos* (pointing at ``<<``).
+
+    Returns ``(delimiter, tab_stripped, next_pos)`` or ``None`` when this is
+    not a heredoc -- a here-string ``<<<`` or a missing delimiter word.
+    """
+    n = len(line)
+    j = pos + 2                       # past "<<"
+    tab_strip = False
+    if j < n and line[j] == "-":      # <<- form
+        tab_strip = True
+        j += 1
+    if j < n and line[j] == "<":      # "<<<" here-string -> not a heredoc
+        return None
+    while j < n and line[j] in (" ", "\t"):
+        j += 1
+    quote_delim: Optional[str] = None
+    if j < n and line[j] in ("'", '"'):
+        quote_delim = line[j]
+        j += 1
+    start = j
+    while j < n and (line[j].isalnum() or line[j] == "_"):
+        j += 1
+    if j == start:
+        return None                   # no delimiter word -> not a heredoc
+    delim = line[start:j]
+    if quote_delim is not None and j < n and line[j] == quote_delim:
+        j += 1
+    return delim, tab_strip, j
 
 
 def is_high_risk_command(command: str) -> bool:
@@ -137,6 +253,7 @@ def validate_shell_command(
     if sandbox_type != "local":
         return
 
+    command = _strip_heredoc_bodies(command)
     tokens = _tokenize_command(command)
     subcommand: List[str] = []
 

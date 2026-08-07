@@ -102,6 +102,16 @@ export interface UsageMetrics {
   context_window: number;
   ratio: number;
   step_state?: string;
+  /** system prompt 占用 token */
+  system?: number;
+  /** 历史消息（不含当前用户消息）占用 token */
+  history?: number;
+  /** 当前用户消息占用 token */
+  user_msg?: number;
+  /** 工具列表占用 token */
+  tools?: number;
+  /** 分层 hot/warm/cold 占用 */
+  layers?: { hot: number; warm: number; cold: number };
 }
 
 /**

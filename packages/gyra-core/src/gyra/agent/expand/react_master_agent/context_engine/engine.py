@@ -150,9 +150,7 @@ class ContextEngine:
             subagent_goal_id=subagent_goal_id,
         )
         segments = self.segmenter.segment(timeline)
-        plan: LayerPlan = self.layerer.layer(
-            segments, history_window, current_conv_id=current_conv_id
-        )
+        plan: LayerPlan = self.layerer.layer(segments, history_window)
 
         # 2) cold 重整（低频）
         handoff = await self.summarizer.summarize_cold(

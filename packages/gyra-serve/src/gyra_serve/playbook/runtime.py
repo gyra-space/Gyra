@@ -538,7 +538,7 @@ async def _poll_chat_completion(agent_conv_id: str) -> Dict[str, Any]:
             if result is None:
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
                 continue
-            vis_final, user_answer, current_vis_render, is_final, state = result
+            vis_final, user_answer, current_vis_render, is_final, state, dock = result
             if state in ("COMPLETE", "FAILED") or is_final:
                 return {
                     "state": state,
@@ -546,6 +546,7 @@ async def _poll_chat_completion(agent_conv_id: str) -> Dict[str, Any]:
                     "vis_final": vis_final,
                     "user_answer": user_answer,
                     "vis_render": current_vis_render,
+                    "dock": dock,
                 }
         except Exception as e:
             logger.warning(f"playbook runtime poll error: {e}")

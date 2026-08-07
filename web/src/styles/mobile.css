@@ -4,7 +4,43 @@
    ═══════════════════════════════════════════════════════════════ */
 
 :root {
-  /* 深空色板 */
+  /* 浅色色板(默认) */
+  --ms-bg: #f6f7fb;
+  --ms-bg-2: #eef0f6;
+  --ms-elev: #ffffff;
+  --ms-surface: rgba(15, 23, 42, 0.04);
+  --ms-surface-2: rgba(15, 23, 42, 0.07);
+  --ms-border: rgba(15, 23, 42, 0.08);
+  --ms-border-strong: rgba(15, 23, 42, 0.14);
+  --ms-text: #14161c;
+  --ms-text-2: #5d6577;
+  --ms-text-3: #8a92a6;
+
+  /* 光电 */
+  --ms-brand: #6d5cff;
+  --ms-brand-soft: rgba(109, 92, 255, 0.12);
+  --ms-cyan: #0891b2;
+  --ms-pink: #d946ef;
+  --ms-green: #16a34a;
+  --ms-amber: #d97706;
+  --ms-red: #dc2626;
+
+  /* 玻璃拟态背景(顶栏/底导/输入条) */
+  --ms-glass: rgba(255, 255, 255, 0.72);
+  --ms-frame-shadow: 0 24px 80px rgba(15, 23, 42, 0.18);
+
+  /* 极光渐变 */
+  --ms-aurora: linear-gradient(135deg, #6d5cff 0%, #22d3ee 100%);
+  --ms-aurora-3: linear-gradient(135deg, #6d5cff 0%, #22d3ee 50%, #f0abfc 100%);
+
+  --ms-radius: 12px;
+  --ms-radius-sm: 8px;
+  --ms-radius-full: 999px;
+}
+
+/* 深色:深空黑 + 极光紫青(作用域限移动端容器 .ms-app.dark,由 /m/layout 根据显式主题选择切换;
+   brand 与极光渐变两套主题共用) */
+.ms-app.dark {
   --ms-bg: #0b0d14;
   --ms-bg-2: #0e1019;
   --ms-elev: #12151f;
@@ -16,8 +52,6 @@
   --ms-text-2: #9aa3b5;
   --ms-text-3: #5d6678;
 
-  /* 光电 */
-  --ms-brand: #6d5cff;
   --ms-brand-soft: rgba(109, 92, 255, 0.16);
   --ms-cyan: #22d3ee;
   --ms-pink: #f0abfc;
@@ -25,13 +59,8 @@
   --ms-amber: #fbbf24;
   --ms-red: #f87171;
 
-  /* 极光渐变 */
-  --ms-aurora: linear-gradient(135deg, #6d5cff 0%, #22d3ee 100%);
-  --ms-aurora-3: linear-gradient(135deg, #6d5cff 0%, #22d3ee 50%, #f0abfc 100%);
-
-  --ms-radius: 12px;
-  --ms-radius-sm: 8px;
-  --ms-radius-full: 999px;
+  --ms-glass: rgba(11, 13, 20, 0.72);
+  --ms-frame-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
 }
 
 /* ── 应用外层:全屏深空,桌面端居中 480px 手机列 ── */
@@ -76,7 +105,7 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: rgba(11, 13, 20, 0.72);
+  background: var(--ms-glass);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--ms-border);
@@ -166,7 +195,7 @@ body {
   display: flex;
   align-items: stretch;
   gap: 4px;
-  background: rgba(11, 13, 20, 0.82);
+  background: var(--ms-glass);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-top: 1px solid var(--ms-border);
@@ -256,16 +285,16 @@ body {
   font-size: 11px;
   font-weight: 500;
   background: var(--ms-brand-soft);
-  color: #b3a8ff;
+  color: var(--ms-brand);
   border: 1px solid rgba(109, 92, 255, 0.28);
 }
 .ms-chip--neutral { background: var(--ms-surface-2); color: var(--ms-text-2); border-color: var(--ms-border); }
 
 /* 状态语义 chip */
-.ms-chip--running { background: rgba(109, 92, 255, 0.16); color: #b3a8ff; border-color: rgba(109, 92, 255, 0.3); }
-.ms-chip--awaiting { background: rgba(251, 191, 36, 0.14); color: #fcd34d; border-color: rgba(251, 191, 36, 0.3); }
-.ms-chip--done { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; border-color: rgba(52, 211, 153, 0.3); }
-.ms-chip--failed { background: rgba(248, 113, 113, 0.14); color: #fca5a5; border-color: rgba(248, 113, 113, 0.3); }
+.ms-chip--running { background: rgba(109, 92, 255, 0.16); color: var(--ms-brand); border-color: rgba(109, 92, 255, 0.3); }
+.ms-chip--awaiting { background: rgba(251, 191, 36, 0.14); color: var(--ms-amber); border-color: rgba(251, 191, 36, 0.3); }
+.ms-chip--done { background: rgba(52, 211, 153, 0.14); color: var(--ms-green); border-color: rgba(52, 211, 153, 0.3); }
+.ms-chip--failed { background: rgba(248, 113, 113, 0.14); color: var(--ms-red); border-color: rgba(248, 113, 113, 0.3); }
 
 /* ── 主操作按钮(极光) ── */
 .ms-primary-btn {
@@ -408,7 +437,7 @@ body {
 .ms-agent__input {
   flex-shrink: 0;
   padding: 8px 12px calc(env(safe-area-inset-bottom, 0px) + 8px);
-  background: rgba(11, 13, 20, 0.6);
+  background: var(--ms-glass);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-top: 1px solid var(--ms-border);
@@ -453,9 +482,36 @@ body {
 }
 .ms-agent-composer__send:active { transform: scale(0.92); }
 .ms-agent-composer__send:disabled { background: var(--ms-surface-2); color: var(--ms-text-3); cursor: not-allowed; }
-.ms-agent-composer__send--stop { background: rgba(248, 113, 113, 0.2); color: #fca5a5; }
+.ms-agent-composer__send--stop { background: rgba(248, 113, 113, 0.2); color: var(--ms-red); }
 
 /* ── Agent 渲染器窄屏适配:防桌面样式溢出撑破布局 ── */
+/* 桌面 AgentWorkspaceRenderer 的 ws-* 样式依赖 --ws-* 变量,而该组变量只在桌面 .ws-page 上定义。
+   移动端 /m 无 .ws-page 祖先,变量未定义会让工具步骤/思考文本回退到 body 的深色文字,在深空底上看不见。
+   在此为移动端渲染器补齐一套自洽的深色 --ws-* 调色板,映射到 --ms-* 移动端色板。 */
+.ms-agent__feed {
+  --ws-accent: var(--ms-brand);
+  --ws-accent-rgb: 109, 92, 255;
+  --ws-accent-light: var(--ms-brand-soft);
+  --ws-attention: var(--ms-amber);
+  --ws-attention-rgb: 251, 191, 36;
+  --ws-attention-light: rgba(251, 191, 36, 0.1);
+  --ws-danger: var(--ms-red);
+  --ws-danger-rgb: 248, 113, 113;
+  --ws-success: var(--ms-green);
+  --ws-success-rgb: 52, 211, 153;
+  --ws-bg: var(--ms-bg);
+  --ws-surface: var(--ms-surface);
+  --ws-surface-2: var(--ms-surface-2);
+  --ws-border: var(--ms-border-strong);
+  --ws-border-subtle: var(--ms-border);
+  --ws-ink: var(--ms-text);
+  --ws-ink-2: var(--ms-text-2);
+  --ws-ink-3: var(--ms-text-3);
+  --ws-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --ws-radius: var(--ms-radius);
+  --ws-radius-sm: var(--ms-radius-sm);
+  --ws-transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
 .ms-agent__feed .ws-agent-renderer { min-width: 0; width: 100%; }
 .ms-agent__feed .ws-agent-renderer__summary { min-width: 0; max-width: 100%; overflow-x: hidden; }
 .ms-agent__feed .ws-agent-renderer__summary pre,
@@ -536,7 +592,7 @@ body {
 .ms-notif__act--danger {
   background: rgba(248, 113, 113, 0.14);
   border-color: rgba(248, 113, 113, 0.3);
-  color: #fca5a5;
+  color: var(--ms-red);
 }
 
 /* ── 下拉刷新 ── */
@@ -595,8 +651,60 @@ body {
   transition: transform 0.12s ease, opacity 0.12s ease;
 }
 .ms-approve__btn:active { transform: scale(0.97); opacity: 0.85; }
-.ms-approve__btn--danger { background: rgba(248, 113, 113, 0.14); color: #fca5a5; border-color: rgba(248, 113, 113, 0.3); }
+.ms-approve__btn--danger { background: rgba(248, 113, 113, 0.14); color: var(--ms-red); border-color: rgba(248, 113, 113, 0.3); }
 .ms-approve__btn--primary { background: var(--ms-aurora); color: #fff; border-color: transparent; }
+
+/* ── 移动端提案详情 ── */
+.ms-prop__head { display: inline-flex; align-items: center; gap: 8px; }
+.ms-prop__type {
+  font-size: 11px; font-weight: 600;
+  color: var(--ms-brand);
+  background: var(--ms-brand-soft);
+  border: 1px solid var(--ms-border);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.ms-prop__id { font-size: 14px; font-weight: 650; color: var(--ms-text); }
+.ms-prop__ver { font-size: 12px; color: var(--ms-text-3); }
+.ms-prop__empty { text-align: center; color: var(--ms-text-2); font-size: 13px; padding: 28px 0 16px; }
+.ms-prop { display: flex; flex-direction: column; gap: 10px; }
+.ms-prop__kv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--ms-surface);
+  border: 1px solid var(--ms-border);
+}
+.ms-prop__k { font-size: 11px; color: var(--ms-text-3); }
+.ms-prop__v { font-size: 13px; color: var(--ms-text); line-height: 1.5; word-break: break-word; }
+.ms-prop__status { font-size: 12px; font-weight: 600; color: var(--ms-brand); }
+.ms-prop__section { display: flex; flex-direction: column; gap: 6px; }
+.ms-prop__section-title { font-size: 12px; font-weight: 600; color: var(--ms-text-2); }
+.ms-prop__evidence {
+  font-size: 12px;
+  color: var(--ms-text-2);
+  line-height: 1.5;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--ms-surface);
+  border: 1px solid var(--ms-border);
+}
+.ms-prop__payload {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ms-text);
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--ms-surface);
+  border: 1px solid var(--ms-border);
+  -webkit-overflow-scrolling: touch;
+}
+.ms-prop__actions { display: flex; gap: 10px; margin-top: 6px; }
 
 /* ── 移动端登录 ── */
 .ms-auth {
@@ -645,7 +753,7 @@ body {
 .ms-auth__err {
   border: 1px solid rgba(248, 113, 113, 0.3);
   background: rgba(248, 113, 113, 0.12);
-  color: #fca5a5;
+  color: var(--ms-red);
   border-radius: 12px;
   padding: 10px 12px;
   font-size: 13px;
@@ -706,5 +814,5 @@ body {
 
 /* 桌面端隐藏不必要的触感约束:大屏下视口仍为手机列 */
 @media (min-width: 641px) {
-  .ms-frame { box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5); }
+  .ms-frame { box-shadow: var(--ms-frame-shadow); }
 }
