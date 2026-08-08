@@ -122,3 +122,20 @@ async def test_facade_flips_legacy_memory_to_capability():
     assert wrapped.capability_id == "memory"
     assert wrapped.declare() == []
     assert "memory" in facade.executor_provider
+
+def test_memory_from_config_builds_memory_parameters():
+    """Phase D:from_config 把 value dict 规范化为 MemoryParameters。"""
+    from gyra.agent.capabilities.memory.capability import MemoryCapability
+    from gyra.agent.resource.memory import MemoryParameters
+
+    cap = MemoryCapability.from_config({"top_k": 5, "discard_strategy": "lru"})
+    assert isinstance(cap.memory_params, MemoryParameters)
+    assert cap.memory_params.top_k == 5
+    assert cap.memory_params.discard_strategy == "lru"
+
+
+def test_memory_from_config_empty_or_bad_value():
+    from gyra.agent.capabilities.memory.capability import MemoryCapability
+
+    assert MemoryCapability.from_config(None).memory_params is None
+    assert MemoryCapability.from_config({}).memory_params is None

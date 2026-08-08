@@ -1,4 +1,4 @@
-"""KnowledgeCapability —— 知识库自管理资源能力(RFC-006 Stage 7/8)。
+"""KnowledgeCapability —— 知识库自管理资源能力(RFC-006 Stage 7/8 + Phase D)。
 
 知识库是 Consumer:declare 库列表 SYSTEM + consume 检索结果回注(TURN)。
 
@@ -7,9 +7,9 @@ prepare 自管 hydrate:按 _knowledge_ids 调 KnowledgeService.get_knowledge_spa
 (RFC-006 Stage 8),declare 能读到 prepare 产出的 _spaces。若 from_legacy 已带完整 spaces
 (旧实例构造期已 hydrate)或 config 已带 name/desc,则 prepare 免 I/O。
 
-execute 不收编:knowledge_search 是 v1 KnowledgeSearch action(_init_actions 派发,经
-retriever.retrieve I/O),收编需改 v1/v2 shadowing + Action 派发,风险高。本轮
-KnowledgeCapability 自管 prepare/declare/consume,execute 保持 v1 action。
+Phase D:收编检索执行。retrieve/get_summary/get_directory/read_document 从
+KnowledgePackSearchResource 移植,KnowledgeRetrieveAction 与 cron ToolContext 注入改走
+本能力;rag Service/YuqueService 不可用时所有操作降级返回空(与 v1 行为一致)。
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any, List, Optional
 
+from gyra.core import Chunk
 from gyra.core.interface.resource.bundle import (
     CacheScope,
     Contribution,
@@ -30,7 +31,60 @@ from gyra.core.interface.resource.executor import (
     ReleaseReason,
 )
 
+# TODO: rewire to new knowledge module (Task #9) — 与 resource/knowledge_pack.py 同款 stub
+try:
+    from gyra.rag.knowledge.base import DirectoryModeType  # type: ignore
+except ImportError:  # pragma: no cover - rag module removed
+    class DirectoryModeType:  # type: ignore[no-redef]
+        """Stub used when the old rag module is not available."""
+
+        class DOCUMENT:
+            value = "document"
+
+try:
+    from gyra_serve.rag.api.schemas import (  # type: ignore
+        KnowledgeSearchDirectoryRequest,
+        KnowledgeSearchRequest,
+        KnowledgeSearchResponse,
+    )
+except ImportError:  # pragma: no cover - rag module removed
+    KnowledgeSearchRequest = None  # type: ignore[assignment]
+    KnowledgeSearchResponse = None  # type: ignore[assignment]
+    KnowledgeSearchDirectoryRequest = None  # type: ignore[assignment]
+
+try:
+    from gyra_serve.rag.service.service import Service  # type: ignore
+except ImportError:  # pragma: no cover - rag module removed
+    Service = None  # type: ignore[assignment]
+
+try:
+    from gyra_serve.rag.service.yuque_service import YuqueService  # type: ignore
+except ImportError:  # pragma: no cover - rag module removed
+    YuqueService = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
+
+# 检索参数默认值,对齐 KnowledgePackLoadResourceParameters
+_RETRIEVE_DEFAULTS = {
+    "top_k": 10,
+    "similarity_score_threshold": 0.0,
+    "single_knowledge_top_k": 20,
+    "enable_rerank": True,
+    "rerank_model": "bge-reranker-v2-m3",
+    "enable_summary": True,
+    "summary_model": None,
+    "summary_prompt": None,
+    "enable_split_query": True,
+    "split_query_model": None,
+    "split_query_prompt": None,
+    "enable_rewrite_query": False,
+    "rewrite_query_model": None,
+    "rewrite_query_prompt": None,
+    "search_with_historical": False,
+    "tag_filters": None,
+    "summary_with_historical": False,
+    "retrieve_mode": None,
+}
 
 
 class KnowledgeCapability(Capability):
@@ -46,10 +100,16 @@ class KnowledgeCapability(Capability):
         spaces: Optional[List[dict]] = None,
         description: str = "",
         knowledge_ids: Optional[List[Any]] = None,
+        retrieve_config: Optional[dict] = None,
+        system_app: Any = None,
     ):
         self._spaces = spaces
         self._description = description
         self._knowledge_ids = knowledge_ids or []
+        self._retrieve_config = {**_RETRIEVE_DEFAULTS, **(retrieve_config or {})}
+        self._system_app = system_app
+        self._rag_service = None
+        self._yuque_service = None
         self._status = ExecutorStatus.UNINITIALIZED
 
     @classmethod
@@ -65,7 +125,15 @@ class KnowledgeCapability(Capability):
             for k in knowledges
         ]
         knowledge_ids = [k.get("knowledge_id") for k in knowledges if k.get("knowledge_id")]
-        return cls(spaces=spaces or None, knowledge_ids=knowledge_ids)
+        retrieve_config = {
+            k: v for k, v in value.items() if k in _RETRIEVE_DEFAULTS and v is not None
+        }
+        return cls(
+            spaces=spaces or None,
+            knowledge_ids=knowledge_ids,
+            retrieve_config=retrieve_config,
+            system_app=system_app,
+        )
 
     @classmethod
     def from_legacy(cls, legacy_instance: Any) -> "KnowledgeCapability":
@@ -186,9 +254,234 @@ class KnowledgeCapability(Capability):
             logger.warning(f"[knowledge-capability] hydrate spaces failed: {e}")
             self._status = ExecutorStatus.READY  # 降级:用现有 _spaces/_description
 
+    def _ensure_services(self) -> bool:
+        """懒解析 rag Service/YuqueService;不可用(stub None)时返回 False 降级。"""
+        if Service is None or YuqueService is None:
+            return False
+        if self._rag_service is None:
+            self._rag_service = Service.get_instance(self._system_app)
+        if self._yuque_service is None:
+            self._yuque_service = YuqueService.get_instance(self._system_app)
+        return self._rag_service is not None and self._yuque_service is not None
+
+    def _empty_response(self):
+        return KnowledgeSearchResponse() if KnowledgeSearchResponse else None
+
+    async def retrieve(
+        self,
+        query: str,
+        filters: Optional[Any] = None,
+        score: float = 0.0,
+    ) -> List["Chunk"]:
+        """Retrieve knowledge chunks(对齐 v1 RetrieverResource.retrieve 形状)。
+
+        knowledge_ids 缺省用自身全部空间(v1 此处漏传导致恒空,收编时修复)。
+        """
+        search_res = await self._retrieve(query=query, knowledge_ids=self._knowledge_ids)
+        candidates = []
+        if not search_res or not search_res.document_response_list:
+            return candidates
+        retriever_name = self._spaces[0].get("name") if self._spaces else None
+        for doc in search_res.document_response_list:
+            candidates.append(
+                Chunk(
+                    content=doc.content,
+                    score=doc.score,
+                    metadata={
+                        "yuque_url": doc.yuque_url,
+                        "retriever": retriever_name,
+                    },
+                )
+            )
+        return candidates
+
+    async def get_directory(
+        self,
+        *,
+        query: str,
+        selected_knowledge_ids: Optional[List[str]] = None,
+        directory_mode: Optional[str] = DirectoryModeType.DOCUMENT.value,
+        doc_uuids: Optional[List[str]] = None,
+        **kwargs,
+    ):
+        return await self._retrieve(
+            query=query,
+            knowledge_ids=selected_knowledge_ids,
+            retrieve_directory=True,
+            directory_mode=directory_mode,
+            doc_uuids=doc_uuids,
+        )
+
+    async def read_document(
+        self,
+        *,
+        query: str,
+        selected_knowledge_ids: Optional[List[str]] = None,
+        doc_uuids: Optional[List[str]] = None,
+        header: Optional[str] = None,
+        **kwargs,
+    ):
+        if not self._ensure_services():
+            logger.warning("[knowledge-capability] rag services unavailable, read_document degraded")
+            return self._empty_response()
+        search_res = await self._yuque_service.read_document(
+            knowledge_ids=selected_knowledge_ids,
+            doc_uuids=doc_uuids,
+            header=header,
+        )
+        search_res.raw_query = query
+        search_res.doc_uuids = doc_uuids
+        return search_res
+
+    async def get_summary(
+        self,
+        *,
+        query: str,
+        selected_knowledge_ids: Optional[List[str]] = None,
+        retrieve_document: Optional[bool] = False,
+        doc_uuids: Optional[List[str]] = None,
+        **kwargs,
+    ):
+        return await self._retrieve(
+            query=query,
+            knowledge_ids=selected_knowledge_ids,
+            retrieve_document=retrieve_document,
+            doc_uuids=doc_uuids,
+        )
+
+    async def _retrieve(
+        self,
+        query: str,
+        knowledge_ids: Optional[List[str]] = None,
+        retrieve_directory: Optional[bool] = False,
+        directory_mode: Optional[str] = DirectoryModeType.DOCUMENT.value,
+        retrieve_document: Optional[bool] = False,
+        doc_uuids: Optional[List[str]] = None,
+    ):
+        """检索主路径(移植自 KnowledgePackSearchResource._retrieve)。"""
+        if not knowledge_ids:
+            return self._empty_response()
+        if not self._ensure_services():
+            logger.warning("[knowledge-capability] rag services unavailable, retrieve degraded")
+            return self._empty_response()
+
+        selected_knowledge_ids = []
+        for knowledge_id in knowledge_ids:
+            if knowledge_id in self._knowledge_ids:
+                logger.info(
+                    f"Knowledge {knowledge_id} is selected, "
+                    f"and the knowledge id is {knowledge_id}"
+                )
+                selected_knowledge_ids.append(knowledge_id)
+        if not selected_knowledge_ids:
+            logger.info("no knowledge space selected, use all knowledge spaces")
+            selected_knowledge_ids = self._knowledge_ids
+
+        if retrieve_directory:
+            search_res = await self._rag_service.knowledge_search_directory(
+                KnowledgeSearchDirectoryRequest(
+                    knowledge_ids=selected_knowledge_ids,
+                    query=query,
+                    directory_mode=directory_mode,
+                    doc_uuids=doc_uuids,
+                )
+            )
+            search_res.raw_query = query
+            search_res.doc_uuids = doc_uuids
+            return search_res
+
+        cfg = self._retrieve_config
+        request = KnowledgeSearchRequest(
+            knowledge_ids=selected_knowledge_ids,
+            query=query,
+            top_k=cfg["top_k"],
+            score_threshold=cfg["similarity_score_threshold"],
+            single_knowledge_top_k=cfg["single_knowledge_top_k"],
+            enable_rerank=cfg["enable_rerank"],
+            rerank_model=cfg["rerank_model"],
+            enable_summary=cfg["enable_summary"],
+            summary_model=cfg["summary_model"],
+            summary_prompt=cfg["summary_prompt"],
+            split_query_model=cfg["split_query_model"],
+            split_query_prompt=cfg["split_query_prompt"],
+            enable_split_query=cfg["enable_split_query"],
+            tag_filters=cfg["tag_filters"],
+            mode=cfg["retrieve_mode"],
+        )
+        if doc_uuids:
+            from gyra.storage.vector_store.filters import (
+                FilterCondition,
+                MetadataFilter,
+                MetadataFilters,
+            )
+
+            logger.info(f"doc_uuids: {doc_uuids}")
+            doc_ids = []
+            for doc_uuid in doc_uuids:
+                yuque = self._yuque_service.get_yuque_by_uuid(doc_uuid)
+                if not yuque and not yuque.doc_id:
+                    continue
+                doc_ids.append(yuque.doc_id)
+            request.metadata_filters = MetadataFilters(
+                filters=[
+                    MetadataFilter(key="doc_id", value=doc_id) for doc_id in doc_ids
+                ],
+                condition=FilterCondition.OR,
+            )
+        search_res = await self._rag_service.knowledge_search(request)
+        if not request.enable_summary:
+            search_res.summary_content = search_res.summary_content or ""
+            url_to_index = {}
+            for sub_query, candidates in search_res.references.items():
+                text = ""
+                for i, chunk in enumerate(candidates):
+                    yuque_url = (
+                        chunk.get("metadata").get("yuque_url")
+                        if chunk.get("metadata")
+                        else ""
+                    )
+                    title = (
+                        chunk.get("metadata").get("title")
+                        if chunk.get("metadata")
+                        else ""
+                    )
+                    if yuque_url in url_to_index:
+                        index = url_to_index[yuque_url]
+                    else:
+                        index = len(url_to_index) + 1
+                        url_to_index[yuque_url] = index
+                    text += f"{chunk.get('content')}-([{index}]-link:{yuque_url},title:{title})\n"
+                text = f"\n{sub_query}:\n" + text
+                search_res.summary_content += text
+        return search_res
+
     async def execute(self, call: ExecutorCall) -> Any:
-        raise NotImplementedError(
-            "KnowledgeCapability.execute 未收编 —— knowledge_search 暂走 v1 action"
+        """按 args["func"] 分发检索操作(search/ls/doc_ls/read,对齐 KnowledgeActionOperation)。"""
+        args = call.args or {}
+        func = args.get("func", "search")
+        query = args.get("query", "")
+        knowledge_ids = args.get("knowledge_ids") or self._knowledge_ids
+        if func == "ls":
+            return await self.get_directory(
+                query=query, selected_knowledge_ids=knowledge_ids, directory_mode="book"
+            )
+        if func == "doc_ls":
+            return await self.get_directory(
+                query=query,
+                selected_knowledge_ids=knowledge_ids,
+                doc_uuids=args.get("doc_uuids"),
+            )
+        if func == "read":
+            return await self.read_document(
+                query=query,
+                selected_knowledge_ids=knowledge_ids,
+                doc_uuids=args.get("doc_uuids"),
+                header=args.get("header"),
+            )
+        return await self.get_summary(
+            query=query,
+            selected_knowledge_ids=knowledge_ids,
+            doc_uuids=args.get("doc_uuids"),
         )
 
     async def release(self, reason: ReleaseReason) -> None:

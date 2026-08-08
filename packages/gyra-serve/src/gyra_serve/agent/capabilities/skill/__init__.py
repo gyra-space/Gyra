@@ -61,3 +61,5 @@ CAPABILITY_TYPE_KEY = "skill(gyra)"
 
 def register_capability_to(registry) -> None:
     registry.register(CAPABILITY_TYPE_KEY, build_capability)
+    # Phase D:旧 AgentSkillResource.type() 为 "skill"(沙箱技能),同走 SkillCapability。
+    registry.register("skill", build_capability)

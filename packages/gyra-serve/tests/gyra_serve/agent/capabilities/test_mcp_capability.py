@@ -212,3 +212,27 @@ async def test_facade_assemble_reads_capability_pack_for_mcp(monkeypatch):
     # MCP 工具进 snapshot tools
     tool_names = {getattr(c.content, "tool_name", None) for c in snap.tools}
     assert "mcp_loaded" in tool_names
+
+
+def test_mcp_gyra_alias_registered():
+    """Phase D:"mcp(gyra)" 类型(materializer 产出)注册别名,走 MCPCapability。"""
+    from gyra.agent.capabilities.registry_factory import CapabilityFactoryRegistry
+    from gyra_serve.agent.capabilities.mcp import register_capability_to
+
+    registry = CapabilityFactoryRegistry()
+    register_capability_to(registry)
+    assert registry.has("tool")
+    assert registry.has("mcp(gyra)")
+    # mcp(gyra) value 形状(materializer 产出)可直接构建
+    cap = registry.get("mcp(gyra)")(
+        {
+            "mcp_code": "mc-1",
+            "name": "my-mcp",
+            "mcp_servers": "http://sse.example.com",
+            "headers": {"k": "v"},
+            "source": "sse",
+        }
+    )
+    assert cap._mcp_name == "my-mcp"
+    assert cap._mcp_servers == "http://sse.example.com"
+    assert cap._headers == {"k": "v"}

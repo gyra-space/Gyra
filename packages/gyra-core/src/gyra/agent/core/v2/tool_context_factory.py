@@ -1,9 +1,10 @@
 """ToolContext 工厂。
 
-根据 tool_call + resource_map + sandbox_manager 构造 ToolContext，
-按 tool 类型注入活资源句柄（DBResource / RetrieverResource / AppResource / sandbox_client）。
+根据 tool_call + capability_pack + sandbox_manager 构造 ToolContext，
+按 tool 类型注入活资源句柄(DBCapability / KnowledgeCapability / AppCapability /
+sandbox_client)。
 
-等价 BAIZE tool_action.py:993-1059 + agent_adapter.py:240-320 的组装逻辑。
+Phase D:资源句柄来源从 v1 resource_map 改为 capability_pack。
 """
 from typing import Any, Dict, List, Optional
 
@@ -11,7 +12,7 @@ from gyra.agent.tools.context import ToolContext
 from gyra.agent.core.v2.tool_call_types import V2ToolCall
 
 
-# tool_name → resource_map key 的映射
+# tool_name → ToolContext resource key 的映射
 _TOOL_RESOURCE_MAP = {
     "execute_sql": "db_resource",
     "list_tables": "db_resource",
@@ -20,13 +21,13 @@ _TOOL_RESOURCE_MAP = {
     "AgentStart": "app_resource",
 }
 
-# tool_name → resource_map 类型 key（用于查找）
-_TOOL_RESOURCE_TYPE = {
-    "execute_sql": "DBResource",
-    "list_tables": "DBResource",
-    "get_table_spec": "DBResource",
-    "KnowledgeSearch": "RetrieverResource",
-    "AgentStart": "AppResource",
+# tool_name → capability_id 前缀(用于在 capability_pack 中查找)
+_TOOL_CAPABILITY_PREFIX = {
+    "execute_sql": "db",
+    "list_tables": "db",
+    "get_table_spec": "db",
+    "KnowledgeSearch": "knowledge",
+    "AgentStart": "app",
 }
 
 
@@ -40,7 +41,7 @@ class ToolContextFactory:
         scene: Optional[str] = None,
         scenario_id: Optional[str] = None,
         language: str = "zh",
-        resource_map: Optional[Dict[str, List[Any]]] = None,
+        capability_pack: Optional[Any] = None,
         sandbox_manager: Optional[Any] = None,
         skill_dir: Optional[str] = None,
         available_skills: Optional[Dict[str, str]] = None,
@@ -54,7 +55,7 @@ class ToolContextFactory:
         self._scene = scene
         self._scenario_id = scenario_id
         self._language = language
-        self._resource_map = resource_map or {}
+        self._capability_pack = capability_pack
         self._sandbox_manager = sandbox_manager
         self._skill_dir = skill_dir
         self._available_skills = available_skills or {}
@@ -70,8 +71,8 @@ class ToolContextFactory:
         """按名称（app_code / app_name）解析目标多媒体 app 的配置。
 
         返回 ``(config, app_code, app_name, app_desc)``；未命中返回 ``(None, "", "", "")``。
-        优先用注入的 ``multimedia_resolver``，其次扫描 ``resource_map`` 中匹配的
-        ``AppResource``（其 ``get_multimedia_config`` 只在 app 启用多媒体时返回配置）。
+        优先用注入的 ``multimedia_resolver``，其次扫描 ``capability_pack`` 中匹配的
+        ``AppCapability``（其 ``get_multimedia_config`` 只在 app 启用多媒体时返回配置）。
         """
         # 1) 注入的解析器（serve 层：app_code → 多媒体配置）
         if callable(self._multimedia_resolver):
@@ -81,28 +82,26 @@ class ToolContextFactory:
                     return cfg, name, "", ""
             except Exception:  # noqa: BLE001
                 pass
-        # 2) resource_map 里的 AppResource（按 app_code 或 app_name 匹配）
-        for items in (self._resource_map or {}).values():
-            for item in items or []:
-                if not hasattr(item, "app_code"):
-                    continue
-                code = getattr(item, "app_code", "") or ""
-                app_name = getattr(item, "app_name", "") or getattr(item, "name", "") or ""
-                if name not in (code, app_name):
-                    continue
-                getter = getattr(item, "get_multimedia_config", None)
-                if not callable(getter):
-                    continue
-                try:
-                    cfg = getter()
-                except Exception:  # noqa: BLE001
-                    cfg = None
-                return (
-                    cfg,
-                    code,
-                    app_name or name,
-                    getattr(item, "app_desc", "") or "",
-                )
+        # 2) capability_pack 里的 AppCapability（按 app_code 或 app_name 匹配）
+        pack = self._capability_pack
+        for cap in (pack.get_all("app") if pack else []):
+            code = getattr(cap, "app_code", "") or ""
+            app_name = getattr(cap, "app_name", "") or ""
+            if name not in (code, app_name):
+                continue
+            getter = getattr(cap, "get_multimedia_config", None)
+            if not callable(getter):
+                continue
+            try:
+                cfg = getter()
+            except Exception:  # noqa: BLE001
+                cfg = None
+            return (
+                cfg,
+                code,
+                app_name or name,
+                getattr(cap, "app_desc", "") or "",
+            )
         return None, "", "", ""
 
     def _build_subagent_delegate_factory(self, **kwargs: Any) -> Any:
@@ -181,11 +180,11 @@ class ToolContextFactory:
 
         # 按 tool 类型派发对应资源（G4）
         tool_name = tool_call.name
-        resource_type = _TOOL_RESOURCE_TYPE.get(tool_name)
+        cap_prefix = _TOOL_CAPABILITY_PREFIX.get(tool_name)
         resource_key = _TOOL_RESOURCE_MAP.get(tool_name)
-        if resource_type and resource_key:
-            resources = self._resource_map.get(resource_type, [])
-            if resources:
-                ctx.set_resource(resource_key, resources[0])
+        if cap_prefix and resource_key and self._capability_pack:
+            caps = self._capability_pack.get_all(cap_prefix)
+            if caps:
+                ctx.set_resource(resource_key, caps[0])
 
         return ctx

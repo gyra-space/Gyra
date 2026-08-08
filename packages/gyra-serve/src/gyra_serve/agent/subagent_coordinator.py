@@ -535,6 +535,12 @@ class SubagentCoordinator:
                 )
                 return
             await self._safe_set_waiting(main_conv_id)
+            # 同步内存对象 state 为 WAITING：_safe_set_waiting 只改数据库，不更新
+            # 传入的 conv 实体。aggregation_chat 依赖传入实体的 state 判断 is_retry_chat，
+            # 若不更新会误判为新会话而重复 INSERT，触发 UNIQUE constraint failed。
+            from gyra.agent.core.schema import Status as _Status
+
+            conv.state = _Status.WAITING.value
 
             # aggregation_chat 是异步生成器（yield task/chunk/conv_id），必须 async for
             # 消费才会真正执行（直接 await 会抛 TypeError）。放进独立后台 task，

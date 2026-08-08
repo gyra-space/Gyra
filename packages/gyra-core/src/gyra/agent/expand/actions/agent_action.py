@@ -624,10 +624,42 @@ class SubAgent(AgentAction, FunctionTool):
                     need_vis_render=need_vis_render,
                     **kwargs,
                 )
+            # 解析真实 app_code（与 sync 分支一致）：优先按名称从 capability_pack /
+            # resource_map 解析目标子 Agent 应用的真实 app_code，避免把 app_name 当
+            # app_code 查询失败（"应用不存在[xxx]"）。解析不到时回退 agent_name。
+            target_app_code = (
+                self._resolve_app_code(sender, action_input.agent_name)
+                or action_input.agent_name
+            )
             app_resource = GptAppResource(
                 name=action_input.agent_name,
-                app_code=action_input.agent_name,
+                app_code=target_app_code,
             )
+
+            # 前置校验：目标 app 必须存在。此处同步失败并返回 is_exe_success=False，
+            # 而不是在后台任务里吞掉错误（后台失败只回调 pending_subagents，
+            # 主 loop 感知不到、无法让 Agent 重新生成参数）。
+            try:
+                from gyra_serve.agent.agents.app_agent_manage import get_app_manager
+
+                await get_app_manager().get_app(target_app_code)
+            except Exception as ve:
+                logger.warning(
+                    f"[SubAgent.async] target app not found: {ve}"
+                )
+                metrics.end_time_ms = time.time_ns() // 1_000_000
+                return ActionOutput.from_dict({
+                    "action_id": self.action_uid,
+                    "is_exe_success": False,
+                    "thoughts": action_input.thought,
+                    "action": self.name,
+                    "name": self.name,
+                    "state": Status.FAILED.value,
+                    "action_input": action_input.to_dict(),
+                    "content": f"子 Agent 启动失败: {ve}",
+                    "observations": f"async subagent validation failed: {ve}",
+                    "metrics": metrics,
+                })
 
             # 深度守卫（与 sync 路径一致）
             parent_extra = (agent_context.extra or {}) if agent_context else {}

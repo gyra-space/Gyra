@@ -3417,11 +3417,9 @@ class ReActMasterAgent(ConversableAgent, Team):
         async def var_available_agents(instance):
             logger.info("注入agent资源")
             prompts = ""
-            for k, v in self.resource_map.items():
-                if isinstance(v[0], AppResource):
-                    for item in v:
-                        app_item: AppResource = item  # type:ignore
-                        prompts += f"- <agent><code>{app_item.app_code}</code><name>{app_item.app_name}</name><description>{app_item.app_desc}</description>\n</agent>\n"
+            if self.capability_pack:
+                for cap in self.capability_pack.get_all("app"):
+                    prompts += f"- <agent><code>{cap.app_code}</code><name>{cap.app_name}</name><description>{cap.app_desc}</description>\n</agent>\n"
             return prompts
 
         @self._vm.register("available_knowledges", "可用知识库")
@@ -3429,15 +3427,14 @@ class ReActMasterAgent(ConversableAgent, Team):
             logger.info("注入knowledges资源")
 
             prompts = ""
-            for k, v in self.resource_map.items():
-                if isinstance(v[0], RetrieverResource):
-                    for item in v:
-                        if hasattr(item, "knowledge_spaces") and item.knowledge_spaces:
-                            for i, knowledge_space in enumerate(item.knowledge_spaces):
-                                prompts += f"- <knowledge><id>{knowledge_space.knowledge_id}</id><name>{knowledge_space.name}</name><description>{knowledge_space.desc}</description></knowledge>\n"
-
-                        else:
-                            logger.error(f"当前知识资源无法使用!{k}")
+            if self.capability_pack:
+                for cap in self.capability_pack.get_all("knowledge"):
+                    spaces = getattr(cap, "_spaces", None) or []
+                    if not spaces:
+                        logger.error("当前知识资源无法使用!knowledge")
+                        continue
+                    for sp in spaces:
+                        prompts += f"- <knowledge><id>{sp.get('knowledge_id','')}</id><name>{sp.get('name','')}</name><description>{sp.get('desc','')}</description></knowledge>\n"
             return prompts
 
         @self._vm.register("available_skills", "可用技能")
@@ -3471,24 +3468,17 @@ class ReActMasterAgent(ConversableAgent, Team):
                     "使用方式：使用 `Skill` 工具加载技能的 SKILL.md 指令，使用 `bash` 工具执行技能目录中的脚本(指定 cwd=技能目录)。\n\n"
                 )
 
-            for k, v in self.resource_map.items():
-                if isinstance(v[0], AgentSkillResource):
-                    for item in v:
-                        skill_item: AgentSkillResource = item  # type:ignore
-                        mode, branch = "release", "master"
-                        debug_info = getattr(skill_item, "debug_info", None)
+            if self.capability_pack:
+                for cap in self.capability_pack.get_all("skill"):
+                    for sk in getattr(cap, "_skills", None) or []:
+                        branch = sk.get("branch") or "master"
+                        debug_info = sk.get("debug_info")
                         if debug_info and debug_info.get("is_debug"):
-                            mode, branch = "debug", debug_info.get("branch")
-                        skill_meta = skill_item.skill_meta(mode)
-                        if not skill_meta:
-                            continue
+                            branch = debug_info.get("branch")
 
-                        # skill_code is the UUID (GyraSkillResource) or dir name.
-                        skill_code = getattr(
-                            skill_item, "_skill_code", None
-                        ) or getattr(skill_item, "skill_code", None)
-                        if not skill_code and skill_meta.path:
-                            skill_code = os.path.basename(skill_meta.path)
+                        skill_code = sk.get("skill_code") or ""
+                        if not skill_code and sk.get("path"):
+                            skill_code = os.path.basename(sk["path"])
 
                         # Determine skill path based on sandbox mode
                         # If sandbox is enabled, use sandbox_skill_dir + skill_code (absolute path in sandbox)
@@ -3498,12 +3488,12 @@ class ReActMasterAgent(ConversableAgent, Team):
                         elif skill_code:
                             skill_path = os.path.join(local_skill_dir, skill_code)
                         else:
-                            skill_path = skill_meta.path
+                            skill_path = sk.get("path")
 
                         prompts += (
                             f"- <skill>"
-                            f"<name>{skill_meta.name}</name>"
-                            f"<description>{skill_meta.description}</description>"
+                            f"<name>{sk.get('name','')}</name>"
+                            f"<description>{sk.get('description','')}</description>"
                             f"<path>{skill_path}</path>"
                             f"<branch>{branch}</branch>"
                             f"<load_command>Skill(skill_name=\"{skill_code}\")</load_command>"
@@ -3516,44 +3506,24 @@ class ReActMasterAgent(ConversableAgent, Team):
         async def var_other_resources(instance):
             logger.info("注入其他资源")
 
-            excluded_types = (
-                BaseTool,
-                MCPToolPack,
-                AppResource,
-                AgentSkillResource,
-                RetrieverResource,
-            )
-
+            # Phase D:从 capability_pack 渲染。v1 此处对 DBResource.get_prompt 做
+            # schema I/O;v2 用 DBCapability 基本信息(无 I/O,facade declare 同款
+            # 文本),schema 明细由 declare 的 DataRequirement 占位回填。
             prompts = ""
-            for k, v in self.resource_map.items():
-                if not isinstance(v[0], excluded_types):
-                    for item in v:
-                        try:
-                            resource_type = item.type()
-                            if isinstance(resource_type, str):
-                                type_name = resource_type
-                            else:
-                                type_name = (
-                                    resource_type.value
-                                    if hasattr(resource_type, "value")
-                                    else str(resource_type)
-                                )
-
-                            resource_prompt, _ = await item.get_prompt(
-                                lang=instance.agent_context.language
-                                if instance.agent_context
-                                else "en"
+            if self.capability_pack:
+                for cap in self.capability_pack.get_all("db"):
+                    try:
+                        basic_info = cap._build_basic_info()
+                        if basic_info:
+                            prompts += (
+                                f"- <database><name>{cap.db_name}</name>"
+                                f"<prompt>{basic_info}</prompt>\n</database>\n"
                             )
-                            if resource_prompt:
-                                resource_name = (
-                                    item.name if hasattr(item, "name") else k
-                                )
-                                prompts += f"- <{type_name}><name>{resource_name}</name><prompt>{resource_prompt}</prompt>\n</{type_name}>\n"
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to get prompt for resource {k}: {e}"
-                            )
-                            continue
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to render database resource {getattr(cap, 'db_name', '?')}: {e}"
+                        )
+                        continue
             return prompts
 
         @self._vm.register("sandbox", "沙箱配置")

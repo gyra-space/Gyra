@@ -129,7 +129,7 @@ const DockPanel: React.FC<DockPanelProps> = ({ widgets, systemEvents }) => {
   return (
     // -mb-4 让输入框卡片向上叠 16px 盖住 dock 底部(底部垫高区),dock 不定位,
     // 输入框(relative)自然绘制在上层 — 呈「输入框压在 dock 上」的贴合效果。
-    <div className="w-full overflow-hidden -mb-4 rounded-2xl border border-[#e5e7eb] dark:border-gray-700 bg-white dark:bg-[#232734]">
+    <div className="w-[calc(100%-44px)] mx-[22px] overflow-hidden -mb-4 rounded-2xl border border-[#e5e7eb] dark:border-gray-700 bg-white dark:bg-[#232734]">
       {/* 单行摘要栏 */}
       <div className="flex items-center h-10 pl-3 pr-2 gap-1.5">
         {/* 多 widget 时：左侧图标切换器 */}

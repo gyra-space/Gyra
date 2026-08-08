@@ -59,6 +59,41 @@ interface IProps {
   data: ManusRightPanelData;
 }
 
+/**
+ * LRU cache for step detail (active_step + outputs) loaded on demand via
+ * /api/unified/vis/step_detail. Module-level so it survives right-panel
+ * re-renders / cross-round remounts within a page session.
+ */
+class StepDetailCache {
+  private cache = new Map<string, { active_step: any; outputs: any[] }>();
+  private maxSize: number;
+
+  constructor(maxSize = 100) {
+    this.maxSize = maxSize;
+  }
+
+  get(key: string) {
+    const entry = this.cache.get(key);
+    if (entry) {
+      this.cache.delete(key);
+      this.cache.set(key, entry);
+      return entry;
+    }
+    return undefined;
+  }
+
+  set(key: string, data: { active_step: any; outputs: any[] }) {
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.maxSize) {
+      const firstKey = this.cache.keys().next().value;
+      if (firstKey !== undefined) this.cache.delete(firstKey);
+    }
+    this.cache.set(key, data);
+  }
+}
+const stepDetailCache = new StepDetailCache(100);
+
 /* ═══════════════════════════════════════════════════════════════
    Step type helpers
    ═══════════════════════════════════════════════════════════════ */
@@ -791,6 +826,8 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   // Track user-selected step via CLICK_FOLDER event
   const [selectedStep, setSelectedStep] = useState<ManusStepData | null>(null);
+  // step_id currently being lazy-fetched (shows loading in content area)
+  const [loadingStepUid, setLoadingStepUid] = useState<string | null>(null);
   // Track selected deliverable within the single 「交付文件」 tab
   const [selectedDeliverable, setSelectedDeliverable] = useState<ManusDeliverableFile | null>(null);
 
@@ -810,30 +847,78 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
       if (selectedStep) {
         setSelectedStep(null);
       }
+      if (loadingStepUid) {
+        setLoadingStepUid(null);
+      }
     }
   }, [active_step?.id]);
 
-  // Listen for CLICK_FOLDER events to switch displayed step
   // Use a ref to avoid re-registering the handler on every steps_map change
   const stepsMapRef = useRef(steps_map);
   stepsMapRef.current = steps_map;
+  // Tracks the most recently requested step uid, so a slow in-flight fetch
+  // won't overwrite a newer click (rapid double-click race).
+  const latestUidRef = useRef<string | null>(null);
+
+  // Select a step by uid: show local metadata instantly, then lazy-fetch real
+  // outputs (lazy steps_map has no outputs). Works for both within-round (step
+  // in current steps_map) and cross-round (step only resolvable via API) clicks.
+  const selectStep = useCallback(async (uid: string) => {
+    latestUidRef.current = uid;
+    const local = stepsMapRef.current?.[uid];
+    setActiveTab('execution');
+    setInputCollapsed(false);
+    if (local) {
+      setSelectedStep({ active_step: local.active_step, outputs: local.outputs ?? [] });
+    }
+    // 非 lazy(已有 outputs)无需拉取
+    if (local && local.outputs !== undefined) return;
+
+    const convId = typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('conv_uid') || ''
+      : '';
+    if (!convId) return;
+
+    const cacheKey = `${convId}_${uid}`;
+    const cached = stepDetailCache.get(cacheKey);
+    if (cached) {
+      if (latestUidRef.current === uid) {
+        setSelectedStep({ active_step: cached.active_step, outputs: cached.outputs });
+      }
+      return;
+    }
+
+    setLoadingStepUid(uid);
+    try {
+      const resp = await fetch(
+        `${process.env.NEXT_PUBLIC_API_BASE_URL || ''}/api/unified/vis/step_detail?conv_id=${encodeURIComponent(convId)}&step_id=${encodeURIComponent(uid)}`
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        const outputs = Array.isArray(data.outputs) ? data.outputs : [];
+        stepDetailCache.set(cacheKey, { active_step: data.active_step, outputs });
+        if (latestUidRef.current === uid) {
+          setSelectedStep({ active_step: data.active_step, outputs });
+        }
+      } else if (!local && latestUidRef.current === uid) {
+        setSelectedStep(null);
+      }
+    } catch {
+      if (!local && latestUidRef.current === uid) setSelectedStep(null);
+    } finally {
+      if (latestUidRef.current === uid) setLoadingStepUid(null);
+    }
+  }, []);
 
   useEffect(() => {
     const handler = (payload: { uid?: string }) => {
-      const currentMap = stepsMapRef.current;
-      if (!payload?.uid || !currentMap) return;
-      const stepData = currentMap[payload.uid];
-      if (stepData) {
-        setSelectedStep(stepData);
-        setActiveTab('execution');
-        setInputCollapsed(false);
-      }
+      if (payload?.uid) selectStep(payload.uid);
     };
     ee.on(EVENTS.CLICK_FOLDER, handler);
     return () => {
       ee.off(EVENTS.CLICK_FOLDER, handler);
     };
-  }, []); // stable — no dependency on steps_map
+  }, [selectStep]); // stable — no dependency on steps_map
 
   // Listen for SWITCH_TAB events from left panel links
   useEffect(() => {
@@ -857,9 +942,12 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
     return () => { ee.off(EVENTS.SWITCH_TAB, handler); };
   }, [deliverable_files]);
 
-  // Determine which step to display: user-selected or backend-active
+  // Determine which step to display: user-selected or backend-active.
+  // 选中步骤时只显示该步骤的 outputs(lazy 下可能为空,等待 fetch),不再回退到
+  // 活跃步骤的 outputs —— 否则点击非活跃步骤会显示「B 标题 + A 内容」。
   const displayStep = selectedStep?.active_step ?? active_step;
-  const displayOutputs = selectedStep?.outputs ?? outputs;
+  const displayOutputs = selectedStep ? (selectedStep.outputs ?? []) : outputs;
+  const showStepLoading = loadingStepUid !== null;
 
   // Step navigation: steps_map keys follow execution order (insertion order)
   const stepKeys = useMemo(() => Object.keys(steps_map || {}), [steps_map]);
@@ -1269,7 +1357,14 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
               {/* Step content — fills remaining area */}
               {!inputCollapsed && (
                 <div className="flex-1 min-h-0 overflow-auto p-3">
-                  <StepRenderer activeStep={displayStep} outputs={displayOutputs} />
+                  {showStepLoading ? (
+                    <div className="flex flex-col items-center justify-center h-48">
+                      <LoadingOutlined spin className="text-xl text-gray-300 mb-2" />
+                      <div className="text-xs text-gray-300">加载步骤详情...</div>
+                    </div>
+                  ) : (
+                    <StepRenderer activeStep={displayStep} outputs={displayOutputs} />
+                  )}
                 </div>
               )}
             </div>

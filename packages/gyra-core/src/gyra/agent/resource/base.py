@@ -2,6 +2,7 @@
 import asyncio
 import dataclasses
 import json
+import logging
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import (
@@ -24,6 +25,8 @@ from gyra._private.pydantic import BaseModel, model_to_dict
 from gyra.core import Chunk
 from gyra.util.i18n_utils import _
 from gyra.util.parameter_utils import BaseParameters, _get_parameter_descriptions
+
+logger = logging.getLogger(__name__)
 
 P = TypeVar("P", bound="ResourceParameters")
 T = TypeVar("T", bound="Resource")
@@ -400,14 +403,25 @@ class AgentResource(BaseModel):
         if v2_resource:
             return raw_resource
         else:
-            # Transform the old resource to the new one
+            # Transform the old resource to the new one.
+            # Phase D:走非实例化的 normalize;未知类型/解析失败保留原值(不 raise),
+            # DB 存量配置(已删除的 reasoning_engine/workflow 类型、纯字符串 value)
+            # 必须能正常加载,在 capability build 期被跳过。
             from .manage import get_resource_manager
 
-            v2_resource_dict = get_resource_manager().build_resource_by_type(
-                raw_resource.type, raw_resource, return_resource=False
-            )
-            # To JSON string
-            raw_resource.value = json.dumps(v2_resource_dict, ensure_ascii=False)
+            normalized = None
+            try:
+                normalized = get_resource_manager().normalize_resource_value(
+                    raw_resource.type, raw_resource
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"Failed to normalize legacy resource value: type={raw_resource.type}, "
+                    f"name={raw_resource.name}: {e}. Keeping raw value."
+                )
+            if normalized is not None:
+                # To JSON string
+                raw_resource.value = json.dumps(normalized, ensure_ascii=False)
             return raw_resource
 
     @staticmethod

@@ -3,6 +3,11 @@ import { queryChatStatus, ChatQueryResponse } from '@/client/api/chat';
 
 export type ConversationState = 'RUNNING' | 'COMPLETE' | 'FAILED' | 'WAITING' | 'UNKNOWN';
 
+// 会话是否处于"进行中"（RUNNING 或 WAITING）：
+// WAITING 表示正在等后台子任务/异步任务恢复，完成后主会话会自动 resume。
+// 仅终态（COMPLETE/FAILED）才停止轮询并触发 onComplete，从而刷新历史看到恢复内容。
+const isInProgress = (s: string | undefined) => s === 'RUNNING' || s === 'WAITING';
+
 interface UseChatPollingOptions {
   convId: string | null;
   enabled?: boolean;
@@ -90,8 +95,8 @@ export function useChatPolling({
     
     // 立即检查一次
     checkStatus().then(result => {
-      if (result && result.state !== 'RUNNING') {
-        // 如果不是运行中，不开始轮询
+      if (result && !isInProgress(result.state)) {
+        // 已是终态，不开始轮询
         setIsPolling(false);
         return;
       }
@@ -100,7 +105,7 @@ export function useChatPolling({
       intervalRef.current = setInterval(async () => {
         const status = await checkStatus();
         
-        if (status && status.state !== 'RUNNING') {
+        if (status && !isInProgress(status.state)) {
           // 对话完成或失败，停止轮询
           if (intervalRef.current) {
             clearInterval(intervalRef.current);
@@ -143,7 +148,7 @@ export function useChatPolling({
   useEffect(() => {
     if (convId && enabled) {
       checkStatus().then(result => {
-        if (result?.state === 'RUNNING') {
+        if (result && isInProgress(result.state)) {
           startPolling();
         }
       });

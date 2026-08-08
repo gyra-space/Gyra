@@ -66,7 +66,25 @@ class MemoryCapability(Capability):
 
     @classmethod
     def from_config(cls, value: dict, system_app: Any = None) -> "MemoryCapability":
-        return cls(memory_params=value or None)
+        """从 config dict 构造,value 规范化为 MemoryParameters(Phase D)。
+
+        role.get_memory_parameters 改从本属性读取,v1 MemoryResource 退场后
+        记忆参数不丢。解析失败降级 None(消费方回退默认参数)。
+        """
+        params = None
+        if value:
+            try:
+                from gyra.agent.resource.memory import MemoryParameters
+
+                params = MemoryParameters.from_dict(value, ignore_extra_fields=True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[memory-capability] parse memory params failed: {e}")
+        return cls(memory_params=params)
+
+    @property
+    def memory_params(self) -> Any:
+        """MemoryParameters 或 None(对齐 v1 MemoryResource.memory_params 消费形状)。"""
+        return self._memory_params
 
     # ----------------------------- 输入投影(空) --------------------------- #
     def declare(self, config: Any = None) -> List[Contribution]:

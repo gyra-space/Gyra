@@ -1,4 +1,5 @@
 """Tests for workspace_resource materializer."""
+import json
 from unittest.mock import MagicMock, patch
 from gyra_serve.workspace.materializer import (
     materialize_resources,
@@ -125,7 +126,11 @@ def test_materialize_inactive_resource_skipped():
 
 
 def test_materialize_llm_model_sets_space_config_and_injects_agentinfo():
-    """type=llm_model 资源:设置空间级模型配置(ContextVar)并注入 AgentInfo。"""
+    """type=llm_model 资源:设置空间级模型配置(ContextVar)。
+
+    Phase D:不再产出 AgentResource(llm_model 类型下线),只保留 ModelConfigCache
+    副作用。
+    """
     from gyra.agent.util.llm.model_config_cache import ModelConfigCache
 
     ModelConfigCache.set_space_model_config(None)  # 清空遗留覆盖
@@ -147,14 +152,8 @@ def test_materialize_llm_model_sets_space_config_and_injects_agentinfo():
         MockWsService.return_value.list_resources.return_value = [llm_resource]
         result = materialize_resources(system_app, workspace_id=1)
 
-    # AgentInfo 注入
-    assert len(result.dynamic_resources) == 1
-    ar = result.dynamic_resources[0]
-    assert ar.type == "llm_model"
-    assert ar.name == "deepseek-chat"
-    assert ar.value["protocol"] == "openai"
-    assert ar.value["provider"] == "deepseek"
-    assert ar.value["source"] == "space_bound"
+    # Phase D:不再物化 AgentResource
+    assert result.dynamic_resources == []
 
     # 空间级配置生效:has_model / get_config 命中空间模型
     assert ModelConfigCache.has_model("deepseek-chat") is True
@@ -188,3 +187,26 @@ def test_materialize_llm_model_empty_model_returns_none():
     assert ModelConfigCache.get_space_model_config() is None
 
     ModelConfigCache.set_space_model_config(None)
+
+
+def test_materialize_knowledge_space_emits_knowledge_pack_v2():
+    """Phase D:knowledge_space 物化为 type=knowledge_pack + v2 JSON value。"""
+    system_app = MagicMock()
+    ks = MagicMock(
+        type="knowledge_space",
+        name="wiki",
+        physical_ref="kid-1",
+        config={"name": "内部wiki"},
+        is_active=True,
+    )
+    with patch(
+        "gyra_serve.workspace.materializer.WorkspaceService"
+    ) as MockWsService:
+        MockWsService.return_value.list_resources.return_value = [ks]
+        result = materialize_resources(system_app, workspace_id=1)
+
+    assert len(result.dynamic_resources) == 1
+    ar = result.dynamic_resources[0]
+    assert ar.type == "knowledge_pack"
+    value = ar.value if isinstance(ar.value, dict) else json.loads(ar.value)
+    assert value["knowledges"] == [{"knowledge_id": "kid-1"}]

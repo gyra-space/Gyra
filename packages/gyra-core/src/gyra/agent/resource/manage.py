@@ -228,6 +228,68 @@ class ResourceManager(BaseComponent):
 
         return results
 
+    def normalize_resource_value(
+        self, type_unique_key: str, agent_resource: AgentResource
+    ) -> Optional[Dict[str, Any]]:
+        """规范化 AgentResource.value 为参数 dict(不实例化)。
+
+        Phase D:替代 build_resource_by_type(return_resource=False) 的非实例化路径,
+        供 AgentResource.from_dict 老格式(v1 纯字符串 value)转换用。
+        未知类型/解析失败返回 None(调用方保留原值),绝不 raise —— DB 存量配置
+        加载路径(from_json_list_str)必须容忍历史数据。
+        """
+        item = self._type_to_resources.get(type_unique_key)
+        if not item:
+            logger.warning(
+                f"Resource type {type_unique_key} not found, cannot normalize. "
+                f"Resource name: {agent_resource.name}. Keeping raw value."
+            )
+            return None
+        inst_items = [i for i in item if not i.is_class]
+        resource_value: Union[str, Dict[str, Any]] = agent_resource.value
+        v2_resource = False
+        if resource_value and isinstance(resource_value, str):
+            try:
+                resource_value = json.loads(resource_value)
+                # V2 value is JSON string
+                v2_resource = True
+            except json.JSONDecodeError:
+                pass
+        elif resource_value and isinstance(resource_value, dict):
+            v2_resource = True
+
+        if inst_items:
+            real_resource_name = (
+                resource_value.get("name")
+                if isinstance(resource_value, dict)
+                else resource_value
+            )
+            for i in inst_items:
+                if (
+                    i.resource_instance
+                    and i.resource_instance.name == real_resource_name
+                ):
+                    return {"name": real_resource_name}
+            logger.warning(
+                f"Resource {real_resource_name} not found in {type_unique_key}, "
+                f"cannot normalize. Keeping raw value."
+            )
+            return None
+        single_item = item[0]
+        try:
+            parameter_cls = single_item.get_parameter_class()
+            param = parameter_cls.from_dict(
+                resource_value if v2_resource else agent_resource.to_dict(),
+                ignore_extra_fields=True,
+            )
+            return param.to_dict()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Failed to normalize resource {single_item.key}: {str(e)}. "
+                f"Keeping raw value."
+            )
+            return None
+
     def build_resource_by_type(
         self,
         type_unique_key: str,

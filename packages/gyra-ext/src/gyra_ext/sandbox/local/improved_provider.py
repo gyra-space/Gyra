@@ -222,8 +222,10 @@ class ImprovedLocalSandbox(SandboxBase):
         kwargs.setdefault("local_sandbox_config", {})
         kwargs["local_sandbox_config"]["allow_network"] = allow_internet_access
 
-        # Set work_dir if provided and not None (from kwargs)
-        if "work_dir" in kwargs and kwargs["work_dir"] is not None:
+        # Set work_dir if provided and not empty (from kwargs). 空字符串视为未设置，
+        # 由本地 provider 兜底到 DEFAULT_LOCAL_SANDBOX_WORK_DIR，而不是落到
+        # SandboxBase 的 DEFAULT_WORK_DIR(/home/ubuntu)。
+        if kwargs.get("work_dir"):
             kwargs["local_sandbox_config"]["work_dir"] = kwargs["work_dir"]
 
         # Set host_work_dir (scene-workspace persistent sandbox dir) if provided

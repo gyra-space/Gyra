@@ -97,9 +97,17 @@ def _materialize_skill(
 def _materialize_knowledge_space(
     physical_ref: str, config: Dict[str, Any]
 ) -> Optional[AgentResource]:
-    """type=knowledge_space → AgentResource(type=knowledge)。"""
+    """type=knowledge_space → AgentResource(type=knowledge_pack,v2 JSON value)。
+
+    Phase D:旧版产 type="knowledge" + 纯字符串 value(未注册类型,from_dict 转换
+    直接 raise);改为 knowledge_pack + v2 JSON,由 KnowledgeCapability 接管。
+    """
     return AgentResource.from_dict(
-        {"type": "knowledge", "value": physical_ref, **config}
+        {
+            "type": "knowledge_pack",
+            "name": config.get("name") or physical_ref,
+            "value": {"knowledges": [{"knowledge_id": physical_ref}], **config},
+        }
     )
 
 
@@ -131,13 +139,16 @@ def _materialize_app(
 def _materialize_llm_model(
     physical_ref: str, config: Dict[str, Any]
 ) -> Optional[AgentResource]:
-    """type=llm_model → 设置空间级模型配置覆盖(ContextVar)并注入 AgentInfo。
+    """type=llm_model → 设置空间级模型配置覆盖(ContextVar)。
 
     空间绑定的 llm_model 资源决定该空间可用的专属模型/token:
     物化时把模型配置写入 ModelConfigCache 的空间级 ContextVar,该作用域内后续
     LLM 调用经 get_config/has_model 以"空间模型 > 全局回退"解析,实现空间专属
     token 管控。不落明文 token:仅引用 api_key_ref,运行时由 ConfigReferenceResolver
-    解析。返回的 AgentResource 让 system prompt 能看到空间绑定的模型与协议。
+    解析。
+
+    Phase D:不再产出 AgentResource(llm_model 类型已下线,旧产出本就被所有消费方
+    丢弃);只保留 ModelConfigCache 副作用,返回 None。
     """
     from gyra.agent.util.llm.model_config_cache import ModelConfigCache
 
@@ -158,21 +169,7 @@ def _materialize_llm_model(
             "reasoning_effort": config.get("reasoning_effort"),
         }
     )
-    space_cfg = ModelConfigCache.get_space_model_config() or {}
-    return AgentResource.from_dict(
-        {
-            "type": "llm_model",
-            "name": space_cfg.get("model") or model,
-            "value": {
-                "model": space_cfg.get("model"),
-                "provider": space_cfg.get("provider"),
-                "protocol": space_cfg.get("protocol"),
-                "base_url": space_cfg.get("base_url"),
-                "api_key_ref": space_cfg.get("api_key_ref"),
-                "source": "space_bound",
-            },
-        }
-    )
+    return None
 
 
 def _materialize_ecp(

@@ -269,12 +269,12 @@ class PlaybookResource(ResourceProtocol):
             "resources": config.resources,
             # 执行投影层据此分派到对应的 ResourceManager/ToolRegistry
             "_resolve_hint": {
-                "skills": "agent_skill",
+                "skills": "skill(gyra)",
                 "datasource": "datasource",
                 "data_source": "datasource",
                 "mcp": "mcp(gyra)",
-                "knowledge": "knowledge",
-                "knowledge_space": "knowledge",
+                "knowledge": "knowledge_pack",
+                "knowledge_space": "knowledge_pack",
             },
         }
 

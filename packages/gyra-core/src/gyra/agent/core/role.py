@@ -409,16 +409,17 @@ class Role(ABC, BaseModel):
             return fragments
 
     def get_memory_parameters(self) -> BaseParameters | None:
-        """Get memory parameters from the agent's resource if available."""
+        """Get memory parameters from the agent's memory capability if available.
+
+        Phase D:改从 capability_pack 的 MemoryCapability 读取(v1 读 self.resource
+        里的 MemoryResource)。无配置时回退默认参数(对齐 v1 default_parameters)。
+        """
         from gyra.agent.resource.memory import MemoryResource
 
-        resource = self.resource
-        if resource and resource.is_pack and resource.sub_resources:
-            for r in resource.sub_resources:
-                if isinstance(r, MemoryResource):
-                    return r.memory_params
-        elif resource and isinstance(resource, MemoryResource):
-            return resource.memory_params
+        if self.capability_pack:
+            memory_cap = self.capability_pack.get("memory")
+            if memory_cap is not None and memory_cap.memory_params is not None:
+                return memory_cap.memory_params
         return MemoryResource.default_parameters()
 
     async def recovering_memory(self, action_outputs: List[ActionOutput]) -> None:

@@ -4020,6 +4020,16 @@ class AgentChat(BaseComponent, ABC):
             if not cache:
                 return None
 
+            # 优先用转换器的 get_step_detail:按 step_id(或 action_id)重放消息精确匹配,
+            # 正确处理并行多工具调用(render_step_detail 只取消息内最后一个 action)。
+            # 统一返回 {active_step, outputs}。
+            if hasattr(vis_convert, "get_step_detail"):
+                messages = list(cache.messages.values())
+                detail = vis_convert.get_step_detail(messages=messages, step_id=step_uid)
+                if detail:
+                    return detail
+
+            # Fallback:按 tool_call_id(=action_id)定位消息,再 render_step_detail
             target_entry = None
             for entry in cache.work_logs:
                 if entry.tool_call_id == step_uid:
@@ -4038,28 +4048,27 @@ class AgentChat(BaseComponent, ABC):
                 target_msg.set_work_entries(entries)
 
             if hasattr(vis_convert, "render_step_detail"):
-                return await vis_convert.render_step_detail(
+                rd = await vis_convert.render_step_detail(
                     gpt_msg=target_msg,
                     step_uid=step_uid,
                 )
+                if rd and rd.get("step_data"):
+                    return rd["step_data"]
 
             action_name = target_entry.tool or ""
             observation = getattr(target_entry, "output", None) or ""
             return {
-                "vis_content": "",
-                "step_data": {
-                    "active_step": {
-                        "id": step_uid,
-                        "type": action_name or "tool",
-                        "title": action_name or "Step",
-                        "status": "completed" if target_entry.success else "error",
-                        "action": action_name,
-                        "action_input": getattr(target_entry, "args", None),
-                    },
-                    "outputs": [{"output_type": "text", "content": observation}]
-                    if observation
-                    else [],
+                "active_step": {
+                    "id": step_uid,
+                    "type": action_name or "tool",
+                    "title": action_name or "Step",
+                    "status": "completed" if target_entry.success else "error",
+                    "action": action_name,
+                    "action_input": getattr(target_entry, "args", None),
                 },
+                "outputs": [{"output_type": "text", "content": observation}]
+                if observation
+                else [],
             }
         finally:
             await gpts_memory.clear(conv_id)

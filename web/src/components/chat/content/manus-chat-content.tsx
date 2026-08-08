@@ -36,48 +36,11 @@ const isMessageTooLarge = (msg: IChatDialogueMessageSchema): boolean => {
 };
 
 /**
- * LRU cache for step detail data loaded on demand
- */
-class StepDetailCache {
-  private cache = new Map<string, { data: any; timestamp: number }>();
-  private maxSize: number;
-
-  constructor(maxSize = 100) {
-    this.maxSize = maxSize;
-  }
-
-  get(key: string): any | undefined {
-    const entry = this.cache.get(key);
-    if (entry) {
-      // Move to end (most recently used)
-      this.cache.delete(key);
-      this.cache.set(key, entry);
-      return entry.data;
-    }
-    return undefined;
-  }
-
-  set(key: string, data: any): void {
-    if (this.cache.has(key)) {
-      this.cache.delete(key);
-    } else if (this.cache.size >= this.maxSize) {
-      // Evict oldest entry
-      const firstKey = this.cache.keys().next().value;
-      if (firstKey !== undefined) this.cache.delete(firstKey);
-    }
-    this.cache.set(key, { data, timestamp: Date.now() });
-  }
-}
-
-const stepDetailCache = new StepDetailCache(100);
-
-/**
  * Extract the latest running_window and build routing maps for cross-round switching:
  * - fileRunningWindowMap: deliverable file_id → running_window
- * - stepRunningWindowMap: step UID (from steps_map keys) → running_window
  *
  * Optimized: only scan the last N messages to reduce parsing overhead
- * Enhanced: detect lazy_loading mode and meta_window for on-demand loading
+ * Also tracks meta_window and the latest active_step id (for stream-follow logic).
  */
 function useRunningWindows(
   showMessages: Array<IChatDialogueMessageSchema & { key: string }>
@@ -85,8 +48,6 @@ function useRunningWindows(
   latestRunningWindow: string;
   latestHasData: boolean;
   fileRunningWindowMap: Map<string, string>;
-  stepRunningWindowMap: Map<string, string>;
-  isLazyLoading: boolean;
   metaWindow: { total_steps?: number; visible_steps?: number; evicted_steps?: number } | null;
   latestActiveStepId: string | null;
 } {
@@ -94,8 +55,6 @@ function useRunningWindows(
     let latestRunningWindow = '';
     let latestActiveStepId: string | null = null;
     const fileMap = new Map<string, string>();
-    const stepMap = new Map<string, string>();
-    let isLazyLoading = false;
     let metaWindow: any = null;
 
     // Only scan the last 50 messages to reduce overhead
@@ -132,10 +91,6 @@ function useRunningWindows(
           try {
             const data = JSON.parse(match[1]);
 
-            // Detect lazy_loading mode
-            if (data.lazy_loading) {
-              isLazyLoading = true;
-            }
             // 跟踪最新 active step id,供流式阶段判断「新步骤开始」(同步骤的增量 chunk 不应清 override)
             if (data.active_step?.id) {
               latestActiveStepId = data.active_step.id;
@@ -147,14 +102,6 @@ function useRunningWindows(
             }
             if ((data.task_files || []).length > 0) {
               fileMap.set('task_files', rw);
-            }
-            // Index step UIDs from steps_map
-            // In lazy_loading mode, steps_map has metadata only (no outputs)
-            // but we still index for click-to-switch routing
-            if (data.steps_map) {
-              for (const uid of Object.keys(data.steps_map)) {
-                stepMap.set(uid, rw);
-              }
             }
           } catch {
             // skip
@@ -169,51 +116,10 @@ function useRunningWindows(
       latestRunningWindow,
       latestHasData: !!latestRunningWindow,
       fileRunningWindowMap: fileMap,
-      stepRunningWindowMap: stepMap,
-      isLazyLoading,
       metaWindow,
       latestActiveStepId,
     };
   }, [showMessages]);
-}
-
-/**
- * Build a manus-right-panel running_window string from step detail data
- * (returned by the /vis/step_detail API)
- */
-function buildRunningWindowFromStepDetail(data: {
-  active_step?: any;
-  outputs?: any[];
-}): string | null {
-  if (!data.active_step && (!data.outputs || data.outputs.length === 0)) {
-    return null;
-  }
-  const stepId = data.active_step?.id || '';
-  const stepUid = data.active_step?.uid || stepId;
-  // Build steps_map with the current step so future clicks work
-  const steps_map: Record<string, { active_step: any; outputs: any[] }> = {};
-  if (stepId && data.active_step) {
-    steps_map[stepId] = {
-      active_step: data.active_step,
-      outputs: data.outputs || [],
-    };
-  }
-  if (stepUid && stepUid !== stepId && data.active_step) {
-    steps_map[stepUid] = {
-      active_step: data.active_step,
-      outputs: data.outputs || [],
-    };
-  }
-  const payload = {
-    uid: 'manus_right_panel',
-    type: 'all',
-    active_step: data.active_step,
-    outputs: data.outputs || [],
-    is_running: false,
-    panel_view: 'execution',
-    steps_map,
-  };
-  return '```manus-right-panel\n' + JSON.stringify(payload) + '\n```';
 }
 
 const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPanel }) => {
@@ -266,7 +172,7 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
     return points;
   }, [compressionSegments, showMessages]);
 
-  const { latestRunningWindow, latestHasData, fileRunningWindowMap, stepRunningWindowMap, isLazyLoading, metaWindow, latestActiveStepId } = useRunningWindows(showMessages);
+  const { latestRunningWindow, latestHasData, fileRunningWindowMap, metaWindow, latestActiveStepId } = useRunningWindows(showMessages);
 
   // The running window shown in right panel: override (from deliverable click) or latest
   const displayRunningWindow = overrideRunningWindow || latestRunningWindow;
@@ -322,57 +228,9 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
     };
   }, [fileRunningWindowMap, displayRunningWindow]);
 
-  // Listen for CLICK_FOLDER to route step clicks to the correct round's running_window
-  // In lazy_loading mode, fetch step detail from API; otherwise use local stepRunningWindowMap
-  useEffect(() => {
-    const handleClickFolder = async (payload: { uid?: string; conv_id?: string }) => {
-      if (!payload?.uid) return;
-
-      // In lazy loading mode, try to fetch step detail via API
-      if (isLazyLoading && payload.conv_id) {
-        const cacheKey = `${payload.conv_id}_${payload.uid}`;
-        const cached = stepDetailCache.get(cacheKey);
-        if (cached) {
-          // Build a running_window from cached data
-          const rw = buildRunningWindowFromStepDetail(cached);
-          if (rw) {
-            setOverrideRunningWindow(rw);
-            return;
-          }
-        }
-
-        // Fetch from API
-        try {
-          const resp = await fetch(
-            `/api/unified/vis/step_detail?conv_id=${encodeURIComponent(payload.conv_id)}&step_id=${encodeURIComponent(payload.uid)}`
-          );
-          if (resp.ok) {
-            const data = await resp.json();
-            if (data.active_step || (data.outputs && data.outputs.length > 0)) {
-              stepDetailCache.set(cacheKey, data);
-              const rw = buildRunningWindowFromStepDetail(data);
-              if (rw) {
-                setOverrideRunningWindow(rw);
-                return;
-              }
-            }
-          }
-        } catch {
-          // Fall through to local lookup
-        }
-      }
-
-      // Fallback: local stepRunningWindowMap lookup
-      const rw = stepRunningWindowMap.get(payload.uid);
-      if (rw && rw !== displayRunningWindow) {
-        setOverrideRunningWindow(rw);
-      }
-    };
-    ee.on(EVENTS.CLICK_FOLDER, handleClickFolder);
-    return () => {
-      ee.off(EVENTS.CLICK_FOLDER, handleClickFolder);
-    };
-  }, [stepRunningWindowMap, displayRunningWindow, isLazyLoading]);
+  // Step clicks (CLICK_FOLDER) are handled entirely by VisManusRightPanel:
+  // it selects the step and lazy-fetches its outputs via /api/unified/vis/step_detail.
+  // The parent no longer intercepts step clicks.
 
   // 流式数据到达时:自动展开右面板;但手动 override 只在「新步骤开始(active step id 变化)」时清。
   // 之前每个增量 chunk 都清 override,导致流式阶段点步骤右侧不变(被下个 chunk 立即覆盖)。

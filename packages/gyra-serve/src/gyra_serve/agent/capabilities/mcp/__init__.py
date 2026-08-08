@@ -57,3 +57,6 @@ CAPABILITY_TYPE_KEY = "tool"
 
 def register_capability_to(registry) -> None:
     registry.register(CAPABILITY_TYPE_KEY, build_capability)
+    # Phase D:materializer/agent_chat/playbook 产出 "mcp(gyra)" 类型,
+    # value 结构与 from_config 兼容,注册别名使旧路径退场后仍可构建。
+    registry.register("mcp(gyra)", build_capability)

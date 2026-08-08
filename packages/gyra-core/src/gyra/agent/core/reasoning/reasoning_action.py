@@ -16,14 +16,12 @@ from ..agent import (
 from ..action.base import AskUserType, Action
 from .reasoning_engine import REASONING_LOGGER as LOGGER
 from ..schema import ActionInferenceMetrics, Status
-from ...resource import ResourcePack
 from gyra.context.window import ContextWindow
 from gyra.util.tracer import root_tracer
 from gyra.vis import SystemVisTag
 from gyra.vis.schema import VisStepContent
 
-from gyra_serve.agent.resource.knowledge_pack import KnowledgePackSearchResource, \
-    KnowledgeActionOperation
+from gyra_serve.agent.resource.knowledge_pack import KnowledgeActionOperation
 from ... import GptsMemory, AgentResource, ConversableAgent, ResourceType, Resource
 
 # TODO: rewire to new knowledge module (Task #9)
@@ -233,24 +231,9 @@ class KnowledgeRetrieveAction(Action[KnowledgeRetrieveActionInput]):
     def resource_need(self) -> Optional[ResourceType]:
         return ResourceType.KnowledgePack
 
-    def _inited_resource(self) -> Optional[KnowledgePackSearchResource]:
-        def _unpack(resource: Resource) -> Optional[Resource]:
-            if not resource:
-                return None
-            elif isinstance(resource, KnowledgePackSearchResource):
-                return resource
-            elif isinstance(resource, ResourcePack) and resource.sub_resources:
-                return next(
-                    (r2 for r1 in resource.sub_resources if (r2 := _unpack(r1))), None
-                )
-            else:
-                return None
-
-        return _unpack(self.resource)
-
     async def _retrieve_doc_directory(
         self,
-        resource: Optional[KnowledgePackSearchResource] = None,
+        resource: Optional[Any] = None,
         agent: Optional[ConversableAgent] = None,
     ) -> ActionOutput:
         output_dict = {
@@ -294,7 +277,7 @@ class KnowledgeRetrieveAction(Action[KnowledgeRetrieveActionInput]):
         return action_output
 
     async def _retrieve_book_directory(self,
-                                       resource: Optional[KnowledgePackSearchResource] = None,
+                                       resource: Optional[Any] = None,
                                        agent: Optional[ConversableAgent] = None,
                                        ) -> ActionOutput:
         output_dict = {
@@ -338,7 +321,7 @@ class KnowledgeRetrieveAction(Action[KnowledgeRetrieveActionInput]):
         return action_output
 
     async def _read_document(self,
-                             resource: Optional[KnowledgePackSearchResource] = None,
+                             resource: Optional[Any] = None,
                              agent: Optional[ConversableAgent] = None,
                              ) -> ActionOutput:
         output_dict = {
@@ -383,7 +366,7 @@ class KnowledgeRetrieveAction(Action[KnowledgeRetrieveActionInput]):
         return action_output
 
     async def _retrieve_knowledge_summary(self,
-                                          resource: Optional[KnowledgePackSearchResource] = None,
+                                          resource: Optional[Any] = None,
                                           agent: Optional[ConversableAgent] = None,
                                           ) -> ActionOutput:
         output_dict = {
@@ -486,8 +469,6 @@ class KnowledgeRetrieveAction(Action[KnowledgeRetrieveActionInput]):
                 action_id = kwargs.get("action_id", None)
                 message_id = kwargs.get("message_id", None)
                 memory: AgentMemory = kwargs.get('memory')
-                resource_map: dict[str, List[Resource]] = kwargs.get("resource_map")
-                # resource: Resource = kwargs.get("resource")
 
                 self._render = kwargs.get("render_protocol") or self._render
                 ## 推送工具执行初始化消息
@@ -495,11 +476,10 @@ class KnowledgeRetrieveAction(Action[KnowledgeRetrieveActionInput]):
                                                 agent_context=agent_context,
                                                 message_id=message_id, start_time=start_time)
 
-                if resource_map:
-                    resource_lst = resource_map.get(KnowledgePackSearchResource.type())
-                    resource = resource_lst[0] if resource_lst else None
-                else:
-                    resource = self._inited_resource()
+                # Phase D:检索能力改从 capability_pack 取 KnowledgeCapability
+                # (v1 路径从 resource_map/self.resource 取 KnowledgePackSearchResource)。
+                cap_pack = getattr(agent, "capability_pack", None)
+                resource = cap_pack.get("knowledge") if cap_pack else None
                 if not resource:
                     raise RuntimeError("knowledge resource is empty or not init")
                 if self.action_input.func == KnowledgeActionOperation.DOC_LS.action:

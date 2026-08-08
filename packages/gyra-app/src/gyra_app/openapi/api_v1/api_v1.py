@@ -401,16 +401,15 @@ async def vis_step_detail(
     """按 step_id 查询单个执行步骤详情。
 
     vis_manus 布局左侧步骤点击时按需拉取(lazy_loading 模式),返回该步骤的
-    active_step / outputs,前端 buildRunningWindowFromStepDetail 据此切换右侧面板。
+    active_step / outputs,前端 selectStep 据此切换右侧面板。
     直接返回 step_data(顶层 active_step / outputs),与前端 raw fetch 约定一致。
     """
     logger.info(f"vis_step_detail: conv_id={conv_id}, step_id={step_id}")
     try:
         result = await multi_agents.query_step_detail(conv_id=conv_id, step_uid=step_id)
-        step_data = result.get("step_data") if isinstance(result, dict) else None
-        if not step_data:
+        if not result:
             raise HTTPException(status_code=404, detail=f"步骤 {step_id} 详情不存在")
-        return step_data
+        return result
     except HTTPException:
         raise
     except Exception as e:

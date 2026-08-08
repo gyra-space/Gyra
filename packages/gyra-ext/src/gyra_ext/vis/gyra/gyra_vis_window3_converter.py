@@ -857,6 +857,16 @@ class GyraIncrVisWindow3Converter(GyraVisIncrConverter):
 
             if parent_id and children_vis_list:
                 parent_task = task_manager.get_node(parent_id)
+                if parent_task is None:
+                    logger.warning(
+                        "父节点 %s 在 task_manager 中不存在，子节点直接作为根节点返回",
+                        parent_id,
+                    )
+                    result_vis_list.extend(children_vis_list)
+                    for child_node in children:
+                        if child_node.content:
+                            self._track_planning_step(child_node.node_id)
+                    continue
                 parent_item = AgentPlanItem(
                     uid=parent_task.node_id,
                     type=UpdateType.INCR.value,

@@ -51,7 +51,12 @@ class SkillCapability(Capability):
 
     @classmethod
     def from_config(cls, value: dict, system_app: Any = None) -> "SkillCapability":
-        """从 config dict 构造(若 config 已带 name/description/path 则纯配置态)。"""
+        """从 config dict 构造(若 config 已带 name/description/path 则纯配置态)。
+
+        Phase D:补齐 path/parent_folder/allowed_tools/branch/skill_code/debug_info,
+        使 skill 工具元数据(available_skills)可完全从本能力派生,不再依赖 v1
+        AgentSkillResource 实例。
+        """
         value = value or {}
         skills = None
         if value.get("skill_name") or value.get("name"):
@@ -64,6 +69,10 @@ class SkillCapability(Capability):
                     "path": value.get("skill_path") or value.get("path") or "",
                     "owner": value.get("skill_author") or value.get("owner") or "",
                     "branch": value.get("skill_branch") or value.get("branch") or "master",
+                    "skill_code": value.get("skill_code") or "",
+                    "parent_folder": value.get("parent_folder") or "",
+                    "allowed_tools": value.get("allowed_tools"),
+                    "debug_info": value.get("debug_info"),
                 }
             ]
         return cls(skills=skills)
@@ -175,16 +184,16 @@ class SkillCapability(Capability):
                 if sk.get("path"):
                     continue
                 skill_name = sk.get("name") or ""
-                # 查 skill_code(精确名 + 前缀回退)
-                skill_code = await asyncio.to_thread(
+                # 查 skill_code(config 已带则直接用;否则精确名 + 前缀回退)
+                skill_code = sk.get("skill_code") or await asyncio.to_thread(
                     self._lookup_skill_code, service, skill_name
                 )
                 if not skill_code:
                     continue
-                sk_code = skill_code or skill_name
+                sk["skill_code"] = skill_code
                 # 解析 sandbox path
                 skill_dir = await asyncio.to_thread(
-                    self._get_skill_directory, service, sk_code
+                    self._get_skill_directory, service, skill_code
                 )
                 if skill_dir:
                     sk["path"] = skill_dir

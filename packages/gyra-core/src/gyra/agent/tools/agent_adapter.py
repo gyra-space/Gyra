@@ -273,7 +273,9 @@ class AgentToolAdapter:
                         config["sandbox_manager"] = sandbox_manager
 
             # 注入 available_skills 和 skill_dir（供 skill_list/Skill/skill_exec 工具使用）
-            if hasattr(self._agent, "resource_map"):
+            # Phase D:技能元数据改从 capability_pack 的 SkillCapability 派生
+            # （旧路径读 resource_map 的 AgentSkillResource 实例）。
+            if getattr(self._agent, "capability_pack", None):
                 import os
 
                 available_skills = {}
@@ -296,36 +298,26 @@ class AgentToolAdapter:
                     except Exception:
                         base_skill_dir = None
 
-                resource_map = self._agent.resource_map or {}
-                for key, value_list in resource_map.items():
-                    if not value_list:
-                        continue
-                    for item in value_list:
-                        if hasattr(item, "skill_meta"):
-                            try:
-                                meta = item.skill_meta()
-                                if meta:
-                                    skill_code = (
-                                        getattr(item, "_skill_code", None)
-                                        or getattr(item, "skill_code", None)
-                                        or ""
+                for cap in self._agent.capability_pack.get_all("skill"):
+                    for sk in getattr(cap, "_skills", None) or []:
+                        try:
+                            skill_code = sk.get("skill_code") or ""
+                            if not skill_code and sk.get("path"):
+                                skill_code = os.path.basename(sk["path"])
+                            if skill_code:
+                                if base_skill_dir:
+                                    skill_path = os.path.join(
+                                        base_skill_dir, skill_code
                                     )
-                                    if not skill_code and hasattr(meta, "path") and meta.path:
-                                        skill_code = os.path.basename(meta.path)
-                                    if skill_code:
-                                        if base_skill_dir:
-                                            skill_path = os.path.join(
-                                                base_skill_dir, skill_code
-                                            )
-                                        else:
-                                            skill_path = meta.path or skill_code
-                                        # 同时以 name 与 skill_code 为键，
-                                        # 模型用任一标识都能命中目录。
-                                        if meta.name:
-                                            available_skills[meta.name] = skill_path
-                                        available_skills[skill_code] = skill_path
-                            except Exception:
-                                pass
+                                else:
+                                    skill_path = sk.get("path") or skill_code
+                                # 同时以 name 与 skill_code 为键，
+                                # 模型用任一标识都能命中目录。
+                                if sk.get("name"):
+                                    available_skills[sk["name"]] = skill_path
+                                available_skills[skill_code] = skill_path
+                        except Exception:
+                            pass
 
                 if available_skills:
                     context.setdefault("available_skills", available_skills)

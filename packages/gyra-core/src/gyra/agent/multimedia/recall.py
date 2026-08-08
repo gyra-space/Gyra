@@ -140,8 +140,15 @@ async def recall_media_job_record(
         resume_fn = getattr(provider, "resume_task", None)
         if resume_fn is None:
             return _fail(f"provider '{protocol}' 不支持按 task_id 召回")
+        # 过滤掉会被显式实参覆盖的保留键，避免 **gen_kwargs 与位置/关键字实参
+        # 冲突（如 metadata 里带 task_id → resume_task() 重复传参）
+        resume_kwargs = {
+            k: v
+            for k, v in (gen_kwargs or {}).items()
+            if k not in ("task_id", "model", "timeout")
+        }
         submission = await resume_fn(
-            provider_task_id, model, timeout=timeout, **gen_kwargs
+            provider_task_id, model, timeout=timeout, **resume_kwargs
         )
         result = await submission.complete()
     except NotImplementedError as e:

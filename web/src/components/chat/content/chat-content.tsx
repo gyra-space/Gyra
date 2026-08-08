@@ -19,7 +19,7 @@ import { Avatar } from "antd";
 import classNames from "classnames";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
-import React, { memo, useContext, useMemo } from "react";
+import React, { memo, useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { transformFileUrl } from "@/utils";
 
@@ -118,6 +118,69 @@ function getRobotContext(context: string): { left: string; right: string } {
     };
   }
 }
+
+/** 折叠用户消息:超过固定高度时底部渐隐,可展开看全文。 */
+const COLLAPSE_HEIGHT = 160;
+const CollapsibleUserMessage: React.FC<{
+  children: React.ReactNode;
+  text: string;
+}> = ({ children, text }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [clamped, setClamped] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // 仅在折叠态测量是否溢出;展开态保留上一次结论(按钮需切换为「收起」)。
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      if (expanded) return;
+      setClamped(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    // 异步 markdown/图片渲染后再测一次
+    const raf = requestAnimationFrame(measure);
+    const onResize = () => measure();
+    window.addEventListener("resize", onResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [text, expanded]);
+
+  return (
+    <div className="relative">
+      <div
+        ref={ref}
+        className="overflow-hidden transition-[max-height] duration-200"
+        style={{
+          maxHeight: expanded ? "none" : COLLAPSE_HEIGHT,
+          ...(clamped && !expanded
+            ? {
+                maskImage:
+                  "linear-gradient(to bottom, #000 62%, transparent 100%)",
+                WebkitMaskImage:
+                  "linear-gradient(to bottom, #000 62%, transparent 100%)",
+              }
+            : {}),
+        }}
+      >
+        {children}
+      </div>
+      {clamped && (
+        <div className="text-right">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-1 text-[12px] text-[#4f46e5] hover:text-[#4338ca] transition-colors"
+          >
+            {expanded ? "收起" : "展开"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const ChatContent: React.FC<{
   content: Omit<IChatDialogueMessageSchema, "context"> & {
@@ -292,30 +355,27 @@ const ChatContent: React.FC<{
                 className='flex-1 text-sm text-[#1c2533] dark:text-white'
                 style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
               >
-                {typeof context === 'string' && (
-                  <div>
-                    {/* @ts-ignore */}
-                    <GPTVis
-                      components={{
-                        ...markdownComponents,
-                        // @ts-ignore
-                        img: ({ src, alt, ...props }) => (
-                          <img
-                            src={transformFileUrl(src || '')}
-                            alt={alt || 'image'}
-                            className='max-w-full md:max-w-[80%] lg:max-w-[70%] object-contain'
-                            style={{ maxHeight: '200px' }}
-                            {...props}
-                          />
-                        ),
-                        
-                      }}
-                      {...markdownPlugins}
-                    >
-                      {preprocessLaTeX(formatMarkdownVal(value))}
-                    </GPTVis>
-                  </div>
-                )}
+                <CollapsibleUserMessage text={value}>
+                  {/* @ts-ignore */}
+                  <GPTVis
+                    components={{
+                      ...markdownComponents,
+                      // @ts-ignore
+                      img: ({ src, alt, ...props }) => (
+                        <img
+                          src={transformFileUrl(src || '')}
+                          alt={alt || 'image'}
+                          className='max-w-full md:max-w-[80%] lg:max-w-[70%] object-contain'
+                          style={{ maxHeight: '200px' }}
+                          {...props}
+                        />
+                      ),
+                    }}
+                    {...markdownPlugins}
+                  >
+                    {preprocessLaTeX(formatMarkdownVal(value))}
+                  </GPTVis>
+                </CollapsibleUserMessage>
               </div>
             ) : (
               context?.template_introduce || ''

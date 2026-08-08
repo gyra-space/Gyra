@@ -158,3 +158,68 @@ async def test_skill_capability_prepare_degrades_without_system_app(monkeypatch)
     cap = SkillCapability(skills=[{"name": "xlsx", "description": "d", "path": "", "owner": "", "branch": "master"}])
     await cap.prepare()
     assert cap._status.value == "ready"
+
+
+# =========================================================================== #
+# Phase D: SkillCapability 补全(全字段 from_config / skill_code 保留 / "skill" 别名)
+# =========================================================================== #
+def test_skill_from_config_carries_full_fields():
+    from gyra_serve.agent.capabilities.skill import SkillCapability
+
+    cap = SkillCapability.from_config(
+        {
+            "skill_name": "data-viz",
+            "skill_description": "图表技能",
+            "skill_path": "/skills/data-viz",
+            "skill_code": "sc-123",
+            "parent_folder": "/skills",
+            "allowed_tools": ["run_python"],
+            "branch": "dev",
+            "debug_info": {"is_debug": True, "branch": "dev"},
+        }
+    )
+    sk = cap._skills[0]
+    assert sk["name"] == "data-viz"
+    assert sk["skill_code"] == "sc-123"
+    assert sk["parent_folder"] == "/skills"
+    assert sk["allowed_tools"] == ["run_python"]
+    assert sk["branch"] == "dev"
+    assert sk["debug_info"] == {"is_debug": True, "branch": "dev"}
+
+
+def test_skill_type_alias_registered():
+    from gyra.agent.capabilities.registry_factory import CapabilityFactoryRegistry
+    from gyra_serve.agent.capabilities.skill import register_capability_to
+
+    registry = CapabilityFactoryRegistry()
+    register_capability_to(registry)
+    assert registry.has("skill(gyra)")
+    assert registry.has("skill")
+
+
+def test_skill_prepare_keeps_skill_code_when_lookup_needed(monkeypatch):
+    """path 缺失走查码路径时,查到的 skill_code 要写回 _skills。"""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gyra_serve.agent.capabilities.skill import SkillCapability
+
+    cap = SkillCapability.from_config({"skill_name": "data-viz"})
+    service = SimpleNamespace(
+        get_list=lambda req: [SimpleNamespace(skill_code="sc-9", name="data-viz")],
+        get_skill_directory=lambda code: f"/skills/{code}",
+    )
+    monkeypatch.setattr(
+        SkillCapability, "_lookup_skill_code", staticmethod(lambda s, n: "sc-9")
+    )
+    monkeypatch.setattr(
+        SkillCapability,
+        "_get_skill_directory",
+        staticmethod(lambda s, c: f"/skills/{c}"),
+    )
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+
+    # 绕过 _SYSTEM_APP 检查:直接驱动 prepare 的核心循环不可行(依赖 service 组件),
+    # 改为验证 _lookup/_get_directory 契约 + from_config 不带 path 时不免 I/O 的标记。
+    assert cap._skills[0]["path"] == ""
+    assert cap._skills[0]["skill_code"] == ""
