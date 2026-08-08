@@ -1,7 +1,7 @@
 -- ============================================================
 -- MySQL DDL Script for Gyra
 -- Version: 0.3.0
--- Generated: 2026-08-08T08:32:48.448974
+-- Generated: 2026-08-08T10:50:22.575943
 -- ============================================================
 
 SET NAMES utf8mb4;
@@ -25,8 +25,8 @@ CREATE TABLE IF NOT EXISTS `chat_history` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_conv_uid` (`conv_uid`),
   KEY `ix_chat_history_workspace_id` (`workspace_id`),
-  KEY `ix_chat_history_sys_code` (`sys_code`),
-  KEY `ix_chat_history_task_id` (`task_id`)
+  KEY `ix_chat_history_task_id` (`task_id`),
+  KEY `ix_chat_history_sys_code` (`sys_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: chat_history_message
@@ -59,8 +59,8 @@ CREATE TABLE IF NOT EXISTS `server_app_artifact` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `ix_server_app_artifact_task_id` (`task_id`),
-  KEY `ix_server_app_artifact_workspace_id` (`workspace_id`)
+  KEY `ix_server_app_artifact_workspace_id` (`workspace_id`),
+  KEY `ix_server_app_artifact_task_id` (`task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_artifact_version
@@ -73,8 +73,8 @@ CREATE TABLE IF NOT EXISTS `server_app_artifact_version` (
   `created_by` VARCHAR(128) NULL,
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `ix_server_app_artifact_version_artifact_id` (`artifact_id`),
-  UNIQUE KEY `uk_artifact_version` (`artifact_id`, `version`)
+  UNIQUE KEY `uk_artifact_version` (`artifact_id`, `version`),
+  KEY `ix_server_app_artifact_version_artifact_id` (`artifact_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gyra_serve_cron_job
@@ -145,11 +145,11 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_flow` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record update time',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_uid` (`uid`),
-  KEY `ix_gyra_serve_flow_name` (`name`),
   KEY `ix_gyra_serve_flow_uid` (`uid`),
   KEY `ix_gyra_serve_flow_user_name` (`user_name`),
   KEY `ix_gyra_serve_flow_sys_code` (`sys_code`),
-  KEY `ix_gyra_serve_flow_dag_id` (`dag_id`)
+  KEY `ix_gyra_serve_flow_dag_id` (`dag_id`),
+  KEY `ix_gyra_serve_flow_name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gyra_serve_variables
@@ -198,10 +198,10 @@ CREATE TABLE IF NOT EXISTS `connect_config` (
   `owner_workspace_id` INT NULL COMMENT 'Owner workspace id for workspace-owned datasets; NULL means global',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_db` (`db_name`),
+  KEY `idx_q_owner_workspace` (`owner_workspace_id`),
   KEY `ix_connect_config_user_name` (`user_name`),
   KEY `ix_connect_config_user_id` (`user_id`),
   KEY `idx_q_db_type` (`db_type`),
-  KEY `idx_q_owner_workspace` (`owner_workspace_id`),
   KEY `ix_connect_config_sys_code` (`sys_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

@@ -2011,119 +2011,98 @@ class AgentChat(BaseComponent, ABC):
             )
 
             if team_mode == TeamMode.SINGLE_AGENT or TeamMode.NATIVE_APP == team_mode:
-                if employees is not None and len(employees) == 1:
-                    recipient = employees[0]
-                    # 单个成员(详情/extra_agent 均可能)直接作为主代理时,仍须绑定
-                    # dynamic_resources 里的场景/ECP 等能力包并预载,否则该对话拿不到
-                    # workspace_scene/ecp(db) 资源(资源工具为空、system prompt 无资源信息)。
-                    try:
-                        from gyra.agent.capabilities.registry_factory import (
-                            get_default_factory_registry,
-                        )
-                        cap_pack = get_default_factory_registry().build_pack(
-                            real_all_resources, self.system_app
-                        )
-                        if cap_pack and cap_pack.sub_resources:
-                            recipient.bind(cap_pack)
-                            await recipient.capability_pack.preload_resource()
-                            logger.info(
-                                f"[AgentChat] CapabilityPack bound to single employee: "
-                                f"{len(cap_pack.sub_resources)} caps "
-                                f"({[getattr(c,'capability_id','?') for c in cap_pack.sub_resources]})"
-                            )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            f"[AgentChat] single-employee bind CapabilityPack failed: {e}"
-                        )
-                else:
-                    # 解析Agent别名（历史数据兼容）
-                    resolved_agent_type = resolve_agent_name(app.agent)
+                # 统一治理：主代理恒由 app.agent 构建，并承载全部能力包
+                # （workspace_scene/ecp 等资产）。子代理(employees)仅是团队成员，
+                # 在下游 hire 进主代理，绝不替换主代理，因此资产加载与 employees 无关。
+                # 解析Agent别名（历史数据兼容）
+                resolved_agent_type = resolve_agent_name(app.agent)
+                if resolved_agent_type != app.agent:
+                    logger.info(
+                        f"[AgentChat] Resolved agent alias: {app.agent} -> {resolved_agent_type}"
+                    )
+                cls: Type[ConversableAgent] = self.agent_manage.get_by_name(
+                    resolved_agent_type
+                )
 
-                    if resolved_agent_type != app.agent:
+                ## 处理agent资源内容
+                logger.info(
+                    f"[AgentChat] real_all_resources before build: "
+                    f"{[(r.type, r.name) for r in real_all_resources]}"
+                )
+                logger.info(
+                    f"[AgentChat] ResourceManager registered type_keys: "
+                    f"{list(rm._type_to_resources.keys())}"
+                )
+                depend_resource = await rm.a_build_resource(
+                    real_all_resources, ignore_missing=True
+                )
+                logger.info(
+                    f"[AgentChat] depend_resource after build: "
+                    f"{type(depend_resource).__name__ if depend_resource else 'None'}, "
+                    f"is_pack={depend_resource.is_pack if depend_resource else 'N/A'}, "
+                    f"sub_resources_count={len(depend_resource.sub_resources) if depend_resource and depend_resource.is_pack else 'N/A'}"
+                )
+
+                agent_context = deepcopy(context)
+                agent_context.agent_app_code = app.app_code
+
+                cap_pack = None
+                try:
+                    from gyra.agent.capabilities.registry_factory import (
+                        get_default_factory_registry,
+                    )
+                    cap_pack = get_default_factory_registry().build_pack(
+                        real_all_resources, self.system_app
+                    )
+                    if cap_pack and cap_pack.sub_resources:
                         logger.info(
-                            f"[AgentChat] Resolved agent alias: {app.agent} -> {resolved_agent_type}"
+                            f"[AgentChat] CapabilityPack built: "
+                            f"{len(cap_pack.sub_resources)} caps "
+                            f"({[getattr(c,'capability_id','?') for c in cap_pack.sub_resources]})"
                         )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[AgentChat] build CapabilityPack failed: {e}")
 
-                    cls: Type[ConversableAgent] = self.agent_manage.get_by_name(
-                        resolved_agent_type
-                    )
-
-                    if resolved_agent_type != app.agent:
-                        logger.info(
-                            f"[AgentChat] Resolved agent alias: {app.agent} -> {resolved_agent_type}"
-                        )
-
-                    cls: Type[ConversableAgent] = self.agent_manage.get_by_name(
-                        resolved_agent_type
-                    )
-
-                    ## 处理agent资源内容
-                    # depend_resource = await blocking_func_to_async(
-                    #     CFG.SYSTEM_APP, rm.build_resource, app.all_resources
-                    # )
-                    logger.info(
-                        f"[AgentChat] real_all_resources before build: "
-                        f"{[(r.type, r.name) for r in real_all_resources]}"
-                    )
-                    logger.info(
-                        f"[AgentChat] ResourceManager registered type_keys: "
-                        f"{list(rm._type_to_resources.keys())}"
-                    )
-                    depend_resource = await rm.a_build_resource(
-                        real_all_resources, ignore_missing=True
-                    )
-                    logger.info(
-                        f"[AgentChat] depend_resource after build: "
-                        f"{type(depend_resource).__name__ if depend_resource else 'None'}, "
-                        f"is_pack={depend_resource.is_pack if depend_resource else 'N/A'}, "
-                        f"sub_resources_count={len(depend_resource.sub_resources) if depend_resource and depend_resource.is_pack else 'N/A'}"
-                    )
-
-                    agent_context = deepcopy(context)
-                    agent_context.agent_app_code = app.app_code
-
-                    cap_pack = None
-                    try:
-                        from gyra.agent.capabilities.registry_factory import (
-                            get_default_factory_registry,
-                        )
-                        cap_pack = get_default_factory_registry().build_pack(
-                            real_all_resources, self.system_app
-                        )
-                        if cap_pack and cap_pack.sub_resources:
-                            logger.info(
-                                f"[AgentChat] CapabilityPack built: "
-                                f"{len(cap_pack.sub_resources)} caps "
-                                f"({[getattr(c,'capability_id','?') for c in cap_pack.sub_resources]})"
-                            )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(f"[AgentChat] build CapabilityPack failed: {e}")
-
-                    recipient = (
-                        await cls()
-                        .bind(agent_context)
-                        .bind(agent_memory)
-                        .bind(llm_config)
-                        .bind(sandbox_manager)
-                        .bind(cap_pack)
-                        .bind(depend_resource)
-                        # .bind(prompt_template)
-                        .bind(app.context_config)
-                        .bind(ExtConfigHolder(ext_config=app.ext_config))
-                        .bind(scheduler)
-                        .build()
-                    )
+                recipient = (
+                    await cls()
+                    .bind(agent_context)
+                    .bind(agent_memory)
+                    .bind(llm_config)
+                    .bind(sandbox_manager)
+                    .bind(cap_pack)
+                    .bind(depend_resource)
+                    # .bind(prompt_template)
+                    .bind(app.context_config)
+                    .bind(ExtConfigHolder(ext_config=app.ext_config))
+                    .bind(scheduler)
+                    .build()
+                )
 
                 # 标准 Team Agent 场景：将已构建的子 Agent 雇佣到主 Agent（.agents），
                 # 使子 Agent 以团队成员形式派发（send/receive、async 委派等）。
-                # 注意：仅当主 Agent 为 Team 且 employees 非空时雇佣，避免 len==1 时
-                # 把子 Agent 又 hire 到自己（self-reference）。
+                # 统一治理：剔除与主代理同应用的自引用成员，避免把主代理 hire 到自己。
                 if isinstance(recipient, Team) and employees:
-                    recipient.hire(employees)
-                    logger.info(
-                        f"[AgentChat] hired {len(employees)} sub-agent(s) into "
-                        f"{recipient.name}: {[a.agent_context.agent_app_code or a.name for a in employees]}"
+                    _main_code = getattr(
+                        getattr(recipient, "agent_context", None),
+                        "agent_app_code",
+                        None,
                     )
+                    _hire_members = [
+                        e
+                        for e in employees
+                        if getattr(
+                            getattr(e, "agent_context", None),
+                            "agent_app_code",
+                            None,
+                        )
+                        != _main_code
+                    ]
+                    if _hire_members:
+                        recipient.hire(_hire_members)
+                        logger.info(
+                            f"[AgentChat] hired {len(_hire_members)} sub-agent(s) into "
+                            f"{recipient.name}: {[a.agent_context.agent_app_code or a.name for a in _hire_members]}"
+                        )
 
                 # 诊断日志：检查 resource_map
                 if hasattr(recipient, 'resource_map'):
