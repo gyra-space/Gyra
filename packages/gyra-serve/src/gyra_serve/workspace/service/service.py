@@ -20,6 +20,7 @@ from ..api.schemas import (
 from ..config import ServeConfig
 from ..models.models import (
     WorkspaceConversationLinkDao,
+    WorkspaceConversationLinkEntity,
     WorkspaceDao,
     WorkspaceEntity,
     WorkspaceMemberDao,
