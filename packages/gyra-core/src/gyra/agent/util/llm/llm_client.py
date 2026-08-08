@@ -586,34 +586,6 @@ class AIWrapper:
 
         logger.info(f"Model Request:{llm_model}")
 
-        # 详细输入日志：打印发给模型的原始 messages（含 tool_calls/tool_call_id），
-        # 便于排查工具调用链路。超长 content 做轻量截断，但 tool_calls/tool_call_id 全量保留。
-        if request.messages:
-            _MAX_LOG_CONTENT_CHARS = 2000
-            messages_summary = []
-            for msg in request.messages:
-                if isinstance(msg, dict):
-                    role = msg.get("role", "unknown")
-                    content = msg.get("content", "")
-                    tool_calls = msg.get("tool_calls")
-                    tool_call_id = msg.get("tool_call_id")
-                else:
-                    role = getattr(msg, "role", "unknown")
-                    content = getattr(msg, "content", str(msg))
-                    tool_calls = getattr(msg, "tool_calls", None)
-                    tool_call_id = getattr(msg, "tool_call_id", None)
-
-                content_repr = _repr_content(content, _MAX_LOG_CONTENT_CHARS)
-                entry = {"role": role, "content": content_repr}
-                if tool_calls:
-                    entry["tool_calls"] = tool_calls
-                if tool_call_id:
-                    entry["tool_call_id"] = tool_call_id
-                messages_summary.append(entry)
-            logger.info(
-                f"Model Input Messages: {json.dumps(messages_summary, ensure_ascii=False, indent=2, default=str)}"
-            )
-
         if request.tools:
             tool_names = [
                 t.get("function", {}).get("name", "unknown") for t in request.tools

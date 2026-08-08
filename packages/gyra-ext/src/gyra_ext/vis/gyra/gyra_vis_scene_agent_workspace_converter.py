@@ -540,9 +540,6 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                 task_files, deliverable_files = await self._collect_files_from_gpts_memory(
                     conv_id, senders_map, main_agent_name
                 )
-                logger.info(
-                    f"[SceneWorkspace] collected {len(deliverable_files)} deliverable files from gpts_memory"
-                )
             except Exception as e:
                 logger.warning(f"[SceneWorkspace] gpts_memory collection failed: {e}")
 
@@ -550,9 +547,6 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         if not deliverable_files and messages:
             try:
                 task_files, deliverable_files = self._collect_files_from_messages(messages)
-                logger.info(
-                    f"[SceneWorkspace] collected {len(deliverable_files)} deliverable files from messages"
-                )
             except Exception as e:
                 logger.warning(f"[SceneWorkspace] message fallback collection failed: {e}")
 

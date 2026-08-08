@@ -2013,6 +2013,28 @@ class AgentChat(BaseComponent, ABC):
             if team_mode == TeamMode.SINGLE_AGENT or TeamMode.NATIVE_APP == team_mode:
                 if employees is not None and len(employees) == 1:
                     recipient = employees[0]
+                    # 单个成员(详情/extra_agent 均可能)直接作为主代理时,仍须绑定
+                    # dynamic_resources 里的场景/ECP 等能力包并预载,否则该对话拿不到
+                    # workspace_scene/ecp(db) 资源(资源工具为空、system prompt 无资源信息)。
+                    try:
+                        from gyra.agent.capabilities.registry_factory import (
+                            get_default_factory_registry,
+                        )
+                        cap_pack = get_default_factory_registry().build_pack(
+                            real_all_resources, self.system_app
+                        )
+                        if cap_pack and cap_pack.sub_resources:
+                            recipient.bind(cap_pack)
+                            await recipient.capability_pack.preload_resource()
+                            logger.info(
+                                f"[AgentChat] CapabilityPack bound to single employee: "
+                                f"{len(cap_pack.sub_resources)} caps "
+                                f"({[getattr(c,'capability_id','?') for c in cap_pack.sub_resources]})"
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            f"[AgentChat] single-employee bind CapabilityPack failed: {e}"
+                        )
                 else:
                     # 解析Agent别名（历史数据兼容）
                     resolved_agent_type = resolve_agent_name(app.agent)

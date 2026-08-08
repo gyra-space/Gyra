@@ -1337,16 +1337,10 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                 task_files, deliverable_files = await self._collect_files_from_gpts_memory(
                     conv_id, senders_map, main_agent_name
                 )
-                logger.info(
-                    f"[ManusConverter] visualization end: collected {len(deliverable_files)} deliverable files from gpts_memory"
-                )
 
             # Fallback: 从 messages 收集
             if not deliverable_files and messages:
                 task_files, deliverable_files = self._collect_files_from_messages(messages)
-                logger.info(
-                    f"[ManusConverter] visualization fallback: collected {len(deliverable_files)} deliverable files from messages"
-                )
 
             right_panel.task_files = task_files
             right_panel.deliverable_files = deliverable_files
@@ -1740,7 +1734,6 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         deliverable_files: List[ManusDeliverableFile] = []
         seen_file_ids = set()
 
-        logger.info(f"[ManusConverter] _collect_files_from_messages: {len(messages)} messages to scan")
         for msg in messages:
             if not msg.action_report:
                 continue
@@ -1749,9 +1742,6 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                     output_files = action_out.get("output_files") or []
                 else:
                     output_files = getattr(action_out, "output_files", None) or []
-
-                if output_files:
-                    logger.info(f"[ManusConverter] Found {len(output_files)} output_files in action_report")
 
                 for file_info in output_files:
                     if not isinstance(file_info, dict):
@@ -1797,7 +1787,6 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                             render_type=self._determine_render_type(file_name, mime_type),
                         ))
 
-        logger.info(f"[ManusConverter] _collect_files_from_messages result: task={len(task_files)}, deliverable={len(deliverable_files)}")
         return task_files, deliverable_files
 
     async def _collect_files_from_gpts_memory(
@@ -1838,7 +1827,6 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                 return task_files, deliverable_files
 
             files = await gpts_memory.list_files(conv_id)
-            logger.info(f"[ManusConverter] list_files returned {len(files)} files for conv_id={conv_id}")
 
             for file_meta in files:
                 file_id = file_meta.file_id
@@ -1877,8 +1865,6 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                         object_path=file_meta.metadata.get("object_path") if file_meta.metadata else None,
                         render_type=self._determine_render_type(file_name, mime_type),
                     ))
-
-            logger.info(f"[ManusConverter] _collect_files_from_gpts_memory result: task={len(task_files)}, deliverable={len(deliverable_files)}")
 
         except Exception as e:
             logger.warning(f"[ManusConverter] Failed to collect files from gpts_memory: {e}")

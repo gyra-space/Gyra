@@ -94,6 +94,28 @@ PID_FILE="${LOG_DIR}/gyra.pid"
 
 echo ""
 
+# Ensure dependencies are installed
+if [ -f "uv.lock" ]; then
+    echo "Checking dependencies..."
+    if command -v uv > /dev/null 2>&1; then
+        uv sync --all-packages \
+            --extra "proxy_openai" \
+            --extra "rag" \
+            --extra "storage_chromadb" \
+            --extra "gyras" \
+            --extra "storage_oss2" \
+            --extra "client" \
+            --extra "ext_base" 2>&1 | while IFS= read -r line; do
+            echo "  $line"
+        done
+        echo ""
+    else
+        echo "WARNING: uv not found, skipping dependency sync"
+        echo "         Run 'bash install.sh' for full installation"
+        echo ""
+    fi
+fi
+
 # Check if virtual environment exists
 if [ -d ".venv" ]; then
     source .venv/bin/activate
