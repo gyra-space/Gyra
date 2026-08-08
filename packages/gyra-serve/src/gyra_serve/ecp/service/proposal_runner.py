@@ -22,6 +22,8 @@ from ..config import DEFAULT_WORKSPACE_ID, STATUS_PROPOSED
 
 logger = logging.getLogger(__name__)
 
+_ECP_TASK_KIND = "ecp_proposal"
+
 
 def _proposed_ids(workspace_id: str) -> set:
     """Return the set of proposed object ids in a workspace (best-effort)."""
@@ -201,3 +203,145 @@ async def run_proposal_agent(
         f"proposals {new_ids}"
     )
     return result
+
+
+# --------------------------------------------------------------------- async
+# 提案生成改为真异步任务:POST /proposals/generate 立即返回 task_id,生成在后台执行,
+# 前端轮询任务状态。任务记录持久化到 gpts_async_tasks(AsyncTaskDao),与 media-jobs
+# 同一张表,跨进程/重启可见。agent 路径(全资产生成)常达数分钟,不再受 HTTP 超时约束。
+
+
+def _task_id(workspace_id: Optional[str]) -> str:
+    return f"ecp_prop_{(workspace_id or 'default')}_{uuid.uuid4().hex[:8]}"
+
+
+def _describe(request) -> str:
+    if request.datasource_id:
+        return f"为数据源 #{request.datasource_id} 生成语义提案"
+    return f"为工作空间 {request.workspace_id or 'default'} 的所有资产生成语义提案"
+
+
+def _resolve_agent_id(service, request) -> Optional[str]:
+    try:
+        cfg = service.get_workspace_config(request.workspace_id)
+        return getattr(cfg, "proposal_agent_id", None) if cfg else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def generate(service, request) -> GenerateProposalsVO:
+    """执行完整提案生成逻辑(agent 路径或 batch 路径),返回结果。
+
+    从 endpoint 抽出,供前台同步调用与后台任务共用。
+    """
+    from ..service.propose import DbSemanticsProposer
+
+    agent_id = _resolve_agent_id(service, request)
+    if agent_id:
+        return await run_proposal_agent(
+            system_app=service._system_app,
+            app_code=agent_id,
+            workspace_id=request.workspace_id,
+            domain_hint=request.domain_hint,
+        )
+
+    proposer = DbSemanticsProposer(service)
+    if request.datasource_id:
+        return await proposer.generate(
+            datasource_id=request.datasource_id,
+            workspace_id=request.workspace_id,
+            table_names=request.table_names,
+            max_tables=request.max_tables,
+            domain_hint=request.domain_hint,
+        )
+
+    # No datasource_id and no agent: iterate over ALL registered DB assets.
+    assets = service.list_assets(workspace_id=request.workspace_id, kind="db")
+    if not assets:
+        return GenerateProposalsVO(
+            datasource_id=0,
+            errors=[
+                f"工作空间 {request.workspace_id or 'default'} 未登记 DB 资产,"
+                "无法批量生成提案;请先登记数据源,或在 ECP 设置配置提案 Agent"
+            ],
+        )
+    aggregated = GenerateProposalsVO(datasource_id=0)
+    for asset in assets:
+        try:
+            ds_id = int(asset.ref_id)
+        except (TypeError, ValueError):
+            continue
+        sub = await proposer.generate(
+            datasource_id=ds_id,
+            workspace_id=request.workspace_id,
+            table_names=request.table_names,
+            max_tables=request.max_tables,
+            domain_hint=request.domain_hint,
+        )
+        aggregated.tables_processed += sub.tables_processed
+        aggregated.proposals_created += sub.proposals_created
+        aggregated.proposal_ids.extend(sub.proposal_ids)
+        aggregated.errors.extend(sub.errors)
+    return aggregated
+
+
+async def _deliver(result: str) -> str:
+    """交付协程:resume 返回的人行摘要直接作为 result(落为 result_preview)。
+
+    引擎 ``_run_task`` 会 ``await deliver(resume_result)`` 并把返回值写入
+    ``state.result``;to_record 据此生成 result_preview。结构化解构不需要
+    单独交付,resume 已写进 spec.context.artifact(落为 detail.artifact)。
+    """
+    return result
+
+
+async def enqueue_proposal(service, request) -> str:
+    """用通用异步任务引擎(AsyncTaskManager)提交提案生成任务,立即返回 task_id。
+
+    ``kind='ecp_proposal'``。引擎统一承载生命周期(并发/超时/持久化),记录落
+    ``gpts_async_tasks``(与 media-jobs 同表),前端轮询查询该表即可。resume 闭包
+    执行生成,并把结构化解构写进 ``spec.context.artifact``(to_record 会落为记录的
+    detail 字段),返回人行摘要(落为 result_preview)。
+    """
+    from gyra.agent.util.async_task_manager import AsyncTaskManager, AsyncTaskSpec
+
+    agent_id = _resolve_agent_id(service, request)
+    task_id = _task_id(request.workspace_id)
+    # 结构化解构先占位,resume 完成后回填;to_record 会把 context 落为记录 detail
+    result_box: dict = {}
+    context: dict = {"artifact": result_box}
+
+    async def _resume() -> str:
+        result = await generate(service, request)
+        if result.errors and not result.proposals_created:
+            raise RuntimeError(result.errors[0])
+        result_box.update(
+            {
+                "tables_processed": result.tables_processed,
+                "proposals_created": result.proposals_created,
+                "proposal_ids": result.proposal_ids,
+                "errors": result.errors,
+            }
+        )
+        return (
+            f"处理 {result.tables_processed} 张表,"
+            f"生成 {result.proposals_created} 条提案"
+        )
+
+    spec = AsyncTaskSpec(
+        task_id=task_id,
+        conv_id=request.workspace_id or "",
+        kind=_ECP_TASK_KIND,
+        model=agent_id or "batch",
+        task_description=_describe(request),
+        timeout=3600,
+        context=context,
+        resume=_resume,
+        deliver=_deliver,
+    )
+    task_id = await AsyncTaskManager.media_instance().spawn(spec)
+    logger.info(
+        f"[ecp-proposal-runner] enqueued async task {task_id} "
+        f"ws={request.workspace_id or 'default'}"
+    )
+    return task_id

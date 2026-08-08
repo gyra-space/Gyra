@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { Button, Spin, Tag, Tooltip } from 'antd';
-import { ArrowLeftOutlined, DownloadOutlined, ExportOutlined, FileOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, DownloadOutlined, ExportOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { GPTVis } from '@antv/gpt-vis';
 import dayjs from 'dayjs';
@@ -20,6 +20,7 @@ import { statusLabel, triggerLabel } from './scene-task-rail';
 import { EcpProposalDetail } from './ecp-proposal-detail';
 import type { WorkspaceView } from './agent-workspace-types';
 import type { WorkspaceDeliverableFile } from './agent-workspace-types';
+import type { LobbyExhibit, LobbyExhibitKind } from './agent-workspace-types';
 import type { DetailContext } from './agent-types';
 
 export interface SceneSpaceProps {
@@ -320,6 +321,55 @@ function isPreviewableFile(contentRef: string): boolean {
   return ['html', 'htm', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext);
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   文件类文章物 → 大厅 Exhibit:让"最近产出"里的文件真正打开/预览
+   ═══════════════════════════════════════════════════════════════ */
+
+/** 扩展名 → Exhibit kind(与 agent-workspace-renderer 的 render_type 推断保持一致) */
+const EXHIBIT_KIND_BY_EXT: Record<string, LobbyExhibitKind> = {
+  png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', svg: 'image', webp: 'image',
+  mp4: 'video', mov: 'video', webm: 'video', avi: 'video', mkv: 'video',
+  mp3: 'audio', wav: 'audio', ogg: 'audio', m4a: 'audio', flac: 'audio',
+  pdf: 'pdf',
+  md: 'markdown', markdown: 'markdown',
+  html: 'html', htm: 'html',
+  csv: 'table', xls: 'file', xlsx: 'file',
+  ppt: 'slides', pptx: 'slides',
+  py: 'code', js: 'code', jsx: 'code', ts: 'code', tsx: 'code', java: 'code', go: 'code',
+  rs: 'code', c: 'code', cpp: 'code', sql: 'code', xml: 'code', css: 'code', sh: 'code', vue: 'code',
+  json: 'data', yaml: 'data', yml: 'data',
+  txt: 'text', log: 'text',
+  zip: 'file', tar: 'file', gz: 'file',
+};
+
+/** 由文件名 + mime_type 推断 Exhibit kind,未知类型兜底 file(仅下载) */
+function inferExhibitKind(fileName: string, mime?: string): LobbyExhibitKind {
+  const m = (mime || '').toLowerCase();
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('video/')) return 'video';
+  if (m.startsWith('audio/')) return 'audio';
+  if (m.includes('pdf')) return 'pdf';
+  const ext = (fileName || '').split('.').pop()?.toLowerCase() || '';
+  return EXHIBIT_KIND_BY_EXT[ext] || 'file';
+}
+
+/** 把文件类文章物适配为大厅 Exhibit(真正打开/预览文件内容) */
+function buildArtifactExhibit(artifact: any, resolvedUrl: string): LobbyExhibit | null {
+  if (!resolvedUrl) return null;
+  const prov = artifact?.provenance || {};
+  return {
+    exhibit_id: `artifact_${artifact.id}`,
+    kind: inferExhibitKind(artifact.title || '', prov.mime_type),
+    title: artifact.title || `artifact_${artifact.id}`,
+    source: {
+      url: resolvedUrl,
+      mime_type: prov.mime_type,
+      file_size: prov.file_size,
+    },
+    actions: ['preview', 'download'],
+  };
+}
+
 /** artifact_produced 等只带 id 的事件:拉取 artifact 详情后渲染内容 */
 function ArtifactPreview({ artifactId, title, type }: { artifactId: number; title?: string; type?: string }) {
   const { data: res, loading } = useRequest(
@@ -334,54 +384,49 @@ function ArtifactPreview({ artifactId, title, type }: { artifactId: number; titl
   const resolvedUrl = fileUrl ? resolveArtifactFileUrl(fileUrl) : '';
   const fileSize = artifact.provenance?.file_size;
   const previewable = fileUrl ? isPreviewableFile(fileUrl) : false;
+  // 文件类文章物:用通用 ExhibitHost 真正打开/预览文件内容(优先于原文内容)
+  const fileExhibit = buildArtifactExhibit(artifact, resolvedUrl);
   return (
     <div className="ws-preview">
-      <div className="ws-preview__head">
-        <span className="ws-preview__title">{artifact.title || title || `artifact_${artifactId}`}</span>
-        {(artifact.type || type) && <Tag color="blue">{artifact.type || type}</Tag>}
-        {artifact.current_version != null && <Tag>v{artifact.current_version}</Tag>}
-        {fileUrl && (
-          <span className="ws-preview__head-tools">
-            {previewable && (
-              <Tooltip title="新窗口打开">
-                <button type="button" className="ws-exhibit__tool" aria-label="新窗口打开" onClick={() => window.open(resolvedUrl, '_blank')}>
-                  <ExportOutlined />
-                </button>
-              </Tooltip>
-            )}
-            <Tooltip title="下载">
-              <button
-                type="button"
-                className="ws-exhibit__tool"
-                aria-label="下载"
-                onClick={() => downloadFile(resolvedUrl, artifact.title || `artifact_${artifactId}`)}
-              >
-                <DownloadOutlined />
-              </button>
-            </Tooltip>
-          </span>
-        )}
-      </div>
-      {content ? (
-        <section className="ws-preview__section">
-          <div className="ws-preview__section-title">内容</div>
-          <ContentView text={content} />
-        </section>
-      ) : fileUrl ? (
-        <section className="ws-preview__section">
-          <div className="ws-preview__section-title">文件</div>
-          {artifact.provenance?.description && (
-            <div className="ws-preview__markdown" style={{ marginBottom: 8 }}>{artifact.provenance.description}</div>
-          )}
-          {/* 文件元信息 */}
-          <div className="ws-preview__file-meta">
-            <FileOutlined />
-            <span className="ws-preview__file-name">{artifact.title || `artifact_${artifactId}`}</span>
-            {fileSize ? <span className="ws-preview__file-size">{fmtSize(fileSize)}</span> : null}
-          </div>
-        </section>
+      {fileExhibit ? (
+        <ExhibitHost exhibit={fileExhibit} />
       ) : (
-        <PayloadFields payload={artifact} />
+        <>
+          <div className="ws-preview__head">
+            <span className="ws-preview__title">{artifact.title || title || `artifact_${artifactId}`}</span>
+            {(artifact.type || type) && <Tag color="blue">{artifact.type || type}</Tag>}
+            {artifact.current_version != null && <Tag>v{artifact.current_version}</Tag>}
+            {fileUrl && (
+              <span className="ws-preview__head-tools">
+                {previewable && (
+                  <Tooltip title="新窗口打开">
+                    <button type="button" className="ws-exhibit__tool" aria-label="新窗口打开" onClick={() => window.open(resolvedUrl, '_blank')}>
+                      <ExportOutlined />
+                    </button>
+                  </Tooltip>
+                )}
+                <Tooltip title="下载">
+                  <button
+                    type="button"
+                    className="ws-exhibit__tool"
+                    aria-label="下载"
+                    onClick={() => downloadFile(resolvedUrl, artifact.title || `artifact_${artifactId}`)}
+                  >
+                    <DownloadOutlined />
+                  </button>
+                </Tooltip>
+              </span>
+            )}
+          </div>
+          {content ? (
+            <section className="ws-preview__section">
+              <div className="ws-preview__section-title">内容</div>
+              <ContentView text={content} />
+            </section>
+          ) : (
+            <PayloadFields payload={artifact} />
+          )}
+        </>
       )}
     </div>
   );

@@ -274,3 +274,41 @@ async def test_real_agent_compute_context_engine_messages():
         v for v in out.guard_report.violations if v.startswith(("I1", "I2"))
     ]
 
+
+@pytest.mark.asyncio
+async def test_p9_merge_cache_messages_not_in_db():
+    """P9: get_session_messages 读 DB（append_message fire-and-forget 写），当前轮刚
+    append 的消息可能未落库。_compute_context_engine_messages 合并当前 conv 的 cache
+    消息（get_messages 读 cache，与 get_work_log 同源），使工具结果能绑上。"""
+    gm = GptsMemory()
+    session = "p9_merge"
+    conv = f"{session}_1"
+    m1 = _msg(conv, session, "human", "用户问题", rounds=1)
+    m2 = _msg(conv, session, "assistant", "历史回答", rounds=1)
+    m3 = _msg(
+        conv, session, "assistant", "工具步骤", rounds=1,
+        tool_calls=[{"id": "tc1", "type": "function", "function": {"name": "fa", "arguments": "{}"}}],
+    )
+
+    async def _db_view(sid):  # DB 视图：缺 m3（模拟未落库）
+        return [m1, m2]
+    gm.get_session_messages = _db_view
+
+    async def _cache_view(cid):  # cache 视图：含 m3
+        return [m1, m2, m3]
+    gm.get_messages = _cache_view
+
+    async def _wl(cid):  # work_log（cache）：含 m3 的工具结果
+        if cid != conv:
+            return []
+        return [WorkEntry(timestamp=1.0, tool="fa", tool_call_id="tc1", result="工具结果X", message_id=m3.message_id)]
+    gm.get_work_log = _wl
+
+    agent = ReActMasterAgent()
+    agent.memory = AgentMemory(gpts_memory=gm)
+    out = await agent._compute_context_engine_messages(conv, session, 100000)
+    assert out is not None
+    all_text = " ".join(str(m.get("content", "")) for m in out.messages)
+    assert "工具步骤" in all_text  # m3（cache-only）被合并进来
+    assert "工具结果X" in all_text  # m3 的工具结果绑上（messages 与 work_log 同源）
+

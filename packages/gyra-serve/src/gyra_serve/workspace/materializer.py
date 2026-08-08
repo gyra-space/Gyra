@@ -18,7 +18,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MaterializedResources:
-    """物化结果：dynamic_resources 给 Agent 工具列表，extra_agents 给多 Agent 协作。"""
+    """物化结果：dynamic_resources 给 Agent 工具列表。
+
+    type=app（子 Agent）现在也物化成 AppResource 进 dynamic_resources，由运行时
+    按需构建（AppCapability + GptAppResource._start_app），不再预构建为
+    extra_agents。extra_agents 字段保留为空以兼容下游读取。
+    """
 
     dynamic_resources: List[AgentResource] = field(default_factory=list)
     extra_agents: List[Dict[str, Any]] = field(default_factory=list)
@@ -98,11 +103,29 @@ def _materialize_knowledge_space(
     )
 
 
-def _materialize_app_as_extra_agent(
+def _materialize_app(
     physical_ref: str, config: Dict[str, Any]
-) -> Optional[Dict[str, Any]]:
-    """type=app（子 Agent）→ extra_agents 项。"""
-    return {"app_code": physical_ref, **config}
+) -> Optional[AgentResource]:
+    """type=app（子 Agent）→ AgentResource(type=app)，运行时按需构建。
+
+    物化成 AppResource 进 dynamic_resources：AppCapability 声明 app 描述，
+    派发时经 _resolve_app_code 命中后由 GptAppResource._start_app 按需构建，
+    不预构建、不 hire。
+    """
+    app_code = physical_ref
+    app_name = config.get("app_name") or config.get("name") or app_code
+    app_desc = config.get("app_desc") or config.get("description") or ""
+    return AgentResource.from_dict(
+        {
+            "type": "app",
+            "name": app_name,
+            "value": {
+                "app_code": app_code,
+                "app_name": app_name,
+                "app_desc": app_desc,
+            },
+        }
+    )
 
 
 def _materialize_llm_model(
@@ -175,7 +198,7 @@ _MATERIALIZE_DISPATCH = {
     "skill": "_materialize_skill",
     "agent_skill": "_materialize_skill",
     "knowledge_space": "_materialize_knowledge_space",
-    "app": "_materialize_app_as_extra_agent",
+    "app": "_materialize_app",
     "llm_model": "_materialize_llm_model",
     "ecp": "_materialize_ecp",
 }
@@ -207,8 +230,8 @@ def _declaration_item_to_ref_config(
 def _materialize_declared_skill(skill_item: Any) -> Optional["AgentResource"]:
     """物化单个声明技能项 -> AgentResource 或 None。
 
-    复用 ``_MATERIALIZE_DISPATCH`` 分派;``app`` 类型跳过(它产出 extra_agents
-    而非 AgentResource)。供顶层 skills 与 roles 块角色技能共用。
+    复用 ``_MATERIALIZE_DISPATCH`` 分派;``app`` 类型跳过(playbook 子 Agent 由
+    roles 块/AgentRoleService 装配,不走技能物化)。供顶层 skills 与 roles 块角色技能共用。
     """
     if isinstance(skill_item, str):
         skill_type = "skill"
@@ -401,10 +424,9 @@ def materialize_resources(system_app, workspace_id: int) -> MaterializedResource
             materialized = handler(physical_ref, config)
             if materialized is None:
                 continue
-            if rtype == "app":
-                result.extra_agents.append(materialized)
-            else:
-                result.dynamic_resources.append(materialized)
+            # 统一按需构建：type=app 也进 dynamic_resources（AppResource），
+            # 运行时经 AppCapability/_resolve_app_code 按需构建，不再产 extra_agents。
+            result.dynamic_resources.append(materialized)
         except Exception as e:
             logger.warning(
                 f"materializer fail type={rtype} name={r.name}: {e}"

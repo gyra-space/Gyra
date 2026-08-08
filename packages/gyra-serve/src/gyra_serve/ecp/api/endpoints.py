@@ -24,6 +24,7 @@ from ..api.schemas import (
     DebugPreviewVO,
     DeprecateRequest,
     GenerateProposalsRequest,
+    GenerateProposalsTaskVO,
     GenerateProposalsVO,
     GraphVO,
     OpLogVO,
@@ -74,82 +75,41 @@ async def propose_object(
         return Result.failed(msg=str(e))
 
 
-@router.post("/proposals/generate", response_model=Result[GenerateProposalsVO])
+@router.post("/proposals/generate", response_model=Result[GenerateProposalsTaskVO])
 async def generate_proposals(
     request: GenerateProposalsRequest,
     service: Service = Depends(get_service),
-) -> Result[GenerateProposalsVO]:
-    """Generate semantic proposals -- workspace-level (agent) or per-datasource (batch).
+) -> Result[GenerateProposalsTaskVO]:
+    """Generate semantic proposals asynchronously.
 
-    If the workspace has a ``proposal_agent_id`` configured (ECP settings), run
-    that BAIZE proposal Agent over **all registered assets** of the workspace
-    (assets passed as dynamic resources -> DBCapability injects db info + table
-    list; Agent explores each via get_table_spec / sample_distinct_values /
-    propose_semantic in its ReAct loop). Otherwise fall back to the batch
-    proposer (``DbSemanticsProposer``): with a ``datasource_id`` it runs on a
-    single datasource; without one it iterates over **all registered DB assets**
-    of the workspace so the "generate for all assets" button works without an
-    agent. All proposals land in ``proposed`` (confirmation gate unchanged).
+    提案生成是真异步任务:立即返回 task_id 并在后台执行(agent 路径或 batch 路径),
+    前端轮询 ``GET /proposals/tasks/{task_id}`` 获取进度与最终结果。这样全资产生成
+    (agent ReAct 循环常达数分钟)不再受 HTTP 请求超时约束。任务记录持久化到
+    ``gpts_async_tasks``(与 media-jobs 同表),跨进程/重启可见。
     """
+    from ..service.proposal_runner import enqueue_proposal
+
     try:
-        cfg = service.get_workspace_config(request.workspace_id)
-        agent_id = getattr(cfg, "proposal_agent_id", None) if cfg else None
-    except Exception:  # noqa: BLE001
-        agent_id = None
+        task_id = await enqueue_proposal(service, request)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[ecp] enqueue proposal task failed")
+        return Result.failed(msg=f"提交提案生成任务失败: {e}")
+    return Result.succ(GenerateProposalsTaskVO(task_id=task_id))
 
-    if agent_id:
-        from ..service.proposal_runner import run_proposal_agent
 
-        result = await run_proposal_agent(
-            system_app=service._system_app,
-            app_code=agent_id,
-            workspace_id=request.workspace_id,
-            domain_hint=request.domain_hint,
-        )
-        return Result.succ(result)
+@router.get("/proposals/tasks/{task_id}")
+async def get_proposal_task(task_id: str) -> Result[dict]:
+    """查询一个异步提案生成任务的状态与结果(投递物在 artifact 中)。"""
+    try:
+        from gyra_serve.agent.db.async_task_db import AsyncTaskDao
 
-    # Batch fallback: per-datasource proposer (DbSemanticsProposer).
-    from ..service.propose import DbSemanticsProposer
-
-    proposer = DbSemanticsProposer(service)
-
-    # Single datasource: run the proposer directly.
-    if request.datasource_id:
-        result = await proposer.generate(
-            datasource_id=request.datasource_id,
-            workspace_id=request.workspace_id,
-            table_names=request.table_names,
-            max_tables=request.max_tables,
-            domain_hint=request.domain_hint,
-        )
-        return Result.succ(result)
-
-    # No datasource_id and no agent: iterate over ALL registered DB assets
-    # in the workspace so the "为所有资产生成提案" button works out of the box.
-    assets = service.list_assets(workspace_id=request.workspace_id, kind="db")
-    if not assets:
-        return Result.failed(
-            msg="工作空间未登记 DB 资产,无法批量生成提案;"
-            "请先登记数据源,或在 ECP 设置配置提案 Agent"
-        )
-    aggregated = GenerateProposalsVO(datasource_id=0)
-    for asset in assets:
-        try:
-            ds_id = int(asset.ref_id)
-        except (TypeError, ValueError):
-            continue
-        sub = await proposer.generate(
-            datasource_id=ds_id,
-            workspace_id=request.workspace_id,
-            table_names=request.table_names,
-            max_tables=request.max_tables,
-            domain_hint=request.domain_hint,
-        )
-        aggregated.tables_processed += sub.tables_processed
-        aggregated.proposals_created += sub.proposals_created
-        aggregated.proposal_ids.extend(sub.proposal_ids)
-        aggregated.errors.extend(sub.errors)
-    return Result.succ(aggregated)
+        job = AsyncTaskDao().get(task_id)
+        if job is None:
+            return Result.failed(msg=f"async proposal task {task_id} not found")
+        return Result.succ(job)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[ecp] query proposal task failed")
+        return Result.failed(msg=str(e))
 
 
 # -------------------------------------------------------------------- inbox

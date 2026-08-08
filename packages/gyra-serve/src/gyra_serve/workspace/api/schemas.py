@@ -27,6 +27,7 @@ class WorkspaceRequest(BaseModel):
         default_factory=dict, description="notification channels / default llm / ..."
     )
     is_archived: Optional[bool] = Field(False, description="archived flag")
+    is_deleted: Optional[bool] = Field(False, description="软删除/释放标记(仅作查询传递,不用于字段更新)")
 
     model_config = ConfigDict(title=f"WorkspaceRequest for {SERVE_APP_NAME_HUMP}")
 
@@ -45,6 +46,7 @@ class WorkspaceResponse(BaseModel):
     default_agent_app_code: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
     is_archived: bool = False
+    is_deleted: bool = False
     member_count: int = 0
     gmt_created: str
     gmt_modified: str

@@ -9,6 +9,7 @@ export const listWorkspaces = (data: any) => POST('/api/v1/serve_workspace_servi
 export const getWorkspaceInfo = (workspace_code: string) => GET(`/api/v1/serve_workspace_service/workspaces/info?workspace_code=${encodeURIComponent(workspace_code)}`);
 export const updateWorkspace = (data: any) => POST('/api/v1/serve_workspace_service/workspaces/update', data);
 export const archiveWorkspace = (data: any) => POST('/api/v1/serve_workspace_service/workspaces/archive', data);
+export const releaseWorkspace = (data: any) => POST('/api/v1/serve_workspace_service/workspaces/release', data);
 
 export const listMembers = (data: any) => POST('/api/v1/serve_workspace_service/members/list', data);
 export const addMember = (data: any) => POST('/api/v1/serve_workspace_service/members/add', data);

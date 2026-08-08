@@ -185,6 +185,44 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
         )
         return self.get_by_id(existing.id)
 
+    def release(self, workspace_code: str) -> bool:
+        """释放(软删除)场景空间 —— 危险操作,仅限空间拥有者。
+
+        语义(与"归档"区分):
+        - 将 workspace 标记为 ``is_deleted=True``,从而从所有列表隐藏。
+        - 物理删除空间核心关联记录:成员、资源、会话关联(conv_link)。
+        - 保留 workspace 底层记录,便于后续恢复;不清理任务/资产/ECP 派生空间等
+          派生数据(避免产生破坏性级联)。
+        """
+        existing = self._dao.get_one({"workspace_code": workspace_code})
+        if not existing:
+            raise ValueError(f"workspace '{workspace_code}' not found")
+        ws_id = existing.id
+        self._dao.update(
+            {"workspace_code": workspace_code},
+            {"is_deleted": True},
+            force_update=True,
+        )
+        # 清理核心关联记录(成员 / 资源 / 会话关联)
+        for entity_cls in (
+            WorkspaceMemberEntity,
+            WorkspaceResourceEntity,
+            WorkspaceConversationLinkEntity,
+        ):
+            session = self._dao.get_raw_session()
+            try:
+                session.query(entity_cls).filter(
+                    entity_cls.workspace_id == ws_id
+                ).delete(synchronize_session=False)
+                session.commit()
+            except Exception as e:  # noqa: BLE001
+                session.rollback()
+                logger.warning(f"release cleanup failed for {entity_cls.__name__} ws={ws_id}: {e}")
+            finally:
+                session.close()
+        logger.info(f"workspace released(soft-deleted): code={workspace_code} id={ws_id}")
+        return True
+
     def get_by_code(self, workspace_code: str) -> Optional[WorkspaceResponse]:
         entity = self._dao.get_raw_session().query(WorkspaceEntity).filter(
             WorkspaceEntity.workspace_code == workspace_code

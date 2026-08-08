@@ -180,6 +180,7 @@ class ContextEngine:
         session_id: str,
         context_window: int,
         subagent_goal_id: Optional[str] = None,
+        current_user_content: Optional[str] = None,
     ) -> BuildOutput:
         history_window = int(context_window * self.config.history_budget_ratio)
 
@@ -237,6 +238,31 @@ class ContextEngine:
         if latest and latest.summary:
             out_messages.append({"role": ROLE_HUMAN, "content": latest.summary})
         out_messages.extend(self._render_units(retained_units))
+
+        # 4.5) 保证当前 user 指令存在（防 DB 读回竞态：append_message fire-and-forget
+        #      写 DB、get_session_messages 读 DB，当前轮 user 可能尚未落库）。
+        #      若输出中无此指令则追加到末尾；已存在（含 ReAct retry 中位于中段）则不动。
+        if current_user_content and current_user_content.strip():
+            _cur = current_user_content.strip()
+            _present = False
+            for _m in out_messages:
+                if _m.get("role") not in (ROLE_HUMAN, "user"):
+                    continue
+                _c = _m.get("content", "")
+                _t = (
+                    _c
+                    if isinstance(_c, str)
+                    else " ".join(
+                        p.get("text", "")
+                        for p in _c
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    )
+                )
+                if _t.strip() == _cur:
+                    _present = True
+                    break
+            if not _present:
+                out_messages.append({"role": ROLE_HUMAN, "content": current_user_content})
 
         # 5) 发送前不变量门禁
         if self.config.enable_invariant_repair:

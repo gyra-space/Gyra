@@ -78,6 +78,8 @@ class WorkspaceEntity(Model):
     default_agent_app_code = Column(String(255), nullable=True)
     settings_json = Column(Text, nullable=True)
     is_archived = Column(Boolean, nullable=False, default=False)
+    # 软删除/释放标记:释放后空间从列表隐藏,保留底层记录便于恢复。
+    is_deleted = Column(Boolean, nullable=False, default=False, index=True)
 
     gmt_created = Column(DateTime, name="gmt_create", default=datetime.now)
     gmt_modified = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -384,6 +386,7 @@ class WorkspaceDao(BaseDao[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]
             default_agent_app_code=entity.default_agent_app_code,
             settings=_load_json(entity.settings_json),
             is_archived=entity.is_archived,
+            is_deleted=entity.is_deleted,
         )
 
     def to_response(self, entity: WorkspaceEntity, member_count: int = 0) -> WorkspaceResponse:
@@ -399,6 +402,7 @@ class WorkspaceDao(BaseDao[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]
             default_agent_app_code=entity.default_agent_app_code,
             settings=_load_json(entity.settings_json),
             is_archived=entity.is_archived,
+            is_deleted=entity.is_deleted,
             member_count=member_count,
             gmt_created=entity.gmt_created.isoformat() if entity.gmt_created else "",
             gmt_modified=entity.gmt_modified.isoformat() if entity.gmt_modified else "",
@@ -411,6 +415,8 @@ class WorkspaceDao(BaseDao[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]
         session = self.get_raw_session()
         try:
             query = session.query(WorkspaceEntity)
+            # 已释放(软删除)的空间一律不可见。
+            query = query.filter(WorkspaceEntity.is_deleted == False)
             if not filter_request.include_archived:
                 query = query.filter(WorkspaceEntity.is_archived == False)
             if filter_request.scenario_type:

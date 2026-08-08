@@ -329,6 +329,23 @@ class TestGetContextWindow:
         )
         assert get_context_window("test-model") == 64000
 
+    def test_reads_context_window_field(self):
+        from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+        ModelConfigCache.register_configs(
+            {"test-provider/cw-model": {"model": "cw-model", "context_window": 262144}}
+        )
+        assert get_context_window("cw-model") == 262144
+
+    def test_ignores_max_new_tokens_as_context_window(self):
+        """max_new_tokens 是输出上限，不能被当上下文窗口回退（否则 4096 会盖过默认 128000）。"""
+        from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+        ModelConfigCache.register_configs(
+            {"test-provider/mt-model": {"model": "mt-model", "max_new_tokens": 4096}}
+        )
+        assert get_context_window("mt-model") == 128000
+
     def test_last_model_name_recorded(self):
         usage = ConversationUsage(conv_id="c1")
         usage.add_call("gpt-4o", prompt_tokens=100, completion_tokens=50)

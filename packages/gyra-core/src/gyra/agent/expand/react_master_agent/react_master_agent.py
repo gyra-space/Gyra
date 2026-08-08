@@ -291,8 +291,6 @@ class ReActMasterAgent(ConversableAgent, Team):
         # 初始化交互能力
         self._interaction_extension = None
 
-        # Skill 内容追踪：skill_name -> content（用于 compaction 后重新注入）
-        self._invoked_skills: Dict[str, str] = {}
 
     async def preload_resource(self) -> None:
         """Preload resources and inject system tools.
@@ -1552,37 +1550,6 @@ class ReActMasterAgent(ConversableAgent, Team):
             return self.llm_config.llm_client
         return None
 
-    async def _inject_history_tools_if_needed(self):
-        """在首次压缩完成后动态注入历史回顾工具。
-
-        历史回顾工具只在 compaction 发生后才有意义（此时才有归档章节可供检索），
-        因此不在 preload_resource() 中静态注入，而是由 load_thinking_messages()
-        在检测到 pipeline.has_compacted 后调用本方法。
-        """
-        # 如果已经注入过，跳过
-        if "read_history_chapter" in self.available_system_tools:
-            return
-
-        pipeline = await self._ensure_compaction_pipeline()
-        if not pipeline or not pipeline.has_compacted:
-            return
-
-        try:
-            from gyra.agent.core.tools.history_tools import create_history_tools
-
-            history_tools = create_history_tools(pipeline)
-            for name, tool in history_tools.items():
-                self.available_system_tools[name] = tool
-
-            # 刷新 function_calling_context 以使 LLM 能看到新工具
-            self.function_calling_context = await self.function_calling_params()
-            logger.info(
-                f"History recovery tools injected after first compaction: "
-                f"{list(history_tools.keys())}"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to inject history tools: {e}")
-
     # _check_and_compact_context removed in Phase 2 - replaced by UnifiedCompactionPipeline
     # _prune_history removed in Phase 2 - replaced by UnifiedCompactionPipeline
 
@@ -1753,86 +1720,6 @@ class ReActMasterAgent(ConversableAgent, Team):
         if not messages:
             return messages, context, "", ""
 
-        # 尝试使用统一压缩管道（Layer 2 + Layer 3）
-        pipeline = await self._ensure_compaction_pipeline()
-        if pipeline:
-            # Layer 2: 历史修剪
-            prune_result = await pipeline.prune_history(messages)
-            messages = prune_result.messages
-            if prune_result.pruned_count > 0:
-                self._prune_count += 1
-                logger.info(
-                    f"Pipeline pruning: removed {prune_result.pruned_count} entries, "
-                    f"saved ~{prune_result.tokens_saved} tokens"
-                )
-
-            # Layer 3: 上下文压缩 + 章节归档
-            compact_result = await pipeline.compact_if_needed(messages)
-            messages = compact_result.messages
-            if compact_result.compaction_triggered:
-                self._compaction_count += 1
-                logger.info(
-                    f"Pipeline compaction: archived {compact_result.messages_archived} messages, "
-                    f"saved ~{compact_result.tokens_saved} tokens"
-                )
-                # 首次压缩完成后动态注入历史回顾工具
-                if pipeline.has_compacted:
-                    await self._inject_history_tools_if_needed()
-
-                # 压缩后重新注入已调用的 Skill 内容，防止 Skill 指令丢失
-                # 淘汰策略：保留第 1 个 + 最后 2 个的完整内容，中间的只保留名称摘要
-                if self._invoked_skills:
-                    skill_items = list(self._invoked_skills.items())
-                    total = len(skill_items)
-                    # _MAX_FULL_SKILLS: first 1 + last 2 = 3 slots for full content
-                    _MAX_FULL_SKILLS = 3
-
-                    if total <= _MAX_FULL_SKILLS:
-                        # 少于等于 3 个，全部完整注入
-                        full_inject = skill_items
-                        evicted_names = []
-                    else:
-                        # 保留第 1 个 + 最后 2 个，中间的被淘汰
-                        keep_first = skill_items[:1]
-                        keep_last = skill_items[-2:]
-                        evicted = skill_items[1:-2]
-                        full_inject = keep_first + keep_last
-                        evicted_names = [name for name, _ in evicted]
-
-                    # 注入完整 skill 内容
-                    for sk_name, sk_content in full_inject:
-                        truncated = sk_content[:100_000] if len(sk_content) > 100_000 else sk_content
-                        skill_msg = {
-                            "role": "system",
-                            "content": f'<skill-content name="{sk_name}">\n{truncated}\n</skill-content>',
-                            "context": {"is_skill_content": True, "is_critical": True},
-                        }
-                        messages.append(skill_msg)
-
-                    # 注入被淘汰 skill 的名称摘要（供 Agent 知道曾加载过哪些 skill）
-                    if evicted_names:
-                        summary_msg = {
-                            "role": "system",
-                            "content": (
-                                f"<evicted-skills>\n"
-                                f"The following {len(evicted_names)} skill(s) were previously loaded but their "
-                                f"content was evicted to save context space. Use Skill to reload if needed:\n"
-                                + "\n".join(f"- {name}" for name in evicted_names)
-                                + "\n</evicted-skills>"
-                            ),
-                            "context": {"is_skill_content": True},
-                        }
-                        messages.append(summary_msg)
-
-                    logger.info(
-                        f"Re-injected {len(full_inject)} skill(s) after compaction"
-                        + (f", evicted {len(evicted_names)}" if evicted_names else "")
-                    )
-
-        else:
-            # 降级到传统的修剪 + 压缩
-            messages = await self._prune_history(messages)
-            messages = await self._check_and_compact_context(messages)
 
         # 确保AgentFileSystem已初始化（用于文件管理）
         await self._ensure_agent_file_system()
@@ -2181,50 +2068,6 @@ class ReActMasterAgent(ConversableAgent, Team):
 
         return filtered_messages, context, system_prompt, user_prompt
 
-    async def _get_worklog_tool_messages(
-        self, max_entries: int = 30
-    ) -> List[Dict[str, Any]]:
-        """
-        将 WorkLog 历史转换为原生 Function Call 格式的工具消息列表。
-
-        重写基类方法，从 compaction_pipeline 获取历史工具调用记录。
-
-        核心设计：压缩后的条目使用摘要替代原始内容，保证上下文管理有效。
-        - 历史 WorkLog 压缩后，用摘要替代原始结果
-        - 当前轮次保持原生 Function Call 模式
-
-        遵循 OpenAI Function Call 协议：
-        [
-            {"role": "assistant", "content": "", "tool_calls": [...]},
-            {"role": "tool", "tool_call_id": "...", "content": "..."},
-            ...
-        ]
-
-        Args:
-            max_entries: 最大获取的 WorkEntry 数量
-
-        Returns:
-            符合原生 Function Call 格式的消息列表
-        """
-        pipeline = await self._ensure_compaction_pipeline()
-        if not pipeline:
-            return []
-
-        try:
-            # 使用压缩摘要，保证上下文连续性
-            tool_messages = await pipeline.get_tool_messages_from_worklog(
-                max_entries=max_entries,
-                use_compressed_summary=True,  # 默认值，显式声明
-            )
-            if tool_messages:
-                logger.info(
-                    f"Converted WorkLog to {len(tool_messages)} tool messages for LLM"
-                )
-            return tool_messages
-        except Exception as e:
-            logger.warning(f"Failed to get worklog tool messages: {e}")
-            return []
-
     @staticmethod
     def _extract_text_from_content(content) -> str:
         """从 LLM 消息的 content 字段提取纯文本。"""
@@ -2393,6 +2236,7 @@ class ReActMasterAgent(ConversableAgent, Team):
                 conv_id=conv_id,
                 session_id=session_id,
                 context_window=context_window,
+                current_user_content=current_user_content,
             )
             if build_result is not None:
                 all_conversation_messages = build_result.messages
@@ -2444,25 +2288,6 @@ class ReActMasterAgent(ConversableAgent, Team):
                 reply_message=reply_message,
                 **kwargs,
             )
-
-        # ========== 注入 user_prompt 到最后一条 HUMAN 消息（跳过历史摘要）==========
-        from .context_engine import SUMMARY_PREFIX as _SUMMARY_PREFIX
-        user_prompt = getattr(reply_message, "user_prompt", None) if reply_message else None
-        if user_prompt and user_prompt.strip() and all_conversation_messages:
-            for i in range(len(all_conversation_messages) - 1, -1, -1):
-                role = all_conversation_messages[i].get("role", "")
-                if role in ("human", "user"):
-                    original_content = all_conversation_messages[i].get("content", "")
-                    if isinstance(original_content, str) and original_content.startswith(_SUMMARY_PREFIX):
-                        continue
-                    if isinstance(original_content, list):
-                        new_content = [{"type": "text", "text": user_prompt}]
-                        new_content.extend(part for part in original_content if part.get("type") != "text")
-                        all_conversation_messages[i] = {**all_conversation_messages[i], "content": new_content}
-                    else:
-                        all_conversation_messages[i] = {**all_conversation_messages[i], "content": user_prompt}
-                    logger.info(f"[UserPromptInjection] Replaced last human message (index={i})")
-                    break
 
         # ========== 收集运行时上下文（通知/补充输入/todo）-- 并入 system prompt ==========
         # 不再作为 role=user 追加到末尾，确保"最后一条 user 消息 = 当前用户指令"。
@@ -3067,12 +2892,6 @@ class ReActMasterAgent(ConversableAgent, Team):
                             f"🎯 Tool executed: {tool_name}, success={result.is_exe_success if hasattr(result, 'is_exe_success') else 'unknown'}"
                         )
 
-                        # 追踪 Skill 内容（用于 compaction 后重新注入）
-                        if tool_name == "Skill" and result.is_exe_success and result.content:
-                            skill_name = tool_args.get("skill_name", "")
-                            if skill_name:
-                                self._invoked_skills[skill_name] = result.content
-                                logger.info(f"📚 Tracked invoked skill: {skill_name}")
 
                         # 记录系统事件
                         if self._system_event_manager:
@@ -3995,7 +3814,8 @@ class ReActMasterAgent(ConversableAgent, Team):
             return self._context_engine
 
     async def _compute_context_engine_messages(
-        self, conv_id: str, session_id: str, context_window: int
+        self, conv_id: str, session_id: str, context_window: int,
+        current_user_content: Optional[str] = None,
     ):
         """统一上下文构建路径：从权威存储装配 → 分层 → 压缩 → 门禁。
 
@@ -4014,6 +3834,22 @@ class ReActMasterAgent(ConversableAgent, Team):
         messages = await gpts_memory.get_session_messages(session_id)
         if not messages:
             return None
+
+        # 1.5) Merge current-conv cache messages: append_message is a fire-and-forget
+        #      DB write, so just-appended current-turn messages (incl. ReAct tool calls)
+        #      may not be in DB yet. get_messages reads cache (same source as get_work_log),
+        #      filling in not-yet-persisted messages so the message view matches work_log
+        #      and the assembler can bind tool results. Dedup by message_id.
+        try:
+            _existing_ids = {getattr(m, "message_id", None) for m in messages}
+            _cache_msgs = await gpts_memory.get_messages(conv_id)
+            for _m in _cache_msgs:
+                _mid = getattr(_m, "message_id", None)
+                if _mid and _mid not in _existing_ids:
+                    messages.append(_m)
+                    _existing_ids.add(_mid)
+        except Exception as _e:
+            logger.warning(f"[ContextEngine] merge cache messages failed: {_e}")
 
         # 2) 加载每个 conv 的 work_log（按 conv 存）
         conv_ids = {getattr(m, "conv_id", None) for m in messages}
@@ -4035,6 +3871,7 @@ class ReActMasterAgent(ConversableAgent, Team):
             session_id=session_id,
             context_window=context_window,
             subagent_goal_id=subagent_goal_id,
+            current_user_content=current_user_content,
         )
 
     async def _ensure_system_event_manager(self):

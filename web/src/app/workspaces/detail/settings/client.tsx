@@ -1,11 +1,11 @@
 'use client';
 
-import { apiInterceptors, getOrCreateHomeWorkspace, getWorkspaceInfo, listMembers, addMember, removeMember, updateMemberRole, updateWorkspace, setHomeWorkspace } from '@/client/api';
+import { apiInterceptors, getOrCreateHomeWorkspace, getWorkspaceInfo, listMembers, addMember, removeMember, updateMemberRole, updateWorkspace, setHomeWorkspace, releaseWorkspace } from '@/client/api';
 import { usersService, type User } from '@/services/users';
 import { getUserId } from '@/utils';
-import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Spin, Table, Tag } from 'antd';
+import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Spin, Table, Tag, Alert } from 'antd';
 import { useRequest } from 'ahooks';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +13,7 @@ import { SpaceModelsTab } from './space-models-tab';
 
 export default function SettingsPage() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const workspaceCode = searchParams?.get('id') || '';
   const { t } = useTranslation();
   const [form] = Form.useForm();
@@ -22,6 +23,9 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [userOptions, setUserOptions] = useState<User[]>([]);
   const [searching, setSearching] = useState(false);
+  const [releaseOpen, setReleaseOpen] = useState(false);
+  const [releaseConfirm, setReleaseConfirm] = useState('');
+  const [releasing, setReleasing] = useState(false);
   const { message } = App.useApp();
 
   const { data: ws, loading, refresh } = useRequest(async () => {
@@ -133,6 +137,18 @@ export default function SettingsPage() {
     refreshMembers();
   };
 
+  const handleRelease = async () => {
+    if (!ws?.workspace_code) return;
+    setReleasing(true);
+    const [err] = await apiInterceptors(releaseWorkspace({ workspace_code: ws.workspace_code }));
+    setReleasing(false);
+    if (err) { message.error(err.message); return; }
+    message.success('空间已释放');
+    setReleaseOpen(false);
+    // 释放后跳回空间列表(该空间已从列表隐藏)
+    router.push('/workspaces');
+  };
+
   if (loading) return <div className="flex justify-center py-20"><Spin /></div>;
   if (!ws) return <div className="p-6"><Empty /></div>;
 
@@ -208,6 +224,26 @@ export default function SettingsPage() {
         <SpaceModelsTab workspaceId={ws.id} workspaceCode={ws.workspace_code} canManage={!!canManage} />
       </Card>
 
+      {canManage && (
+        <Card
+          title="危险操作"
+          className="mb-4"
+          styles={{ body: { background: '#fff1f0', borderRadius: 8 } }}
+        >
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <p className="m-0 font-medium">释放此空间</p>
+              <p className="m-0 text-xs text-gray-500">
+                释放后空间将从列表中隐藏,并移除成员/资源/会话关联等核心记录。底层数据保留,可恢复。此操作不可撤销,请谨慎。
+              </p>
+            </div>
+            <Button danger type="primary" onClick={() => { setReleaseConfirm(''); setReleaseOpen(true); }}>
+              释放空间
+            </Button>
+          </div>
+        </Card>
+      )}
+
       <Modal
         open={editOpen}
         onCancel={() => setEditOpen(false)}
@@ -253,6 +289,31 @@ export default function SettingsPage() {
             ]} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        open={releaseOpen}
+        onCancel={() => setReleaseOpen(false)}
+        onOk={handleRelease}
+        confirmLoading={releasing}
+        okText="确认释放"
+        cancelText="取消"
+        okButtonProps={{ danger: true, disabled: releaseConfirm.trim() !== ws?.name }}
+        title="释放场景空间"
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="此操作不可撤销"
+          description="释放后空间将从列表中隐藏,并移除成员、资源、会话关联等核心记录。底层数据保留但不可在列表中访问。"
+          className="mb-4"
+        />
+        <p className="mb-2">请输入空间名称 <b>{ws?.name}</b> 以确认释放:</p>
+        <Input
+          value={releaseConfirm}
+          onChange={(e) => setReleaseConfirm(e.target.value)}
+          placeholder={ws?.name}
+        />
       </Modal>
     </div>
   );

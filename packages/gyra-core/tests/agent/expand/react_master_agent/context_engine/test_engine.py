@@ -357,3 +357,55 @@ async def test_token_counter_injection_unifies_counting():
     # m1 是当前用户消息（最后一个 USER），从 retained_display 排除；retained=[m2]=3 tokens
     # 若用 chars//4 则为 max(1, 3//4)=1；用 counter(len) 则为 3
     assert out.history_breakdown["retained"] == 3
+
+
+@pytest.mark.asyncio
+async def test_current_user_appended_when_missing():
+    # DB 读回竞态：当前 user 不在 messages 里 -> 引擎追加到末尾（不覆盖历史）
+    msgs = [
+        FakeMsg("c1", "human", "m1", content="历史问题", rounds=1, created_at=1.0),
+        FakeMsg("c1", "ai", "m2", content="历史回答", rounds=1, created_at=2.0),
+    ]
+    out = await _engine().build_messages(
+        msgs, {"c1": []}, "c1", "s", 100000, current_user_content="当前新问题"
+    )
+    all_text = " ".join(str(m.get("content", "")) for m in out.messages)
+    assert "当前新问题" in all_text  # 被补上
+    assert "历史问题" in all_text  # 历史 user 未被覆盖
+    assert out.messages[-1]["role"] == "human"
+    assert out.messages[-1]["content"] == "当前新问题"
+
+
+@pytest.mark.asyncio
+async def test_current_user_not_duplicated_when_present():
+    # 当前 user 已在 messages 里 -> 不重复追加
+    msgs = [
+        FakeMsg("c1", "human", "m1", content="历史问题", rounds=1, created_at=1.0),
+        FakeMsg("c1", "ai", "m2", content="历史回答", rounds=1, created_at=2.0),
+        FakeMsg("c1", "human", "m3", content="当前新问题", rounds=2, created_at=3.0),
+    ]
+    out = await _engine().build_messages(
+        msgs, {"c1": []}, "c1", "s", 100000, current_user_content="当前新问题"
+    )
+    user_msgs = [
+        m for m in out.messages
+        if m.get("role") == "human" and m.get("content") == "当前新问题"
+    ]
+    assert len(user_msgs) == 1  # 只一次
+    assert out.messages[-1]["content"] == "当前新问题"  # 在时序末位（最新）
+
+
+@pytest.mark.asyncio
+async def test_current_user_not_moved_in_react_retry():
+    # ReAct retry：[user, ai tool_call, tool] -- user 在首位，末条应是 tool，不追加到末尾
+    msgs = [
+        FakeMsg("c1", "human", "m1", content="执行任务", rounds=1, created_at=1.0),
+        FakeMsg("c1", "ai", "m2", content="", tool_calls=[ai_tool_call("tc1", "fa")], rounds=1, created_at=2.0),
+    ]
+    wls = {"c1": [FakeWE("fa", "tc1", result="工具结果", message_id="m2")]}
+    out = await _engine().build_messages(
+        msgs, wls, "c1", "s", 100000, current_user_content="执行任务"
+    )
+    roles = [m["role"] for m in out.messages]
+    assert roles == ["human", "ai", "tool"]  # user 首位、末条 tool，未被移动
+    assert sum(1 for m in out.messages if m.get("content") == "执行任务") == 1

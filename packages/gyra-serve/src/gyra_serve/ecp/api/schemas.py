@@ -165,6 +165,18 @@ class GenerateProposalsVO(BaseModel):
     errors: List[str] = Field(default_factory=list)
 
 
+class GenerateProposalsTaskVO(BaseModel):
+    """Async proposal generation task handle.
+
+    生成提案改为真异步:接口立即返回 task_id,前端轮询
+    GET /proposals/tasks/{task_id} 获取进度与最终结果。
+    """
+
+    model_config = ConfigDict(title="EcpGenerateProposalsTask")
+
+    task_id: str
+
+
 class AssetRefVO(BaseModel):
     """A registered original-asset reference."""
 

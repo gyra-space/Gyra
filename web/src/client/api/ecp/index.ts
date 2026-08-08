@@ -183,13 +183,33 @@ export const generateEcpProposals = (data: {
   max_tables?: number;
   domain_hint?: string;
 }) =>
-  POST<typeof data, {
-    datasource_id: number;
-    tables_processed: number;
-    proposals_created: number;
-    proposal_ids: string[];
-    errors: string[];
-  }>(`${API_PREFIX}/proposals/generate`, data);
+  POST<typeof data, { task_id: string }>(`${API_PREFIX}/proposals/generate`, data);
+
+/** Async proposal generation task status/result (polled by the asset tab). */
+export const getEcpProposalTask = (taskId: string) =>
+  GET<{}, {
+    task_id: string;
+    conv_id: string;
+    /** ecp_proposal */
+    kind: string;
+    model: string;
+    description: string;
+    status: 'pending' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
+    error?: string;
+    result_preview?: string;
+    /** 结构化解构(引擎 to_record 落于 detail.artifact) */
+    detail?: {
+      artifact?: {
+        tables_processed?: number;
+        proposals_created?: number;
+        proposal_ids?: string[];
+        errors?: string[];
+      };
+    };
+    created_at?: string;
+    started_at?: string;
+    completed_at?: string;
+  }>(`${API_PREFIX}/proposals/tasks/${encodeURIComponent(taskId)}`);
 
 export const listEcpConfirmers = (workspace_id?: string) =>
   GET<{ workspace_id?: string }, EcpConfirmer[]>(`${API_PREFIX}/confirmers`, {

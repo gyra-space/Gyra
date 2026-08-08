@@ -24,7 +24,6 @@ from gyra.agent import (
     LLMStrategyType,
     GptsMemory,
     LLMConfig,
-    ResourceType,
     ActionOutput,
     Agent,
     AgentMessage,
@@ -32,7 +31,6 @@ from gyra.agent import (
     ShortTermMemory,
 )
 from gyra.agent.core.agent_alias import AgentAliasManager, resolve_agent_name
-from gyra.agent.core.base_team import ManagerAgent, Team
 from gyra.agent.core.memory.gpts import GptsMessage
 from gyra.agent.core.plan.react.team_react_plan import AutoTeamContext
 from gyra.agent.core.sandbox_manager import SandboxManager
@@ -54,7 +52,7 @@ from gyra.core import HumanMessage, StorageConversation
 from gyra.core.interface.file import FileStorageClient
 from gyra.util.data_util import first
 from gyra.util.date_utils import current_ms
-from gyra.util.executor_utils import ExecutorFactory, execute_no_wait, run_async_tasks
+from gyra.util.executor_utils import ExecutorFactory, execute_no_wait
 from gyra.util.json_utils import serialize
 from gyra.util.log_util import CHAT_LOGGER
 from gyra.util.logger import digest
@@ -78,7 +76,7 @@ from gyra_serve.agent.db import (
 )
 from gyra_serve.agent.db.gpts_tool import GptsToolDao
 from gyra_serve.agent.team.base import TeamMode
-from gyra_serve.building.app.api.schema_app import GptsApp, GptsAppDetail
+from gyra_serve.building.app.api.schema_app import GptsApp
 from gyra_serve.building.app.api.schemas import ServerResponse
 from gyra_serve.building.app.service.service import Service as AppService
 from gyra_serve.building.config.api.schemas import ChatInParamValue, AppParamType
@@ -1986,23 +1984,10 @@ class AgentChat(BaseComponent, ABC):
                     )
                     # 场景初始化失败不影响主流程
 
-            employees: List[ConversableAgent] = []
-            if "extra_agents" in kwargs and kwargs.get("extra_agents"):
-                # extra_agents 表示动态添加的子Agent
-                employees = await self._build_extra_employees(
-                    kwargs.get("extra_agents"), context, agent_memory, rm, scheduler
-                )
-                app.all_resources.extend(
-                    [self.agent_to_resource(extra_agent) for extra_agent in employees]
-                )
-            elif app.details is not None and len(app.details) > 0:
-                employees: List[ConversableAgent] = await self._build_employees(
-                    context,
-                    agent_memory,
-                    rm,
-                    [deepcopy(item) for item in app.details],
-                    scheduler,
-                )
+            # 统一治理：子 Agent 不再在此预构建/hire。子 Agent 一律以 AppResource
+            # （type=app）注入 capability_pack/resource_map，派发时经 _resolve_app_code
+            # 命中后由 GptAppResource._start_app 按需构建。app.details 与 workspace
+            # 物化器（原 extra_agents）均已并入 AppResource 注入路径。
             team_mode = TeamMode(app.team_mode)
             ## 模型服务
             # LLM client is resolved by AIWrapper via ProviderRegistry at
@@ -2038,8 +2023,8 @@ class AgentChat(BaseComponent, ABC):
 
             if team_mode == TeamMode.SINGLE_AGENT or TeamMode.NATIVE_APP == team_mode:
                 # 统一治理：主代理恒由 app.agent 构建，并承载全部能力包
-                # （workspace_scene/ecp 等资产）。子代理(employees)仅是团队成员，
-                # 在下游 hire 进主代理，绝不替换主代理，因此资产加载与 employees 无关。
+                # （workspace_scene/ecp 等资产）。子代理不再预构建/hire，资产加载与
+                # 子代理无关，主代理独立承载全部资产。
                 # 解析Agent别名（历史数据兼容）
                 resolved_agent_type = resolve_agent_name(app.agent)
                 if resolved_agent_type != app.agent:
@@ -2089,31 +2074,8 @@ class AgentChat(BaseComponent, ABC):
                     .build()
                 )
 
-                # 标准 Team Agent 场景：将已构建的子 Agent 雇佣到主 Agent（.agents），
-                # 使子 Agent 以团队成员形式派发（send/receive、async 委派等）。
-                # 统一治理：剔除与主代理同应用的自引用成员，避免把主代理 hire 到自己。
-                if isinstance(recipient, Team) and employees:
-                    _main_code = getattr(
-                        getattr(recipient, "agent_context", None),
-                        "agent_app_code",
-                        None,
-                    )
-                    _hire_members = [
-                        e
-                        for e in employees
-                        if getattr(
-                            getattr(e, "agent_context", None),
-                            "agent_app_code",
-                            None,
-                        )
-                        != _main_code
-                    ]
-                    if _hire_members:
-                        recipient.hire(_hire_members)
-                        logger.info(
-                            f"[AgentChat] hired {len(_hire_members)} sub-agent(s) into "
-                            f"{recipient.name}: {[a.agent_context.agent_app_code or a.name for a in _hire_members]}"
-                        )
+                # 统一治理：不再 hire 预构建子 Agent 到主 Team（子 Agent 按需经
+                # AppResource/_dispatch_to_app 构建），避免把主代理/子代理提前实例化。
 
                 # 诊断日志：检查 resource_map
                 if hasattr(recipient, 'resource_map'):
@@ -2613,8 +2575,8 @@ class AgentChat(BaseComponent, ABC):
                     temp_profile.user_prompt_template = app.user_prompt_template
                 manager.bind(temp_profile)
 
-                if isinstance(manager, ManagerAgent) and len(employees) > 0:
-                    manager.hire(employees)
+                # 统一治理：不再 hire 预构建子 Agent（子 Agent 按需经
+                # AppResource/_dispatch_to_app 构建）。
                 logger.info(
                     f"_build_agent_by_gpts return:{manager.profile.name},{manager.profile.desc},{id(manager)}"
                 )
@@ -2627,97 +2589,6 @@ class AgentChat(BaseComponent, ABC):
             logger.info(
                 f"_build_agent_by_gpts:{app.app_code},{app.app_name}, end:{datetime.now()}"
             )
-
-    @trace("agent.build_employees")
-    async def _build_employees(
-        self,
-        context: AgentContext,
-        agent_memory: AgentMemory,
-        rm: ResourceManager,
-        app_details: List[GptsAppDetail],
-        scheduler: Optional[Scheduler],
-    ) -> List[ConversableAgent]:
-        """Constructing dialogue members through gpts-related Agent or gpts app information."""
-        from datetime import datetime
-
-        logger.info(
-            f"_build_employees: details={[item.agent_role + ',' + item.agent_name for item in app_details] if app_details else ''},start:{datetime.now()}"
-        )
-        app_service = get_app_service()
-
-        async def _build_employee_agent(record: GptsAppDetail):
-            logger.info(
-                f"_build_employees循环:{record.agent_role},{record.agent_name}, start:{datetime.now()}"
-            )
-            if record.type == "app":
-                gpt_app: GptsApp = deepcopy(
-                    await app_service.app_detail(record.agent_role, building_mode=False)
-                )
-                if not gpt_app:
-                    raise ValueError(f"Not found app {record.agent_role}!")
-                employee_agent = await self._build_agent_by_gpts(
-                    context, agent_memory, rm, gpt_app, scheduler=scheduler
-                )
-
-                logger.info(
-                    f"_build_employees循环:{employee_agent.profile.role},{employee_agent.profile.name},{employee_agent.profile.desc},{id(employee_agent)}, end:{datetime.now()}"
-                )
-                return employee_agent
-            else:
-                raise ValueError("当前应用数据已经无法支持，请重新编辑构建！")
-
-        api_tasks = []
-        for record in app_details:
-            api_tasks.append(_build_employee_agent(record))
-
-        employees = await run_async_tasks(tasks=api_tasks, concurrency_limit=10)
-        logger.info(
-            f"_build_employees return:{[item.profile.name if item.profile.name else '' + ',' + str(id(item)) for item in employees]},end:{datetime.now()}"
-        )
-        return employees
-
-    @trace("agent.build_extra_agents")
-    async def _build_extra_employees(
-        self,
-        extra_agents: List[Union[str, dict]],
-        context: AgentContext,
-        agent_memory: AgentMemory,
-        rm: ResourceManager,
-        scheduler: Optional[Scheduler],
-        need_sandbox: bool = False,
-    ) -> List[ConversableAgent]:
-        logger.info(f"_build_extra_employees: need_sandbox={need_sandbox}")
-
-        def _uniform(_extra_agent) -> dict:
-            """将参数转为同样的格式。
-
-            已经是构建好的 ConversableAgent 实例时，使用 sentinel 包装后原样透传，
-            避免被当作 app_code 字符串去查询应用详情而崩溃。
-            """
-            if isinstance(_extra_agent, ConversableAgent):
-                return {"__prebuilt_agent__": _extra_agent}
-            if isinstance(_extra_agent, dict):
-                return _extra_agent
-            return {"app_code": _extra_agent}
-
-        async def _build(_extra_agent) -> ConversableAgent:
-            if "__prebuilt_agent__" in _extra_agent:
-                return _extra_agent["__prebuilt_agent__"]
-            app = await app_service.app_detail(
-                _extra_agent.get("app_code"),
-                specify_config_code=_extra_agent.get("config_code", None),
-                building_mode=False,
-            )
-            agent = await self._build_agent_by_gpts(
-                context, agent_memory, rm, app, scheduler, need_sandbox=need_sandbox
-            )
-            return agent
-
-        app_service = get_app_service()
-        extra_agents = [_uniform(extra_agent) for extra_agent in extra_agents]
-        tasks = [_build(extra_agent) for extra_agent in extra_agents]
-        extra_employees = await asyncio.gather(*tasks)
-        return list(extra_employees)
 
     async def _load_and_inject_scenes(
         self,
@@ -2782,25 +2653,6 @@ class AgentChat(BaseComponent, ABC):
         agent_profile.system_prompt_template = scene_prompt + original_prompt
 
         return scene_prompt
-
-    def agent_to_resource(self, agent: ConversableAgent) -> AgentResource:
-        return AgentResource.from_dict(
-            {
-                "type": ResourceType.App.value,
-                "value": json.dumps(
-                    {
-                        "name": f"{agent.name}({agent.agent_context.agent_app_code})",
-                        "app_code": agent.agent_context.agent_app_code,
-                        "app_name": agent.name,
-                        "app_describe": agent.desc,
-                        "icon": agent.avatar,
-                    },
-                    ensure_ascii=False,
-                ),
-                "name": f"{agent.name}({agent.agent_context.agent_app_code})",
-                "unique_id": uuid.uuid4().hex,
-            }
-        )
 
     async def add_duplicate_allow_tools(self, resources: List[AgentResource]):
         if not resources:

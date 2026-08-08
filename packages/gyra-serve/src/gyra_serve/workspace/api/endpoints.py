@@ -177,6 +177,26 @@ async def archive_workspace(
         return Result.failed(str(e))
 
 
+@router.post("/workspaces/release", response_model=Result[bool],
+             dependencies=[Depends(check_api_key),
+                           Depends(require_permission(Permission.DELETE_WORKSPACE))])
+async def release_workspace(
+    request: dict, service: Service = Depends(get_service),
+) -> Result[bool]:
+    """释放(软删除)场景空间 —— 危险操作,仅空间拥有者。
+
+    标记空间已删除并从列表隐藏,同时清理成员/资源/会话关联等核心记录。
+    """
+    try:
+        workspace_code = request.get("workspace_code")
+        if not workspace_code:
+            return Result.failed("workspace_code is required")
+        return Result.succ(service.release(workspace_code))
+    except Exception as e:
+        logger.exception("workspace release exception!")
+        return Result.failed(str(e))
+
+
 # ----------------------- Members -----------------------
 @router.post("/members/list", response_model=Result,
              dependencies=[Depends(check_api_key)])

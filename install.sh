@@ -192,7 +192,6 @@ install_dependencies() {
     
     uv sync --all-packages --frozen \
         --extra "proxy_openai" \
-        --extra "rag" \
         --extra "storage_chromadb" \
         --extra "gyras" \
         --extra "storage_oss2" \
@@ -246,7 +245,6 @@ if [ -f "uv.lock" ] && [ "\${GYRA_NO_SYNC:-}" != "1" ]; then
     echo -e "\033[34m[Gyra]\033[0m Checking dependencies..."
     uv sync --all-packages --frozen \\
         --extra "proxy_openai" \\
-        --extra "rag" \\
         --extra "storage_chromadb" \\
         --extra "gyras" \\
         --extra "storage_oss2" \\
@@ -273,7 +271,6 @@ if [ -f "uv.lock" ] && [ "\${GYRA_NO_SYNC:-}" != "1" ]; then
     echo -e "\033[34m[Gyra]\033[0m Checking dependencies..."
     uv sync --all-packages --frozen \\
         --extra "proxy_openai" \\
-        --extra "rag" \\
         --extra "storage_chromadb" \\
         --extra "gyras" \\
         --extra "storage_oss2" \\

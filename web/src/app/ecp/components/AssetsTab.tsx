@@ -6,6 +6,7 @@ import {
   EcpReadiness,
   deleteEcpAsset,
   generateEcpProposals,
+  getEcpProposalTask,
   getEcpReadiness,
   listEcpAssets,
   registerEcpAsset,
@@ -26,7 +27,7 @@ import {
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { Alert, App, Button, Input, Modal, Popconfirm, Select, Space, Spin } from 'antd';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import DatabaseAddModal from '@/app/database/components/DatabaseAddModal';
 
@@ -225,6 +226,50 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
   const [newSpaceSlug, setNewSpaceSlug] = useState('');
   const [creatingSpace, setCreatingSpace] = useState(false);
 
+  // 异步提案任务轮询计时器(卸载时清理)。
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(
+    () => () => {
+      if (pollTimer.current) clearInterval(pollTimer.current);
+    },
+    [],
+  );
+
+  // 提交后轮询任务状态直到终态,返回最终任务记录(加载中更新顶部进度条文案)。
+  const waitForTask = useCallback(
+    async (taskId: string, label: string): Promise<any> => {
+      return new Promise(resolve => {
+        const done = (res: any) => {
+          if (pollTimer.current) clearInterval(pollTimer.current);
+          setGenTask(null);
+          resolve(res);
+        };
+        const tick = async () => {
+          const [err, res] = await apiInterceptors(getEcpProposalTask(taskId));
+          if (err) {
+            done({ error: err.message || '任务查询失败' });
+            return;
+          }
+          if (
+            res?.status === 'completed' ||
+            res?.status === 'failed' ||
+            res?.status === 'timeout' ||
+            res?.status === 'cancelled'
+          ) {
+            done(res);
+            return;
+          }
+          setGenTask({
+            label: `${label}（${res?.status === 'running' ? '生成中' : '排队中'}，可能需数分钟…）`,
+          });
+        };
+        tick();
+        pollTimer.current = setInterval(tick, 2000);
+      });
+    },
+    [],
+  );
+
   const { data: assets, loading, refresh } = useRequest(
     async () => {
       const [err, res] = await apiInterceptors(
@@ -336,7 +381,8 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
       // 立即关闭弹窗,不再让卡片/弹窗原地转圈等待,改为页面顶部进度条展示进展
       setGenAsset(null);
       setDomainHint(undefined);
-      setGenTask({ label: `正在为数据源 ${asset.ref_id} 生成语义提案…` });
+      const label = `正在为数据源 ${asset.ref_id} 生成语义提案…`;
+      setGenTask({ label });
       const [err, res] = await apiInterceptors(
         generateEcpProposals({
           datasource_id: Number(asset.ref_id),
@@ -344,14 +390,34 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
           domain_hint: hint || undefined,
         }),
       );
-      setGenTask(null);
       if (err) {
-        message.error(`生成提案失败：${err.message || err}`);
+        setGenTask(null);
+        message.error(`提交生成失败：${err.message || err}`);
         return;
       }
+      if (!res?.task_id) {
+        setGenTask(null);
+        message.error('提交生成失败：未返回任务 ID');
+        return;
+      }
+      const task = await waitForTask(res.task_id, label);
+      if (task?.error) {
+        message.error(`生成提案失败：${task.error}`);
+        return;
+      }
+      if (task?.status !== 'completed') {
+        message.error(
+          task?.status === 'failed'
+            ? `生成提案失败：${task?.error || task?.result_preview || '未知原因'}`
+            : `生成提案未完成：${task?.status}`,
+        );
+        return;
+      }
+      const art = task?.detail?.artifact ?? {};
       message.success(
-        `提案完成：处理 ${res?.tables_processed ?? 0} 张表，生成 ${res?.proposals_created ?? 0} 条提案，请到收件箱确认`,
+        `提案完成：处理 ${art.tables_processed ?? 0} 张表，生成 ${art.proposals_created ?? 0} 条提案，请到收件箱确认`,
       );
+      refresh();
     },
     { manual: true },
   );
@@ -363,25 +429,46 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
     async () => {
       const hint = domainHint;
       setDomainHint(undefined);
-      setGenTask({ label: '正在为所有资产生成语义提案…' });
+      const label = '正在为所有资产生成语义提案…';
+      setGenTask({ label });
       const [err, res] = await apiInterceptors(
         generateEcpProposals({
           workspace_id: workspaceId,
           domain_hint: hint || undefined,
         }),
       );
-      setGenTask(null);
       if (err) {
-        message.error(`生成提案失败：${err.message || err}`);
+        setGenTask(null);
+        message.error(`提交生成失败：${err.message || err}`);
         return;
       }
-      if ((res?.errors ?? []).length > 0 && !res?.proposals_created) {
-        message.warning(`提案未生成：${res?.errors?.[0] ?? '未知原因'}`);
+      if (!res?.task_id) {
+        setGenTask(null);
+        message.error('提交生成失败：未返回任务 ID');
+        return;
+      }
+      const task = await waitForTask(res.task_id, label);
+      if (task?.error) {
+        message.error(`生成提案失败：${task.error}`);
+        return;
+      }
+      if (task?.status !== 'completed') {
+        message.error(
+          task?.status === 'failed'
+            ? `生成提案失败：${task?.error || '未知原因'}`
+            : `生成提案未完成：${task?.status}`,
+        );
+        return;
+      }
+      const art = task?.detail?.artifact ?? {};
+      if ((art.errors ?? []).length > 0 && !art.proposals_created) {
+        message.warning(`提案未生成：${art.errors?.[0] ?? '未知原因'}`);
         return;
       }
       message.success(
-        `工作空间级提案完成：生成 ${res?.proposals_created ?? 0} 条提案，请到收件箱确认`,
+        `工作空间级提案完成：生成 ${art.proposals_created ?? 0} 条提案，请到收件箱确认`,
       );
+      refresh();
     },
     { manual: true },
   );

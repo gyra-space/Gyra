@@ -107,6 +107,23 @@ const TAB_CLASS: Record<TaskTabKey, string> = {
   failed: 'ws-rail-tab--failed',
 };
 
+/**
+ * 取可展示的更新时间:按字段优先级取第一个非空值。
+ * 字段全部缺失时返回空串,而不是强造 `new Date().toISOString()`——
+ * 否则每个"缺时间"的条目都会渲染成同一个"当前时间",导致列表里所有任务时间看起来一模一样。
+ */
+function itemTime(...fields: any[]): string {
+  for (const f of fields) {
+    if (f) return String(f);
+  }
+  return '';
+}
+
+/** 空串(缺失时间)显示为占位符,避免 dayjs 解析空串产生 "Invalid Date"。 */
+function fmtTime(iso: string): string {
+  return iso ? dayjs(iso).format('MM-DD HH:mm') : '—';
+}
+
 /** 介入 question -> 展示文本(string / {question|message|summary} / JSON 兜底) */
 function questionToText(q: any): string {
   if (!q) return '';
@@ -324,7 +341,7 @@ export function SceneTaskRail({
       kind: 'task' as const,
       raw: t,
       interventions: interventionsByTask.get(t.id) || [],
-      updatedAt: t.gmt_modified || t.gmt_created || t.updated_at || new Date().toISOString(),
+      updatedAt: itemTime(t.gmt_modified, t.gmt_created, t.updated_at),
     })),
     [tasks, interventionsByTask],
   );
@@ -336,7 +353,7 @@ export function SceneTaskRail({
       .map((i) => ({
         kind: 'orphan-intervention' as const,
         raw: i,
-        updatedAt: i.updated_at || i.created_at || i.gmt_modified || new Date().toISOString(),
+        updatedAt: itemTime(i.updated_at, i.created_at, i.gmt_modified, i.gmt_created),
       })),
     [interventions, tasks],
   );
@@ -350,14 +367,15 @@ export function SceneTaskRail({
       .map((c) => ({
         kind: 'lobby-conversation' as const,
         raw: c,
-        updatedAt: c.gmt_modified || c.gmt_created || new Date().toISOString(),
+        updatedAt: itemTime(c.gmt_modified, c.gmt_created),
       })),
     [conversations],
   );
 
+  const ts = (s: string) => (s ? new Date(s).getTime() : 0);
   const merged = useMemo(
     () => [...taskItems, ...lobbyConvItems, ...orphanItems].sort(
-      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      (a, b) => ts(b.updatedAt) - ts(a.updatedAt),
     ),
     [taskItems, lobbyConvItems, orphanItems],
   );
@@ -679,7 +697,7 @@ export function SceneTaskRail({
                   <span className="ws-rail-meta-pb">无关联任务</span>
                 </div>
                 <div className="ws-rail-foot">
-                  <span className="ws-rail-tm">{dayjs(it.updatedAt).format('MM-DD HH:mm')}</span>
+                  <span className="ws-rail-tm">{fmtTime(it.updatedAt)}</span>
                   <span className="ws-rail-meta-sep">·</span>
                   <span className="ws-rail-src">人工介入</span>
                 </div>
@@ -707,7 +725,7 @@ export function SceneTaskRail({
                   {isCurrent && <span className="ws-rail-conv-cur">当前</span>}
                 </div>
                 <div className="ws-rail-foot">
-                  <span className="ws-rail-tm">{dayjs(it.updatedAt).format('MM-DD HH:mm')}</span>
+                  <span className="ws-rail-tm">{fmtTime(it.updatedAt)}</span>
                   <span className="ws-rail-meta-sep">·</span>
                   <span className="ws-rail-src">大厅会话</span>
                 </div>
@@ -748,7 +766,7 @@ export function SceneTaskRail({
                 )}
               </div>
               <div className="ws-rail-foot">
-                <span className="ws-rail-tm">{dayjs(it.updatedAt).format('MM-DD HH:mm')}</span>
+                <span className="ws-rail-tm">{fmtTime(it.updatedAt)}</span>
                 <span className="ws-rail-meta-sep">·</span>
                 <span className="ws-rail-src">{triggerLabel(t)}</span>
                 <ElapsedTimer task={t} />

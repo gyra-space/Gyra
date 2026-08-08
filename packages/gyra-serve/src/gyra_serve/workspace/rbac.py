@@ -54,6 +54,7 @@ class Permission(str, Enum):
     COACH = "coach"
     ESCALATE = "escalate"
     MANAGE_RESOURCE = "manage_resource"  # 维护空间资源(含 llm_model 空间专属模型/token)
+    DELETE_WORKSPACE = "delete_workspace"  # 释放(软删除)空间 —— 危险操作,仅空间拥有者
 
 
 ROLE_PERMISSIONS: Dict[Role, set] = {
