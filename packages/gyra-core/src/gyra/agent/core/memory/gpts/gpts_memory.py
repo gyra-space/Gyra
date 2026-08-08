@@ -1527,7 +1527,8 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
         if not cache.message_ids:
             await self.load_persistent_memory(conv_id)
         messages = cache.get_messages_ordered()
-        messages.sort(key=lambda x: x.rounds)  # 若 append 时保序，可移除此行
+        # 按 gmt_create 排序：rounds 在异步恢复后会重置导致乱序，需按时序展示
+        messages.sort(key=lambda x: x.created_at)
         return messages
 
     async def get_messages_with_work_entries(self, conv_id: str) -> List[GptsMessage]:
@@ -1539,7 +1540,8 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
         if not cache.message_ids:
             await self.load_persistent_memory(conv_id)
         messages = cache.get_messages_ordered()
-        messages.sort(key=lambda x: x.rounds)
+        # 按 gmt_create 排序：rounds 在异步恢复后会重置导致乱序，需按时序展示
+        messages.sort(key=lambda x: x.created_at)
 
         for msg in messages:
             if (

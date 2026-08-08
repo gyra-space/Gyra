@@ -117,6 +117,8 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
     仅覆写 running_window 部分为 manus-right-panel VIS tag。
     """
 
+    include_user_messages = True  # 保留 Human 消息，使异步任务完成通知可见
+
     MAX_STEPS_IN_MAP = 100
 
     def __init__(self, paths: Optional[str] = None, **kwargs):
