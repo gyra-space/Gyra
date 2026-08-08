@@ -1,4 +1,4 @@
-import { ChartData, ChatHistoryResponse, IChatDialogueSchema, UserChatContent } from '@/types/chat';
+import { ChartData, ChatHistoryResponse, CompressionSegmentVo, IChatDialogueSchema, UserChatContent } from '@/types/chat';
 import { IApp } from '@/types/app';
 import { createContext } from 'react';
 import type { DockWidget } from '@/components/chat/dock/dock-types';
@@ -17,6 +17,7 @@ export interface SelectedSkill {
 
 interface ChatContentProps {
   history: ChatHistoryResponse;
+  compressionSegments?: CompressionSegmentVo[];
   replyLoading: boolean;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   canAbort: boolean;

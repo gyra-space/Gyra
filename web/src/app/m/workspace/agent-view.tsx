@@ -1,18 +1,47 @@
 'use client';
 
 import { useMemo, useState, type KeyboardEvent } from 'react';
+import { Drawer, Tag } from 'antd';
+import { GPTVis } from '@antv/gpt-vis';
 import { AgentWorkspaceRenderer } from '@/app/workspaces/detail/agent-workspace-renderer';
 import { useSceneAgentChat } from '@/app/workspaces/detail/use-scene-agent-chat';
 import { useUserInput } from '@/hooks/use-user-input';
 import { formatTokens } from '@/types/context-metrics';
-import type { WorkspaceDeliverableFile } from '@/app/workspaces/detail/agent-workspace-types';
-import { ArrowUpOutlined, BorderOutlined, ReloadOutlined } from '@ant-design/icons';
+import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
+import type {
+  WorkspaceDeliverableFile,
+  WorkspaceExecutionStep,
+} from '@/app/workspaces/detail/agent-workspace-types';
+import {
+  ArrowUpOutlined,
+  BorderOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
+
+const STEP_STATUS_COLOR: Record<string, string> = {
+  running: 'processing',
+  done: 'success',
+  failed: 'error',
+};
+
+/** 步骤执行结果 markdown 渲染(与桌面 preview 一致) */
+function StepMarkdown({ text }: { text: string }) {
+  return (
+    // @ts-ignore rehypePlugins type mismatch is pre-existing repo-wide (see chat-detail-content.tsx)
+    <GPTVis components={markdownComponents} {...markdownPlugins}>
+      {preprocessLaTeX(text)}
+    </GPTVis>
+  );
+}
 
 export interface MobileAgentViewProps {
   convUid?: string;
   workspaceId?: number | string;
   appCode?: string;
   taskId?: number | string;
+  /** 开启新会话入口(由空间页创建新会话并切换当前会话) */
+  onNewSession?: () => void;
 }
 
 /**
@@ -20,9 +49,10 @@ export interface MobileAgentViewProps {
  * 复用桌面场景空间的 SSE 执行流(useSceneAgentChat)与渲染器(AgentWorkspaceRenderer),
  * 输入条使用移动端专属轻量输入条(避免桌面 AgentWorkspaceInput 的固定宽度布局破坏窄屏)。
  */
-export function MobileAgentView({ convUid, workspaceId, appCode, taskId }: MobileAgentViewProps) {
+export function MobileAgentView({ convUid, workspaceId, appCode, taskId, onNewSession }: MobileAgentViewProps) {
   const { submitUserInput } = useUserInput(convUid);
   const [text, setText] = useState('');
+  const [selectedStep, setSelectedStep] = useState<WorkspaceExecutionStep | null>(null);
 
   const { workspaceView, loading, error, lastInput, convState, usageMetrics, send, abort } =
     useSceneAgentChat({ convUid, appCode, workspaceId, taskId });
@@ -65,13 +95,30 @@ export function MobileAgentView({ convUid, workspaceId, appCode, taskId }: Mobil
 
   return (
     <div className="ms-agent">
+      {onNewSession && (
+        <div className="ms-agent__toolbar">
+          <span className="ms-agent__toolbar-title">Agent 对话</span>
+          <button
+            type="button"
+            className="ms-agent__toolbar-new"
+            onClick={onNewSession}
+            aria-label="开启新会话"
+          >
+            <PlusOutlined /> 新会话
+          </button>
+        </div>
+      )}
       <div className="ms-agent__feed">
         {!convUid ? (
           <div className="ms-empty">
             <div className="ms-empty__title">会话加载中…</div>
           </div>
         ) : (
-          <AgentWorkspaceRenderer view={workspaceView} onDeliverableClick={handleOpenFile} />
+          <AgentWorkspaceRenderer
+            view={workspaceView}
+            onStepClick={setSelectedStep}
+            onDeliverableClick={handleOpenFile}
+          />
         )}
         {error && (
           <div className="ms-muted" style={{ marginTop: 12, color: 'var(--ms-red)' }}>
@@ -129,6 +176,54 @@ export function MobileAgentView({ convUid, workspaceId, appCode, taskId }: Mobil
           </div>
         </div>
       </div>
+
+      {/* 工具步骤详情:点击步骤行弹出,展示输入参数与执行结果 */}
+      <Drawer
+        title={selectedStep?.title || '步骤详情'}
+        placement="bottom"
+        height="min(72dvh, 560px)"
+        open={!!selectedStep}
+        onClose={() => setSelectedStep(null)}
+        destroyOnClose
+        className="ms-step-drawer"
+      >
+        {selectedStep && (
+          <div className="ms-step-detail">
+            <div className="ms-step-detail__head">
+              {selectedStep.action && <Tag color="geekblue">{selectedStep.action}</Tag>}
+              <Tag color={STEP_STATUS_COLOR[selectedStep.status]}>
+                {selectedStep.status === 'running'
+                  ? '执行中'
+                  : selectedStep.status === 'failed'
+                    ? '执行失败'
+                    : '已完成'}
+              </Tag>
+            </div>
+            {selectedStep.action_input && (
+              <section className="ms-step-detail__section">
+                <div className="ms-step-detail__section-title">输入参数</div>
+                <pre className="ms-step-detail__json">
+                  {JSON.stringify(selectedStep.action_input, null, 2)}
+                </pre>
+              </section>
+            )}
+            {selectedStep.output ? (
+              <section className="ms-step-detail__section">
+                <div className="ms-step-detail__section-title">
+                  {selectedStep.type === 'thinking' ? '思考内容' : '执行结果'}
+                </div>
+                <div className="ms-step-detail__markdown">
+                  <StepMarkdown text={selectedStep.output} />
+                </div>
+              </section>
+            ) : (
+              !selectedStep.action_input && (
+                <div className="ms-step-detail__empty">该步骤暂无结果内容</div>
+              )
+            )}
+          </div>
+        )}
+      </Drawer>
     </div>
   );
 }

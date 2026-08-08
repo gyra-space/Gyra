@@ -1,6 +1,6 @@
 "use client"
-import { apiInterceptors, getAppInfo, getChatHistory, getDialogueList, newDialogue, queryChatStatus } from '@/client/api';
-import { ChartData, ChatHistoryResponse, IChatDialogueSchema, UserChatContent } from '@/types/chat';
+import { apiInterceptors, getAppInfo, getChatHistory, getCompressionSegments, getDialogueList, newDialogue, queryChatStatus } from '@/client/api';
+import { ChartData, ChatHistoryResponse, CompressionSegmentVo, IChatDialogueSchema, UserChatContent } from '@/types/chat';
 import { IApp } from '@/types/app';
 import React, { forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useAsyncEffect, useDebounceFn, useRequest } from 'ahooks';
@@ -78,6 +78,7 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
   const scrollRef = useRef<HTMLDivElement>(null);
   const order = useRef<number>(1);
   const [history, setHistory] = useState<ChatHistoryResponse>([]);
+  const [compressionSegments, setCompressionSegments] = useState<CompressionSegmentVo[]>([]);
   const [chartsData] = useState<Array<ChartData>>();
   const [replyLoading, setReplyLoading] = useState<boolean>(false);
   const [canAbort, setCanAbort] = useState<boolean>(false);
@@ -288,6 +289,18 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
     }
   }, [currentVisRender]);
 
+  // 获取上下文压缩段（压缩点组件用）
+  const { run: getSegments } = useRequest(
+    async () => await apiInterceptors(getCompressionSegments(chatId)),
+    {
+      manual: true,
+      onSuccess: data => {
+        const [, res] = data;
+        setCompressionSegments(res || []);
+      },
+    },
+  );
+
   // 获取会话历史记录
   const {
     run: getHistory,
@@ -302,6 +315,7 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
         order.current = viewList[viewList.length - 1].order + 1;
       }
       setHistory(res || []);
+      getSegments();
       // 实时刷新最新轮 vis_final,覆盖最新一条 view 消息(DB 预存可能因 convert 演进不一致)
       if (chatId && res && res.some(m => m.role === 'view')) {
         refreshLatestView(chatId);
@@ -695,6 +709,7 @@ const sessionContent = (
       <ChatContentContext.Provider
         value={{
           history,
+          compressionSegments,
           replyLoading,
           scrollRef,
           canAbort,

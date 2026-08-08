@@ -1,7 +1,9 @@
 'use client';
 
 import ChatContent from "./chat-content";
+import CompressionPoint from "./compression-point";
 import { ChatContentContext } from "@/contexts";
+import { CompressionSegmentVo } from "@/types/chat";
 import { IChatDialogueMessageSchema } from "@/types/chat";
 import React, { memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useDetailPanel } from "./chat-detail-content";
@@ -27,7 +29,7 @@ const isMessageTooLarge = (msg: IChatDialogueMessageSchema): boolean => {
 
 const TaskChatContent: React.FC<TaskChatContentProps> = ({ ctrl }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { history, replyLoading, dockWidgets } = useContext(ChatContentContext);
+  const { history, compressionSegments, replyLoading, dockWidgets } = useContext(ChatContentContext);
 
   const { runningWindowData } = useDetailPanel(history);
   const [isRunningWindowVisible, setIsRunningWindowVisible] = useState(false);
@@ -44,6 +46,21 @@ const TaskChatContent: React.FC<TaskChatContentProps> = ({ ctrl }) => {
       key: `${item.role}_${item.order ?? index}`,
     }));
   }, [history]);
+
+  const compressionPoints = useMemo(() => {
+    const points: Record<number, CompressionSegmentVo> = {};
+    if (!compressionSegments || compressionSegments.length === 0) return points;
+    for (const seg of compressionSegments) {
+      const covered = new Set(seg.source_message_ids);
+      let lastIdx = -1;
+      for (let i = 0; i < showMessages.length; i++) {
+        const mid = showMessages[i].message_id;
+        if (mid && covered.has(mid)) lastIdx = i;
+      }
+      if (lastIdx >= 0) points[lastIdx] = seg;
+    }
+    return points;
+  }, [compressionSegments, showMessages]);
 
   const hasRunningWindowData = useMemo(() => {
     return !!(runningWindowData?.running_window || 
@@ -109,9 +126,12 @@ const TaskChatContent: React.FC<TaskChatContentProps> = ({ ctrl }) => {
           {hasMessages ? (
             <div className="w-full px-3 py-3">
               <div className="w-full space-y-2">
-                {showMessages.map((content) => (
+                {showMessages.map((content, index) => (
                   <div key={content.key} className="[content-visibility:auto] [contain-intrinsic-size:auto_200px]">
                     <ChatContent content={content} messages={showMessages} />
+                    {compressionPoints[index] && (
+                      <CompressionPoint segment={compressionPoints[index]} />
+                    )}
                   </div>
                 ))}
                 <div className="h-8" />

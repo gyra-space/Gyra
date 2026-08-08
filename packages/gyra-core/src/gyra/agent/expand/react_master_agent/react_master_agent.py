@@ -3776,6 +3776,48 @@ class ReActMasterAgent(ConversableAgent, Team):
                 f"WorkLogManager loaded: {len(self._work_log_manager.work_log)} entries"
             )
 
+    @staticmethod
+    def _build_engine_config():
+        """Build ContextEngine config with env-var overrides (defaults in CompressionConfig).
+
+        Env vars:
+        - GYRA_COMPRESS_THRESHOLD_RATIO (float, default 0.92): token ratio to trigger compression
+        - GYRA_COMPRESS_RETAIN_RATIO (float, default 0.30): retained-zone fraction of window
+        - GYRA_COMPRESS_MIN_INTERVAL_TURNS (int, default 3): min turns between compressions (anti-thrash)
+        - GYRA_COMPRESS_RETAIN_TOOL_RESULT_MAX_LENGTH (int, default 8000): retained tool result truncation
+        - GYRA_COMPRESS_MAX_SUMMARY_CHARS (int, default 1200): max summary chars
+        - GYRA_HISTORY_BUDGET_RATIO (float, default 0.85): history budget fraction of context_window
+        """
+        import os
+        from .context_engine import CompressionConfig, EngineConfig
+
+        def _f(name, default):
+            try:
+                v = os.getenv(name)
+                return float(v) if v is not None else default
+            except (TypeError, ValueError):
+                return default
+
+        def _i(name, default):
+            try:
+                v = os.getenv(name)
+                return int(v) if v is not None else default
+            except (TypeError, ValueError):
+                return default
+
+        return EngineConfig(
+            compression=CompressionConfig(
+                threshold_ratio=_f("GYRA_COMPRESS_THRESHOLD_RATIO", 0.92),
+                retain_ratio=_f("GYRA_COMPRESS_RETAIN_RATIO", 0.30),
+                min_interval_turns=_i("GYRA_COMPRESS_MIN_INTERVAL_TURNS", 3),
+                retain_tool_result_max_length=_i(
+                    "GYRA_COMPRESS_RETAIN_TOOL_RESULT_MAX_LENGTH", 8000
+                ),
+                max_summary_chars=_i("GYRA_COMPRESS_MAX_SUMMARY_CHARS", 1200),
+            ),
+            history_budget_ratio=_f("GYRA_HISTORY_BUDGET_RATIO", 0.85),
+        )
+
     async def _ensure_context_engine(self):
         """确保 ContextEngine 已初始化（统一上下文管理引擎）。
 
@@ -3793,14 +3835,14 @@ class ReActMasterAgent(ConversableAgent, Team):
             if self._context_engine_initialized and self._context_engine:
                 return self._context_engine
             try:
-                from .context_engine import ContextEngine, EngineConfig
+                from .context_engine import ContextEngine
                 from .cold_persistence import DbCompressionPersistenceAdapter
                 from .engine_wiring import SystemEventAdapter, make_summarize_fn
                 from gyra.agent.core.usage_metric import count_tokens
 
                 llm_client = getattr(self, "llm_client", None)
                 self._context_engine = ContextEngine(
-                    config=EngineConfig(),
+                    config=self._build_engine_config(),
                     compression_persistence=DbCompressionPersistenceAdapter(),
                     summarize_fn=make_summarize_fn(llm_client),
                     token_counter=count_tokens,

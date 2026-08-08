@@ -2,11 +2,12 @@
 
 import UnifiedChatInput from '@/components/chat/input/unified-chat-input';
 import { ChatContentContext } from '@/contexts';
-import { IChatDialogueMessageSchema } from '@/types/chat';
+import { CompressionSegmentVo, IChatDialogueMessageSchema } from '@/types/chat';
 import React, { memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import ChatHeader from '../header/chat-header';
 import DockPanel from '@/components/chat/dock/dock-panel';
 import ChatContent from './chat-content';
+import CompressionPoint from './compression-point';
 import { TaskCreatedCard, TaskCreatedCardPayload } from '../task-created-card';
 
 interface BasicChatContentProps {
@@ -36,7 +37,7 @@ function getTaskCreatedPayload(item: IChatDialogueMessageSchema): TaskCreatedCar
 
 const BasicChatContent: React.FC<BasicChatContentProps> = ({ ctrl, workspaceId }) => {
   const scrollableRef = useRef<HTMLDivElement>(null);
-  const { history, replyLoading, dockWidgets } = useContext(ChatContentContext);
+  const { history, compressionSegments, replyLoading, dockWidgets } = useContext(ChatContentContext);
   const [jsonModalOpen, setJsonModalOpen] = useState(false);
   const [jsonValue, setJsonValue] = useState<string>('');
 
@@ -51,6 +52,22 @@ const BasicChatContent: React.FC<BasicChatContentProps> = ({ ctrl, workspaceId }
       key: `${item.role}_${item.order ?? index}`,
     }));
   }, [history]);
+
+  // 压缩点定位：每个压缩段覆盖的最后一条可见消息的 index -> segment
+  const compressionPoints = useMemo(() => {
+    const points: Record<number, CompressionSegmentVo> = {};
+    if (!compressionSegments || compressionSegments.length === 0) return points;
+    for (const seg of compressionSegments) {
+      const covered = new Set(seg.source_message_ids);
+      let lastIdx = -1;
+      for (let i = 0; i < showMessages.length; i++) {
+        const mid = showMessages[i].message_id;
+        if (mid && covered.has(mid)) lastIdx = i;
+      }
+      if (lastIdx >= 0) points[lastIdx] = seg;
+    }
+    return points;
+  }, [compressionSegments, showMessages]);
 
   useEffect(() => {
     setTimeout(() => {
@@ -73,7 +90,7 @@ const BasicChatContent: React.FC<BasicChatContentProps> = ({ ctrl, workspaceId }
         {hasMessages && (
           <div className="w-full px-3 py-4">
             <div className="w-full">
-              {showMessages.map((content) => {
+              {showMessages.map((content, index) => {
                 const taskPayload = workspaceId ? getTaskCreatedPayload(content) : null;
                 if (taskPayload) {
                   return (
@@ -84,6 +101,9 @@ const BasicChatContent: React.FC<BasicChatContentProps> = ({ ctrl, workspaceId }
                           window.dispatchEvent(new CustomEvent('workspace:view-task', { detail: { taskId } }));
                         }}
                       />
+                      {compressionPoints[index] && (
+                        <CompressionPoint segment={compressionPoints[index]} />
+                      )}
                     </div>
                   );
                 }
@@ -97,6 +117,9 @@ const BasicChatContent: React.FC<BasicChatContentProps> = ({ ctrl, workspaceId }
                       }}
                       messages={showMessages}
                     />
+                    {compressionPoints[index] && (
+                      <CompressionPoint segment={compressionPoints[index]} />
+                    )}
                   </div>
                 );
               })}

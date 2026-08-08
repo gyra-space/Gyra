@@ -484,6 +484,78 @@ body {
 .ms-agent-composer__send:disabled { background: var(--ms-surface-2); color: var(--ms-text-3); cursor: not-allowed; }
 .ms-agent-composer__send--stop { background: rgba(248, 113, 113, 0.2); color: var(--ms-red); }
 
+/* ── Agent 对话工具条:顶部固定"新会话"入口,避免空态大段空白 ── */
+.ms-agent__toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--ms-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--ms-border);
+}
+.ms-agent__toolbar-title { font-size: 13px; font-weight: 600; color: var(--ms-text); }
+.ms-agent__toolbar-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ms-brand);
+  background: var(--ms-brand-soft);
+  border: 1px solid var(--ms-brand-soft);
+  border-radius: 999px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.ms-agent__toolbar-new:active { transform: scale(0.94); opacity: 0.85; }
+
+/* ── 工具步骤详情抽屉 ── */
+.ms-step-detail { display: flex; flex-direction: column; gap: 14px; }
+.ms-step-detail__head { display: flex; flex-wrap: wrap; gap: 8px; }
+.ms-step-detail__section { min-width: 0; }
+.ms-step-detail__section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ms-text-2);
+  margin-bottom: 8px;
+}
+.ms-step-detail__json {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--ms-surface-2);
+  border: 1px solid var(--ms-border);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ms-text);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.ms-step-detail__markdown {
+  min-width: 0;
+  max-width: 100%;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ms-text);
+}
+.ms-step-detail__markdown pre,
+.ms-step-detail__markdown code { max-width: 100%; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+.ms-step-detail__markdown img { max-width: 100%; height: auto; }
+.ms-step-detail__markdown table { display: block; max-width: 100%; overflow-x: auto; }
+.ms-step-detail__empty {
+  font-size: 13px;
+  color: var(--ms-text-3);
+  text-align: center;
+  padding: 24px 0;
+}
+
 /* ── Agent 渲染器窄屏适配:防桌面样式溢出撑破布局 ── */
 /* 桌面 AgentWorkspaceRenderer 的 ws-* 样式依赖 --ws-* 变量,而该组变量只在桌面 .ws-page 上定义。
    移动端 /m 无 .ws-page 祖先,变量未定义会让工具步骤/思考文本回退到 body 的深色文字,在深空底上看不见。

@@ -1055,6 +1055,17 @@
   overflow-x: auto;
 }
 
+/* 中间容器 ask_user 只读提示:确认卡片在 Agent 空间 feed,此处仅提示 */
+.ws-preview__ask-note {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ws-ink-muted, #6b7280);
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
 /* 空态引导:图标 tile + 标题 + 提示 */
 .ws-agent-renderer__empty {
   display: flex;

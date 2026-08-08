@@ -102,12 +102,28 @@ export type IChatDialogueMessageSchema = {
   role: 'human' | 'view' | 'system' | 'ai';
   context: string;
   order: number;
+  message_id?: string; // gpts message_id (uuid), for matching compression-segment boundaries
   time_stamp: number | string | null;
   model_name: string;
   retry?: boolean;
   thinking?: boolean;
   outing?: boolean;
   feedback?: Record<string, any>;
+};
+
+/** 上下文压缩段（GET /compression/segments 返回）*/
+export type CompressionSegmentVo = {
+  id: number;
+  session_id: string;
+  conv_id: string;
+  segment_index: number; // compression sequence (1,2,3...)
+  boundary_message_id: string | null; // last covered message_id (uuid)
+  prev_segment_id: number | null;
+  summary: string | null; // compressed summary content
+  source_message_ids: string[]; // covered original message_ids
+  original_tokens: number;
+  compressed_tokens: number;
+  degraded: boolean;
 };
 
 export type ModelType =

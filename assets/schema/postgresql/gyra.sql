@@ -1,7 +1,7 @@
 -- ============================================================
 -- PostgreSQL DDL Script for Gyra
 -- Version: 0.3.0
--- Generated: 2026-08-08T12:30:25.355904
+-- Generated: 2026-08-08T16:10:50.972587
 -- ============================================================
 
 -- Table: chat_history
@@ -57,8 +57,8 @@ CREATE TABLE IF NOT EXISTS "server_app_artifact" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_artifact_task_id" ON "server_app_artifact" ("task_id");
 CREATE INDEX "ix_server_app_artifact_workspace_id" ON "server_app_artifact" ("workspace_id");
+CREATE INDEX "ix_server_app_artifact_task_id" ON "server_app_artifact" ("task_id");
 
 -- Table: server_app_artifact_version
 CREATE TABLE IF NOT EXISTS "server_app_artifact_version" (
@@ -143,11 +143,11 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_flow" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_uid" UNIQUE ("uid")
 );
+CREATE INDEX "ix_gyra_serve_flow_sys_code" ON "gyra_serve_flow" ("sys_code");
+CREATE INDEX "ix_gyra_serve_flow_uid" ON "gyra_serve_flow" ("uid");
 CREATE INDEX "ix_gyra_serve_flow_dag_id" ON "gyra_serve_flow" ("dag_id");
 CREATE INDEX "ix_gyra_serve_flow_name" ON "gyra_serve_flow" ("name");
 CREATE INDEX "ix_gyra_serve_flow_user_name" ON "gyra_serve_flow" ("user_name");
-CREATE INDEX "ix_gyra_serve_flow_uid" ON "gyra_serve_flow" ("uid");
-CREATE INDEX "ix_gyra_serve_flow_sys_code" ON "gyra_serve_flow" ("sys_code");
 
 -- Table: gyra_serve_variables
 CREATE TABLE IF NOT EXISTS "gyra_serve_variables" (
@@ -170,10 +170,10 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_variables" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
+CREATE INDEX "ix_gyra_serve_variables_key_info" ON "gyra_serve_variables" ("key_info");
 CREATE INDEX "ix_gyra_serve_variables_sys_code" ON "gyra_serve_variables" ("sys_code");
 CREATE INDEX "ix_gyra_serve_variables_name" ON "gyra_serve_variables" ("name");
 CREATE INDEX "ix_gyra_serve_variables_user_name" ON "gyra_serve_variables" ("user_name");
-CREATE INDEX "ix_gyra_serve_variables_key_info" ON "gyra_serve_variables" ("key_info");
 
 -- Table: connect_config
 CREATE TABLE IF NOT EXISTS "connect_config" (
@@ -196,10 +196,10 @@ CREATE TABLE IF NOT EXISTS "connect_config" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_db" UNIQUE ("db_name")
 );
-CREATE INDEX "ix_connect_config_user_id" ON "connect_config" ("user_id");
 CREATE INDEX "ix_connect_config_sys_code" ON "connect_config" ("sys_code");
-CREATE INDEX "idx_q_db_type" ON "connect_config" ("db_type");
 CREATE INDEX "idx_q_owner_workspace" ON "connect_config" ("owner_workspace_id");
+CREATE INDEX "idx_q_db_type" ON "connect_config" ("db_type");
+CREATE INDEX "ix_connect_config_user_id" ON "connect_config" ("user_id");
 CREATE INDEX "ix_connect_config_user_name" ON "connect_config" ("user_name");
 
 -- Table: db_spec

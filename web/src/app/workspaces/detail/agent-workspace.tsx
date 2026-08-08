@@ -29,6 +29,8 @@ export interface AgentWorkspaceProps {
   onTaskClick?: (taskId: number) => void;
   /** 点击异步子 agent 卡片:在中间容器内联展开子会话 */
   onSubagentClick?: (subConvId: string) => void;
+  /** ask_user 交互确认后续跑 Agent 对话(复用同一 conv_uid 恢复 WAITING 会话) */
+  onInteractionResume?: (userMessage: string) => void;
   onWorkspaceEvent?: (event: WorkspaceEvent) => void;
   /** 用户在 Agent 空间提交任务、开始对话时触发(外层据此折叠中间内容区) */
   onConversationStart?: () => void;
@@ -52,6 +54,7 @@ export function AgentWorkspace({
   onDeliverableClick,
   onTaskClick,
   onSubagentClick,
+  onInteractionResume: onInteractionResumeProp,
   onWorkspaceEvent,
   onConversationStart,
   inputRef: inputRefProp,
@@ -81,6 +84,18 @@ export function AgentWorkspace({
   const running = loading || convState === 'RUNNING';
   // 运行中提交作为"补充输入"投递到后端队列(不开新 SSE 流,不中止当前生成)
   const { submitUserInput } = useUserInput(convUid);
+
+  // ask_user 交互确认后续跑:复用同一 conv_uid 发一条新消息,后端
+  // `_initialize_agent_conversation` 检测到 WAITING 会话后恢复 Agent loop。
+  // 外层可传自定义 onInteractionResume(如带 original_message_id 做关联),缺省走 send。
+  const resumeInteraction = (userMessage: string) => {
+    if (onInteractionResumeProp) {
+      onInteractionResumeProp(userMessage);
+      return;
+    }
+    if (!convUid || !userMessage.trim()) return;
+    send({ text: userMessage });
+  };
 
   return (
     <div className="ws-agent-workspace">
@@ -151,6 +166,7 @@ export function AgentWorkspace({
               onDeliverableClick={onDeliverableClick}
               onTaskClick={onTaskClick}
               onSubagentClick={onSubagentClick}
+              onInteractionResume={resumeInteraction}
             />
           )}
         </div>

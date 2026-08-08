@@ -14,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     and_,
     desc,
+    func,
     or_,
 )
 
@@ -432,9 +433,32 @@ class WorkspaceDao(BaseDao[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]
                     WorkspaceEntity.owner_user_id == filter_request.user_id,
                 ))
             entities = query.order_by(desc(WorkspaceEntity.gmt_modified)).all()
-            return [self.to_response(e) for e in entities]
+            return self._with_member_counts(session, entities)
         finally:
             session.close()
+
+    def _with_member_counts(
+        self, session, entities: List[WorkspaceEntity]
+    ) -> List[WorkspaceResponse]:
+        """为列表聚合各空间成员数,避免对每个 workspace 触发 N+1 查询。"""
+        workspace_ids = [e.id for e in entities]
+        count_map: Dict[int, int] = {}
+        if workspace_ids:
+            subq = (
+                session.query(
+                    WorkspaceMemberEntity.workspace_id.label("wid"),
+                    func.count(WorkspaceMemberEntity.id).label("cnt"),
+                )
+                .filter(WorkspaceMemberEntity.workspace_id.in_(workspace_ids))
+                .group_by(WorkspaceMemberEntity.workspace_id)
+                .subquery()
+            )
+            rows = session.query(subq.c.wid, subq.c.cnt).all()
+            count_map = {wid: cnt for wid, cnt in rows}
+        return [
+            self.to_response(e, member_count=count_map.get(e.id, 0))
+            for e in entities
+        ]
 
 
 class WorkspaceMemberDao(BaseDao[WorkspaceMemberEntity, WorkspaceMemberRequest, WorkspaceMemberResponse]):

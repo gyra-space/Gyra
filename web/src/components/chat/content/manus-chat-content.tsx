@@ -1,8 +1,9 @@
 'use client';
 
 import ChatContent from './chat-content';
+import CompressionPoint from './compression-point';
 import { ChatContentContext } from '@/contexts';
-import { IChatDialogueMessageSchema } from '@/types/chat';
+import { CompressionSegmentVo, IChatDialogueMessageSchema } from '@/types/chat';
 import React, { memo, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import ChatHeader from '../header/chat-header';
 import UnifiedChatInput from '../input/unified-chat-input';
@@ -220,7 +221,7 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
   const searchParams = useSearchParams();
   const shareMode = (searchParams?.get('share_mode') as ShareMode) || null;
   const isSharedView = !!shareMode;
-  const { history, replyLoading, dockWidgets, appInfo, handleChat } = useContext(ChatContentContext);
+  const { history, compressionSegments, replyLoading, dockWidgets, appInfo, handleChat } = useContext(ChatContentContext);
   const [userClosedPanel, setUserClosedPanel] = useState(false);
   const [overrideRunningWindow, setOverrideRunningWindow] = useState<string | null>(null);
   // 状态事件 badge 数据(由 SystemEventsBridge 从消息流中桥接出来)
@@ -249,6 +250,21 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
       key: `${item.role}_${item.order ?? index}`,
     }));
   }, [history]);
+
+  const compressionPoints = useMemo(() => {
+    const points: Record<number, CompressionSegmentVo> = {};
+    if (!compressionSegments || compressionSegments.length === 0) return points;
+    for (const seg of compressionSegments) {
+      const covered = new Set(seg.source_message_ids);
+      let lastIdx = -1;
+      for (let i = 0; i < showMessages.length; i++) {
+        const mid = showMessages[i].message_id;
+        if (mid && covered.has(mid)) lastIdx = i;
+      }
+      if (lastIdx >= 0) points[lastIdx] = seg;
+    }
+    return points;
+  }, [compressionSegments, showMessages]);
 
   const { latestRunningWindow, latestHasData, fileRunningWindowMap, stepRunningWindowMap, isLazyLoading, metaWindow, latestActiveStepId } = useRunningWindows(showMessages);
 
@@ -430,11 +446,14 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
             {hasMessages ? (
               <div className={classNames("w-full px-4 py-3", !isRightPanelVisible && "max-w-[768px] mx-auto")}>
                 <div className="w-full space-y-1.5">
-                  {showMessages.map((content) => (
+                  {showMessages.map((content, index) => (
                     // content-visibility:auto 让浏览器跳过屏外消息的渲染,
                     // 长会话(200 条滑动窗口)下大幅降低布局/绘制成本
                     <div key={content.key} className="[content-visibility:auto] [contain-intrinsic-size:auto_200px] animate-rise">
                       <ChatContent content={content} messages={showMessages} compact />
+                      {compressionPoints[index] && (
+                        <CompressionPoint segment={compressionPoints[index]} />
+                      )}
                     </div>
                   ))}
                   <div className="h-4" />

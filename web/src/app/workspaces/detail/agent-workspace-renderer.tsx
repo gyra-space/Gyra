@@ -27,6 +27,7 @@ import { Tooltip } from 'antd';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
 import { transformFileUrl } from '@/utils';
 import VisSubagentBoard from '@/components/chat/chat-content-components/VisComponents/VisSubagentBoard';
+import { SceneAskUserCard, extractAskUserData } from './scene-ask-user-card';
 import type {
   WorkspaceDeliverableFile,
   WorkspaceExecutionStep,
@@ -468,9 +469,11 @@ export interface AgentWorkspaceRendererProps {
   onTaskClick?: (taskId: number) => void;
   /** 点击异步子 agent 卡片:在中间容器内联展开子会话(不传则默认新标签) */
   onSubagentClick?: (subConvId: string) => void;
+  /** ask_user 交互确认后续跑 Agent 对话(复用同一 conv_uid 恢复 WAITING 会话) */
+  onInteractionResume?: (userMessage: string) => void;
 }
 
-export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, onTaskClick, onSubagentClick }: AgentWorkspaceRendererProps) {
+export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, onTaskClick, onSubagentClick, onInteractionResume }: AgentWorkspaceRendererProps) {
   const deliverable_files = view.deliverable_files ?? [];
   const task_files = view.task_files ?? [];
   const hasDeliverables = deliverable_files.length > 0;
@@ -512,6 +515,11 @@ export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, 
         }
         if (step.type === 'task_created') {
           return <TaskCreatedCard key={step.id} step={step} onTaskClick={onTaskClick} />;
+        }
+        // ask_user 交互:直接把确认卡片渲染在 Agent 空间 feed 里(而非折叠成工具行),
+        // 用户可就地选择并续跑对话。数据在 step.output(drsk-confirm fence)。
+        if (onInteractionResume && extractAskUserData(step.output ?? step.vis)) {
+          return <SceneAskUserCard key={step.id} step={step} onResume={onInteractionResume} />;
         }
         return <ToolStepRow key={step.id} step={step} onStepClick={onStepClick} />;
       })}

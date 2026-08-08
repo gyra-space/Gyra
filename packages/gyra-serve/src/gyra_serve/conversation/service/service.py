@@ -465,12 +465,14 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                     unified_msg = UnifiedMessage.from_gpts_message(gpts_msg)
                     base_msg = unified_msg.to_base_message()
                     base_msg.round_index = msg_round
+                    base_msg.additional_kwargs["message_id"] = gpts_msg.message_id
                     base_messages.append(base_msg)
                 elif msg_round in view_messages_by_round:
                     # 有 chat_history 的 view 消息，使用完整的 VIS 数据
                     view_content = view_messages_by_round[msg_round]
                     base_msg = ViewMessage(content=view_content)
                     base_msg.round_index = msg_round
+                    base_msg.additional_kwargs["message_id"] = gpts_msg.message_id
                     base_messages.append(base_msg)
                 else:
                     # 没有 view 消息，尝试使用 action_report 的 view
@@ -478,6 +480,7 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                     if vis_content:
                         base_msg = AIMessage(content=vis_content)
                         base_msg.round_index = msg_round
+                        base_msg.additional_kwargs["message_id"] = gpts_msg.message_id
                         base_messages.append(base_msg)
 
             logger.info(
@@ -498,6 +501,7 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                         role=msg.type,
                         context=msg.content,
                         order=msg.round_index,
+                        message_id=msg.additional_kwargs.get("message_id"),
                         model_name=None,
                         feedback={},
                     )

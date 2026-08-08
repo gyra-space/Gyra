@@ -283,6 +283,32 @@ async def get_history_messages(con_uid: str, service: Service = Depends(get_serv
 
 
 @router.get(
+    "/compression/segments",
+    response_model=Result[List[Dict]],
+    dependencies=[Depends(check_api_key)],
+)
+async def get_compression_segments(con_uid: str):
+    """获取会话的上下文压缩段（前端在压缩边界渲染"压缩点"组件用）。
+
+    返回字段：segment_index(序号) / boundary_message_id(压缩边界, uuid message_id)
+    / summary(摘要正文) / source_message_ids(覆盖的原文 message_id 列表) 等。
+    """
+    try:
+        from gyra_serve.agent.db.gpts_cold_segment_db import GptsColdSegmentDao
+
+        # conv_uid 可能是 conv_id (uuid_N) 或 conv_session_id (uuid)，剥离 _N
+        if "_" in con_uid and con_uid.split("_")[-1].isdigit():
+            conv_session_id = con_uid.rsplit("_", 1)[0]
+        else:
+            conv_session_id = con_uid
+        segments = GptsColdSegmentDao().get_all_by_session(conv_session_id)
+        return Result.succ(segments)
+    except Exception as e:
+        logger.warning(f"Failed to get compression segments: {e}")
+        return Result.succ([])
+
+
+@router.get(
     "/{conv_id}/subagents",
     response_model=Result[List[Dict]],
     dependencies=[Depends(check_api_key)],

@@ -13,6 +13,7 @@ import { transformFileUrl } from '@/utils';
 import { Lobby } from './lobby';
 import { FlywheelWorkspace } from './flywheel';
 import { AgentWorkspaceRenderer } from './agent-workspace-renderer';
+import { extractAskUserData } from './scene-ask-user-card';
 import { parseWorkspaceView, deliverableFileToExhibit } from './parse-workspace-view';
 import { parseSceneAgentWorkspaceString } from './parse-scene-agent-workspace-string';
 import { ExhibitHost } from './lobby-exhibit';
@@ -488,6 +489,9 @@ function StepPreview({ step }: { step: any }) {
   const payload = step?.payload || {};
   const output = typeof payload.output === 'string' ? payload.output : null;
   const actionInput = payload.action_input;
+  // ask_user 交互:确认卡片已渲染在 Agent 空间 feed(可交互并能续跑对话),
+  // 此处避免再渲染一个无 ChatContentContext 的失效 VisConfirmCard,改为只读提示。
+  const askUserData = output ? extractAskUserData(output) : null;
   return (
     <div className="ws-preview">
       <div className="ws-preview__head">
@@ -501,14 +505,21 @@ function StepPreview({ step }: { step: any }) {
           <pre className="ws-preview__json">{JSON.stringify(actionInput, null, 2)}</pre>
         </section>
       )}
-      {output && (
+      {askUserData ? (
+        <section className="ws-preview__section">
+          <div className="ws-preview__section-title">待你确认</div>
+          <div className="ws-preview__ask-note">
+            Agent 正在等待你的确认，请在右侧 Agent 空间的确认卡片中选择/输入后继续。
+          </div>
+        </section>
+      ) : output ? (
         <section className="ws-preview__section">
           <div className="ws-preview__section-title">
             {payload.step_type === 'thinking' ? '内容' : '执行结果'}
           </div>
           <ContentView text={output} />
         </section>
-      )}
+      ) : null}
       {!actionInput && !output && <PayloadFields payload={payload} />}
     </div>
   );

@@ -177,6 +177,11 @@ class MessageVo(BaseModel):
         ],
     )
 
+    message_id: Optional[str] = Field(
+        default=None,
+        description="The gpts message_id (uuid), used to match compression-segment boundaries.",
+    )
+
     time_stamp: Optional[Any] = Field(
         default=None,
         description="The current message time stamp.",

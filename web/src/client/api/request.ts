@@ -9,6 +9,7 @@ import {
 import { GetAppInfoParams, IApp } from '@/types/app';
 import {
   ChatHistoryResponse,
+  CompressionSegmentVo,
   DialogueListResponse,
   FeedBack,
   IChatDialogueSchema,
@@ -304,6 +305,9 @@ export const postChatModeParamsInfoList = (chatMode: string) => {
 };
 export const getChatHistory = (convId: string) => {
   return GET<null, ChatHistoryResponse>(`/api/v1/chat/dialogue/messages/history?con_uid=${convId}`);
+};
+export const getCompressionSegments = (convId: string) => {
+  return GET<null, CompressionSegmentVo[]>(`/api/v1/chat/dialogue/compression/segments?con_uid=${convId}`);
 };
 export const postChatModeParamsFileLoad = ({
   convUid,

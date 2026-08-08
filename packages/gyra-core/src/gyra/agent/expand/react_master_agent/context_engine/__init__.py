@@ -20,6 +20,22 @@
     compression    CompressionService + CompressionConfig + CompressionSegment (两段式 LLM 摘要)
     invariants     InvariantGuard (I1-I6 硬不变量)
     engine         ContextEngine (门面 build_messages)
+
+注意事项::
+
+- conv_id 模型：每轮新用户提问生成 `{session}_{N}`；但 ask_user / 工具授权回复在 WAITING
+  状态下复用原 conv_id（见 gyra_serve agent_chat.py），故一个 conv_id 可含多条 user 消息。
+  压缩边界按 (rounds, created_at) 全局时序确定，不依赖"一 conv 一 user"假设。
+- 唯一压缩系统：ReActMasterAgent 路径上 ContextEngine 是唯一上下文压缩；compaction_pipeline
+  的 Layer2(修剪)/Layer3(压缩) 已退役，仅保留 Layer1(工具输出截断) + Layer4(跨轮历史喂
+  system_prompt) + 轮次状态。skill 是标准工具，内容经 tool 结果由 ContextEngine 原子渲染，
+  无需特殊重注入。
+- 配置：压缩参数支持环境变量覆盖，见 ReActMasterAgent._build_engine_config
+  (GYRA_COMPRESS_THRESHOLD_RATIO / GYRA_COMPRESS_RETAIN_RATIO /
+  GYRA_COMPRESS_MIN_INTERVAL_TURNS / GYRA_COMPRESS_RETAIN_TOOL_RESULT_MAX_LENGTH /
+  GYRA_COMPRESS_MAX_SUMMARY_CHARS / GYRA_HISTORY_BUDGET_RATIO)。
+- token 计数：tiktoken cl100k_base（gyra-core 核心依赖），全链路统一；
+  count_tokens 不可用时兜底 chars//4。
 """
 
 from .engine import (

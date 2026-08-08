@@ -164,6 +164,19 @@ export default function MobileWorkspace() {
     refreshInbox?.();
   };
 
+  // 开启新会话:创建新会话并设为当前(历史会话保留,可在桌面端回溯)
+  const handleNewSession = async () => {
+    if (!workspaceId) return;
+    const [err, newConv] = await apiInterceptors(createConversation({ workspace_id: workspaceId }));
+    if (err || !newConv?.conv_uid) return;
+    await apiInterceptors(
+      linkConversation({ workspace_id: workspaceId, conv_uid: newConv.conv_uid, user_id: undefined }),
+    );
+    await apiInterceptors(setCurrentConversation(workspaceId, newConv.conv_uid));
+    setConvUid(newConv.conv_uid);
+    message.success('已开启新会话');
+  };
+
   // 介入确认:批准/驳回后由后端继续执行(flywheel 联动)
   const resolveApprove = async (action: 'approved' | 'rejected') => {
     if (!approveItem || !workspaceId || acting) return;
@@ -262,6 +275,7 @@ export default function MobileWorkspace() {
             convUid={convUid}
             workspaceId={workspaceId}
             appCode={appCode}
+            onNewSession={handleNewSession}
           />
         </div>
       );
