@@ -207,16 +207,19 @@ def _resolve_media_model(
     """Resolve (protocol, api_key, base_url) for a media-gen model by name.
 
     Looks up ``ModelConfigCache`` by model name. The protocol (selected in the
-    model-config UI) determines the provider class / API shape. ``api_key``
-    falls back to the env var for that protocol if the config has none.
-    ``base_url`` comes from the config (else the provider uses its default).
+    model-config UI) determines the vendor provider class / API shape. The
+    protocol is normalized to the vendor level (e.g. ``volcengine_video`` →
+    ``volcengine_multimedia``) so legacy fine-grained protocols keep working.
+    ``api_key`` falls back to the env var for that protocol if the config has
+    none. ``base_url`` comes from the config (else the provider uses its default).
 
     Returns ``(None, None, None)`` if the model is not configured as a
-    media-gen model (protocol not in MEDIA_PROTOCOLS).
+    media-gen model (normalized protocol not in MEDIA_PROTOCOLS).
     """
     from gyra.agent.util.llm.model_config_cache import (
         ModelConfigCache,
         MEDIA_PROTOCOLS,
+        normalize_protocol,
     )
     from gyra.agent.util.media_gen.provider_registry import (
         MediaGenProviderRegistry,
@@ -228,10 +231,13 @@ def _resolve_media_model(
         logger.debug(f"[media_gen] ModelConfigCache lookup failed for '{model}': {e}")
         return None, None, None
 
-    if not cfg or cfg.get("protocol") not in MEDIA_PROTOCOLS:
+    if not cfg:
         return None, None, None
 
-    protocol = cfg["protocol"]
+    protocol = normalize_protocol(cfg.get("protocol"))
+    if protocol not in MEDIA_PROTOCOLS:
+        return None, None, None
+
     api_key = cfg.get("api_key") or MediaGenProviderRegistry.get_env_api_key(protocol)
     base_url = cfg.get("base_url") or cfg.get("api_base")
     return protocol, api_key, base_url
@@ -419,7 +425,7 @@ class GenerateImageTool(ToolBase):
         if not model:
             return ToolResult.fail(
                 error="未配置任何可用的图片生成模型。请在「系统配置 → 媒体生成」设置默认模型，"
-                      "或在模型管理中配置图片生成模型（protocol 为 dashscope_image/openai_image/google_image）。",
+                      "或在模型管理中配置图片生成模型（protocol 为 dashscope_multimedia/volcengine_multimedia/openai_multimedia，model_type 为 image）。",
                 tool_name=self.name,
             )
 
@@ -762,7 +768,7 @@ class GenerateVideoTool(ToolBase):
         if not model:
             return ToolResult.fail(
                 error="未配置任何可用的视频生成模型。请在「系统配置 → 媒体生成」设置默认模型，"
-                      "或在模型管理中配置视频生成模型（protocol 为 dashscope_video/volcengine_video/openai_video）。",
+                      "或在模型管理中配置视频生成模型（protocol 为 dashscope_multimedia/volcengine_multimedia/openai_multimedia，model_type 为 video）。",
                 tool_name=self.name,
             )
 
@@ -1020,8 +1026,272 @@ class GenerateVideoTool(ToolBase):
         )
 
 
+_GENERATE_AUDIO_PROMPT = """语音合成 (TTS): 把文本合成为语音音频。
+
+支持多 Provider 音频生成 (厂商级协议，按模型 model_type=audio 路由):
+- 百炼多媒体: qwen-audio-3.0-tts-flash / cosyvoice-v3.5-flash 等
+- 火山多媒体: seed-audio-1.0 (配合 speaker 音色)
+- OpenAI 多媒体: tts-1 / tts-1-hd / gpt-4o-mini-tts
+
+生成结果为音频交付物 (mp3/wav 等)，通过 d-attach 交付。
+"""
+
+
+class GenerateAudioTool(ToolBase):
+    """AI 语音合成 (TTS) 工具。"""
+
+    def _define_metadata(self) -> ToolMetadata:
+        return ToolMetadata(
+            name="generate_audio",
+            display_name="Generate Audio",
+            description=_GENERATE_AUDIO_PROMPT,
+            category=ToolCategory.MEDIA_GEN,
+            risk_level=ToolRiskLevel.MEDIUM,
+            source=ToolSource.SYSTEM,
+            requires_permission=True,
+            timeout=120,
+            tags=["audio", "tts", "speech", "voice", "media"],
+            author="opengyra",
+        )
+
+    def _define_parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "要朗读/合成的文本内容。",
+                },
+                "model": {
+                    "type": "string",
+                    "description": (
+                        "模型名称（从下方「当前可用的音频生成模型」中选择；"
+                        "该模型需先在系统配置-模型配置里以多媒体协议配置且 model_type 为 audio）。"
+                        "如 qwen-audio-3.0-tts-flash、cosyvoice-v3.5-flash、seed-audio-1.0、tts-1。"
+                    ),
+                },
+                "voice": {
+                    "type": "string",
+                    "description": (
+                        "音色 (可选)。百炼/OpenAI 用 voice，火山用 speaker。"
+                        "不传则使用各服务默认音色。"
+                    ),
+                },
+                "format": {
+                    "type": "string",
+                    "description": "音频格式: mp3 / wav / opus (默认 mp3)。",
+                    "default": "mp3",
+                },
+                "sample_rate": {
+                    "type": "integer",
+                    "description": "采样率 (Hz): 8000~48000 (默认 24000)。",
+                },
+                "speed": {
+                    "type": "number",
+                    "description": "语速 (仅 OpenAI 支持 0.25~4.0；默认 1.0)。",
+                    "default": 1.0,
+                },
+                "description": {
+                    "type": "string",
+                    "description": "交付文件描述 (可选)。",
+                },
+            },
+            "required": ["prompt"],
+        }
+
+    def to_openai_tool(self) -> Dict[str, Any]:
+        """动态注入可用模型列表与默认模型到工具描述/schema。"""
+        tool_dict = super().to_openai_tool()
+        try:
+            from gyra.agent.util.media_gen.provider_registry import MediaGenProviderRegistry
+
+            default_model = MediaGenProviderRegistry.get_default_audio_model()
+            if default_model:
+                props = tool_dict.get("function", {}).get("parameters", {}).get("properties", {})
+                if "model" in props:
+                    props["model"]["default"] = default_model
+
+            availability = MediaGenProviderRegistry.format_available_summary(capability="audio")
+            if availability:
+                tool_dict["function"]["description"] = (
+                    tool_dict["function"]["description"] + "\n\n" + availability
+                )
+        except Exception as e:
+            logger.debug(f"[generate_audio] Failed to inject dynamic availability: {e}")
+        return tool_dict
+
+    async def execute(
+        self, args: Dict[str, Any], context: Optional[ToolContext] = None
+    ) -> ToolResult:
+        prompt = args.get("prompt", "").strip()
+        if not prompt:
+            return ToolResult.fail(error="prompt 不能为空", tool_name=self.name)
+
+        from gyra.agent.util.media_gen.provider_registry import MediaGenProviderRegistry
+
+        # 模型优先级：工具显式传参 > 系统配置默认 > 第一个可用模型
+        model = (
+            args.get("model")
+            or MediaGenProviderRegistry.get_default_audio_model()
+            or MediaGenProviderRegistry.get_first_usable_model("audio")
+        )
+        if not model:
+            return ToolResult.fail(
+                error="未配置任何可用的音频生成模型。请在「系统配置 → 媒体生成」设置默认模型，"
+                      "或在模型管理中配置音频生成模型（protocol 为 dashscope_multimedia/volcengine_multimedia/openai_multimedia，model_type 为 audio）。",
+                tool_name=self.name,
+            )
+
+        protocol, api_key, base_url = _resolve_media_model(model)
+        if not protocol:
+            return ToolResult.fail(
+                error=f"未找到模型 '{model}' 对应的音频生成服务。"
+                      f"请确认该模型已在模型管理中配置且 protocol 属于多媒体生成协议、model_type 为 audio。",
+                tool_name=self.name,
+            )
+        if not api_key:
+            return ToolResult.fail(
+                error=f"未找到模型 '{model}' (protocol={protocol}) 的 API Key。"
+                      f"请在模型配置中填写 api_key，或设置对应的环境变量。",
+                tool_name=self.name,
+            )
+
+        provider = MediaGenProviderRegistry.create_provider_by_protocol(
+            protocol=protocol, api_key=api_key, base_url=base_url
+        )
+        if not provider:
+            return ToolResult.fail(
+                error=f"protocol '{protocol}' 未注册对应的音频生成 provider。",
+                tool_name=self.name,
+            )
+
+        gen_kwargs = {}
+        for k in ("voice", "format", "sample_rate", "speed", "rate", "speaker"):
+            v = args.get(k)
+            if v is not None and v != "":
+                gen_kwargs[k] = v
+
+        description = args.get("description") or f"语音合成: {prompt[:50]}"
+        try:
+            result = await provider.generate_audio(prompt, model, **gen_kwargs)
+        except NotImplementedError:
+            return ToolResult.fail(
+                error=f"模型 '{model}' (protocol={protocol}) 不支持音频生成",
+                tool_name=self.name,
+            )
+        except Exception as e:
+            logger.warning(f"[generate_audio] Generation failed: {e}", exc_info=True)
+            return ToolResult.fail(
+                error=f"音频生成失败: {e}",
+                tool_name=self.name,
+            )
+
+        return await self._save_and_deliver(
+            result=result,
+            file_name=(
+                f"audio_{int(time.time())}.{result.format}"
+                if result.format not in ("wav", "mp3", "ogg", "opus")
+                else f"audio_{int(time.time())}.{result.format}"
+            ),
+            description=description,
+            context=context,
+            prompt=prompt,
+        )
+
+    async def _save_and_deliver(
+        self,
+        result: Any,
+        file_name: str,
+        description: str,
+        context: Optional[ToolContext],
+        prompt: str,
+    ) -> ToolResult:
+        """Save generated audio to storage and render d-attach component."""
+        afs = _get_agent_file_system(context)
+
+        preview_url = None
+        dattach_md = ""
+
+        if afs:
+            try:
+                from gyra.agent.core.memory.gpts.file_base import FileType
+
+                file_key = file_name.rsplit(".", 1)[0]
+                extension = file_name.rsplit(".", 1)[1] if "." in file_name else result.format
+
+                file_metadata = await afs.save_binary_file(
+                    file_key=file_key,
+                    data=result.data,
+                    file_type=FileType.DELIVERABLE,
+                    extension=extension,
+                    file_name=file_name,
+                    tool_name="generate_audio",
+                    is_deliverable=True,
+                    description=description,
+                    metadata={
+                        "file_category": "deliverable",
+                        "mime_type": result.mime_type,
+                        "prompt": prompt[:200],
+                        **(result.metadata or {}),
+                    },
+                )
+
+                if file_metadata:
+                    preview_url = file_metadata.preview_url
+                    try:
+                        from gyra.agent.core.file_system.dattach_utils import render_dattach
+
+                        dattach_md = render_dattach(
+                            file_name=file_name,
+                            file_url=preview_url or "",
+                            file_type="deliverable",
+                            object_path=file_metadata.metadata.get("object_path") if file_metadata.metadata else None,
+                            preview_url=preview_url,
+                            download_url=file_metadata.download_url or preview_url,
+                            description=description,
+                            mime_type=result.mime_type,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[generate_audio] d-attach render failed: {e}")
+            except Exception as e:
+                logger.warning(f"[generate_audio] AFS save failed: {e}", exc_info=True)
+
+        parts = [
+            f"✅ 语音合成成功: {file_name}",
+            f"📋 描述: {description}",
+            f"🎙️ 模型: {result.metadata.get('model', 'unknown')}",
+        ]
+        if result.metadata.get("voice"):
+            parts.append(f"🔊 音色: {result.metadata['voice']}")
+        if result.metadata.get("speaker"):
+            parts.append(f"🔊 音色: {result.metadata['speaker']}")
+
+        if preview_url:
+            parts.append(f"\n🔊 [音频: {description}]({preview_url})")
+
+        if dattach_md:
+            parts.append(f"\n\n**交付文件:**\n{dattach_md}")
+        elif preview_url:
+            parts.append(f"\n**下载链接:** {preview_url}")
+
+        artifact = Artifact(
+            name=file_name,
+            type="file",
+            url=preview_url,
+            mime_type=result.mime_type,
+            size=len(result.data),
+            metadata=result.metadata,
+        )
+
+        return ToolResult.ok(
+            output="\n".join(parts),
+            tool_name=self.name,
+            artifacts=[artifact],
+        )
+
+
 # 模型能力描述（按模型名后缀推断输入模式）
-def _infer_model_capabilities(model: str, protocol: str) -> List[str]:
+def _infer_model_capabilities(model: str, protocol: str, capability: Optional[str] = None) -> List[str]:
     """根据模型名后缀推断支持的输入模式（文生/图生/参考生等）。"""
     m = (model or "").lower()
     caps: List[str] = []
@@ -1042,22 +1312,28 @@ def _infer_model_capabilities(model: str, protocol: str) -> List[str]:
     if "gemini" in m and "image" in m:
         caps.append("image-editing (图片编辑，参考图)")
 
-    # 兜底：如果没匹配到，按 protocol 给基础能力
+    # 兜底：如果没匹配到，按能力/协议给基础能力
     if not caps:
-        if "video" in protocol:
+        if capability == "video" or "video" in protocol:
             caps.append("video generation")
-        elif "image" in protocol:
+        elif capability == "image" or "image" in protocol:
             caps.append("image generation")
+        elif capability == "audio" or "audio" in protocol:
+            caps.append("audio generation")
+        else:
+            caps.append("media generation")
 
     return caps
 
 
-def _infer_output_format(protocol: str) -> str:
-    """按 protocol 推断输出格式。"""
-    if "video" in protocol:
+def _infer_output_format(capability: Optional[str]) -> str:
+    """按能力推断输出格式。"""
+    if capability == "video":
         return "video/mp4"
-    if "image" in protocol:
+    if capability == "image":
         return "image/png"
+    if capability == "audio":
+        return "audio/mpeg"
     return "unknown"
 
 
@@ -1142,8 +1418,6 @@ class ListMediaModelsTool(ToolBase):
 
         from gyra.agent.util.llm.model_config_cache import (
             ModelConfigCache,
-            IMAGE_PROTOCOLS,
-            VIDEO_PROTOCOLS,
         )
         from gyra.agent.util.media_gen.provider_registry import (
             MediaGenProviderRegistry,
@@ -1159,17 +1433,18 @@ class ListMediaModelsTool(ToolBase):
             if not MediaGenProviderRegistry._is_model_usable(m):
                 continue
             protocol = m.get("protocol", "")
+            capability = ModelConfigCache.get_model_capability(m)
             entry = {
                 "model": m["model"],
                 "protocol": protocol,
                 "label": PROTOCOL_LABELS.get(protocol, protocol),
                 "inputs": _infer_model_capabilities(m["model"], protocol),
-                "output": _infer_output_format(protocol),
+                "output": _infer_output_format(capability),
             }
-            if protocol in VIDEO_PROTOCOLS:
+            if capability == "video":
                 entry["is_default"] = (m["model"] == default_video)
                 video_list.append(entry)
-            elif protocol in IMAGE_PROTOCOLS:
+            elif capability == "image":
                 entry["is_default"] = (m["model"] == default_image)
                 image_list.append(entry)
 
@@ -1209,8 +1484,8 @@ class ListMediaModelsTool(ToolBase):
             parts = [
                 "⚠️ 当前没有可用的媒体生成模型。",
                 "请在「系统配置 → LLM 配置」中添加媒体生成模型（protocol 属于 "
-                "dashscope_video / volcengine_video / openai_video / "
-                "dashscope_image / openai_image / google_image），并配置对应的 API Key。",
+                "dashscope_multimedia / volcengine_multimedia / openai_multimedia），"
+                "model_type 设为 image/video，并配置对应的 API Key。",
             ]
 
         # 结构化数据放进 metadata，供程序化消费

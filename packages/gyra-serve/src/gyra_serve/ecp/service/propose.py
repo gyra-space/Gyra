@@ -75,6 +75,7 @@ class DbSemanticsProposer(SemanticsProposer):
     def __init__(self, service):
         super().__init__(service)
         self._llm_config_cache: Optional[Dict[str, str]] = None
+        self._llm_last_error: Optional[str] = None
 
     async def generate(
         self,
@@ -93,7 +94,7 @@ class DbSemanticsProposer(SemanticsProposer):
         specs = dao.get_all_by_datasource(datasource_id)
         if table_names:
             wanted = set(table_names)
-            specs = [s for s in specs if s.table_name in wanted]
+            specs = [s for s in specs if _spec_attr(s, "table_name") in wanted]
         specs = specs[:max_tables]
         if not specs:
             result.errors.append(
@@ -214,9 +215,9 @@ class DbSemanticsProposer(SemanticsProposer):
         )
         text = await self._call_llm(prompt)
         if not text:
-            raise RuntimeError("LLM unavailable or returned empty")
+            raise RuntimeError(self._llm_last_error or "LLM unavailable or returned empty")
         proposals = self._parse_proposals(text)
-        known_tables = {s.table_name for s in batch}
+        known_tables = {_spec_attr(s, "table_name") for s in batch}
         return self._validate(proposals, known_tables, datasource_id=datasource_id)
 
     # -------------------------------------------------------------- validation
@@ -361,8 +362,12 @@ class DbSemanticsProposer(SemanticsProposer):
     async def _call_llm(self, prompt: str, max_tokens: int = 4000) -> Optional[str]:
         import httpx
 
+        self._llm_last_error = None
         config = self._get_llm_config()
         if not config:
+            self._llm_last_error = (
+                "LLM 未配置：ModelConfigCache 无可用模型或 base_url 缺失"
+            )
             return None
         headers = {"Content-Type": "application/json"}
         if config["api_key"]:
@@ -388,7 +393,9 @@ class DbSemanticsProposer(SemanticsProposer):
                 if choices:
                     text = choices[0].get("message", {}).get("content", "")
                     return text.strip() if text else None
+                self._llm_last_error = "LLM 响应无 choices（空返回）"
         except Exception as e:  # noqa: BLE001
+            self._llm_last_error = f"LLM 调用失败: {e}"
             logger.warning(f"[ECP] LLM call failed: {e}")
         return None
 
@@ -585,7 +592,7 @@ class DocSemanticsProposer(DbSemanticsProposer):
         )
         llm_text = await self._call_llm("\n".join(parts))
         if not llm_text:
-            raise RuntimeError("LLM unavailable or returned empty")
+            raise RuntimeError(self._llm_last_error or "LLM unavailable or returned empty")
         return self._parse_proposals(llm_text)
 
     @staticmethod

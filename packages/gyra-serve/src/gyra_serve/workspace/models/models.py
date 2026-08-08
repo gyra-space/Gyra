@@ -361,6 +361,16 @@ class WorkspaceConversationLinkDao(
 
 
 # ----------------------------- DAOs -----------------------------
+def _is_false(column) -> Any:
+    """归一化布尔列比较:兼容历史 text('False') 与 integer(0) 两种存储。
+
+    SQLite 布尔列可能被历史迁移写成字符串 ``'False'``,而 ``col == False`` 只会
+    绑定整数 0,导致 text 存储的行被误当作"已置位"而过滤掉。这里统一比较字符串
+    小写形式:``0``/``false``(含 'False')视为未置位,其余(1/'True'/'1')视为已置位。
+    """
+    return func.lower(func.cast(column, String)).in_(["0", "false"])
+
+
 class WorkspaceDao(BaseDao[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]):
     def from_request(self, request: Union[WorkspaceRequest, Dict[str, Any]]) -> WorkspaceEntity:
         data = request.dict() if isinstance(request, WorkspaceRequest) else dict(request)
@@ -416,10 +426,10 @@ class WorkspaceDao(BaseDao[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]
         session = self.get_raw_session()
         try:
             query = session.query(WorkspaceEntity)
-            # 已释放(软删除)的空间一律不可见。
-            query = query.filter(WorkspaceEntity.is_deleted == False)
+            # 已释放(软删除)的空间一律不可见。用 _is_false 兼容 text('False')/integer(0) 两种存储。
+            query = query.filter(_is_false(WorkspaceEntity.is_deleted))
             if not filter_request.include_archived:
-                query = query.filter(WorkspaceEntity.is_archived == False)
+                query = query.filter(_is_false(WorkspaceEntity.is_archived))
             if filter_request.scenario_type:
                 query = query.filter(WorkspaceEntity.scenario_type == filter_request.scenario_type)
             if filter_request.user_id is not None:

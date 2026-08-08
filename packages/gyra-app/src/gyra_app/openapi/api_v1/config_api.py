@@ -794,14 +794,13 @@ async def get_available_media_models():
       {
         "video": [{"model": "...", "protocol": "...", "label": "..."}, ...],
         "image": [{"model": "...", "protocol": "...", "label": "..."}, ...],
-        "defaults": {"video": "...", "image": "..."}
+        "audio": [{"model": "...", "protocol": "...", "label": "..."}, ...],
+        "defaults": {"video": "...", "image": "...", "audio": "..."}
       }
     """
     try:
         from gyra.agent.util.llm.model_config_cache import (
             ModelConfigCache,
-            IMAGE_PROTOCOLS,
-            VIDEO_PROTOCOLS,
         )
         from gyra.agent.util.media_gen.provider_registry import (
             MediaGenProviderRegistry,
@@ -809,31 +808,68 @@ async def get_available_media_models():
         )
 
         media = ModelConfigCache.get_media_models()
-        video, image = [], []
+        video, image, audio = [], [], []
         for m in media:
-            # 管理后台下拉展示所有已配置的媒体模型（按协议），不按 key 过滤——
+            # 管理后台下拉展示所有已配置的媒体模型，不按 key 过滤——
             # 可用性(key)在工具调用时再校验。这样用户配了协议+模型名即可在选择器看到。
+            # 分类完全依赖每个模型的 model_type（image/video/audio），
+            # 厂商级协议（dashscope_multimedia 等）不再编码媒体类型，
+            # 使同一厂商下图片/视频/音频模型能正确拆分到对应列表。
+            capability = ModelConfigCache.get_model_capability(m)
             entry = {
                 "model": m["model"],
                 "protocol": m["protocol"],
+                "model_type": m.get("model_type"),
+                # 音频模型借助厂商多媒体协议（如 volcengine_multimedia）工作，
+                # 其能力由 model_type=audio 决定，这里仅用于展示归类的协议标签。
                 "label": PROTOCOL_LABELS.get(m["protocol"], m["protocol"]),
                 "usable": MediaGenProviderRegistry._is_model_usable(m),
             }
-            if m["protocol"] in VIDEO_PROTOCOLS:
-                video.append(entry)
-            elif m["protocol"] in IMAGE_PROTOCOLS:
+            if capability == "image":
                 image.append(entry)
+            elif capability == "video":
+                video.append(entry)
+            elif capability == "audio":
+                audio.append(entry)
 
         return JSONResponse(
             content={
                 "video": sorted(video, key=lambda x: x["model"]),
                 "image": sorted(image, key=lambda x: x["model"]),
+                "audio": sorted(audio, key=lambda x: x["model"]),
                 "defaults": {
                     "video": MediaGenProviderRegistry.get_default_video_model(),
                     "image": MediaGenProviderRegistry.get_default_image_model(),
+                    "audio": MediaGenProviderRegistry.get_default_audio_model(),
                 },
             }
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/media-gen/protocols")
+async def get_media_gen_protocols() -> JSONResponse:
+    """返回已注册的**厂商级**媒体生成协议（value=协议, label=展示名）。
+
+    协议由后端 provider 注册表驱动，但只下发厂商级合并协议
+    （dashscope_multimedia / volcengine_multimedia / openai_multimedia / google_multimedia），
+    细分协议（volcengine_image 等）通过别名归一化到厂商协议，不出现在下拉里。
+    新增厂商协议无需前端重新构建即可出现。
+    """
+    try:
+        from gyra.agent.util.llm.model_config_cache import MEDIA_PROTOCOLS
+        from gyra.agent.util.media_gen.provider_registry import (
+            MediaGenProviderRegistry,
+            PROTOCOL_LABELS,
+        )
+
+        protocols = [
+            {"value": p, "label": PROTOCOL_LABELS.get(p, p)}
+            for p in sorted(MediaGenProviderRegistry.get_supported_protocols())
+            if p in MEDIA_PROTOCOLS
+        ]
+        return JSONResponse(content={"protocols": protocols})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1451,6 +1487,7 @@ def _refresh_model_config_cache(config: AppConfig) -> int:
                     MediaGenProviderRegistry.set_default_models(
                         video_model=media_gen.video_default_model,
                         image_model=media_gen.image_default_model,
+                        audio_model=media_gen.audio_default_model,
                     )
             except Exception as mg_err:
                 logger.warning(f"Failed to sync media_gen defaults: {mg_err}")

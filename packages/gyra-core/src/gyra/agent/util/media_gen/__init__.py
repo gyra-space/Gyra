@@ -18,7 +18,17 @@ from gyra.agent.util.media_gen import openai_video_provider  # noqa: F401
 from gyra.agent.util.media_gen import wanxiang_image_provider  # noqa: F401
 from gyra.agent.util.media_gen import happyhorse_video_provider  # noqa: F401
 from gyra.agent.util.media_gen import seedance_video_provider  # noqa: F401
+from gyra.agent.util.media_gen import volcengine_image_provider  # noqa: F401
 from gyra.agent.util.media_gen import google_banana_provider  # noqa: F401
+# 音频(TTS) provider
+from gyra.agent.util.media_gen import openai_audio_provider  # noqa: F401
+from gyra.agent.util.media_gen import dashscope_audio_provider  # noqa: F401
+from gyra.agent.util.media_gen import volcengine_audio_provider  # noqa: F401
+# 厂商级合并 provider（按 model_type 路由图片/视频/音频）
+from gyra.agent.util.media_gen import dashscope_multimedia_provider  # noqa: F401
+from gyra.agent.util.media_gen import volcengine_multimedia_provider  # noqa: F401
+from gyra.agent.util.media_gen import openai_multimedia_provider  # noqa: F401
+from gyra.agent.util.media_gen import google_multimedia_provider  # noqa: F401
 
 __all__ = [
     "MediaGenProvider",

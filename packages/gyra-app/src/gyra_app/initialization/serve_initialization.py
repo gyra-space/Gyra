@@ -32,6 +32,7 @@ def scan_serve_configs():
         "gyra_serve.skill",
         "gyra_serve.workspace",
         "gyra_serve.task",
+        "gyra_serve.job",
         "gyra_serve.playbook",
         "gyra_serve.artifact",
         "gyra_serve.workspace_asset",
@@ -302,6 +303,24 @@ def register_serve_apps(
     )
 
     # ################################ Knowledge Serve Register End ####################
+
+    # ################################ Job Engine Serve Register Begin ################
+    # 任务引擎: 独立持久化任务队列 + worker 调度。知识模块在 after_init 里把
+    # knowledge_ingest / knowledge_rebuild_wiki 等 job type 注册进来, 必须在此装配。
+    from gyra_serve.job.serve import Serve as JobServe
+
+    system_app.register(
+        JobServe,
+        api_prefix="/api/v1/serve/job",
+        config=get_config(
+            serve_configs,
+            JobServe.name,
+            gyra_serve.job.serve.ServeConfig,
+            api_keys=global_api_keys,
+        ),
+    )
+
+    # ################################ Job Engine Serve Register End ################
 
     # ################################ Multimodal Serve Register Begin ##############
     from gyra_serve.multimodal.serve import Serve as MultimodalServe

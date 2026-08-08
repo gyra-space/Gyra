@@ -902,6 +902,19 @@ async def model_types():
     try:
         types = set()
 
+        # 数据库优先（分布式共享）：模型/LLM 配置以数据库为准，避免只读启动时加载的
+        # 内存配置导致新增 provider 不生效。有记录时直接返回，否则回退到内存配置。
+        try:
+            from gyra_app.config_storage.agent_llm_db_storage import (
+                load_agent_llm_model_names,
+            )
+
+            db_names = load_agent_llm_model_names()
+            if db_names:
+                return Result.succ(db_names)
+        except Exception:
+            pass
+
         system_app = SystemApp.get_instance()
         if system_app and system_app.config:
             # PRIORITY 1: app_config from configs dict (JSON config source).

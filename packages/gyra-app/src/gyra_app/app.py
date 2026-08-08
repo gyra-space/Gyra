@@ -601,11 +601,13 @@ def _sync_app_config_to_system_app():
             MediaGenProviderRegistry.set_default_models(
                 video_model=media_gen.video_default_model,
                 image_model=media_gen.image_default_model,
+                audio_model=media_gen.audio_default_model,
             )
             logger.info(
                 f"[ConfigSync] MediaGen defaults: "
                 f"video={media_gen.video_default_model}, "
-                f"image={media_gen.image_default_model}"
+                f"image={media_gen.image_default_model}, "
+                f"audio={media_gen.audio_default_model}"
             )
     except Exception as e:
         logger.error(f"Failed to sync media_gen defaults: {e}", exc_info=True)

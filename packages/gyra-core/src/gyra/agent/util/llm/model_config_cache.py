@@ -104,18 +104,47 @@ def _space_model_key(config: Optional[Dict[str, Any]]) -> Optional[str]:
         return None
     return f"{config.get('provider')}/{config.get('model')}"
 
-# 媒体生成协议（= API 形状 = 一个 provider 类）。图/视频编码在后缀。
+# 厂商级媒体生成协议（= API 形状 = 一个合并的 provider 类）。
+# 图片/视频/音频能力不再编码在协议名里，而是由每个模型的 model_type 决定。
 # model_config_cache 用它过滤媒体模型（防聊天污染）；media_gen 用它路由+列可用模型。
 MEDIA_PROTOCOLS = {
-    "dashscope_video",   # 百炼视频 (HappyHorse t2v/i2v/r2v)
-    "dashscope_image",   # 百炼图像 (qwen-image / wan2.x / wanx)
-    "volcengine_video",  # 火山视频 (Seedance)
-    "openai_image",      # OpenAI 图像 (DALL-E)
-    "openai_video",      # OpenAI 视频 (Sora)
-    "google_image",      # Google 图像 (Nano Banana)
+    "dashscope_multimedia",   # 百炼多媒体 (qwen-image/wanx 图像 + HappyHorse 视频)
+    "volcengine_multimedia",  # 火山多媒体 (Seedream 图像 + Seedance 视频)
+    "openai_multimedia",      # OpenAI 多媒体 (DALL-E 图像 + Sora 视频)
+    "google_multimedia",      # Google 多媒体 (Nano Banana 图像)
 }
-IMAGE_PROTOCOLS = {"dashscope_image", "openai_image", "google_image"}
-VIDEO_PROTOCOLS = {"dashscope_video", "volcengine_video", "openai_video"}
+
+# 细分协议 → 厂商协议别名（兼容存量配置：旧协议自动归一化到厂商协议，无需迁移数据）。
+PROTOCOL_ALIASES = {
+    "dashscope_video": "dashscope_multimedia",
+    "dashscope_image": "dashscope_multimedia",
+    "volcengine_video": "volcengine_multimedia",
+    "volcengine_image": "volcengine_multimedia",
+    "openai_image": "openai_multimedia",
+    "openai_video": "openai_multimedia",
+    "google_image": "google_multimedia",
+}
+
+# 细分协议 → 能力（仅用于兼容旧配置判定能力；厂商协议只依赖 model_type）。
+LEGACY_PROTOCOL_CAPABILITY = {
+    "dashscope_video": "video",
+    "dashscope_image": "image",
+    "volcengine_video": "video",
+    "volcengine_image": "image",
+    "openai_image": "image",
+    "openai_video": "video",
+    "google_image": "image",
+}
+
+# 媒体模型类型（决定能力：image/video/audio）
+_MEDIA_MODEL_TYPES = ("image", "video", "audio")
+
+
+def normalize_protocol(protocol: Optional[str]) -> str:
+    """把细分协议归一化到厂商级协议；已是厂商协议或未知协议则原样返回。"""
+    if not protocol:
+        return ""
+    return PROTOCOL_ALIASES.get(protocol, protocol)
 
 # 接入协议推断映射：provider 名称 -> 协议
 def infer_protocol(provider_name: str) -> str:
@@ -279,16 +308,25 @@ class ModelConfigCache:
 
     @classmethod
     def _is_media_model(cls, model_key: str) -> bool:
-        """该模型是否为媒体生成模型 (protocol 属于 MEDIA_PROTOCOLS)。"""
+        """该模型是否为媒体生成模型。
+
+        命中任一条件即视为媒体模型：
+        - 归一化后 protocol 属于 MEDIA_PROTOCOLS（厂商级）；
+        - model_type 显式为 image/video/audio（即使协议是通用协议，也能被识别）。
+        """
         config = cls.get_config(model_key)
-        return bool(config and config.get("protocol") in MEDIA_PROTOCOLS)
+        if not config:
+            return False
+        if normalize_protocol(config.get("protocol")) in MEDIA_PROTOCOLS:
+            return True
+        return (config.get("model_type") or "").lower() in _MEDIA_MODEL_TYPES
 
     @classmethod
     def get_media_models(cls) -> List[Dict[str, Any]]:
-        """返回所有媒体生成模型的配置（protocol 属于 MEDIA_PROTOCOLS）。
+        """返回所有媒体生成模型的配置（protocol 属于 MEDIA_PROTOCOLS 或 model_type 为 image/video/audio）。
 
         供 media_gen 工具的可用性展示与凭据解析使用。
-        每项: {"model", "protocol", "api_key", "base_url", "provider"}
+        每项: {"model", "protocol", "model_type", "api_key", "base_url", "provider"}
         """
         result: List[Dict[str, Any]] = []
         for model_name in cls._model_providers.keys():
@@ -298,11 +336,32 @@ class ModelConfigCache:
             result.append({
                 "model": model_name,
                 "protocol": config.get("protocol"),
+                "model_type": config.get("model_type") or "llm",
                 "api_key": config.get("api_key", ""),
                 "base_url": config.get("base_url") or config.get("api_base", ""),
                 "provider": config.get("provider", ""),
             })
         return result
+
+    @classmethod
+    def get_model_capability(cls, model_key_or_config: Any) -> Optional[str]:
+        """判定模型能力：image / video / audio / llm(返回 None)。
+
+        厂商级协议下，能力**仅依赖 model_type**（用户显式配置的 image/video/audio）。
+        存量细分协议（如 volcengine_video）仍按协议编码的能力兼容判定，
+        保证旧配置无需迁移即可继续分类。
+        """
+        config = (
+            cls.get_config(model_key_or_config)
+            if isinstance(model_key_or_config, str)
+            else model_key_or_config
+        )
+        if not config:
+            return None
+        mt = (config.get("model_type") or "").lower()
+        if mt in _MEDIA_MODEL_TYPES:
+            return mt
+        return LEGACY_PROTOCOL_CAPABILITY.get(config.get("protocol"))
 
     @classmethod
     def get_all_model_keys(cls) -> List[str]:

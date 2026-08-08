@@ -31,7 +31,7 @@ Gyra is an AI-native **workspace for trusted business loops** — a multi-agent 
 </div>
 
 <p align="center">
-  <img src="./docs/img/gyra_flywheel_cover.jpg" width="100%" />
+  <img src="./docs/img/gyra_flywheel_cover.png" width="100%" />
 </p>
 
 ### Why Loop Engineering?

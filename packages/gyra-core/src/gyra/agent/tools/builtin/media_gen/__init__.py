@@ -1,8 +1,9 @@
 """Media Generation Tools module.
 
-Provides tools for AI-powered image and video generation:
+Provides tools for AI-powered image, video and audio generation:
 - generate_image: Generate images using DALL-E, Stable Diffusion, etc.
 - generate_video: Generate videos using Sora, Runway, etc.
+- generate_audio: TTS text-to-speech synthesis.
 """
 
 from typing import TYPE_CHECKING
@@ -15,6 +16,7 @@ def register_media_gen_tools(registry: "ToolRegistry") -> None:
     """Register media generation tools."""
     from .media_gen_tools import (
         CheckMediaJobTool,
+        GenerateAudioTool,
         GenerateImageTool,
         GenerateVideoTool,
         ListMediaModelsTool,
@@ -22,5 +24,6 @@ def register_media_gen_tools(registry: "ToolRegistry") -> None:
 
     registry.register(GenerateImageTool())
     registry.register(GenerateVideoTool())
+    registry.register(GenerateAudioTool())
     registry.register(ListMediaModelsTool())
     registry.register(CheckMediaJobTool())

@@ -63,12 +63,6 @@ const BUILTIN_PROTOCOL_OPTIONS = [
   { value: "openai", label: "OpenAI / OpenAI Compatible" },
   { value: "anthropic", label: "Anthropic / Claude" },
   { value: "theta", label: "Theta" },
-  { value: "dashscope_video", label: "百炼视频 (DashScope Video)" },
-  { value: "dashscope_image", label: "百炼图像 (DashScope Image)" },
-  { value: "volcengine_video", label: "火山视频 (Volcano Video)" },
-  { value: "openai_image", label: "OpenAI 图像 (DALL-E)" },
-  { value: "openai_video", label: "OpenAI 视频 (Sora)" },
-  { value: "google_image", label: "Google 图像 (Nano Banana)" },
 ];
 
 const MODEL_TYPE_OPTIONS = [
@@ -84,7 +78,7 @@ const MODEL_TYPE_OPTIONS = [
 
 const CAPABILITY_OPTIONS = [
   { value: "text", label: "文本" },
-  { value: "vision", label: "视觉 (Vision)" },
+  { value: "vision", label: "图片输入" },
   { value: "audio_input", label: "音频输入" },
   { value: "audio_output", label: "音频输出" },
   { value: "video_input", label: "视频输入" },
@@ -164,6 +158,10 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
   const [keyModalVisible, setKeyModalVisible] = useState(false);
   const [keyForm] = Form.useForm();
   const [saving, setSaving] = useState(false);
+  // 媒体生成协议（由后端 provider 注册表动态下发，避免新增协议需重新构建前端）
+  const [mediaProtocolOptions, setMediaProtocolOptions] = useState<
+    Array<{ value: string; label: string }>
+  >([]);
 
   const configuredProviders =
     Form.useWatch(["agent_llm", "providers"], form) || [];
@@ -215,6 +213,8 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
   useEffect(() => {
     loadLLMKeys();
     loadSupportedModels();
+    // 动态拉取媒体生成协议（后端 provider 注册表驱动）
+    configService.getMediaGenProtocols().then(setMediaProtocolOptions).catch(() => {});
   }, []);
 
   const llmKeyMap = useMemo(() => {
@@ -263,6 +263,23 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
           value,
       }));
   }, [configuredProviders]);
+
+  // 接入协议下拉：LLM 协议（前端内置）+ 媒体协议（后端动态下发）合并去重
+  const protocolOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: Array<{ value: string; label: string }> = [];
+    BUILTIN_PROTOCOL_OPTIONS.forEach((o) => {
+      seen.add(o.value);
+      merged.push(o);
+    });
+    (mediaProtocolOptions || []).forEach((o) => {
+      if (!seen.has(o.value)) {
+        seen.add(o.value);
+        merged.push(o);
+      }
+    });
+    return merged;
+  }, [mediaProtocolOptions]);
 
   async function loadSupportedModels() {
     setLoadingModels(true);
@@ -594,7 +611,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                               ]}
                             >
                               <Select
-                                options={BUILTIN_PROTOCOL_OPTIONS}
+                                options={protocolOptions}
                                 placeholder="选择协议"
                               />
                             </Form.Item>

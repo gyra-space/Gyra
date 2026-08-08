@@ -467,7 +467,7 @@ class RagConfig(BaseModel):
 
 
 class MediaGenDefaults(BaseModel):
-    """媒体生成（图片/视频）默认模型配置。
+    """媒体生成（图片/视频/音频）默认模型配置。
 
     只存模型名（不含 provider）：工具按模型名反查 protocol/provider，
     用户无需感知 provider。为空时工具回退到第一个可用模型。
@@ -477,6 +477,8 @@ class MediaGenDefaults(BaseModel):
     video_default_model: Optional[str] = Field(default=None)
     # 默认图片生成模型名，如 "wan2.6-t2i"
     image_default_model: Optional[str] = Field(default=None)
+    # 默认音频生成(TTS)模型名，如 "qwen-audio-3.0-tts-flash"
+    audio_default_model: Optional[str] = Field(default=None)
 
 
 class AppConfig(BaseModel):

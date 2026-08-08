@@ -708,6 +708,7 @@ function MediaGenConfigSection({
   const [form] = Form.useForm();
   const [videoModels, setVideoModels] = useState<MediaModelOption[]>([]);
   const [imageModels, setImageModels] = useState<MediaModelOption[]>([]);
+  const [audioModels, setAudioModels] = useState<MediaModelOption[]>([]);
   const [loading, setLoading] = useState(false);
 
   const loadAvailable = async () => {
@@ -716,9 +717,11 @@ function MediaGenConfigSection({
       const data = await configService.getAvailableMediaModels();
       setVideoModels(data.video || []);
       setImageModels(data.image || []);
+      setAudioModels(data.audio || []);
       form.setFieldsValue({
         video_default_model: data.defaults?.video || config.media_gen?.video_default_model || null,
         image_default_model: data.defaults?.image || config.media_gen?.image_default_model || null,
+        audio_default_model: data.defaults?.audio || config.media_gen?.audio_default_model || null,
       });
     } catch (error: any) {
       message.error('加载可用媒体模型失败: ' + error.message);
@@ -731,6 +734,7 @@ function MediaGenConfigSection({
     form.setFieldsValue({
       video_default_model: config.media_gen?.video_default_model || null,
       image_default_model: config.media_gen?.image_default_model || null,
+      audio_default_model: config.media_gen?.audio_default_model || null,
     });
     loadAvailable();
   }, [config.media_gen]);
@@ -742,6 +746,7 @@ function MediaGenConfigSection({
         media_gen: {
           video_default_model: values.video_default_model || null,
           image_default_model: values.image_default_model || null,
+          audio_default_model: values.audio_default_model || null,
         },
       };
       await configService.importConfig(newConfig);
@@ -767,7 +772,7 @@ function MediaGenConfigSection({
         type="info"
         showIcon
         message="媒体生成默认模型"
-        description="为 Agent 的 generate_image / generate_video 工具指定默认模型。Agent 调用工具时若未显式指定模型，将使用此处的默认值；为空时自动回退到第一个可用的媒体模型。仅显示已在「LLM 配置」中配置且有效的媒体生成模型。"
+        description="为 Agent 的 generate_image / generate_video / generate_audio 工具指定默认模型。Agent 调用工具时若未显式指定模型，将使用此处的默认值；为空时自动回退到第一个可用的媒体模型。仅显示已在「LLM 配置」中配置且有效的媒体生成模型。"
         className="mb-4"
       />
       <Spin spinning={loading}>
@@ -780,7 +785,7 @@ function MediaGenConfigSection({
             <Select
               placeholder="选择默认视频模型"
               allowClear
-              notFoundContent="暂无可用视频模型，请先在 LLM 配置中添加 protocol 为 dashscope_video / volcengine_video / openai_video 的模型"
+              notFoundContent="暂无可用视频模型，请先在 LLM 配置中添加 protocol 为 dashscope_multimedia / volcengine_multimedia / openai_multimedia 且 model_type 为 video 的模型"
             >
               {videoModels.map(renderModelOption)}
             </Select>
@@ -793,9 +798,22 @@ function MediaGenConfigSection({
             <Select
               placeholder="选择默认图片模型"
               allowClear
-              notFoundContent="暂无可用图片模型，请先在 LLM 配置中添加 protocol 为 dashscope_image / openai_image / google_image 的模型"
+              notFoundContent="暂无可用图片模型，请先在 LLM 配置中添加 protocol 为 dashscope_multimedia / volcengine_multimedia / openai_multimedia 且 model_type 为 image 的模型"
             >
               {imageModels.map(renderModelOption)}
+            </Select>
+          </Form.Item>
+          <Form.Item
+            name="audio_default_model"
+            label="默认音频生成模型"
+            tooltip="generate_audio 工具未指定 model 时使用此项"
+          >
+            <Select
+              placeholder="选择默认音频模型"
+              allowClear
+              notFoundContent="暂无可用音频模型，请先在 LLM 配置中添加 protocol 为 dashscope_multimedia / volcengine_multimedia / openai_multimedia 且 model_type 为 audio 的模型"
+            >
+              {audioModels.map(renderModelOption)}
             </Select>
           </Form.Item>
         </div>

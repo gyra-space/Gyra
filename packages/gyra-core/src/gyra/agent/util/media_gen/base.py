@@ -102,6 +102,22 @@ class MediaGenProvider(ABC):
     def supported_video_models(self) -> List[str]:
         """List supported video generation models."""
 
+    async def generate_audio(
+        self,
+        prompt: str,
+        model: str,
+        **kwargs: Any,
+    ) -> MediaGenResult:
+        """Text-to-speech: synthesize audio from text.
+
+        默认不支持。支持音频生成的 provider 需覆盖此方法。厂商级多媒体协议
+        （dashscope_multimedia / volcengine_multimedia / openai_multimedia）
+        内部按模型 model_type=audio 路由到这里。
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} 不支持音频生成（generate_audio 未实现）"
+        )
+
     async def resume_task(
         self,
         task_id: str,
@@ -169,8 +185,20 @@ def _sniff_video(data: bytes) -> bool:
     return False
 
 
+def _sniff_audio(data: bytes) -> bool:
+    if data.startswith(b"ID3"):  # MP3 (ID3 tag)
+        return True
+    if len(data) > 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":  # WAV
+        return True
+    if data.startswith(b"OggS"):  # OGG / Opus
+        return True
+    if data.startswith(b"fLaC"):  # FLAC
+        return True
+    return False
+
+
 def _validate_media_payload(
-    data: bytes, content_type: str, kind: Literal["image", "video"]
+    data: bytes, content_type: str, kind: Literal["image", "video", "audio"]
 ) -> Tuple[bool, str]:
     """Return (is_valid, reason)."""
     if not data:
@@ -183,6 +211,10 @@ def _validate_media_payload(
         if _sniff_image(data) or ct.startswith("image/"):
             return True, ""
         return False, f"payload is not a recognizable image (content-type={ct!r}, {len(data)} bytes)"
+    if kind == "audio":
+        if _sniff_audio(data) or ct.startswith("audio/"):
+            return True, ""
+        return False, f"payload is not recognizable audio (content-type={ct!r}, {len(data)} bytes)"
     # video: OSS may serve clips as application/octet-stream with
     # x-oss-force-download, so accept octet-stream when magic bytes match or
     # the payload is large enough to plausibly be media.
@@ -197,7 +229,7 @@ async def download_media_with_retry(
     client: Any,
     url: str,
     *,
-    kind: Literal["image", "video"],
+    kind: Literal["image", "video", "audio"],
     provider: str = "media",
     attempts: int = 4,
     retry_delay: float = 2.0,

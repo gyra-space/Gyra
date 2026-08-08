@@ -9,6 +9,20 @@ gpts_dao = GptsAppDao()
 async def available_llms(worker_type: str = "llm"):
     types = set()
 
+    # 数据库优先（分布式共享）：模型/LLM 配置以数据库为准，避免只读启动时加载的
+    # 内存配置导致新增 provider 不生效。无记录时回退到内存配置。
+    try:
+        from gyra_app.config_storage.agent_llm_db_storage import (
+            load_agent_llm_model_names,
+        )
+
+        db_names = load_agent_llm_model_names()
+        if db_names:
+            types.update(db_names)
+            return list(types)
+    except Exception:
+        pass
+
     # Fetch models from global SystemApp config (proxy/provider-driven).
     if CFG.SYSTEM_APP and CFG.SYSTEM_APP.config:
         agent_llm_conf = CFG.SYSTEM_APP.config.get("agent.llm")

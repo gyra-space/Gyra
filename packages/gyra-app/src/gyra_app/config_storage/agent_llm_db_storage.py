@@ -35,6 +35,34 @@ def load_agent_llm_dict() -> Optional[Dict[str, Any]]:
     return None
 
 
+def load_agent_llm_model_names() -> list:
+    """从数据库读取 agent_llm 配置并提取所有模型名（数据库优先，分布式共享）。
+
+    同时兼容前端格式（providers/models）与后端格式（provider/model）。
+    无记录或异常时返回空列表，调用方应回退到内存配置。
+    """
+    data = load_agent_llm_dict()
+    if not data or not isinstance(data, dict):
+        return []
+    names = set()
+    providers = data.get("providers")
+    if not isinstance(providers, list):
+        providers = data.get("provider")
+    for p in providers or []:
+        if not isinstance(p, dict):
+            continue
+        models = p.get("models")
+        if not isinstance(models, list):
+            models = p.get("model")
+        for m in models or []:
+            if not isinstance(m, dict):
+                continue
+            name = m.get("name") or m.get("model")
+            if name:
+                names.add(name)
+    return list(names)
+
+
 def save_agent_llm_dict(
     agent_llm: Dict[str, Any], description: Optional[str] = None
 ) -> bool:

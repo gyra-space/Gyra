@@ -196,6 +196,7 @@ export interface FeaturePluginCatalogItem {
 export interface MediaGenDefaults {
   video_default_model?: string | null;
   image_default_model?: string | null;
+  audio_default_model?: string | null;
 }
 
 export interface MediaModelOption {
@@ -207,9 +208,11 @@ export interface MediaModelOption {
 export interface AvailableMediaModels {
   video: MediaModelOption[];
   image: MediaModelOption[];
+  audio: MediaModelOption[];
   defaults: {
     video?: string | null;
     image?: string | null;
+    audio?: string | null;
   };
 }
 
@@ -330,6 +333,11 @@ class ConfigService {
     const response = await axios.get(`${API_BASE}/config/media-gen/available`);
     // 该接口通过 JSONResponse(content=...) 直接返回 {video, image, defaults}，无 data 包装
     return response.data;
+  }
+
+  async getMediaGenProtocols(): Promise<Array<{ value: string; label: string }>> {
+    const response = await axios.get(`${API_BASE}/config/media-gen/protocols`);
+    return response.data.protocols || [];
   }
 
   async getCachedModels(): Promise<{ models: string[]; model_keys: string[]; total: number }> {
