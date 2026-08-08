@@ -4,8 +4,20 @@ from pathlib import Path
 from enum import Enum
 import base64
 import json
+import logging
 
 from .home import get_gyra_home
+
+_logger = logging.getLogger(__name__)
+
+# 上下文空间与输出上限的口径分离（见 LLMProviderModelConfig）：
+#   - context_window : 输入+输出总预算（上下文空间），用于上下文压缩/历史预算/用量统计
+#   - max_new_tokens : 单次输出上限，作为 max_tokens 发给模型
+# 遗留配置迁移阈值：max_new_tokens 超过此值视为"本是上下文空间却误填进输出上限"，
+# 迁移到 context_window 并把输出上限重置为默认。输出上限极少超过 32K，超过几乎都是误配。
+LEGACY_MAX_TOKENS_AS_CONTEXT_THRESHOLD = 32768
+DEFAULT_MAX_NEW_TOKENS = 4096
+DEFAULT_CONTEXT_WINDOW = 128000
 
 
 class LLMProvider(str, Enum):
@@ -162,11 +174,24 @@ class OAuth2Config(BaseModel):
 
 
 class LLMProviderModelConfig(BaseModel):
-    """模型配置（provider下的模型）"""
+    """模型配置（provider下的模型）
+
+    口径分离：
+      - ``max_new_tokens``：单次最大生成（输出）token 数，作为 ``max_tokens`` 发给模型。
+      - ``context_window``：上下文空间（输入+输出总预算），用于上下文压缩/历史预算/用量统计。
+        未配置时由消费方默认 ``DEFAULT_CONTEXT_WINDOW``（128000）。
+    """
 
     name: str = Field(..., description="模型名称，如 gpt-4o, deepseek-chat")
     temperature: float = Field(0.7, description="模型温度参数")
-    max_new_tokens: int = Field(4096, description="最大生成token数")
+    max_new_tokens: int = Field(
+        DEFAULT_MAX_NEW_TOKENS,
+        description="单次最大生成（输出）token 数，作为 max_tokens 发给模型",
+    )
+    context_window: Optional[int] = Field(
+        None,
+        description="上下文空间（输入+输出总预算），用于上下文压缩与用量统计；未配置时默认 128000",
+    )
     # 新增：模型类型与能力标签
     model_type: str = Field("llm", description="模型类型: llm/embedding/rerank/video/image/audio/speech/moderation")
     capabilities: List[str] = Field(default_factory=list, description="能力标签: text/vision/audio_input/audio_output/video_input/function_call/streaming")
@@ -175,7 +200,27 @@ class LLMProviderModelConfig(BaseModel):
     is_multimodal: bool = Field(False, description="是否支持多模态（图片输入），旧配置兼容字段")
 
     def model_post_init(self, __context: Any) -> None:
-        """旧配置兼容：将 is_multimodal 转换为 capabilities 中的 vision"""
+        """旧配置兼容。
+
+        - 将 is_multimodal 转换为 capabilities 中的 vision；
+        - 遗留迁移：旧配置只有 max_new_tokens 没有 context_window，且把上下文空间
+          （如 256K）误填进了 max_new_tokens。超过阈值时迁回 context_window，并把
+          输出上限重置为默认，避免作为 max_tokens 发出触发 provider 上限报错。
+        """
+        if (
+            self.context_window is None
+            and self.max_new_tokens
+            and self.max_new_tokens > LEGACY_MAX_TOKENS_AS_CONTEXT_THRESHOLD
+        ):
+            _logger.info(
+                "migrate legacy max_new_tokens=%d -> context_window for model %s "
+                "(reset max_new_tokens=%d)",
+                self.max_new_tokens,
+                self.name,
+                DEFAULT_MAX_NEW_TOKENS,
+            )
+            self.context_window = self.max_new_tokens
+            self.max_new_tokens = DEFAULT_MAX_NEW_TOKENS
         if self.is_multimodal and "vision" not in self.capabilities:
             self.capabilities = list(self.capabilities) + ["vision"]
 

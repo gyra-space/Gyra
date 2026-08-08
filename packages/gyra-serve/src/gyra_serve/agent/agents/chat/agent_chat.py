@@ -3526,7 +3526,7 @@ class AgentChat(BaseComponent, ABC):
                                     "user_msg": detail.get("user_msg") or 0,
                                     "tools": detail.get("tools") or 0,
                                     "layers": detail.get("layers")
-                                    or {"hot": 0, "warm": 0, "cold": 0},
+                                    or {"compressed": 0, "retained": 0},
                                 },
                             }
                         )

@@ -401,18 +401,10 @@ class ReActMasterAgent(ConversableAgent, Team):
                     )
 
                     if not recipient:
-                        # 返回失败结果
-                        result = type(
-                            "SubagentResult",
-                            (),
-                            {
-                                "success": False,
-                                "output": None,
-                                "error": f"子 Agent '{subagent_name}' 不存在",
-                                "artifacts": {},
-                            },
-                        )()
-                        return result
+                        # 团队成员未命中 → 回退按 app_code/app_name 解析 AppResource
+                        # （与 SubAgent 工具的 _resolve_app_code 同一语义），
+                        # 命中则以独立子会话跑目标 app（覆盖多媒体生成助手等 app）
+                        return await self._delegate_via_app(subagent_name, task)
 
                     # 构建消息
                     message = AgentMessage.init_new(
@@ -454,6 +446,112 @@ class ReActMasterAgent(ConversableAgent, Team):
                             },
                         )()
                         return result
+
+                @staticmethod
+                def _fail_result(error: str):
+                    return type(
+                        "SubagentResult",
+                        (),
+                        {
+                            "success": False,
+                            "output": None,
+                            "error": error,
+                            "artifacts": {},
+                        },
+                    )()
+
+                def _resolve_app_code(self, subagent_name: str) -> str:
+                    """在 master 的 app 资源中按 app_code/app_name 解析目标子 Agent。
+
+                    与 agent_action._resolve_app_code 同一语义：capability_pack
+                    （AppCapability）优先，resource_map（AppResource）兜底。
+                    """
+                    master = self._master
+                    pack = getattr(master, "capability_pack", None)
+                    if pack is not None and hasattr(pack, "sub_resources"):
+                        for cap in pack.sub_resources:
+                            cid = getattr(cap, "capability_id", "") or ""
+                            if not cid.startswith("app"):
+                                continue
+                            code = getattr(cap, "_app_code", "") or ""
+                            name = getattr(cap, "_app_name", "") or ""
+                            if subagent_name in (code, name):
+                                return code
+                    for resources in (getattr(master, "resource_map", None) or {}).values():
+                        for res in resources or []:
+                            if not isinstance(res, AppResource):
+                                continue
+                            code = getattr(res, "app_code", "") or ""
+                            name = (
+                                getattr(res, "app_name", "")
+                                or getattr(res, "name", "")
+                                or ""
+                            )
+                            if subagent_name in (code, name):
+                                return code
+                    return ""
+
+                async def _delegate_via_app(self, subagent_name: str, task: str):
+                    """经 GptAppResource 以独立子会话委派到目标 app（后台执行）。
+
+                    与 SubAgent async 分支同一执行形态，但注册/恢复由
+                    spawn_agent_task 的 atask 体系负责，不重复登记 SubagentCoordinator。
+                    """
+                    app_code = self._resolve_app_code(subagent_name)
+                    if not app_code:
+                        available = []
+                        for resources in (
+                            getattr(self._master, "resource_map", None) or {}
+                        ).values():
+                            for res in resources or []:
+                                if not isinstance(res, AppResource):
+                                    continue
+                                n = (
+                                    getattr(res, "app_name", None)
+                                    or getattr(res, "name", None)
+                                    or getattr(res, "app_code", None)
+                                )
+                                if n:
+                                    available.append(n)
+                        hint = f"可用: {', '.join(available)}" if available else "无可用 app 资源"
+                        return self._fail_result(
+                            f"子 Agent '{subagent_name}' 不存在（{hint}）"
+                        )
+                    try:
+                        from gyra_serve.agent.resource.app import GptAppResource
+                    except ImportError:
+                        return self._fail_result(
+                            f"子 Agent '{subagent_name}' 是 app 资源，但 gyra_serve 不可用"
+                        )
+                    try:
+                        import uuid
+
+                        master_ctx = getattr(self._master, "agent_context", None)
+                        parent_depth = (
+                            (master_ctx.extra or {}).get("subagent_depth", 0)
+                            if master_ctx
+                            else 0
+                        )
+                        app_resource = GptAppResource(name=app_code, app_code=app_code)
+                        answer = await app_resource._start_app(
+                            user_input=task,
+                            sender=self._master,
+                            conv_uid=str(uuid.uuid4()),
+                            parent_depth=parent_depth or 0,
+                            extra_info=None,
+                        )
+                        return type(
+                            "SubagentResult",
+                            (),
+                            {
+                                "success": True,
+                                "output": getattr(answer, "content", None) or "",
+                                "error": None,
+                                "artifacts": {},
+                            },
+                        )()
+                    except Exception as e:
+                        return self._fail_result(str(e))
 
             # 创建适配器，并把 subagent 任务提交到进程级统一单例（与 media 任务共用）。
             # spec.delegate 打包已绑定 adapter 的委派协程，使单例无需 subagent_manager
@@ -506,8 +604,51 @@ class ReActMasterAgent(ConversableAgent, Team):
             atm = self._async_task_manager
 
             async def _spawn_agent_task(
-                agent_name: str, task: str, timeout: int = 300, depend_on: str = ""
-            ) -> str:
+                agent_name: str,
+                task: str,
+                timeout: int = 300,
+                depend_on: str = "",
+                wait_for_result: bool = True,
+            ) -> "ToolResult":
+                from gyra.agent.tools import ToolResult
+
+                # 防重复提交：同会话已有同 agent 同内容的在途任务时直接复用，
+                # 不新建（图片/视频生成按次计费，重复提交 = 重复扣费）
+                in_flight = atm.find_in_flight(
+                    conv_id=session_id,
+                    agent_name=agent_name,
+                    task_description=task,
+                )
+                if in_flight is not None:
+                    existing_id = in_flight.spec.task_id
+                    return ToolResult.ok(
+                        output=(
+                            f"相同任务已在后台执行中，已复用、未重复提交。\n"
+                            f"- Task ID: {existing_id}\n"
+                            f"- Agent: {agent_name}\n"
+                            f"- 状态: {in_flight.status.value}\n\n"
+                            f"请勿再次提交相同任务。"
+                            + (
+                                "本轮将结束等待，任务完成后会自动恢复继续。"
+                                if wait_for_result
+                                else "结果完成后会经异步通知注入上下文。"
+                            )
+                        ),
+                        tool_name="spawn_agent_task",
+                        metadata={
+                            "task_id": existing_id,
+                            "agent_name": agent_name,
+                            "reused": True,
+                            "wait_async": bool(wait_for_result),
+                            "async_task": {
+                                "task_id": existing_id,
+                                "kind": "subagent",
+                                "model": agent_name,
+                                "conv_id": session_id,
+                            },
+                        },
+                    )
+
                 spec = AsyncTaskSpec(
                     agent_name=agent_name,
                     task_description=task,
@@ -527,13 +668,33 @@ class ReActMasterAgent(ConversableAgent, Team):
                 )
                 task_id = await atm.spawn(spec)
                 deps_info = f"\n依赖: {spec.depend_on}" if spec.depend_on else ""
-                return (
-                    f"任务已提交到后台执行。\n"
-                    f"- Task ID: {task_id}\n"
-                    f"- Agent: {agent_name}\n"
-                    f"- 描述: {task[:100]}\n"
-                    f"- 超时: {timeout}s{deps_info}\n\n"
-                    f"你可以继续其他工作，稍后用 check_tasks 查看状态或 wait_tasks 获取结果。"
+                wait_note = (
+                    "\n本轮将在此结束并等待任务完成，完成后会自动恢复继续（无需轮询）。"
+                    if wait_for_result
+                    else "\n你可以继续其他工作，结果完成后会经异步通知注入上下文。"
+                )
+                return ToolResult.ok(
+                    output=(
+                        f"任务已提交到后台执行。\n"
+                        f"- Task ID: {task_id}\n"
+                        f"- Agent: {agent_name}\n"
+                        f"- 描述: {task[:100]}\n"
+                        f"- 超时: {timeout}s{deps_info}\n\n"
+                        f"你可以继续其他工作，稍后用 check_tasks 查看状态或 wait_tasks 获取结果。"
+                        f"{wait_note}"
+                    ),
+                    tool_name="spawn_agent_task",
+                    metadata={
+                        "task_id": task_id,
+                        "agent_name": agent_name,
+                        "wait_async": bool(wait_for_result),
+                        "async_task": {
+                            "task_id": task_id,
+                            "kind": "subagent",
+                            "model": agent_name,
+                            "conv_id": session_id,
+                        },
+                    },
                 )
 
             async def _check_tasks(task_ids: str = "") -> str:
@@ -542,7 +703,14 @@ class ReActMasterAgent(ConversableAgent, Team):
                     if task_ids
                     else None
                 )
-                return atm.format_status_table(ids)
+                output = atm.format_status_table(ids)
+                if "未找到" in output:
+                    output += (
+                        "\n\n提示：标记「未找到」的 ID 请核对拼写；SubAgent 异步返回的 "
+                        "sub_conv_id 与 spawn_agent_task 返回的 atask_* 均可直接查询。"
+                        "任务查询不到不代表丢失，请勿因此重复提交生成任务。"
+                    )
+                return output
 
             async def _wait_tasks(task_ids: str = "", timeout: int = 60) -> str:
                 ids = (
@@ -551,6 +719,17 @@ class ReActMasterAgent(ConversableAgent, Team):
                     else []
                 )
                 if ids:
+                    # 对未知 task_id 显式报错，避免误导性的"等待超时"导致重复提交
+                    known = set(atm.known_task_ids(ids))
+                    unknown = [t for t in ids if t not in known]
+                    if unknown and not known:
+                        return (
+                            f"错误：任务 ID 不存在: {unknown}。请核对 ID（SubAgent 异步返回的 "
+                            f"sub_conv_id、spawn_agent_task 返回的 atask_* 均可直接查询）；"
+                            f"不要因查询不到就重复提交生成任务。"
+                        )
+                    if unknown:
+                        ids = [t for t in ids if t in known]
                     results = await atm.wait_all(ids, timeout=timeout)
                 else:
                     results = await atm.wait_any(timeout=timeout)
@@ -571,7 +750,10 @@ class ReActMasterAgent(ConversableAgent, Team):
                 name="spawn_agent_task",
                 func=_spawn_agent_task,
                 description=(
-                    "启动一个后台 Agent 异步任务。任务在后台执行，你可以继续其他工作。"
+                    "启动一个后台 Agent 异步任务。默认 wait_for_result=true（阻塞等待）："
+                    "提交后本轮立即结束，任务完成后自动恢复继续，无需轮询；仅当结果与后续"
+                    "工作完全无关时传 wait_for_result=false。相同内容的任务会被去重复用，"
+                    "不会重复执行（图片/视频生成按次计费，切勿重复提交）。"
                     f"可用 Agent: {', '.join(agent_names)}"
                 ),
                 args={
@@ -600,6 +782,16 @@ class ReActMasterAgent(ConversableAgent, Team):
                         required=False,
                         description="依赖的 task_id 列表，逗号分隔（可选）。这些任务完成后才开始。",
                         default="",
+                    ),
+                    "wait_for_result": ToolParameter(
+                        name="wait_for_result",
+                        type="bool",
+                        required=False,
+                        description=(
+                            "是否需要等待任务结果（默认 true）。true=阻塞等待：提交后本轮结束，"
+                            "完成后自动恢复；false=后台执行：继续其他工作，结果经异步通知注入。"
+                        ),
+                        default=True,
                     ),
                 },
             )
@@ -2193,7 +2385,7 @@ class ReActMasterAgent(ConversableAgent, Team):
         # ========== 通过 ContextEngine 统一构建消息 ==========
         # 单一权威路径：装配(唯一join+排序) → 分段 → 分层+剪枝 → cold重整 → 发送前不变量门禁
         all_conversation_messages = []
-        history_layer_tokens = {"hot": 0, "warm": 0, "cold": 0}
+        history_layer_tokens = {"compressed": 0, "retained": 0}
         build_result = None  # BuildOutput（含 cleanup_hints）
 
         try:
@@ -2204,7 +2396,7 @@ class ReActMasterAgent(ConversableAgent, Team):
             )
             if build_result is not None:
                 all_conversation_messages = build_result.messages
-                history_layer_tokens = build_result.layer_tokens
+                history_layer_tokens = build_result.history_breakdown
                 guard_report = build_result.guard_report
                 if guard_report and guard_report.repairs:
                     logger.info(
@@ -2223,19 +2415,17 @@ class ReActMasterAgent(ConversableAgent, Team):
         if not all_conversation_messages:
             logger.info("[Fallback] HistoryMessageBuilder unavailable, using base tool_messages")
 
-            # 异步任务完成通知注入
-            async_notification = await self._collect_background_notifications()
-            if async_notification:
-                notification_msg = {"role": "user", "content": async_notification}
+            # 异步任务完成通知注入（并入 system，不占 user 末位）
+            _fb_op = []
+            _fb_notif = await self._collect_background_notifications()
+            if _fb_notif:
+                _fb_op.append("[异步任务完成通知]\n" + _fb_notif)
+            _fb_supp = await self._collect_supplemental_user_input(session_id)
+            if _fb_supp:
+                _fb_op.append("[用户补充输入]\n" + _fb_supp)
+            if _fb_op:
                 tool_msgs = kwargs.get("tool_messages") or []
-                tool_msgs.append(notification_msg)
-                kwargs["tool_messages"] = tool_msgs
-
-            # 用户补充输入注入(运行中主动输入)
-            supplemental_input = await self._collect_supplemental_user_input(session_id)
-            if supplemental_input:
-                tool_msgs = kwargs.get("tool_messages") or []
-                tool_msgs.append({"role": "user", "content": supplemental_input})
+                tool_msgs.append({"role": "system", "content": "\n\n".join(_fb_op)})
                 kwargs["tool_messages"] = tool_msgs
 
             if self._system_event_manager:
@@ -2255,54 +2445,46 @@ class ReActMasterAgent(ConversableAgent, Team):
                 **kwargs,
             )
 
-        # ========== 注入 user_prompt 到最后一条 HUMAN 消息 ==========
+        # ========== 注入 user_prompt 到最后一条 HUMAN 消息（跳过历史摘要）==========
+        from .context_engine import SUMMARY_PREFIX as _SUMMARY_PREFIX
         user_prompt = getattr(reply_message, "user_prompt", None) if reply_message else None
         if user_prompt and user_prompt.strip() and all_conversation_messages:
             for i in range(len(all_conversation_messages) - 1, -1, -1):
                 role = all_conversation_messages[i].get("role", "")
                 if role in ("human", "user"):
                     original_content = all_conversation_messages[i].get("content", "")
+                    if isinstance(original_content, str) and original_content.startswith(_SUMMARY_PREFIX):
+                        continue
                     if isinstance(original_content, list):
                         new_content = [{"type": "text", "text": user_prompt}]
-                        new_content.extend(
-                            part for part in original_content if part.get("type") != "text"
-                        )
-                        all_conversation_messages[i] = {
-                            **all_conversation_messages[i],
-                            "content": new_content,
-                        }
+                        new_content.extend(part for part in original_content if part.get("type") != "text")
+                        all_conversation_messages[i] = {**all_conversation_messages[i], "content": new_content}
                     else:
-                        all_conversation_messages[i] = {
-                            **all_conversation_messages[i],
-                            "content": user_prompt,
-                        }
-                    logger.info(
-                        f"[UserPromptInjection] Replaced last human message (index={i})"
-                    )
+                        all_conversation_messages[i] = {**all_conversation_messages[i], "content": user_prompt}
+                    logger.info(f"[UserPromptInjection] Replaced last human message (index={i})")
                     break
 
-        # ========== 异步任务通知注入 ==========
+        # ========== 收集运行时上下文（通知/补充输入/todo）-- 并入 system prompt ==========
+        # 不再作为 role=user 追加到末尾，确保"最后一条 user 消息 = 当前用户指令"。
+        _operational_parts = []
         async_notification = await self._collect_background_notifications()
         if async_notification:
-            all_conversation_messages.append(
-                {"role": "user", "content": async_notification}
-            )
-            logger.info("[ReActMasterAgent] 注入异步任务完成通知到消息列表")
-
-        # ========== 用户补充输入注入（运行中主动输入）==========
+            _operational_parts.append("[异步任务完成通知]\n" + async_notification)
         supplemental_input = await self._collect_supplemental_user_input(session_id)
         if supplemental_input:
-            all_conversation_messages.append(
-                {"role": "user", "content": supplemental_input}
-            )
-            logger.info("[ReActMasterAgent] 注入用户补充输入到消息列表")
+            _operational_parts.append("[用户补充输入]\n" + supplemental_input)
+        try:
+            from gyra.agent.tools.builtin.todo.todo_reminder import build_todo_reminder
+            _todo_reminder = await build_todo_reminder(self.memory, conv_id)
+            if _todo_reminder:
+                _operational_parts.append(_todo_reminder)
+        except Exception as _todo_e:
+            logger.debug(f"[TodoReminder] inject failed: {_todo_e}")
 
         # ========== 构建最终 LLM 消息列表 ==========
         llm_messages = []
 
-        # 1. System message
-        # prompt 参数优先；若无，从 reply_message.system_prompt 获取（load_thinking_messages 设置）；
-        # 再无，从 messages 参数中提取第一个 system 消息
+        # 1. System message（运行时上下文追加到 system prompt 末尾）
         system_prompt_text = prompt
         if not system_prompt_text and reply_message:
             system_prompt_text = getattr(reply_message, "system_prompt", None)
@@ -2314,23 +2496,15 @@ class ReActMasterAgent(ConversableAgent, Team):
                     if m_content:
                         system_prompt_text = str(m_content)
                     break
+        if _operational_parts:
+            _op = "\n\n".join(_operational_parts)
+            system_prompt_text = (system_prompt_text + "\n\n" + _op) if system_prompt_text else _op
         if system_prompt_text:
             llm_messages.extend(_new_system_message(system_prompt_text))
 
-        # 2. 所有对话消息（历史 + 当前）
+        # 2. 所有对话消息（摘要 + 保留区，末条为当前 user prompt）
         if all_conversation_messages:
             llm_messages.extend(all_conversation_messages)
-
-        # 3. Todo 进度 reminder 注入（claude-code 式闭环）
-        # 每轮把当前 todo 状态注入 llm_messages，让 LLM 始终看到进度并自行推进
-        try:
-            from gyra.agent.tools.builtin.todo.todo_reminder import build_todo_reminder
-            _todo_reminder = await build_todo_reminder(self.memory, conv_id)
-            if _todo_reminder:
-                llm_messages.append({"role": "user", "content": _todo_reminder})
-                logger.info("[TodoReminder] 注入 todo 进度 reminder 到 llm_messages")
-        except Exception as _todo_e:
-            logger.debug(f"[TodoReminder] inject failed: {_todo_e}")
 
         logger.info(
             f"[MSG_DEBUG] Final llm_messages: count={len(llm_messages)}, "
@@ -2378,7 +2552,7 @@ class ReActMasterAgent(ConversableAgent, Team):
 
                 # 当前上下文空间占用（实时环形图）：把**当前这一轮真正加载进上下文的
                 # message+tool 占用**推给 SSE。注意不是累计 token 消耗。
-                # 明细分类：system / history / 当前用户消息 / 工具列表 / 分层 hot-warm-cold
+                # 明细分类：system / history / 当前用户消息 / 工具列表 / 分层 compressed/retained
                 # 计算规则：本轮增量用 tiktoken 实时计算，tokenizer 不可用则兜底字符/4。
                 try:
                     from gyra.agent.core.usage_metric import (
@@ -3787,7 +3961,8 @@ class ReActMasterAgent(ConversableAgent, Team):
         """确保 ContextEngine 已初始化（统一上下文管理引擎）。
 
         一次性装配：summarize_fn 闭包 llm_client；events 对接 SystemEventManager；
-        cold_persistence 对接 gpts_cold_segments（不可用时降级内存）。
+        compression_persistence 对接 gpts_cold_segments（不可用时降级内存）；
+        token_counter 注入 tiktoken count_tokens（真实 token 计数）。
         """
         if self._context_engine_initialized and self._context_engine:
             return self._context_engine
@@ -3800,14 +3975,16 @@ class ReActMasterAgent(ConversableAgent, Team):
                 return self._context_engine
             try:
                 from .context_engine import ContextEngine, EngineConfig
-                from .cold_persistence import DbColdPersistenceAdapter
+                from .cold_persistence import DbCompressionPersistenceAdapter
                 from .engine_wiring import SystemEventAdapter, make_summarize_fn
+                from gyra.agent.core.usage_metric import count_tokens
 
                 llm_client = getattr(self, "llm_client", None)
                 self._context_engine = ContextEngine(
                     config=EngineConfig(),
-                    cold_persistence=DbColdPersistenceAdapter(),
+                    compression_persistence=DbCompressionPersistenceAdapter(),
                     summarize_fn=make_summarize_fn(llm_client),
+                    token_counter=count_tokens,
                     events=SystemEventAdapter(self._system_event_manager),
                 )
                 self._context_engine_initialized = True

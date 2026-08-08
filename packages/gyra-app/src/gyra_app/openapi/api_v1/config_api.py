@@ -365,9 +365,20 @@ async def get_agent_llm_config(
 
     db_data = load_agent_llm_dict()
     if db_data:
-        return JSONResponse(
-            content={"success": True, "data": db_data, "source": "database"}
-        )
+        # 经 AgentLLMConfig 解析以应用遗留迁移（把误填进 max_new_tokens 的上下文空间
+        # 迁回 context_window），保证前端展示与运行时口径一致，无需用户手动改配置。
+        try:
+            from gyra_core.config.schema import AgentLLMConfig
+
+            migrated = AgentLLMConfig(**db_data).model_dump(mode="json")
+            return JSONResponse(
+                content={"success": True, "data": migrated, "source": "database"}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to migrate agent_llm for display: {e}")
+            return JSONResponse(
+                content={"success": True, "data": db_data, "source": "database"}
+            )
 
     manager = get_config_manager()
     config = manager.get()

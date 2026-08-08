@@ -38,6 +38,7 @@ interface SpaceModelForm {
   api_key?: string;
   temperature?: number;
   max_new_tokens?: number;
+  context_window?: number;
   top_p?: number;
   reasoning_effort?: string;
   is_active: boolean;
@@ -97,7 +98,7 @@ export function SpaceModelsTab({
 
   const openAdd = () => {
     setEditing(null);
-    form.setFieldsValue({ model: '', provider: '', base_url: '', api_key: '', temperature: undefined, max_new_tokens: undefined, top_p: undefined, reasoning_effort: undefined, is_active: true });
+    form.setFieldsValue({ model: '', provider: '', base_url: '', api_key: '', temperature: undefined, max_new_tokens: undefined, context_window: undefined, top_p: undefined, reasoning_effort: undefined, is_active: true });
     setOpen(true);
   };
 
@@ -110,6 +111,7 @@ export function SpaceModelsTab({
       api_key: '',
       temperature: getCfg(r, 'temperature', undefined),
       max_new_tokens: getCfg(r, 'max_new_tokens', undefined) ?? getCfg(r, 'max_tokens', undefined),
+      context_window: getCfg(r, 'context_window', undefined),
       top_p: getCfg(r, 'top_p', undefined),
       reasoning_effort: getCfg(r, 'reasoning_effort', undefined),
       is_active: !!r.is_active,
@@ -157,6 +159,7 @@ export function SpaceModelsTab({
       // 推理参数(思考深度等):留空表示沿用全局/系统配置
       if (values.temperature != null) config.temperature = values.temperature;
       if (values.max_new_tokens != null) config.max_new_tokens = values.max_new_tokens;
+      if (values.context_window != null) config.context_window = values.context_window;
       if (values.top_p != null) config.top_p = values.top_p;
       if (values.reasoning_effort) config.reasoning_effort = values.reasoning_effort;
       const opt = modelOptions.find((o) => o.value === model);
@@ -289,10 +292,12 @@ export function SpaceModelsTab({
                 const parts: string[] = [];
                 const t = getCfg(r, 'temperature', undefined);
                 const m = getCfg(r, 'max_new_tokens', undefined) ?? getCfg(r, 'max_tokens', undefined);
+                const cw = getCfg(r, 'context_window', undefined);
                 const p = getCfg(r, 'top_p', undefined);
                 const e = getCfg(r, 'reasoning_effort', undefined);
                 if (t != null) parts.push(`temp=${t}`);
                 if (m != null) parts.push(`max=${m}`);
+                if (cw != null) parts.push(`ctx=${cw}`);
                 if (p != null) parts.push(`top_p=${p}`);
                 if (e) parts.push(`effort=${e}`);
                 return parts.length ? parts.join(' · ') : '沿用全局';
@@ -448,6 +453,9 @@ export function SpaceModelsTab({
                   </Form.Item>
                   <Form.Item name="max_new_tokens" label="最大输出 token" tooltip="单次最大生成 token 数,留空沿用全局配置">
                     <InputNumber className="w-full" min={1} step={100} placeholder="沿用全局" />
+                  </Form.Item>
+                  <Form.Item name="context_window" label="上下文空间" tooltip="模型上下文空间(输入+输出总预算),用于上下文压缩与用量统计,留空沿用全局配置">
+                    <InputNumber className="w-full" min={0} step={1024} placeholder="沿用全局" />
                   </Form.Item>
                   <Form.Item name="top_p" label="Top P" tooltip="核采样参数,留空沿用全局配置">
                     <InputNumber className="w-full" min={0} max={1} step={0.05} placeholder="沿用全局" />

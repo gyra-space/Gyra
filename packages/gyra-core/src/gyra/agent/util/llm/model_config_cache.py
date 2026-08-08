@@ -3,7 +3,40 @@ import logging
 from typing import Dict, Any, Optional, List, Tuple
 from copy import deepcopy
 
+from gyra_core.config.schema import (
+    DEFAULT_MAX_NEW_TOKENS,
+    LEGACY_MAX_TOKENS_AS_CONTEXT_THRESHOLD,
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _migrate_legacy_token_fields(cfg: Dict[str, Any]) -> None:
+    """遗留迁移：旧配置只有 max_new_tokens/max_tokens、没有 context_window，
+    且常把上下文空间（如 256K）误填进 max_new_tokens。超过阈值时迁回 context_window，
+    输出上限重置为默认，避免作为 max_tokens 发出触发 provider 上限报错。
+
+    原地修改 cfg；已显式设置 context_window 时跳过（幂等）。与
+    ``LLMProviderModelConfig.model_post_init`` 保持同一口径，供 raw dict 路径
+    （parse_provider_configs / 空间级模型 / 直接 register_configs）复用。
+    """
+    if cfg.get("context_window"):
+        return
+    legacy = cfg.get("max_new_tokens")
+    if legacy is None:
+        legacy = cfg.get("max_tokens")
+    if isinstance(legacy, int) and legacy > LEGACY_MAX_TOKENS_AS_CONTEXT_THRESHOLD:
+        logger.info(
+            "migrate legacy max_new_tokens=%s -> context_window for model %s "
+            "(reset max_new_tokens=%d)",
+            legacy,
+            cfg.get("model") or cfg.get("name"),
+            DEFAULT_MAX_NEW_TOKENS,
+        )
+        cfg["context_window"] = legacy
+        cfg["max_new_tokens"] = DEFAULT_MAX_NEW_TOKENS
+        if "max_tokens" in cfg:
+            cfg["max_tokens"] = DEFAULT_MAX_NEW_TOKENS
 
 # 当前请求/任务作用域内的空间级模型配置覆盖(ContextVar)。
 # 空间绑定 llm_model 资源时,空间级模型/token 优先于全局缓存,实现"空间专属 token"的管控。
@@ -41,7 +74,7 @@ def _normalize_space_model(config: Optional[Dict[str, Any]]) -> Optional[Dict[st
             logger.warning(
                 f"resolve space model api_key_ref failed: {e}"
             )
-    return {
+    normalized = {
         "provider": provider,
         "model": model,
         "protocol": protocol,
@@ -51,6 +84,7 @@ def _normalize_space_model(config: Optional[Dict[str, Any]]) -> Optional[Dict[st
         # 透传模型推理参数:空间级配置可覆盖温度/思考深度等,未配置的字段回退全局。
         "temperature": config.get("temperature"),
         "max_new_tokens": config.get("max_new_tokens") or config.get("max_tokens"),
+        "context_window": config.get("context_window"),
         "top_p": config.get("top_p"),
         "reasoning_effort": config.get("reasoning_effort"),
         # 透传模型元数据:空间绑定模型未在全局注册时,仍能保留多模态/能力/类型,
@@ -59,6 +93,9 @@ def _normalize_space_model(config: Optional[Dict[str, Any]]) -> Optional[Dict[st
         "capabilities": config.get("capabilities") or ["text"],
         "is_multimodal": bool(config.get("is_multimodal", config.get("supports_vision", False))),
     }
+    # 遗留迁移:空间级模型同样可能把上下文空间误填进 max_new_tokens
+    _migrate_legacy_token_fields(normalized)
+    return normalized
 
 
 def _space_model_key(config: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -494,6 +531,8 @@ def parse_provider_configs(
                     )
 
             config_key = f"{provider_name}/{model_name}"
+            # 遗留迁移：把误填进 max_new_tokens 的上下文空间迁回 context_window
+            _migrate_legacy_token_fields(final_conf_dict)
             model_configs[config_key] = final_conf_dict
 
     logger.info(

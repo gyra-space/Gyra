@@ -47,6 +47,11 @@ class DbSpecEntity(Model):
     relations = Column(
         Text, nullable=True, comment="JSON: detected table relationships"
     )
+    summary = Column(
+        Text,
+        nullable=True,
+        comment="LLM-generated DB-level overview (主题/主要表/适用分析场景)",
+    )
     status = Column(
         String(32),
         nullable=False,
@@ -113,6 +118,7 @@ class DbSpecDao(BaseDao):
             "table_count": entity.table_count,
             "group_config": group_config,
             "relations": relations or [],
+            "summary": entity.summary,
             "status": entity.status,
             "gmt_created": (
                 entity.gmt_created.strftime("%Y-%m-%d %H:%M:%S")

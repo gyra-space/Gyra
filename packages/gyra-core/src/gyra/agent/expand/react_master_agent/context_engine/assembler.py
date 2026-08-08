@@ -15,7 +15,7 @@ join 规则（每个 tool_call）：
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .text_utils import (
     DEFAULT_CHARS_PER_TOKEN,
@@ -39,8 +39,16 @@ _USER_MESSAGE_TOOL = "__user_message__"
 class TimelineAssembler:
     """唯一真相源：把 messages + work_logs join 成 Timeline。"""
 
-    def __init__(self, chars_per_token: int = DEFAULT_CHARS_PER_TOKEN):
+    def __init__(
+        self,
+        chars_per_token: int = DEFAULT_CHARS_PER_TOKEN,
+        token_counter: Optional[Callable[[str], int]] = None,
+    ):
         self.chars_per_token = chars_per_token
+        # token 计数器：生产注入 tiktoken count_tokens（真实词表），默认 chars//4 估算
+        self.token_counter = token_counter or (
+            lambda t: estimate_tokens_text(t, self.chars_per_token)
+        )
 
     # ------------------------------------------------------------------ #
     # 公共入口
@@ -168,9 +176,7 @@ class TimelineAssembler:
             if not content:
                 return None
             unit = TimelineUnit(kind=UnitKind.USER, user_content=content, **base)
-            unit.tokens = estimate_tokens_text(
-                extract_text_content(content), self.chars_per_token
-            )
+            unit.tokens = self.token_counter(extract_text_content(content))
             return unit
 
         # system / 旧 tool 消息：跳过（tool 结果绑在 CALL 内，不独立存在）
@@ -195,7 +201,7 @@ class TimelineAssembler:
 
         if ai_text and ai_text.strip():
             unit = TimelineUnit(kind=UnitKind.AI_TEXT, ai_text=ai_text, **base)
-            unit.tokens = estimate_tokens_text(ai_text, self.chars_per_token)
+            unit.tokens = self.token_counter(ai_text)
             return unit
 
         return None
@@ -231,8 +237,8 @@ class TimelineAssembler:
         binding.summary = getattr(entry, "summary", None)
         binding.work_entry = entry
         binding.result_status = ResultStatus.OK if success else ResultStatus.ERROR
-        binding.tokens = getattr(entry, "tokens", 0) or estimate_tokens_text(
-            binding.result_text or "", self.chars_per_token
+        binding.tokens = getattr(entry, "tokens", 0) or self.token_counter(
+            binding.result_text or ""
         )
         return binding
 
@@ -278,15 +284,11 @@ class TimelineAssembler:
     def _call_unit_tokens(
         self, ai_text: str, bindings: List[ToolCallBinding]
     ) -> int:
-        total = estimate_tokens_text(ai_text or "", self.chars_per_token)
+        total = self.token_counter(ai_text or "")
         for b in bindings:
-            total += b.tokens or estimate_tokens_text(
-                b.result_text or "", self.chars_per_token
-            )
+            total += b.tokens or self.token_counter(b.result_text or "")
             # tool_call 声明本身（name + args）也占 token
-            total += estimate_tokens_text(
-                (b.tool_name or "") + str(b.args), self.chars_per_token
-            )
+            total += self.token_counter((b.tool_name or "") + str(b.args))
         return max(1, total)
 
     @staticmethod

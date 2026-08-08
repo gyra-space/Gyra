@@ -110,8 +110,8 @@ export interface UsageMetrics {
   user_msg?: number;
   /** 工具列表占用 token */
   tools?: number;
-  /** 分层 hot/warm/cold 占用 */
-  layers?: { hot: number; warm: number; cold: number };
+  /** 分层 compressed/retained 占用 */
+  layers?: { compressed: number; retained: number };
 }
 
 /**

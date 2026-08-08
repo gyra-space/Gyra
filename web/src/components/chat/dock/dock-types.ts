@@ -37,13 +37,17 @@ export interface DockWidgetProps {
 }
 
 /**
- * Dock widget 注册项：tab 化后 DockPanel 不认识具体 payload schema，
- * label 与活跃度推导由注册项提供；新增 widget 仍只需注册一行。
+ * Dock widget 注册项：DockPanel 不认识具体 payload schema，
+ * 摘要/进度/活跃度推导由注册项提供；新增 widget 仍只需注册一项。
  */
 export interface DockWidgetRegistration {
   component: React.ComponentType<DockWidgetProps>;
-  /** tab label，如 `待办 2/5`。 */
-  getLabel: (payload: Record<string, any>) => React.ReactNode;
-  /** 是否有进行中内容（驱动 tab 脉冲点与自动展开）。 */
+  /** 折叠行左侧的 widget 图标（多 widget 时作切换器）。 */
+  icon: React.ReactNode;
+  /** 折叠行摘要主文本（如进行中/最近一条待办的标题）。 */
+  getTitle: (payload: Record<string, any>) => React.ReactNode;
+  /** 折叠行右侧进度文本（如 `3/3`）。 */
+  getProgress?: (payload: Record<string, any>) => React.ReactNode;
+  /** 是否有进行中内容（驱动脉冲点与结束自动收起）。 */
   isRunning: (payload: Record<string, any>) => boolean;
 }

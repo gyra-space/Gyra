@@ -215,7 +215,18 @@ class TestScanAndRecover:
     async def test_stale_no_pending_triggers_main_retry(self):
         """心跳陈旧 + 无 pending_subagents + lease 抢占成功 → 触发 main retry。"""
         mock_agent_chat = MagicMock()
-        mock_agent_chat.aggregation_chat = AsyncMock()
+
+        # aggregation_chat 是异步生成器：mock 为返回可 async for 消费的生成器
+        consumed = []
+
+        def _agg(**kwargs):
+            async def _gen():
+                consumed.append(True)
+                yield ("task", "chunk", "conv_stale")
+
+            return _gen()
+
+        mock_agent_chat.aggregation_chat = MagicMock(side_effect=_agg)
         daemon = RecoveryDaemon(agent_chat=mock_agent_chat)
 
         conv = MagicMock()
@@ -223,6 +234,9 @@ class TestScanAndRecover:
         conv.last_heartbeat = datetime.utcnow() - timedelta(seconds=200)  # 陈旧
         conv.lease_expires_at = None
         conv.extra = None
+        mock_agent_chat.gpts_conversations.get_by_conv_id = MagicMock(
+            return_value=conv
+        )
 
         with patch(
             "gyra_serve.agent.db.gpts_conversations_db.GptsConversationsDao.get_running_convs",
@@ -232,17 +246,24 @@ class TestScanAndRecover:
         ), patch(
             "gyra_serve.agent.recovery_daemon.acquire_lease",
             new=AsyncMock(return_value=True),
+        ), patch(
+            "gyra_serve.agent.recovery_daemon.touch_heartbeat",
         ):
             stats = await daemon.scan_and_recover()
+            # 让 resume 的后台 task（asyncio.create_task）跑完
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
 
         assert stats["scanned"] == 1
         assert stats["stale_recovered"] == 1
         assert stats["fresh_skipped"] == 0
-        # aggregation_chat 被调用，is_retry_chat=True
-        mock_agent_chat.aggregation_chat.assert_awaited_once()
+        # aggregation_chat 被调用且生成器被真正消费（async for），
+        # 走 WAITING 检测的 is_retry_chat 恢复路径
+        mock_agent_chat.aggregation_chat.assert_called_once()
+        assert consumed == [True]
         call_kwargs = mock_agent_chat.aggregation_chat.call_args.kwargs
         assert call_kwargs["conv_id"] == "conv_stale"
-        assert call_kwargs["is_retry_chat"] is True
+        assert call_kwargs["gpts_conversations"] == [conv]
 
     @pytest.mark.asyncio
     async def test_stale_with_pending_calls_coordinator_recover(self):

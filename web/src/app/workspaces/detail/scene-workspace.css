@@ -53,6 +53,9 @@
 @media (max-width: 1535px) {
   .ws-scene-shell {
     zoom: 0.92;
+    /* 小屏 agent 对话优先:中间区此时大量留白,压低 space 最小宽度、加大 agent 占比 */
+    --ws-agent-w: clamp(400px, 30vw, 520px);
+    --ws-space-min: clamp(440px, 36vw, 720px);
   }
   /* 内嵌 ChatSession(子 agent 对话)的 manus 根节点自带小屏 zoom:0.9,
      场景壳已整体缩放,此处复原避免嵌套双重缩放(0,2,0 优先级高于 .manus-chat-root 的 0,1,0) */
@@ -1531,10 +1534,10 @@
 
 /* === 响应式断点(置于文件末尾,确保覆盖上文同优先级基础规则) === */
 
-/* 中屏(900–1279px): rail 收为悬浮抽屉,主区两列 */
+/* 中屏(900–1279px): rail 收为悬浮抽屉,主区两列;agent 随视口加宽(对话优先) */
 @media (max-width: 1279px) and (min-width: 900px) {
   .ws-scene-shell {
-    grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+    grid-template-columns: minmax(0, 1fr) clamp(340px, 36vw, 440px);
   }
   .ws-scene-shell__rail {
     position: absolute;

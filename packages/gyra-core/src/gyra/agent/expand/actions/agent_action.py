@@ -29,7 +29,9 @@ _AGENT_START_PROMPT = """\
   - agent_id: 目标子 Agent 的唯一标识（必填，自模板 spawn 暂未实现）
   - input: 任务目标指令内容（必填）
   - mode: "sync"（默认，等待子 Agent 完成）或 "async"（后台运行，全完成后回调主 resume；单进程异步优先，分布式调度未来演进）
-  - **视频生成等长耗时任务必须用 mode="async"**（或传 media.kind="video" 自动走异步），避免主 Agent 被同步阻塞数分钟。异步时主会话进入 WAITING，子 Agent 后台完成后自动触发主 resume。
+  - wait: 异步模式专用（默认 true）。true=阻塞等待：派发后本轮立即结束、主会话进入 WAITING，子 Agent 完成后自动触发主 resume；false=后台执行：你继续处理其他工作，结果经异步通知注入上下文。
+  - **视频生成等长耗时任务必须用 mode="async"**（或传 media.kind="video" 自动走异步），避免主 Agent 被同步阻塞数分钟。
+  - **同一任务请勿重复派发**：相同 agent + 相同任务的重复调用会被去重并复用在途任务（图片/视频生成按次计费）。
   - background: 相关背景知识（可选）
 """
 
@@ -389,6 +391,18 @@ class SubAgent(AgentAction, FunctionTool):
                 required=False,
                 default="sync"
             ),
+            "wait": ToolParameter(
+                type="bool",
+                name="wait",
+                description=(
+                    '异步(mode="async")时是否需要等待子 Agent 结果（默认 true）。'
+                    'true=阻塞等待: 派发后本轮立即结束, 子 Agent 完成后自动恢复继续; '
+                    'false=后台执行: 你继续处理其他工作, 结果经异步通知注入上下文。'
+                    '仅当结果与后续工作完全无关时才用 false。'
+                ),
+                required=False,
+                default=True
+            ),
             "background": ToolParameter(
                 type="string",
                 name="background",
@@ -481,6 +495,9 @@ class SubAgent(AgentAction, FunctionTool):
             if tool_call.args.get("media"):
                 extra_info = extra_info or {}
                 extra_info["media"] = tool_call.args.get("media")
+            if "wait" in tool_call.args:
+                extra_info = extra_info or {}
+                extra_info["wait"] = tool_call.args.get("wait")
 
             # 解析 mode：优先 mode 参数，回退到 deprecated sync 参数
             explicit_mode = tool_call.args.get("mode")
@@ -602,14 +619,50 @@ class SubAgent(AgentAction, FunctionTool):
             # 新 sub_conv_id
             sub_conv_id = str(uuid.uuid4())
 
-            # 注册到 coordinator（持久化 pending_subagents）
-            await coordinator.register_subagent(
+            # 注册到 coordinator（持久化 pending_subagents）；同 agent 同任务的
+            # 在途子 agent 会被去重复用（created=False），避免昂贵任务重复扣费
+            handle, created = await coordinator.register_subagent(
                 main_conv_id=main_conv_id,
                 sub_conv_id=sub_conv_id,
                 mode=SubAgentMode.ASYNC,
                 agent_name=action_input.agent_name,
                 task=action_input.content,
             )
+
+            metrics.end_time_ms = time.time_ns() // 1_000_000
+            # 阻塞等待（默认）：跳出本轮 loop、会话 WAITING，子 agent 完成后 resume；
+            # wait=False = fire-and-forget：继续 loop，结果经异步通知注入上下文
+            wait_flag = (action_input.extra_info or {}).get("wait", True)
+            wait_flag = bool(wait_flag) if wait_flag is not None else True
+            if not created:
+                logger.info(
+                    f"[SubAgent.async] dedup: reuse in-flight sub_conv="
+                    f"{handle.sub_conv_id} for main={main_conv_id}"
+                )
+                return ActionOutput.from_dict({
+                    "action_id": self.action_uid,
+                    "is_exe_success": True,
+                    "thoughts": action_input.thought,
+                    "action": self.name,
+                    "name": self.name,
+                    "state": Status.WAITING.value if wait_flag else Status.RUNNING.value,
+                    "wait_async": wait_flag,
+                    "action_input": action_input.to_dict(),
+                    "content": (
+                        f"相同任务已有子 Agent 在后台执行中 "
+                        f"(sub_conv_id={handle.sub_conv_id})，已复用该任务、未重复提交。\n"
+                        f"请勿再次提交相同任务（图片/视频生成按次计费）。"
+                        + (
+                            "本轮将结束等待，子 Agent 完成后会自动恢复继续。"
+                            if wait_flag
+                            else "结果完成后会经异步通知注入上下文。"
+                        )
+                    ),
+                    "observations": (
+                        f"async subagent dedup: reuse sub_conv_id={handle.sub_conv_id}"
+                    ),
+                    "metrics": metrics,
+                })
 
             # 后台跑子 agent，不 await
             asyncio.create_task(
@@ -624,7 +677,6 @@ class SubAgent(AgentAction, FunctionTool):
                 )
             )
 
-            metrics.end_time_ms = time.time_ns() // 1_000_000
             logger.info(
                 f"[SubAgent.async] spawned sub_conv={sub_conv_id} for main={main_conv_id}"
             )
@@ -634,11 +686,18 @@ class SubAgent(AgentAction, FunctionTool):
                 "thoughts": action_input.thought,
                 "action": self.name,
                 "name": self.name,
-                "state": Status.RUNNING.value,
+                "state": Status.WAITING.value if wait_flag else Status.RUNNING.value,
+                "wait_async": wait_flag,
                 "action_input": action_input.to_dict(),
                 "content": (
-                    f"子 Agent 已后台启动 (sub_conv_id={sub_conv_id})，"
-                    f"主会话将在所有子 Agent 完成后自动 resume。"
+                    f"子 Agent 已后台启动 (sub_conv_id={sub_conv_id})。\n"
+                    f"请勿重复提交相同任务（图片/视频生成按次计费）。"
+                    + (
+                        "本轮将在此结束并等待子 Agent 完成，完成后会自动恢复继续（无需轮询）。"
+                        if wait_flag
+                        else "你可以继续其他工作，结果完成后会经异步通知注入上下文；"
+                             "可用 check_tasks/wait_tasks 以该 sub_conv_id 查询进度。"
+                    )
                 ),
                 "observations": (
                     f"async subagent spawned: sub_conv_id={sub_conv_id}"

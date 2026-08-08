@@ -1306,6 +1306,10 @@ class ConversableAgent(Role, Agent):
                         if any([act_out.ask_user for act_out in act_outs]):
                             logger.info(f"Agent {self.name} paused for user input (ask_user)")
                             break
+                        ## 异步任务阻塞等待：跳出本轮 loop，等后台任务完成后 resume
+                        if any([getattr(act_out, "wait_async", False) for act_out in act_outs]):
+                            logger.info(f"Agent {self.name} paused for async task (wait_async)")
+                            break
                     else:
                         # 记录action的成功消息
                         if action_system_message:
@@ -1343,6 +1347,10 @@ class ConversableAgent(Role, Agent):
                         if any([act_out.ask_user for act_out in act_outs]):
                             logger.info(f"Agent {self.name} paused for user input (ask_user)")
                             break
+                        ## 异步任务阻塞等待：跳出本轮 loop，等后台任务完成后 resume
+                        if any([getattr(act_out, "wait_async", False) for act_out in act_outs]):
+                            logger.info(f"Agent {self.name} paused for async task (wait_async)")
+                            break
 
             reply_message.success = is_success
 
@@ -1361,12 +1369,13 @@ class ConversableAgent(Role, Agent):
                             ai_message = self._extract_text_from_content(ai_message)
                         except Exception:
                             pass
-                    # interrupted = ask_user paused the loop OR the action
+                    # interrupted = ask_user/wait_async paused the loop OR the action
                     # output reports a non-terminal state. The prefetch hook
                     # (tier 0) reads this to skip warming the cache with a
                     # query that didn't reach a real assistant response.
                     interrupted = any(
-                        getattr(a, "ask_user", False) for a in act_outs
+                        getattr(a, "ask_user", False) or getattr(a, "wait_async", False)
+                        for a in act_outs
                     ) if act_outs else False
                     # `round` MUST be the conversation turn number (not
                     # current_retry_counter, which resets to 0 every
@@ -2378,12 +2387,33 @@ class ConversableAgent(Role, Agent):
             except Exception:
                 return default_length
 
+        model_name = model_list[0] if model_list else None
+        if not model_name:
+            return default_length
+
+        # 优先用模型管理页配置的上下文空间（context_window），与用量统计/压缩口径一致；
+        # 未配置时再回退 provider metadata。
+        try:
+            from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+            cfg = ModelConfigCache.get_config(model_name)
+            if cfg:
+                ctx_win = cfg.get("context_window")
+                if isinstance(ctx_win, int) and ctx_win > 0:
+                    logger.info(
+                        f"llm token limit model_name: {model_name}, "
+                        f"context_window(configured): {ctx_win}"
+                    )
+                    return ctx_win
+        except Exception as e:
+            logger.warning(f"Failed to read context_window from ModelConfigCache: {e}")
+
         if self.llm_client:
             try:
-                llm_metadata = await self.llm_client.get_model_metadata(model_list[0])
+                llm_metadata = await self.llm_client.get_model_metadata(model_name)
                 context_length = llm_metadata.context_length
                 logger.info(
-                    f"llm token limit model_name: {model_list[0]}, context_length: {context_length}"
+                    f"llm token limit model_name: {model_name}, context_length: {context_length}"
                 )
                 return context_length or default_length
             except Exception as e:

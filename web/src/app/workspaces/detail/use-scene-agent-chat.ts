@@ -6,6 +6,8 @@ import type { WorkspaceEvent } from '@/hooks/use-chat';
 import type { UsageMetrics } from '@/types/context-metrics';
 import { useChatPolling, type ConversationState } from '@/hooks/use-chat-polling';
 import { stopChat, type ChatQueryResponse } from '@/client/api/chat';
+import { applyDockFrame } from '@/components/chat/dock/apply-dock-frame';
+import type { DockWidget } from '@/components/chat/dock/dock-types';
 import type { AgentStep } from './agent-types';
 import { parseAgentSteps } from './parse-agent-steps';
 import { parseWorkspaceView } from './parse-workspace-view';
@@ -37,6 +39,8 @@ interface UseSceneAgentChatResult {
   convState: ConversationState;
   /** SSE usage_metric 事件推送的上下文消耗(实时) */
   usageMetrics: UsageMetrics | null;
+  /** Composer Dock 协议:输入框上方固定区域 widget map(by id),由 SSE onDock/轮询 dock 帧合并而来 */
+  dockWidgets: Record<string, DockWidget>;
   send: (payload: SceneAgentSendPayload) => void;
   abort: () => void;
   clearSteps: () => void;
@@ -69,6 +73,7 @@ export function useSceneAgentChat({
   const [error, setError] = useState<string | null>(null);
   const [lastInput, setLastInput] = useState<SceneAgentSendPayload | null>(null);
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(EMPTY_WORKSPACE_VIEW);
+  const [dockWidgets, setDockWidgets] = useState<Record<string, DockWidget>>({});
   const abortRef = useRef<AbortController | null>(null);
   // 乐观插入的用户消息:发送即上屏,服务端回显同文本 user 步骤后移除,避免重复
   const optimisticUserRef = useRef<{ id: string; text: string } | null>(null);
@@ -121,6 +126,7 @@ export function useSceneAgentChat({
   const clearSteps = useCallback(() => {
     setSteps([]);
     setWorkspaceView(EMPTY_WORKSPACE_VIEW);
+    setDockWidgets({});
     optimisticUserRef.current = null;
   }, []);
 
@@ -139,6 +145,10 @@ export function useSceneAgentChat({
     (res: ChatQueryResponse) => {
       // 过滤 convUid 快速切换时滞后的旧会话响应,避免脏合并
       if (res.conv_id && convUid && res.conv_id !== convUid) return;
+      // 轮询链路:回放 dock 帧,与 SSE onDock 共用同一份合并逻辑
+      if (res.dock) {
+        setDockWidgets((prev) => applyDockFrame(prev, res.dock!));
+      }
       const parsed = parseSceneAgentWorkspaceString(res.vis_final);
       if (parsed && Array.isArray(parsed.execution)) {
         setWorkspaceView((prev) => parseWorkspaceView(parsed, prev));
@@ -276,6 +286,7 @@ export function useSceneAgentChat({
           setLoading(false);
         },
         onWorkspaceEvent: handleWorkspaceEventInternal,
+        onDock: (frame) => setDockWidgets((prev) => applyDockFrame(prev, frame)),
       });
     },
     [convUid, workspaceId, taskId, focusArtifactId, chat, appendStep, handleWorkspaceEventInternal, onConversationStart],
@@ -293,5 +304,5 @@ export function useSceneAgentChat({
     }
   }, [convUid]);
 
-  return { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, send, abort, clearSteps, clearWorkspaceView };
+  return { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, dockWidgets, send, abort, clearSteps, clearWorkspaceView };
 }

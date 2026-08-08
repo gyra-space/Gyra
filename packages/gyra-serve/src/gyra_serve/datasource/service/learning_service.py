@@ -610,6 +610,12 @@ class SchemaLearningService:
             # Mask sample data at rest, now that sensitive columns are known.
             self._mask_stored_sample_data(datasource_id)
 
+            # Generate DB-level overview (LLM synopsis from per-table summaries;
+            # fail-soft: None when LLM unavailable -- does not block learning)
+            overview = self._generate_db_overview(
+                db_name, db_type, spec_entries, total_tables, group_config
+            )
+
             # Save db-level spec
             spec_data = {
                 "db_name": db_name,
@@ -620,6 +626,7 @@ class SchemaLearningService:
                     json.dumps(group_config, ensure_ascii=False)
                     if group_config else None
                 ),
+                "summary": overview,
                 "status": "ready",
             }
             if relations:
@@ -1177,6 +1184,89 @@ class SchemaLearningService:
 
         logger.warning(
             f"[LLM-GEN] No summary generated for {table_name}"
+        )
+        return None
+
+    def _generate_db_overview(
+        self,
+        db_name: str,
+        db_type: str,
+        spec_entries: List[Dict[str, Any]],
+        table_count: int,
+        group_config: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Generate an LLM DB-level overview from per-table summaries.
+
+        Synthesizes a short synopsis (主题/主要表/适用分析场景) used as the
+        resource-injection introduction for a managed datasource. Input is
+        capped for large DBs (group structure + top-N by row_count) so the
+        prompt stays bounded regardless of table count. Fail-soft: returns
+        None when the LLM is unavailable or the call fails.
+        """
+        if not self._get_llm_config():
+            return None
+
+        logger.info(f"[LLM-GEN] Generating overview for db: {db_name}")
+
+        # Cap input for large DBs: feed group structure + top-N summaries.
+        MAX_FULL = 50
+        MAX_TOPN = 15
+        group_section = ""
+        if table_count <= MAX_FULL:
+            entries_used = spec_entries
+        else:
+            def _rc(e: Dict[str, Any]) -> int:
+                try:
+                    return int(e.get("row_count") or 0)
+                except (TypeError, ValueError):
+                    return 0
+
+            entries_used = sorted(spec_entries, key=_rc, reverse=True)[:MAX_TOPN]
+            groups = (group_config or {}).get("groups") or {}
+            group_section = (
+                "表分组(按前缀):\n"
+                + "\n".join(f"  {g}: {n} 张表" for g, n in groups.items())
+                + "\n(下列为按数据量取样的代表性表)\n"
+            )
+
+        table_lines = []
+        for e in entries_used:
+            tname = e.get("table_name", "")
+            tsum = (e.get("summary") or "").strip()
+            rc = e.get("row_count")
+            rc_str = f", {rc} 行" if rc is not None else ""
+            if tsum:
+                table_lines.append(f"  {tname}{rc_str}: {tsum}")
+            else:
+                table_lines.append(f"  {tname}{rc_str}")
+        table_section = "\n".join(table_lines) or "(无表摘要)"
+
+        prompt = (
+            "你是一个数据库专家。根据以下数据库的表清单与逐表摘要,用中文写一段简介:"
+            "这个库的主题/业务领域、主要表分类(或最重要的几张表)、适合支撑什么分析。"
+            "不超过200字,只输出简介本身,不要输出其他任何内容。\n\n"
+            f"数据库: {db_name} (类型: {db_type}, 共 {table_count} 张表)\n"
+            f"{group_section}"
+            f"表摘要:\n{table_section}\n"
+        )
+
+        result = self._call_llm(prompt, max_tokens=300)
+        if result:
+            if (
+                len(result) > 2
+                and result[0] in ('"', "'", "“")
+                and result[-1] in ('"', "'", "”")
+            ):
+                result = result[1:-1]
+            if len(result) > 200:
+                result = result[:200]
+            logger.info(
+                f"[LLM-GEN] Overview for {db_name}: {result[:80]}"
+            )
+            return result
+
+        logger.warning(
+            f"[LLM-GEN] No overview generated for {db_name}"
         )
         return None
 

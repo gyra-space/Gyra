@@ -45,6 +45,11 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() if dt else None
 
 
+def normalize_task_text(text: str) -> str:
+    """任务文本归一化（小写 + 压缩空白），供防重复提交的 dedup key 使用。"""
+    return " ".join((text or "").split()).lower()
+
+
 # ==================== 数据模型 ====================
 
 
@@ -452,6 +457,117 @@ class AsyncTaskManager:
         )
 
         return spec.task_id
+
+    # ==================== 外部任务镜像（SubAgent async 状态桥接） ====================
+
+    async def register_external(self, spec: AsyncTaskSpec) -> str:
+        """登记一个由外部驱动生命周期的任务（不启动任何执行体）。
+
+        用于 SubAgent mode=async：执行体在 SubagentCoordinator（后台子会话），
+        这里只镜像状态，使 check_tasks/wait_tasks 能用 sub_conv_id 查询与等待。
+        spec.context 需标记 ``external=True``，AsyncTaskCoordinator 对这类任务
+        只消费不触发 resume（resume 仍由外部驱动方负责）。
+
+        幂等：task_id 已存在时直接返回原 id。
+        """
+        existing = self._tasks.get(spec.task_id)
+        if existing is not None:
+            return spec.task_id
+
+        spec.context = {**(spec.context or {}), "external": True}
+        state = AsyncTaskState(spec=spec)
+        state.status = AsyncTaskStatus.RUNNING
+        state.started_at = datetime.now()
+        self._tasks[spec.task_id] = state
+
+        loop = asyncio.get_running_loop()
+        self._futures[spec.task_id] = loop.create_future()
+
+        self._total_spawned += 1
+        self._persist(state)
+        logger.info(
+            f"[AsyncTaskManager] Registered external task {spec.task_id}: "
+            f"agent={spec.agent_name or spec.model}, conv={spec.conv_id}"
+        )
+        return spec.task_id
+
+    def complete_external(
+        self,
+        task_id: str,
+        result: Optional[Any] = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        """把外部任务置为终态（由外部驱动方回调）。
+
+        Returns:
+            是否成功置终态；任务不存在或已是终态时返回 False。
+        """
+        state = self._tasks.get(task_id)
+        if state is None or state.is_terminal():
+            return False
+
+        if error:
+            state.status = AsyncTaskStatus.FAILED
+            state.error = error
+            self._total_failed += 1
+        else:
+            state.status = AsyncTaskStatus.COMPLETED
+            state.result = result
+            self._total_completed += 1
+        state.completed_at = datetime.now()
+
+        self._persist(state)
+        self._resolve_future(task_id, state)
+        logger.info(
+            f"[AsyncTaskManager] External task {task_id} finished: "
+            f"status={state.status.value}, elapsed={state.elapsed_seconds():.1f}s"
+        )
+        return True
+
+    # ==================== 防重复提交查询 ====================
+
+    def known_task_ids(self, task_ids: List[str]) -> List[str]:
+        """返回 task_ids 中本管理器已知的部分（供工具层对未知 ID 显式报错）。"""
+        return [tid for tid in task_ids if tid in self._tasks]
+
+    def find_in_flight(
+        self,
+        *,
+        conv_id: str = "",
+        agent_name: str = "",
+        kind: str = "",
+        model: str = "",
+        task_description: str = "",
+    ) -> Optional["AsyncTaskState"]:
+        """按 dedup key 查找内容相同的在途（非终态）任务。
+
+        dedup key = (conv_id, agent_name, kind, model, 归一化 task_description)；
+        提供的字段必须全部相等才算命中，task_description 为空时不参与匹配
+        （此时必须至少提供 agent_name/kind/model 之一，避免误匹配）。
+        仅进程内存态生效（跨进程查 ledger 代价高，暂不覆盖）。
+
+        用于昂贵任务（图片/视频生成、子 Agent 委派）提交前去重：命中即复用，
+        不重复提交、不重复扣费。
+        """
+        norm = normalize_task_text(task_description)
+        if not norm and not (agent_name or kind or model):
+            return None
+        for state in self._tasks.values():
+            if state.is_terminal():
+                continue
+            spec = state.spec
+            if (spec.conv_id or "") != (conv_id or ""):
+                continue
+            if agent_name and (spec.agent_name or "") != agent_name:
+                continue
+            if kind and (spec.kind or "") != kind:
+                continue
+            if model and (spec.model or "") != model:
+                continue
+            if norm and normalize_task_text(spec.task_description) != norm:
+                continue
+            return state
+        return None
 
     # ==================== 任务执行 ====================
 
@@ -968,4 +1084,5 @@ __all__ = [
     "AsyncTaskState",
     "AsyncTaskManager",
     "TaskLedger",
+    "normalize_task_text",
 ]

@@ -64,8 +64,8 @@ function ContextUsageRing({
   const circumference = 2 * Math.PI * r;
   const dash = circumference * ratio;
   const pct = (ratio * 100).toFixed(1);
-  const layers = metrics.layers ?? { hot: 0, warm: 0, cold: 0 };
-  const layerTotal = layers.hot + layers.warm + layers.cold;
+  const layers = metrics.layers ?? { compressed: 0, retained: 0 };
+  const layerTotal = layers.compressed + layers.retained;
   return (
     <Tooltip
       title={
@@ -79,7 +79,7 @@ function ContextUsageRing({
           )}
           {layerTotal > 0 && (
             <div className="text-gray-400">
-              分层 Hot {formatTokens(layers.hot)} · Warm {formatTokens(layers.warm)} · Cold {formatTokens(layers.cold)}
+              压缩 {formatTokens(layers.compressed)} · 保留 {formatTokens(layers.retained)}
             </div>
           )}
           {onClick && <div className="text-indigo-400 mt-1">点击查看详情</div>}
@@ -120,7 +120,7 @@ function ContextUsageRing({
 }
 
 /**
- * 上下文空间占用明细抽屉:点击环形图打开,展示构成占比与分层(hot/warm/cold)占比。
+ * 上下文空间占用明细抽屉:点击环形图打开,展示构成占比与分层(compressed/retained)占比。
  */
 function ContextUsageDetail({
   metrics,
@@ -140,8 +140,8 @@ function ContextUsageDetail({
   const history = metrics.history ?? 0;
   const userMsg = metrics.user_msg ?? 0;
   const tools = metrics.tools ?? metrics.completion ?? 0;
-  const layers = metrics.layers ?? { hot: 0, warm: 0, cold: 0 };
-  const layerTotal = layers.hot + layers.warm + layers.cold;
+  const layers = metrics.layers ?? { compressed: 0, retained: 0 };
+  const layerTotal = layers.compressed + layers.retained;
 
   const pct = (n: number) => (total > 0 ? ((n / total) * 100).toFixed(1) : '0.0');
   const layerPct = (n: number) =>
@@ -155,9 +155,8 @@ function ContextUsageDetail({
   ];
 
   const layerData = [
-    { label: 'Hot（近期关键）', value: layers.hot, color: '#f43f5e' },
-    { label: 'Warm（次重要）', value: layers.warm, color: '#f59e0b' },
-    { label: 'Cold（压缩历史）', value: layers.cold, color: '#94a3b8' },
+    { label: '压缩摘要', value: layers.compressed, color: '#94a3b8' },
+    { label: '保留区', value: layers.retained, color: '#0ea5e9' },
   ];
 
   return (
@@ -214,7 +213,7 @@ function ContextUsageDetail({
 
       {/* 分层占比 */}
       <div className="mb-6">
-        <div className="text-sm font-medium mb-3">分层占比（hot/warm/cold）</div>
+        <div className="text-sm font-medium mb-3">历史分区（压缩/保留）</div>
         {layerData.map((l) => (
           <div key={l.label} className="flex items-center gap-2 mb-2">
             <span className="w-3 h-3 rounded-full shrink-0" style={{ background: l.color }} />

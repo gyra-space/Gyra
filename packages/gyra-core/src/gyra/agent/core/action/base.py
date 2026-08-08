@@ -90,6 +90,11 @@ class ActionOutput(BaseModel):
     have_retry: Optional[bool] = True
     ask_user: Optional[bool] = False
     ask_type: Optional[str] = None  # 想用户询问内容的类型
+    # 异步子任务阻塞等待：提交了后台异步任务（spawn_agent_task / SubAgent async /
+    # media wait=False）且需要其结果时置 True，AgentLoop 立即跳出本轮、会话置
+    # WAITING，等任务完成后由 coordinator 触发 resume 恢复（默认模式）。
+    # False 表示 fire-and-forget：主 Agent 继续 Loop，结果经异步通知注入上下文。
+    wait_async: Optional[bool] = False
     # 如果当前agent能确定下个发言者，需要在这里指定
     next_speakers: Optional[List[str]] = None
     # Terminate the conversation, it is a special action

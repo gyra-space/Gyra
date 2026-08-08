@@ -2,14 +2,18 @@
 
 覆盖目标：
 - register_subagent: 写入 pending_subagents 到 gpts_conversations.extra
+- register_subagent 去重: 同 agent 同任务在途 → 复用, created=False
+- 状态镜像: register/done/failed 同步到 AsyncTaskManager 外部任务
 - on_subagent_done: 单个子完成 → 不触发；全部完成 → 触发 main resume
 - on_subagent_failed: 单个失败 → 不触发；全部完成（含失败）→ 触发 main resume
-- _trigger_main_resume: 调 aggregation_chat with gpts_conversations=[entity]
+- _trigger_main_resume: 经后台 task 以 async for 消费 aggregation_chat
+  （异步生成器, 直接 await 会抛 TypeError —— 曾经的 resume 失效 bug）
 - recover_main: 全部完成 → 触发 resume；未完成 → 不触发
 - 全局单例 set/get_subagent_coordinator
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,6 +32,19 @@ from gyra_serve.agent.subagent_coordinator import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _mock_media_manager():
+    """状态镜像写 AsyncTaskManager.media_instance()：mock 掉避免落台账文件。"""
+    manager = MagicMock()
+    manager.register_external = AsyncMock(return_value="sub_x")
+    manager.complete_external = MagicMock(return_value=True)
+    with patch(
+        "gyra.agent.util.async_task_manager.AsyncTaskManager.media_instance",
+        return_value=manager,
+    ):
+        yield manager
+
+
 def _make_conv(extra: dict | None = None):
     """Mock gpts_conversations entity with extra JSON field."""
     conv = MagicMock()
@@ -39,6 +56,25 @@ def _make_conv(extra: dict | None = None):
     return conv
 
 
+def _make_aggregation_chat_mock():
+    """aggregation_chat 是异步生成器：记录调用并返回可 async for 消费的生成器。
+
+    consumed 列表用于断言生成器真的被消费（直接 await 不会执行生成器体）。
+    """
+    consumed = []
+
+    def _agg(**kwargs):
+        async def _gen():
+            consumed.append(True)
+            yield ("task", "chunk", "conv_main_1")
+
+        return _gen()
+
+    mock = MagicMock(side_effect=_agg)
+    mock.consumed = consumed
+    return mock
+
+
 def _make_agent_chat(conv=None):
     """Mock AgentChat with gpts_conversations DAO."""
     agent_chat = MagicMock()
@@ -46,8 +82,14 @@ def _make_agent_chat(conv=None):
     agent_chat.gpts_conversations.get_by_conv_id = MagicMock(return_value=conv)
     session = MagicMock()
     agent_chat.gpts_conversations.get_raw_session = MagicMock(return_value=session)
-    agent_chat.aggregation_chat = AsyncMock()
+    agent_chat.aggregation_chat = _make_aggregation_chat_mock()
     return agent_chat
+
+
+async def _let_background_run():
+    """让 resume 的后台 task（asyncio.create_task）跑完。"""
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
 
 def _extract_extra_from_update_call(session):
@@ -133,6 +175,147 @@ class TestRegisterSubagent:
         )
 
 
+# ---------------- register 去重 + 状态镜像 ----------------
+
+class TestRegisterDedupAndMirror:
+    @pytest.mark.asyncio
+    async def test_duplicate_register_reuses_in_flight(self, _mock_media_manager):
+        """同 agent 同任务的在途子 agent → 复用，created=False，不新增 handle。"""
+        existing = {
+            "pending_subagents": [
+                SubAgentHandle(
+                    sub_conv_id="sub_0",
+                    main_conv_id="conv_main_1",
+                    mode=SubAgentMode.ASYNC,
+                    status=SubAgentStatus.RUNNING,
+                    agent_name="图像生成助手",
+                    task="生成 Gyra 架构图",
+                ).to_dict()
+            ]
+        }
+        conv = _make_conv(extra=existing)
+        agent_chat = _make_agent_chat(conv)
+        coord = SubagentCoordinator(agent_chat=agent_chat)
+
+        handle, created = await coord.register_subagent(
+            main_conv_id="conv_main_1",
+            sub_conv_id="sub_new",
+            mode=SubAgentMode.ASYNC,
+            agent_name="图像生成助手",
+            task="  生成 Gyra 架构图  ",  # 空白/大小写差异应被归一化
+        )
+
+        assert created is False
+        assert handle.sub_conv_id == "sub_0"
+        # 未新增镜像任务
+        _mock_media_manager.register_external.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_different_task_not_deduped(self, _mock_media_manager):
+        """同 agent 但任务内容不同 → 正常新建。"""
+        existing = {
+            "pending_subagents": [
+                SubAgentHandle(
+                    sub_conv_id="sub_0",
+                    main_conv_id="conv_main_1",
+                    mode=SubAgentMode.ASYNC,
+                    status=SubAgentStatus.RUNNING,
+                    agent_name="图像生成助手",
+                    task="生成架构图",
+                ).to_dict()
+            ]
+        }
+        conv = _make_conv(extra=existing)
+        agent_chat = _make_agent_chat(conv)
+        coord = SubagentCoordinator(agent_chat=agent_chat)
+
+        handle, created = await coord.register_subagent(
+            main_conv_id="conv_main_1",
+            sub_conv_id="sub_new",
+            mode=SubAgentMode.ASYNC,
+            agent_name="图像生成助手",
+            task="生成宣传视频",
+        )
+
+        assert created is True
+        assert handle.sub_conv_id == "sub_new"
+
+    @pytest.mark.asyncio
+    async def test_terminal_handle_not_deduped(self, _mock_media_manager):
+        """已终态的 handle 不参与去重（允许失败后重试新任务）。"""
+        existing = {
+            "pending_subagents": [
+                SubAgentHandle(
+                    sub_conv_id="sub_0",
+                    main_conv_id="conv_main_1",
+                    mode=SubAgentMode.ASYNC,
+                    status=SubAgentStatus.FAILED,
+                    agent_name="图像生成助手",
+                    task="生成架构图",
+                ).to_dict()
+            ]
+        }
+        conv = _make_conv(extra=existing)
+        agent_chat = _make_agent_chat(conv)
+        coord = SubagentCoordinator(agent_chat=agent_chat)
+
+        _, created = await coord.register_subagent(
+            main_conv_id="conv_main_1",
+            sub_conv_id="sub_new",
+            mode=SubAgentMode.ASYNC,
+            agent_name="图像生成助手",
+            task="生成架构图",
+        )
+
+        assert created is True
+
+    @pytest.mark.asyncio
+    async def test_register_mirrors_to_async_task_manager(self, _mock_media_manager):
+        """注册时把状态镜像到 AsyncTaskManager（task_id=sub_conv_id）。"""
+        conv = _make_conv(extra={})
+        agent_chat = _make_agent_chat(conv)
+        coord = SubagentCoordinator(agent_chat=agent_chat)
+
+        handle, created = await coord.register_subagent(
+            main_conv_id="conv_main_1",
+            sub_conv_id="sub_1",
+            mode=SubAgentMode.ASYNC,
+            agent_name="图像生成助手",
+            task="生成图片",
+        )
+
+        assert created is True
+        _mock_media_manager.register_external.assert_awaited_once()
+        spec = _mock_media_manager.register_external.call_args.args[0]
+        assert spec.task_id == "sub_1"
+        assert spec.conv_id == "conv_main_1"
+        assert spec.agent_name == "图像生成助手"
+        assert spec.context.get("source") == "subagent_coordinator"
+
+    @pytest.mark.asyncio
+    async def test_done_and_failed_mirror_complete(self, _mock_media_manager):
+        """done/failed 时同步终态到 AsyncTaskManager 镜像任务。"""
+        handles = [
+            SubAgentHandle("sub_1", "conv_main_1", SubAgentMode.ASYNC,
+                           SubAgentStatus.RUNNING).to_dict(),
+            SubAgentHandle("sub_2", "conv_main_1", SubAgentMode.ASYNC,
+                           SubAgentStatus.RUNNING).to_dict(),
+        ]
+        conv = _make_conv(extra={"pending_subagents": handles})
+        agent_chat = _make_agent_chat(conv)
+        coord = SubagentCoordinator(agent_chat=agent_chat)
+
+        await coord.on_subagent_done("conv_main_1", "sub_1", "result-1")
+        _mock_media_manager.complete_external.assert_called_with(
+            "sub_1", result="result-1", error=None
+        )
+
+        await coord.on_subagent_failed("conv_main_1", "sub_2", "boom")
+        _mock_media_manager.complete_external.assert_called_with(
+            "sub_2", result=None, error="boom"
+        )
+
+
 # ---------------- on_subagent_done ----------------
 
 class TestOnSubagentDone:
@@ -148,8 +331,10 @@ class TestOnSubagentDone:
 
         await coord.on_subagent_done("conv_main_1", "sub_1", "result-1")
 
-        # 单子 agent done = 全部 done → 触发 resume
-        agent_chat.aggregation_chat.assert_awaited_once()
+        # 单子 agent done = 全部 done → 触发 resume（后台 task 消费异步生成器）
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_called_once()
+        assert agent_chat.aggregation_chat.consumed == [True]
 
     @pytest.mark.asyncio
     async def test_partial_done_does_not_trigger_resume(self):
@@ -167,7 +352,8 @@ class TestOnSubagentDone:
         await coord.on_subagent_done("conv_main_1", "sub_1", "result-1")
 
         # 只完成 1/2，不触发
-        agent_chat.aggregation_chat.assert_not_awaited()
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_all_done_triggers_resume(self):
@@ -183,7 +369,8 @@ class TestOnSubagentDone:
 
         await coord.on_subagent_done("conv_main_1", "sub_1", "result-1")
 
-        agent_chat.aggregation_chat.assert_awaited_once()
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_called_once()
         call_kwargs = agent_chat.aggregation_chat.call_args.kwargs
         assert call_kwargs["conv_id"] == "conv_main_1"
         assert call_kwargs["agent_conv_id"] == "conv_main_1"
@@ -207,7 +394,8 @@ class TestOnSubagentFailed:
 
         await coord.on_subagent_failed("conv_main_1", "sub_1", "boom")
 
-        agent_chat.aggregation_chat.assert_awaited_once()
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_called_once()
         call_kwargs = agent_chat.aggregation_chat.call_args.kwargs
         assert "boom" in call_kwargs["user_query"]
 
@@ -225,7 +413,8 @@ class TestOnSubagentFailed:
 
         await coord.on_subagent_failed("conv_main_1", "sub_1", "crashed")
 
-        agent_chat.aggregation_chat.assert_awaited_once()
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_called_once()
         user_query = agent_chat.aggregation_chat.call_args.kwargs["user_query"]
         assert "crashed" in user_query
         assert "ok" in user_query
@@ -241,7 +430,8 @@ class TestRecoverMain:
         coord = SubagentCoordinator(agent_chat=agent_chat)
 
         await coord.recover_main("conv_main_1")
-        agent_chat.aggregation_chat.assert_not_awaited()
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recover_all_done_triggers_resume(self):
@@ -254,7 +444,8 @@ class TestRecoverMain:
         coord = SubagentCoordinator(agent_chat=agent_chat)
 
         await coord.recover_main("conv_main_1")
-        agent_chat.aggregation_chat.assert_awaited_once()
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_recover_with_pending_running_does_not_trigger(self):
@@ -268,7 +459,8 @@ class TestRecoverMain:
         coord = SubagentCoordinator(agent_chat=agent_chat)
 
         await coord.recover_main("conv_main_1")
-        agent_chat.aggregation_chat.assert_not_awaited()
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_not_called()
 
 
 # ---------------- _rebuild_subagent_transcript (Tier 3.3) ----------------
@@ -390,8 +582,9 @@ class TestRebuildTranscript:
                 SubAgentHandle.from_dict(h) for h in handles
             ])
 
-        # 验证 aggregation_chat 被调用，user_query 包含 transcript
-        agent_chat.aggregation_chat.assert_awaited_once()
+        # 验证 aggregation_chat 被调用（后台 task 消费），user_query 包含 transcript
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_called_once()
         user_query = agent_chat.aggregation_chat.call_args.kwargs["user_query"]
         assert "崩溃前部分进展" in user_query
         assert "[sub think] partial work" in user_query
@@ -422,7 +615,8 @@ class TestRecoverMainWithLease:
             await coord.recover_main("conv_main_1")
 
         # 验证标记 FAILED 后触发了 resume
-        agent_chat.aggregation_chat.assert_awaited_once()
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_running_subagent_with_valid_lease_waits(self):
@@ -442,7 +636,8 @@ class TestRecoverMainWithLease:
             await coord.recover_main("conv_main_1")
 
         # 不应触发 resume（等子 agent 在另一进程完成）
-        agent_chat.aggregation_chat.assert_not_awaited()
+        await _let_background_run()
+        agent_chat.aggregation_chat.assert_not_called()
 
 
 # ---------------- list_subagent_items ----------------

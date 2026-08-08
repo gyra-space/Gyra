@@ -7,6 +7,7 @@ import type { WorkspaceEvent } from '@/hooks/use-chat';
 import type { AgentStep } from './agent-types';
 import { AgentWorkspaceInput } from './agent-workspace-input';
 import { AgentWorkspaceRenderer } from './agent-workspace-renderer';
+import DockPanel from '@/components/chat/dock/dock-panel';
 import type { AgentWorkspaceInputHandle, WorkspaceDeliverableFile } from './agent-workspace-types';
 import { useSceneAgentChat } from './use-scene-agent-chat';
 import { useUserInput } from '@/hooks/use-user-input';
@@ -61,7 +62,7 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps) {
   const inputRefInner = useRef<AgentWorkspaceInputHandle>(null);
   const inputRef = inputRefProp ?? inputRefInner;
-  const { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, send, abort, clearSteps, clearWorkspaceView } = useSceneAgentChat({
+  const { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, dockWidgets, send, abort, clearSteps, clearWorkspaceView } = useSceneAgentChat({
     convUid,
     appCode,
     workspaceId,
@@ -154,6 +155,8 @@ export function AgentWorkspace({
           )}
         </div>
         <div className="ws-agent-workspace__input">
+          {/* Composer Dock:独立卡片贴合在输入框上方,与通用聊天页同一组件/协议 */}
+          <DockPanel widgets={dockWidgets} />
           <AgentWorkspaceInput
             ref={inputRef}
             convUid={convUid}

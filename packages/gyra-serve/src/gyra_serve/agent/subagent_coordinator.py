@@ -87,8 +87,32 @@ class SubagentCoordinator:
         mode: SubAgentMode,
         agent_name: Optional[str] = None,
         task: Optional[str] = None,
-    ) -> SubAgentHandle:
-        """注册一个子 agent 到 pending 列表。"""
+    ) -> "tuple[SubAgentHandle, bool]":
+        """注册一个子 agent 到 pending 列表。
+
+        防重复提交：同 main_conv 下已有同 (agent_name, 归一化 task) 的非终态
+        handle 时，直接返回该 handle 且 created=False，不新建子任务——图片/视频
+        生成等昂贵任务不允许 LLM 因误判"任务丢失"而反复重试扣费。
+
+        Returns:
+            (handle, created)：created=False 表示复用了在途任务。
+        """
+        from gyra.agent.util.async_task_manager import normalize_task_text
+
+        norm_task = normalize_task_text(task or "")
+        if agent_name and norm_task:
+            for h in await self._read_pending(main_conv_id):
+                if (
+                    not h.is_terminal()
+                    and (h.agent_name or "") == agent_name
+                    and normalize_task_text(h.task or "") == norm_task
+                ):
+                    logger.info(
+                        f"[subagent-coordinator] dedup: reuse in-flight subagent "
+                        f"{h.sub_conv_id} (agent={agent_name}) for main {main_conv_id}"
+                    )
+                    return h, False
+
         handle = SubAgentHandle(
             sub_conv_id=sub_conv_id,
             main_conv_id=main_conv_id,
@@ -106,7 +130,51 @@ class SubagentCoordinator:
             f"[subagent-coordinator] registered subagent {sub_conv_id} "
             f"(mode={mode.value}, agent={agent_name}) for main {main_conv_id}"
         )
-        return handle
+        # 状态镜像到 AsyncTaskManager：check_tasks/wait_tasks 可用 sub_conv_id 查询
+        await self._mirror_register(main_conv_id, handle)
+        return handle, True
+
+    async def _mirror_register(
+        self, main_conv_id: str, handle: SubAgentHandle
+    ) -> None:
+        """把子 agent 任务镜像登记进 AsyncTaskManager（仅状态，不含执行体）。"""
+        try:
+            from gyra.agent.util.async_task_manager import (
+                AsyncTaskManager,
+                AsyncTaskSpec,
+            )
+
+            manager = AsyncTaskManager.media_instance()
+            await manager.register_external(
+                AsyncTaskSpec(
+                    task_id=handle.sub_conv_id,
+                    agent_name=handle.agent_name or "",
+                    task_description=handle.task or "",
+                    conv_id=main_conv_id,
+                    kind="subagent",
+                    context={"source": "subagent_coordinator"},
+                )
+            )
+        except Exception as e:  # noqa: BLE001 - 镜像失败不影响主流程
+            logger.warning(
+                f"[subagent-coordinator] mirror register failed for "
+                f"{handle.sub_conv_id}: {e}"
+            )
+
+    def _mirror_complete(
+        self, sub_conv_id: str, result: Optional[str] = None, error: Optional[str] = None
+    ) -> None:
+        """把子 agent 终态同步到 AsyncTaskManager 镜像任务。"""
+        try:
+            from gyra.agent.util.async_task_manager import AsyncTaskManager
+
+            AsyncTaskManager.media_instance().complete_external(
+                sub_conv_id, result=result, error=error
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[subagent-coordinator] mirror complete failed for {sub_conv_id}: {e}"
+            )
 
     async def on_subagent_done(
         self, main_conv_id: str, sub_conv_id: str, result: str
@@ -121,6 +189,7 @@ class SubagentCoordinator:
                 break
         await self._write_pending(main_conv_id, handles)
         await self._emit_board_event(main_conv_id, handles)
+        self._mirror_complete(sub_conv_id, result=result)
         logger.info(
             f"[subagent-coordinator] subagent {sub_conv_id} done for main {main_conv_id}"
         )
@@ -140,6 +209,7 @@ class SubagentCoordinator:
                 break
         await self._write_pending(main_conv_id, handles)
         await self._emit_board_event(main_conv_id, handles)
+        self._mirror_complete(sub_conv_id, error=error)
         logger.warning(
             f"[subagent-coordinator] subagent {sub_conv_id} failed for main {main_conv_id}: {error}"
         )
@@ -323,20 +393,53 @@ class SubagentCoordinator:
                     f"[subagent-coordinator] main conv {main_conv_id} not found; cannot resume"
                 )
                 return
-            # 触发 retry：传 gpts_conversations=[conv]，让 aggregation_chat 内部检测 WAITING → is_retry_chat=True
-            await self._agent_chat.aggregation_chat(
-                conv_id=main_conv_id,
-                agent_conv_id=main_conv_id,
-                gpts_name=conv.gpts_name,
-                user_query=synthesized,
-                user_code=conv.user_code,
-                sys_code=conv.sys_code,
-                gpts_conversations=[conv],
-            )
+            await self._safe_set_waiting(main_conv_id)
+
+            # aggregation_chat 是异步生成器（yield task/chunk/conv_id），必须 async for
+            # 消费才会真正执行（直接 await 会抛 TypeError）。放进独立后台 task，
+            # 不阻塞子 agent 完成回调。
+            async def _run():
+                try:
+                    async for _task, _chunk, _new_convid in (
+                        self._agent_chat.aggregation_chat(
+                            conv_id=main_conv_id,
+                            agent_conv_id=main_conv_id,
+                            gpts_name=conv.gpts_name,
+                            user_query=synthesized,
+                            user_code=conv.user_code,
+                            sys_code=conv.sys_code,
+                            # 让 aggregation_chat 内部检测 WAITING → is_retry_chat=True
+                            gpts_conversations=[conv],
+                        )
+                    ):
+                        pass
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        f"[subagent-coordinator] resume run failed for {main_conv_id}: {e}"
+                    )
+
+            try:
+                asyncio.create_task(_run())
+            except RuntimeError:
+                logger.warning(
+                    f"[subagent-coordinator] no event loop to schedule resume "
+                    f"for {main_conv_id}"
+                )
         except Exception as e:
             logger.exception(
                 f"[subagent-coordinator] failed to trigger main resume for {main_conv_id}: {e}"
             )
+
+    async def _safe_set_waiting(self, conv_id: str) -> None:
+        """把会话置 WAITING（幂等，忽略状态机守卫告警）。
+
+        aggregation_chat 内据此走 retry 恢复路径。
+        """
+        try:
+            from gyra.agent.core.schema import Status
+            self._agent_chat.gpts_conversations.update(conv_id, Status.WAITING.value)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[subagent-coordinator] set WAITING skip: {e}")
 
     async def recover_main(self, main_conv_id: str) -> None:
         """启动恢复：扫 main 的 pending_subagents，按子状态 + 心跳决策。

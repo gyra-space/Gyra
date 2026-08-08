@@ -174,6 +174,24 @@ def _db_name_for(ref_id: str) -> Optional[str]:
         return None
 
 
+def _db_overview_for(ref_id: str) -> Optional[str]:
+    """best-effort 取数据源学习时生成的库级 overview(供托管清单作内容介绍)。
+
+    读 ``db_spec.summary``;无学习产物 / 失败时返回 None(fail-open,回退裸名)。
+    """
+    try:
+        from gyra_serve.datasource.manages.db_spec_db import DbSpecDao
+
+        spec = DbSpecDao().get_by_datasource_id(int(ref_id))
+        if not spec:
+            return None
+        if isinstance(spec, dict):
+            return spec.get("summary") or None
+        return getattr(spec, "summary", None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def build_managed_assets_text(workspace_id: str) -> str:
     """托管资产清单文本(供 ECPCapability 注入 SYSTEM 槽)。
 
@@ -196,9 +214,16 @@ def build_managed_assets_text(workspace_id: str) -> str:
     for r in refs:
         name = _db_name_for(r.ref_id)
         label = f"{name} (id={r.ref_id})" if name else f"id={r.ref_id}"
-        lines.append(
-            f"  数据源 {label}:已纳入语义层管理,直连查询(execute_sql)已禁用。"
-        )
+        overview = _db_overview_for(r.ref_id)
+        if overview:
+            lines.append(
+                f"  数据源 {label}:{overview}"
+                "(已纳入语义层管理,直连查询 execute_sql 已禁用)"
+            )
+        else:
+            lines.append(
+                f"  数据源 {label}:已纳入语义层管理,直连查询(execute_sql)已禁用。"
+            )
     lines.append(
         "  表结构可用 get_table_spec / list_tables 查阅;"
         "数据查询统一走 ECP 工具(execute_metric_query 优先,"

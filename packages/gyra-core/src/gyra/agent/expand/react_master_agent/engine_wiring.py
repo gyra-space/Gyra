@@ -44,7 +44,7 @@ class SystemEventAdapter:
 def make_summarize_fn(llm_client, temperature: float = 0.3):
     """用 Agent 自身的 llm_client 构造一次性摘要 callable。
 
-    返回 ``async (prompt, max_tokens) -> str``。失败由 ColdSummarizer 兜底（截断）。
+    返回 ``async (prompt, max_tokens) -> str``。失败由 CompressionService 兜底（截断）。
     """
     if llm_client is None:
         return None

@@ -1,34 +1,36 @@
-"""ContextEngine —— 门面/编排。
+"""ContextEngine -- 两段式上下文引擎（门面/编排）。
 
-build_messages 串起：assemble → segment → layer → summarize_cold → render →
-guard.repair → 记账。
+build_messages 串起：assemble -> [load latest 摘要] -> [触发压缩] -> render -> guard.repair。
+
+两段式（对标 Claude Code /compact）：
+  压缩区（最新 boundary 之前）-- 一条 user 摘要消息（CompressionService 产出，9-section）
+  保留区（boundary 之后）    -- 逐字保留（tool_call+result 原子，大结果截断）
 
 引擎不持 agent 引用、不碰 GptsMemory。三个注入协作者保证可纯测：
-  - ColdPersistenceAdapter: cold handoff 持久化（load_handoff / save_handoff）
+  - CompressionPersistenceAdapter: 压缩段持久化（append_segment / get_latest_by_session / get_all_by_session）
   - SummarizeFn: 一次性 LLM 摘要 callable
-  - EventEmitter: 压缩事件上报（emit）
+  - TokenCounter: token 计数（生产 tiktoken，默认 chars//4 估算）
 """
 
-import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
 from .assembler import TimelineAssembler
-from .invariants import GuardReport, InvariantGuard
-from .layering import BudgetLayerer, LayerBudgetConfig, LayerPlan
-from .segmenter import Segmenter
-from .summarizer import ColdSummarizer, HandoffMessage, SummarizeFn
-from .text_utils import (
-    DEFAULT_CHARS_PER_TOKEN,
-    estimate_messages_tokens,
-    extract_text_content,
+from .compression import (
+    CompressionConfig,
+    CompressionSegment,
+    CompressionService,
+    SUMMARY_PREFIX,
+    SummarizeFn,
+    TokenCounter,
 )
+from .invariants import GuardReport, InvariantGuard
+from .text_utils import DEFAULT_CHARS_PER_TOKEN, estimate_messages_tokens
 from .timeline import ResultStatus, TimelineUnit, ToolCallBinding, UnitKind
 
 logger = logging.getLogger(__name__)
 
-# 角色常量（与 ModelMessageRoleType 对齐，但不强依赖以便纯测）
 ROLE_AI = "ai"
 ROLE_HUMAN = "human"
 ROLE_TOOL = "tool"
@@ -39,15 +41,18 @@ _SUPERSEDED_PLACEHOLDER = "[写入内容已被后续读取/写入覆盖，此处
 # ---------------------------------------------------------------------- #
 # 注入接口
 # ---------------------------------------------------------------------- #
-class ColdPersistenceAdapter(Protocol):
-    async def load_handoff(
-        self, session_id: str, content_hash: str
-    ) -> Optional[HandoffMessage]:
+class CompressionPersistenceAdapter(Protocol):
+    async def append_segment(
+        self, session_id: str, conv_id: str, segment: CompressionSegment
+    ) -> Optional[int]:
         ...
 
-    async def save_handoff(
-        self, session_id: str, conv_id: str, handoff: HandoffMessage
-    ) -> None:
+    async def get_latest_by_session(
+        self, session_id: str
+    ) -> Optional[dict]:
+        ...
+
+    async def get_all_by_session(self, session_id: str) -> List[dict]:
         ...
 
 
@@ -67,17 +72,42 @@ class NoopEventEmitter:
         return None
 
 
-class InMemoryColdPersistence:
-    """内存版 cold 持久化（降级/测试用）。无跨进程恢复能力。"""
+class InMemoryCompressionPersistence:
+    """内存版压缩段持久化（降级/测试用）。无跨进程恢复能力。"""
 
     def __init__(self):
-        self._store: Dict[tuple, HandoffMessage] = {}
+        self._segments: List[dict] = []
 
-    async def load_handoff(self, session_id, content_hash):
-        return self._store.get((session_id, content_hash))
+    async def append_segment(self, session_id, conv_id, segment):
+        seq = segment.seq
+        row = {
+            "id": len(self._segments) + 1,
+            "session_id": session_id,
+            "conv_id": conv_id,
+            "segment_index": seq,
+            "boundary_message_id": segment.boundary_message_id,
+            "prev_segment_id": segment.prev_segment_id,
+            "summary": segment.summary,
+            "source_message_ids": list(segment.source_message_ids),
+            "original_tokens": segment.original_tokens,
+            "compressed_tokens": segment.compressed_tokens,
+            "degraded": segment.degraded,
+        }
+        self._segments.append(row)
+        segment.segment_id = row["id"]
+        return row["id"]
 
-    async def save_handoff(self, session_id, conv_id, handoff):
-        self._store[(session_id, handoff.content_hash)] = handoff
+    async def get_latest_by_session(self, session_id):
+        rows = [r for r in self._segments if r["session_id"] == session_id]
+        if not rows:
+            return None
+        return max(rows, key=lambda r: r["segment_index"])
+
+    async def get_all_by_session(self, session_id):
+        return sorted(
+            [r for r in self._segments if r["session_id"] == session_id],
+            key=lambda r: r["segment_index"],
+        )
 
 
 # ---------------------------------------------------------------------- #
@@ -85,24 +115,26 @@ class InMemoryColdPersistence:
 # ---------------------------------------------------------------------- #
 @dataclass
 class EngineConfig:
-    layer: LayerBudgetConfig = field(default_factory=LayerBudgetConfig)
-    history_budget_ratio: float = 0.85
+    compression: CompressionConfig = field(default_factory=CompressionConfig)
+    history_budget_ratio: float = 0.85  # context_window × 此比例 = 可用历史预算
     enable_invariant_repair: bool = True
-    hot_tool_result_max_length: int = 8000  # hot 层单条结果硬上限（防超大单条）
     chars_per_token: int = DEFAULT_CHARS_PER_TOKEN
 
 
 @dataclass
 class BuildOutput:
     messages: List[Dict[str, Any]] = field(default_factory=list)  # 不含 system
-    layer_tokens: Dict[str, int] = field(default_factory=dict)
     total_tokens: int = 0
-    cleanup_hints: Dict[str, List[str]] = field(default_factory=dict)
+    compression_segment: Optional[CompressionSegment] = None  # 本次触发产出的段（若有）
+    latest_segment: Optional[CompressionSegment] = None  # 当前生效的最新段
+    # 两段式历史分区 token（供环形图）：compressed=摘要, retained=保留区逐字
+    history_breakdown: Dict[str, int] = field(
+        default_factory=lambda: {"compressed": 0, "retained": 0}
+    )
     guard_report: Optional[GuardReport] = None
-    handoff: Optional[HandoffMessage] = None
 
     def get_cache_cleanup_hints(self) -> Dict[str, List[str]]:
-        return self.cleanup_hints
+        return {}
 
 
 # ---------------------------------------------------------------------- #
@@ -112,23 +144,33 @@ class ContextEngine:
     def __init__(
         self,
         config: Optional[EngineConfig] = None,
-        cold_persistence: Optional[ColdPersistenceAdapter] = None,
+        compression_persistence: Optional[CompressionPersistenceAdapter] = None,
         summarize_fn: Optional[SummarizeFn] = None,
+        token_counter: Optional[TokenCounter] = None,
         events: Optional[EventEmitter] = None,
     ):
         self.config = config or EngineConfig()
         self.events = events or NoopEventEmitter()
-        self.cold_persistence = cold_persistence or InMemoryColdPersistence()
-        self.assembler = TimelineAssembler(self.config.chars_per_token)
-        self.segmenter = Segmenter()
-        self.layerer = BudgetLayerer(self.config.layer)
-        self.summarizer = ColdSummarizer(
+        self.compression_persistence = (
+            compression_persistence or InMemoryCompressionPersistence()
+        )
+        # 全链路统一 token 计数器：生产注入 tiktoken count_tokens，默认 chars//4
+        self._token_counter = token_counter or (
+            lambda t: max(1, len(t) // self.config.chars_per_token)
+        )
+        self.assembler = TimelineAssembler(
+            self.config.chars_per_token, token_counter=self._token_counter
+        )
+        self.compression = CompressionService(
             summarize_fn=summarize_fn,
-            persistence=self.cold_persistence,
-            config=self.config.layer,
+            persistence=self.compression_persistence,
+            config=self.config.compression,
+            token_counter=self._token_counter,
             events=self.events,
         )
         self.guard = InvariantGuard()
+        # 防抖：记录上次压缩时的会话累计消息数（粗略的"轮次"代理）
+        self._last_compress_msg_count: Dict[str, int] = {}
 
     async def build_messages(
         self,
@@ -141,7 +183,7 @@ class ContextEngine:
     ) -> BuildOutput:
         history_window = int(context_window * self.config.history_budget_ratio)
 
-        # 1) 装配 → 分段 → 分层
+        # 1) 装配全局有序时间线
         timeline = self.assembler.assemble(
             messages=messages,
             work_logs_by_conv=work_logs_by_conv,
@@ -149,151 +191,192 @@ class ContextEngine:
             session_id=session_id,
             subagent_goal_id=subagent_goal_id,
         )
-        segments = self.segmenter.segment(timeline)
-        plan: LayerPlan = self.layerer.layer(segments, history_window)
+        units = timeline.units  # oldest -> newest
+        if not units:
+            return BuildOutput()
 
-        # 2) cold 重整（低频）
-        handoff = await self.summarizer.summarize_cold(
-            plan.cold, current_conv_id, session_id
+        # 2) 加载最新压缩段 -> 切出当前保留区（boundary 之后）
+        latest = await self.compression.load_latest(session_id)
+        retained_units, compressed_msg_ids = self._split_by_boundary(units, latest)
+
+        # 3) 触发判断：摘要 tokens + 保留区 tokens ≥ 阈值
+        summary_tokens = (
+            self.compression.token_counter(latest.summary) if latest else 0
         )
+        retained_tokens = sum(max(1, u.tokens) for u in retained_units)
+        total_tokens = summary_tokens + retained_tokens
+        turns_since = self._turns_since_last(session_id, len(units))
 
-        # 3) 渲染：handoff(单条 human) → warm(截断) → hot(原文)
+        new_segment: Optional[CompressionSegment] = None
+        if self.compression.should_compress(total_tokens, history_window, turns_since):
+            # 3a) 在当前保留区内确定新边界 -> 新压缩区 + 新保留区
+            retain_budget = int(history_window * self.config.compression.retain_ratio)
+            new_compress, new_retained = self.compression.determine_boundary(
+                retained_units, retain_budget
+            )
+            if new_compress:
+                seq = (latest.seq + 1) if latest else 1
+                new_segment = await self.compression.compress(
+                    session_id=session_id,
+                    conv_id=current_conv_id,
+                    compress_units=new_compress,
+                    prev_segment=latest,
+                    seq=seq,
+                )
+                if new_segment is not None:
+                    await self.compression.persist(session_id, current_conv_id, new_segment)
+                    self._last_compress_msg_count[session_id] = len(units)
+                    latest = new_segment
+                    retained_units = new_retained
+                    compressed_msg_ids = compressed_msg_ids | {
+                        (u.message_id or f"seq:{u.seq}") for u in new_compress
+                    }
+
+        # 4) 渲染：[摘要 user 消息] + [保留区逐字]
         out_messages: List[Dict[str, Any]] = []
-        if handoff is not None:
-            out_messages.append(handoff.to_message())
-        out_messages.extend(self._render_units(plan.warm, layer="warm"))
-        out_messages.extend(self._render_units(plan.hot, layer="hot"))
+        if latest and latest.summary:
+            out_messages.append({"role": ROLE_HUMAN, "content": latest.summary})
+        out_messages.extend(self._render_units(retained_units))
 
-        # 4) 发送前不变量门禁
+        # 5) 发送前不变量门禁
         if self.config.enable_invariant_repair:
             out_messages, report = self.guard.repair(out_messages)
         else:
             report = self.guard.check(out_messages)
 
-        # 5) 记账 + cleanup hints
-        total_tokens = estimate_messages_tokens(
-            out_messages, self.config.chars_per_token
+        total_out = estimate_messages_tokens(out_messages, self.config.chars_per_token)
+        compressed_tokens = (
+            self._token_counter(latest.summary) if latest and latest.summary else 0
         )
-        cleanup_hints = self._build_cleanup_hints(plan)
-
+        # 历史保留区 token（排除当前用户消息=最后一个 USER 单元），与环形图
+        # history 语义一致：history ≈ compressed + retained
+        display_units = list(retained_units)
+        for i in range(len(display_units) - 1, -1, -1):
+            if display_units[i].kind == UnitKind.USER:
+                display_units.pop(i)
+                break
+        retained_tokens = sum(max(1, u.tokens) for u in display_units)
         return BuildOutput(
             messages=out_messages,
-            layer_tokens=plan.layer_tokens,
-            total_tokens=total_tokens,
-            cleanup_hints=cleanup_hints,
+            total_tokens=total_out,
+            compression_segment=new_segment,
+            latest_segment=latest,
+            history_breakdown={
+                "compressed": compressed_tokens,
+                "retained": retained_tokens,
+            },
             guard_report=report,
-            handoff=handoff,
         )
+
+    # ------------------------------------------------------------------ #
+    # 切分
+    # ------------------------------------------------------------------ #
+    def _split_by_boundary(
+        self, units: List[TimelineUnit], latest: Optional[CompressionSegment]
+    ) -> tuple:
+        """按最新段的 boundary_message_id 切：boundary 及之前=已压缩（不渲染），
+        之后=保留区（逐字）。无段则全部保留。
+
+        返回 (retained_units, compressed_message_ids)。
+        """
+        if not latest or not latest.boundary_message_id:
+            return units, set()
+        boundary = latest.boundary_message_id
+        retained: List[TimelineUnit] = []
+        compressed_ids = set()
+        passed = False
+        for u in units:
+            uid = u.message_id or f"seq:{u.seq}"
+            if not passed:
+                compressed_ids.add(uid)
+                if uid == boundary:
+                    passed = True
+                continue
+            retained.append(u)
+        # 若 boundary 未命中（异常），保守全部保留
+        if not passed:
+            return units, set()
+        return retained, compressed_ids
+
+    def _turns_since_last(self, session_id: str, current_msg_count: int) -> int:
+        last = self._last_compress_msg_count.get(session_id)
+        if last is None:
+            return self.config.compression.min_interval_turns  # 未压缩过 -> 允许触发
+        return max(0, current_msg_count - last)
 
     # ------------------------------------------------------------------ #
     # 渲染
     # ------------------------------------------------------------------ #
-    def _render_units(
-        self, units: List[TimelineUnit], layer: str
-    ) -> List[Dict[str, Any]]:
+    def _render_units(self, units: List[TimelineUnit]) -> List[Dict[str, Any]]:
         messages: List[Dict[str, Any]] = []
+        limit = self.config.compression.retain_tool_result_max_length
         for u in units:
             if u.kind == UnitKind.USER:
                 if u.user_content:
-                    messages.append(
-                        {"role": ROLE_HUMAN, "content": u.user_content}
-                    )
+                    messages.append({"role": ROLE_HUMAN, "content": u.user_content})
             elif u.kind == UnitKind.AI_TEXT:
                 if u.ai_text and u.ai_text.strip():
                     messages.append({"role": ROLE_AI, "content": u.ai_text})
             elif u.kind == UnitKind.CALL:
-                messages.extend(self._render_call_unit(u, layer))
+                messages.extend(self._render_call_unit(u, limit))
         return messages
 
     def _render_call_unit(
-        self, u: TimelineUnit, layer: str
+        self, u: TimelineUnit, limit: int
     ) -> List[Dict[str, Any]]:
         renderable = u.renderable_calls()
-        # 全部 MISSING/pruned 且无文本 → 不渲染（消灭 orphan）
         if not renderable:
             if u.ai_text and u.ai_text.strip():
                 return [{"role": ROLE_AI, "content": u.ai_text}]
             return []
 
         out: List[Dict[str, Any]] = []
-        tool_calls = []
-        for b in renderable:
-            tool_calls.append(
-                {
-                    "id": b.tool_call_id,
-                    "type": "function",
-                    "function": {
-                        "name": b.tool_name,
-                        "arguments": self._args_to_str(b.args),
-                    },
-                }
-            )
-        out.append(
+        tool_calls = [
             {
-                "role": ROLE_AI,
-                "content": u.ai_text or "",
-                "tool_calls": tool_calls,
+                "id": b.tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": b.tool_name,
+                    "arguments": self._args_to_str(b.args),
+                },
             }
+            for b in renderable
+        ]
+        out.append(
+            {"role": ROLE_AI, "content": u.ai_text or "", "tool_calls": tool_calls}
         )
         for b in renderable:
             out.append(
                 {
                     "role": ROLE_TOOL,
                     "tool_call_id": b.tool_call_id,
-                    "content": self._render_result(b, layer),
+                    "content": self._render_result(b, limit),
                 }
             )
         return out
 
-    def _render_result(self, b: ToolCallBinding, layer: str) -> str:
+    def _render_result(self, b: ToolCallBinding, limit: int) -> str:
         if b.superseded_content:
             return _SUPERSEDED_PLACEHOLDER
         text = b.result_text or ""
         if b.result_status == ResultStatus.ERROR and not text:
             text = "[工具执行失败]"
-        if layer == "warm":
-            limit = self.config.layer.warm_tool_result_max_length
-            if b.tool_name not in self.config.layer.warm_preserve_tools and len(
-                text
-            ) > limit:
-                suffix = (
-                    f"\n...(已截断，完整结果见归档 {b.full_result_archive})"
-                    if b.full_result_archive
-                    else "\n...(已截断)"
-                )
-                text = text[:limit] + suffix
-        else:  # hot
-            limit = self.config.hot_tool_result_max_length
-            if len(text) > limit:
-                suffix = (
-                    f"\n...(过长已截断，完整结果见归档 {b.full_result_archive})"
-                    if b.full_result_archive
-                    else "\n...(过长已截断)"
-                )
-                text = text[:limit] + suffix
+        if len(text) > limit:
+            suffix = (
+                f"\n...(过长已截断，完整结果见归档 {b.full_result_archive})"
+                if b.full_result_archive
+                else "\n...(过长已截断)"
+            )
+            text = text[:limit] + suffix
         return text or "[空结果]"
-
-    # ------------------------------------------------------------------ #
-    def _build_cleanup_hints(self, plan: LayerPlan) -> Dict[str, List[str]]:
-        """生成与旧 BuildResult.get_cache_cleanup_hints 同形的清理建议。
-
-        cold 与剪枝单元的 message_id 可从内存工作集驱逐（已被 handoff/剪枝替代）。
-        """
-        evict_msg_ids = list(
-            dict.fromkeys(plan.cold_unit_message_ids + plan.pruned_unit_message_ids)
-        )
-        # 过滤掉合成 seq:* （非真实 message_id）
-        real_ids = [i for i in evict_msg_ids if not str(i).startswith("seq:")]
-        return {
-            "can_evict_message_ids": real_ids,
-            "can_evict_entry_message_ids": real_ids,
-        }
 
     @staticmethod
     def _args_to_str(args: Any) -> str:
         if isinstance(args, str):
             return args
         try:
+            import json
+
             return json.dumps(args, ensure_ascii=False, default=str)
         except Exception:
             return str(args)

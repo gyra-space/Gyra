@@ -33,8 +33,11 @@ _SPAWN_PROMPT = """启动一个后台 Agent 任务。任务会在后台异步执
 
 注意：
 - 提交后立即返回 task_id，不会等待任务完成
+- 默认 wait_for_result=true（阻塞等待）：提交后本轮立即结束，任务完成后自动恢复继续，无需轮询
+- 仅当结果与后续工作完全无关时传 wait_for_result=false（后台执行，结果经异步通知注入）
 - 可以一次提交多个任务实现并行执行
-- 通过 depend_on 参数可以设置任务依赖关系"""
+- 通过 depend_on 参数可以设置任务依赖关系
+- 相同内容的任务会被去重：若已有相同任务在途，会直接返回在途 task_id，不会重复执行（图片/视频生成按次计费，切勿换个说法重复提交）"""
 
 _CHECK_PROMPT = """查看后台任务的当前状态，不阻塞。
 
@@ -104,6 +107,16 @@ class SpawnAgentTaskTool(ToolBase):
                     "description": "依赖的 task_id 列表。这些任务完成后才会开始执行当前任务（可选）。",
                     "default": [],
                 },
+                "wait_for_result": {
+                    "type": "boolean",
+                    "description": (
+                        "是否需要等待该任务的结果才能继续（默认 true）。"
+                        "true=阻塞等待：提交后本轮立即结束，任务完成后自动恢复继续；"
+                        "false=后台执行：你继续处理其他工作，结果经异步通知注入上下文。"
+                        "仅当任务结果与后续工作完全无关时才用 false。"
+                    ),
+                    "default": True,
+                },
             },
             "required": ["agent_name", "task"],
         }
@@ -147,6 +160,10 @@ class SpawnAgentTaskTool(ToolBase):
         try:
             from ....util.async_task_manager import AsyncTaskSpec
 
+            # 阻塞等待（默认）：提交后本轮 loop 立即结束、会话 WAITING，任务完成
+            # 后由 coordinator resume 恢复；False = fire-and-forget 后台执行
+            wait_for_result = bool(args.get("wait_for_result", True))
+
             conv_id = ""
             if context is not None:
                 conv_id = getattr(context, "conversation_id", "") or ""
@@ -189,12 +206,54 @@ class SpawnAgentTaskTool(ToolBase):
                 delegate=delegate,
             )
 
+            # 防重复提交：同会话已有同 agent 同内容的在途任务时直接复用，
+            # 不新建（图片/视频生成按次计费，重复提交 = 重复扣费）
+            in_flight = manager.find_in_flight(
+                conv_id=conv_id,
+                agent_name=agent_name,
+                task_description=task,
+            )
+            if in_flight is not None:
+                existing_id = in_flight.spec.task_id
+                return ToolResult.ok(
+                    output=(
+                        f"相同任务已在后台执行中，已复用、未重复提交。\n"
+                        f"- Task ID: {existing_id}\n"
+                        f"- Agent: {agent_name}\n"
+                        f"- 状态: {in_flight.status.value}\n\n"
+                        f"请勿再次提交相同任务。"
+                        + (
+                            "本轮将结束等待，任务完成后会自动恢复继续。"
+                            if wait_for_result
+                            else "结果完成后会经异步通知注入上下文。"
+                        )
+                    ),
+                    tool_name=self.name,
+                    metadata={
+                        "task_id": existing_id,
+                        "agent_name": agent_name,
+                        "reused": True,
+                        "wait_async": wait_for_result,
+                        "async_task": {
+                            "task_id": existing_id,
+                            "kind": "subagent",
+                            "model": agent_name,
+                            "conv_id": conv_id,
+                        },
+                    },
+                )
+
             task_id = await manager.spawn(spec)
 
             deps_info = ""
             if spec.depend_on:
                 deps_info = f"\n依赖: {', '.join(spec.depend_on)}（等待依赖完成后自动开始）"
 
+            wait_note = (
+                "\n本轮将在此结束并等待任务完成，完成后会自动恢复继续（无需轮询）。"
+                if wait_for_result
+                else "\n你可以继续其他工作，结果完成后会经异步通知注入上下文。"
+            )
             output = (
                 f"任务已提交到后台执行。\n"
                 f"- Task ID: {task_id}\n"
@@ -203,6 +262,7 @@ class SpawnAgentTaskTool(ToolBase):
                 f"- 超时: {spec.timeout}s"
                 f"{deps_info}\n\n"
                 f"你可以继续其他工作，稍后用 check_tasks 查看状态或 wait_tasks 获取结果。"
+                f"{wait_note}"
             )
 
             return ToolResult.ok(
@@ -211,6 +271,7 @@ class SpawnAgentTaskTool(ToolBase):
                 metadata={
                     "task_id": task_id,
                     "agent_name": agent_name,
+                    "wait_async": wait_for_result,
                     # 供 ToolAction 在工具执行处登记 pending 异步任务
                     "async_task": {
                         "task_id": task_id,
@@ -289,6 +350,12 @@ class CheckTasksTool(ToolBase):
         try:
             task_ids = args.get("task_ids", []) or None
             output = manager.format_status_table(task_ids)
+            if "未找到" in output:
+                output += (
+                    "\n\n提示：标记「未找到」的 ID 请核对拼写；SubAgent 异步返回的 "
+                    "sub_conv_id 与 spawn_agent_task 返回的 atask_* 均可直接查询。"
+                    "任务查询不到不代表丢失，请勿因此重复提交生成任务。"
+                )
             return ToolResult.ok(output=output, tool_name=self.name)
 
         except Exception as e:
@@ -366,6 +433,27 @@ class WaitTasksTool(ToolBase):
         try:
             task_ids = args.get("task_ids", [])
             timeout = args.get("timeout", 60)
+
+            # 对未知 task_id 显式报错，避免误导性的"等待超时"让 LLM 误判任务
+            # 丢失而重复提交。SubAgent 异步返回的 sub_conv_id 与 spawn_agent_task
+            # 返回的 atask_* ID 均可直接用于本工具。
+            if task_ids:
+                known = set(manager.known_task_ids(task_ids))
+                unknown = [tid for tid in task_ids if tid not in known]
+                if unknown and not known:
+                    return ToolResult.fail(
+                        error=(
+                            f"任务 ID 不存在: {unknown}。请核对 ID（SubAgent 异步返回的 "
+                            f"sub_conv_id、spawn_agent_task 返回的 atask_* 均可直接查询）；"
+                            f"不要因查询不到就重复提交生成任务。"
+                        ),
+                        tool_name=self.name,
+                    )
+                if unknown:
+                    logger.warning(
+                        f"[WaitTasksTool] unknown task_ids ignored: {unknown}"
+                    )
+                    task_ids = [tid for tid in task_ids if tid in known]
 
             if task_ids:
                 results = await manager.wait_all(task_ids, timeout=timeout)

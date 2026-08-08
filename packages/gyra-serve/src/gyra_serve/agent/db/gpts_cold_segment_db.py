@@ -1,11 +1,14 @@
-"""Gpts ColdSegment 数据库模型和 DAO.
+"""Gpts CompressionSegment 数据库模型和 DAO.
 
-用于持久化 BAIZE ContextEngine 的"历史背景交接"(cold handoff)压缩摘要。
+持久化 BAIZE ContextEngine 的"两段式压缩"摘要段。每行 = 一次压缩：
+把"压缩区"内的全部消息（gpts_message + work_log）用 LLM 摘要成一条 user 消息，
+记录边界（boundary_message_id）与增量链（prev_segment_id）。
 
-按 (session_id, content_hash) 唯一键存储 —— content_hash 是落入 cold 的全部
-单元 id 的稳定指纹。中断恢复时按 content_hash 读回，**不重新调用模型**。
+加载时：最新段(summary) 作为 user 消息置于上下文开头，其 boundary 之后的消息
+逐字保留；boundary 之前（含历史段覆盖的）不再单独喂 LLM。UI 侧按段渲染压缩点。
 """
 
+import hashlib
 import json
 from datetime import datetime
 from typing import List, Optional
@@ -25,15 +28,16 @@ from gyra.storage.metadata import BaseDao, Model
 
 
 class GptsColdSegmentEntity(Model):
-    """Gpts cold handoff 实体.
+    """压缩段实体（表名沿用 gpts_cold_segments，语义改为"压缩段"）。
 
-    存储一段被压缩为 handoff 的历史上下文摘要。
+    每行 = 一次压缩。segment_index = 压缩序号 seq（1,2,3...）。
     """
 
     __tablename__ = "gpts_cold_segments"
     __table_args__ = (
         UniqueConstraint("session_id", "content_hash", name="uk_cold_session_hash"),
         Index("idx_cold_session", "session_id"),
+        Index("idx_compress_session_seq", "session_id", "segment_index"),
     )
 
     id = Column(Integer, primary_key=True, comment="autoincrement id")
@@ -42,35 +46,44 @@ class GptsColdSegmentEntity(Model):
         String(255), nullable=False, comment="The session id of the conversation"
     )
     conv_id = Column(
-        String(255), nullable=False, comment="The conv id that produced this handoff"
+        String(255), nullable=False, comment="The conv id that produced this compression"
     )
     content_hash = Column(
         String(64),
         nullable=False,
-        comment="Stable fingerprint of cold unit ids (cache key)",
+        comment="Stable fingerprint of this segment (source ids + seq); informational",
     )
     segment_index = Column(
-        Integer, nullable=False, default=0, comment="Segment index (reserved)"
+        Integer, nullable=False, default=1, comment="Compression sequence number (1,2,3...)"
     )
 
-    # 摘要正文（handoff 完整 content）
+    # 本次压缩覆盖的最后一条 message_id（压缩边界）
+    boundary_message_id = Column(
+        String(128), nullable=True, comment="Last message_id covered by this compression"
+    )
+    # 上一次压缩段 id（增量链）
+    prev_segment_id = Column(
+        Integer, nullable=True, comment="Previous compression segment id (incremental chain)"
+    )
+
+    # 摘要正文（作为 user 消息的完整 content）
     summary = Column(
-        Text(length=2**31 - 1), nullable=True, comment="Handoff summary content"
+        Text(length=2**31 - 1), nullable=True, comment="Compressed summary content (user msg)"
     )
     source_message_ids = Column(
-        Text, nullable=True, comment="Source unit message ids (JSON array)"
+        Text, nullable=True, comment="Source message ids covered (JSON array)"
     )
     original_tokens = Column(
-        Integer, nullable=False, default=0, comment="Estimated original token count"
+        Integer, nullable=False, default=0, comment="Original token count of compressed zone"
     )
     compressed_tokens = Column(
-        Integer, nullable=False, default=0, comment="Estimated compressed token count"
+        Integer, nullable=False, default=0, comment="Compressed summary token count"
     )
     degraded = Column(
         Integer,
         nullable=False,
         default=0,
-        comment="Whether this was a truncation fallback (not normally persisted)",
+        comment="1 if truncation fallback (not normally persisted)",
     )
 
     created_at = Column(
@@ -85,8 +98,13 @@ class GptsColdSegmentEntity(Model):
     )
 
 
+def _compute_content_hash(source_message_ids: List[str], seq: int) -> str:
+    raw = f"{','.join(source_message_ids)}|{seq}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 class GptsColdSegmentDao(BaseDao):
-    """Gpts cold handoff DAO."""
+    """压缩段 DAO。按 (session_id, segment_index) 组织增量链。"""
 
     def _to_dict(self, entity: GptsColdSegmentEntity) -> dict:
         return {
@@ -95,6 +113,8 @@ class GptsColdSegmentDao(BaseDao):
             "conv_id": entity.conv_id,
             "content_hash": entity.content_hash,
             "segment_index": entity.segment_index,
+            "boundary_message_id": entity.boundary_message_id,
+            "prev_segment_id": entity.prev_segment_id,
             "summary": entity.summary,
             "source_message_ids": json.loads(entity.source_message_ids)
             if entity.source_message_ids
@@ -107,51 +127,34 @@ class GptsColdSegmentDao(BaseDao):
     # ------------------------------------------------------------------ #
     # 同步
     # ------------------------------------------------------------------ #
-    def upsert(
+    def append_segment(
         self,
         session_id: str,
         conv_id: str,
-        content_hash: str,
+        seq: int,
         summary: str,
         source_message_ids: List[str],
+        boundary_message_id: Optional[str] = None,
+        prev_segment_id: Optional[int] = None,
         original_tokens: int = 0,
         compressed_tokens: int = 0,
-        segment_index: int = 0,
+        degraded: bool = False,
     ) -> int:
-        """按 (session_id, content_hash) upsert 一条 handoff。"""
+        """追加一条压缩段（每次压缩都是新行，不 upsert）。"""
         session = self.get_raw_session()
         try:
-            existing = (
-                session.query(GptsColdSegmentEntity)
-                .filter(
-                    GptsColdSegmentEntity.session_id == session_id,
-                    GptsColdSegmentEntity.content_hash == content_hash,
-                )
-                .first()
-            )
-            if existing:
-                existing.summary = summary
-                existing.conv_id = conv_id
-                existing.source_message_ids = json.dumps(
-                    source_message_ids, ensure_ascii=False
-                )
-                existing.original_tokens = original_tokens
-                existing.compressed_tokens = compressed_tokens
-                existing.segment_index = segment_index
-                session.commit()
-                return existing.id
             entity = GptsColdSegmentEntity(
                 session_id=session_id,
                 conv_id=conv_id,
-                content_hash=content_hash,
+                content_hash=_compute_content_hash(source_message_ids, seq),
+                segment_index=seq,
+                boundary_message_id=boundary_message_id,
+                prev_segment_id=prev_segment_id,
                 summary=summary,
-                source_message_ids=json.dumps(
-                    source_message_ids, ensure_ascii=False
-                ),
+                source_message_ids=json.dumps(source_message_ids, ensure_ascii=False),
                 original_tokens=original_tokens,
                 compressed_tokens=compressed_tokens,
-                segment_index=segment_index,
-                degraded=0,
+                degraded=1 if degraded else 0,
             )
             session.add(entity)
             session.commit()
@@ -159,31 +162,28 @@ class GptsColdSegmentDao(BaseDao):
         finally:
             session.close()
 
-    def get_by_hash(
-        self, session_id: str, content_hash: str
-    ) -> Optional[dict]:
-        """按 (session_id, content_hash) 读回一条 handoff。"""
+    def get_latest_by_session(self, session_id: str) -> Optional[dict]:
+        """取最新压缩段（segment_index 最大）。"""
         session = self.get_raw_session()
         try:
             entity = (
                 session.query(GptsColdSegmentEntity)
-                .filter(
-                    GptsColdSegmentEntity.session_id == session_id,
-                    GptsColdSegmentEntity.content_hash == content_hash,
-                )
+                .filter(GptsColdSegmentEntity.session_id == session_id)
+                .order_by(GptsColdSegmentEntity.segment_index.desc())
                 .first()
             )
             return self._to_dict(entity) if entity else None
         finally:
             session.close()
 
-    def get_by_session(self, session_id: str) -> List[dict]:
+    def get_all_by_session(self, session_id: str) -> List[dict]:
+        """取全部压缩段（按 seq 升序，UI 压缩历史用）。"""
         session = self.get_raw_session()
         try:
             entities = (
                 session.query(GptsColdSegmentEntity)
                 .filter(GptsColdSegmentEntity.session_id == session_id)
-                .order_by(GptsColdSegmentEntity.segment_index)
+                .order_by(GptsColdSegmentEntity.segment_index.asc())
                 .all()
             )
             return [self._to_dict(e) for e in entities]
@@ -193,62 +193,54 @@ class GptsColdSegmentDao(BaseDao):
     # ------------------------------------------------------------------ #
     # 异步
     # ------------------------------------------------------------------ #
-    async def get_by_hash_async(
-        self, session_id: str, content_hash: str
-    ) -> Optional[dict]:
-        async with self.a_session(commit=False) as session:
-            result = await session.execute(
-                select(GptsColdSegmentEntity).where(
-                    GptsColdSegmentEntity.session_id == session_id,
-                    GptsColdSegmentEntity.content_hash == content_hash,
-                )
-            )
-            entity = result.scalars().first()
-            return self._to_dict(entity) if entity else None
-
-    async def upsert_async(
+    async def append_segment_async(
         self,
         session_id: str,
         conv_id: str,
-        content_hash: str,
+        seq: int,
         summary: str,
         source_message_ids: List[str],
+        boundary_message_id: Optional[str] = None,
+        prev_segment_id: Optional[int] = None,
         original_tokens: int = 0,
         compressed_tokens: int = 0,
-        segment_index: int = 0,
+        degraded: bool = False,
     ) -> int:
         async with self.a_session(commit=True) as session:
-            result = await session.execute(
-                select(GptsColdSegmentEntity).where(
-                    GptsColdSegmentEntity.session_id == session_id,
-                    GptsColdSegmentEntity.content_hash == content_hash,
-                )
-            )
-            existing = result.scalars().first()
-            if existing:
-                existing.summary = summary
-                existing.conv_id = conv_id
-                existing.source_message_ids = json.dumps(
-                    source_message_ids, ensure_ascii=False
-                )
-                existing.original_tokens = original_tokens
-                existing.compressed_tokens = compressed_tokens
-                existing.segment_index = segment_index
-                await session.flush()
-                return existing.id
             entity = GptsColdSegmentEntity(
                 session_id=session_id,
                 conv_id=conv_id,
-                content_hash=content_hash,
+                content_hash=_compute_content_hash(source_message_ids, seq),
+                segment_index=seq,
+                boundary_message_id=boundary_message_id,
+                prev_segment_id=prev_segment_id,
                 summary=summary,
-                source_message_ids=json.dumps(
-                    source_message_ids, ensure_ascii=False
-                ),
+                source_message_ids=json.dumps(source_message_ids, ensure_ascii=False),
                 original_tokens=original_tokens,
                 compressed_tokens=compressed_tokens,
-                segment_index=segment_index,
-                degraded=0,
+                degraded=1 if degraded else 0,
             )
             session.add(entity)
             await session.flush()
             return entity.id
+
+    async def get_latest_by_session_async(self, session_id: str) -> Optional[dict]:
+        async with self.a_session(commit=False) as session:
+            result = await session.execute(
+                select(GptsColdSegmentEntity)
+                .where(GptsColdSegmentEntity.session_id == session_id)
+                .order_by(GptsColdSegmentEntity.segment_index.desc())
+                .limit(1)
+            )
+            entity = result.scalars().first()
+            return self._to_dict(entity) if entity else None
+
+    async def get_all_by_session_async(self, session_id: str) -> List[dict]:
+        async with self.a_session(commit=False) as session:
+            result = await session.execute(
+                select(GptsColdSegmentEntity)
+                .where(GptsColdSegmentEntity.session_id == session_id)
+                .order_by(GptsColdSegmentEntity.segment_index.asc())
+            )
+            entities = result.scalars().all()
+            return [self._to_dict(e) for e in entities]

@@ -34,6 +34,9 @@ dependencies = [
     # click is a hard runtime dependency: the `gyra` console script entry
     # point (gyra.cli.cli_scripts:main) imports click at module top-level.
     "click",
+    # Real tokenizer (cl100k_base) for context token counting; core dep so
+    # usage_metric.count_tokens always uses tiktoken, not chars//4 fallback.
+    "tiktoken>=0.8.0",
 ]
 
 [project.urls]
@@ -136,7 +139,6 @@ proxy_tongyi = ["openai"] # tongyi supported by openai package
 proxy_qianfan = ["qianfan"]
 proxy_openai = [
     "openai>=1.59.6",
-    "tiktoken>=0.8.0",
      "httpx[socks]",
 ]
 proxy_anthropic = ["anthropic"]

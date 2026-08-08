@@ -182,8 +182,10 @@ class RecoveryDaemon:
     async def _trigger_main_retry(self, conv_id: str) -> None:
         """无 pending_subagents 时，直接调 aggregation_chat 触发 retry main。
 
-        PR 4 实现：如果 agent_chat 提供，调用其 aggregation_chat(is_retry_chat=True)。
-        否则只 log（dry-run）。
+        aggregation_chat 是异步生成器（yield task/chunk/conv_id），必须 async for
+        消费才会真正执行（直接 await 会抛 TypeError）。其 is_retry_chat 恢复路径
+        仅对 WAITING 会话生效（按 gpts_conversations[-1].state 判定），因此先把
+        RETRYING 回置 WAITING 再触发。agent_chat 缺失时只 log（dry-run）。
         """
         if not self._agent_chat:
             logger.info(
@@ -199,14 +201,43 @@ class RecoveryDaemon:
                     f"cannot trigger retry for {conv_id}"
                 )
                 return
-            # 触发 retry：is_retry_chat=True 让 V1 走 _recovery_message 路径
-            # + PR 3 step-level resume 跳过已成功工具
-            await aggregation_chat(
-                conv_id=conv_id,
-                user_query=None,
-                is_retry_chat=True,
-                user_message_content="[auto-recovery] resuming after crash",
-            )
+            conv = self._agent_chat.gpts_conversations.get_by_conv_id(conv_id)
+            if not conv:
+                logger.warning(
+                    f"[recovery-daemon] conv {conv_id} not found; cannot retry"
+                )
+                return
+
+            # is_retry_chat 仅对 WAITING 会话生效：RETRYING 只是状态机标记，
+            # 这里回置 WAITING（DB + entity）让恢复路径命中
+            from gyra.agent.core.schema import Status
+            self._agent_chat.gpts_conversations.update(conv_id, Status.WAITING.value)
+            conv.state = Status.WAITING.value
+
+            async def _run():
+                try:
+                    async for _task, _chunk, _new_convid in aggregation_chat(
+                        conv_id=conv_id,
+                        agent_conv_id=conv_id,
+                        gpts_name=conv.gpts_name,
+                        user_query="[auto-recovery] resuming after crash",
+                        user_code=conv.user_code,
+                        sys_code=conv.sys_code,
+                        gpts_conversations=[conv],
+                    ):
+                        pass
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        f"[recovery-daemon] retry run failed for {conv_id}: {e}"
+                    )
+
+            try:
+                asyncio.create_task(_run())
+            except RuntimeError:
+                logger.warning(
+                    f"[recovery-daemon] no event loop to schedule retry for {conv_id}"
+                )
+                return
             # 恢复后刷新心跳，标记为本进程在跑
             touch_heartbeat(conv_id)
         except Exception as e:

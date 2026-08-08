@@ -176,6 +176,13 @@ class MultimediaExecutor:
         # 4) 组装 provider 参数（固定覆盖 + 输出默认 + 请求覆盖）
         gen_kwargs = self._build_gen_kwargs(kind, request)
 
+        # 4.5) 防重复提交（在任何 provider 提交之前）：同会话已有同 kind/model/
+        # 同内容的在途任务时直接复用该 job，不再向 provider 发起请求——图片/视频
+        # 生成按次计费，LLM 误判任务丢失而重试时必须在这里拦下，不重复扣费。
+        reused = self._find_in_flight_media(kind, model, final_prompt, request)
+        if reused is not None:
+            return reused
+
         # 5) 决定同步/异步
         wait = self._resolve_wait(request.wait)
         submission = None
@@ -382,6 +389,83 @@ class MultimediaExecutor:
     def name_for(self, kind: str = "") -> str:
         """供 ToolResult.tool_name 使用的稳定名称。"""
         return self._tool_name(kind or "")
+
+    # ------------------------------------------------------------------
+    # 防重复提交（在途任务复用）
+    # ------------------------------------------------------------------
+
+    def _find_in_flight_media(
+        self,
+        kind: str,
+        model: str,
+        final_prompt: str,
+        request: MultimediaRequest,
+    ) -> Any:
+        """查找内容相同的在途媒体任务，命中则返回复用该 job 的 PENDING ToolResult。
+
+        dedup key = (conv_id, kind, model, 归一化任务描述)，并用 spec.context 里
+        的完整 prompt 做二次校验（任务描述只含 prompt 前 50 字符，可能碰撞）。
+        仅进程内存态生效；任何异常都不阻断正常提交。
+        """
+        try:
+            from gyra.agent.tools.result import ResultStatus, ToolResult
+            from gyra.agent.util.async_task_manager import (
+                AsyncTaskManager,
+                normalize_task_text,
+            )
+
+            conv_id = request.conv_id or self.conv_id
+            description = request.description or (
+                f"AI 生成内容: {request.prompt[:50]}"
+            )
+            state = AsyncTaskManager.media_instance().find_in_flight(
+                conv_id=conv_id,
+                kind=kind,
+                model=model,
+                task_description=description,
+            )
+            if state is None:
+                return None
+            # 双保险：完整 prompt 也必须一致（spec.context["prompt"] 截断 2000 字）
+            stored_prompt = (state.spec.context or {}).get("prompt", "")
+            if stored_prompt and normalize_task_text(stored_prompt) != (
+                normalize_task_text(final_prompt[:2000])
+            ):
+                return None
+
+            job_id = state.spec.task_id
+            logger.info(
+                f"[multimedia-executor] dedup: reuse in-flight job {job_id} "
+                f"({kind}/{model}), skip duplicate submit"
+            )
+            return ToolResult(
+                success=True,
+                status=ResultStatus.PENDING,
+                tool_name=self._tool_name(kind),
+                output=(
+                    f"同一生成任务已在后台执行中，已复用该任务、"
+                    f"未重复提交（不重复扣费）。\n"
+                    f"- job_id: {job_id}\n"
+                    f"- 模型: {model}\n"
+                    f"- 状态: {state.status.value}\n\n"
+                    f"完成后会自动通知，请勿重复提交生成请求。"
+                ),
+                metadata={
+                    "job_id": job_id,
+                    "model": model,
+                    "reused": True,
+                    "conv_id": conv_id,
+                    "async_task": {
+                        "task_id": job_id,
+                        "kind": kind,
+                        "model": model,
+                        "conv_id": conv_id,
+                    },
+                },
+            )
+        except Exception as e:  # noqa: BLE001 - 去重失败不阻断正常提交
+            logger.warning(f"[multimedia-executor] dedup check failed: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # 异步执行（提交 + 后台轮询下载 + 交付）

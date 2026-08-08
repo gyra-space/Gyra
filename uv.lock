@@ -2820,6 +2820,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "snowflake-id" },
+    { name = "tiktoken" },
     { name = "tomli" },
     { name = "typeguard" },
     { name = "typing-inspect" },
@@ -2888,7 +2889,6 @@ proxy-anthropic = [
 proxy-openai = [
     { name = "httpx", extra = ["socks"] },
     { name = "openai" },
-    { name = "tiktoken" },
 ]
 proxy-qianfan = [
     { name = "qianfan" },
@@ -2987,7 +2987,7 @@ requires-dist = [
     { name = "sqlparse", marker = "extra == 'simple-framework'", specifier = "==0.4.4" },
     { name = "tenacity", marker = "extra == 'client'", specifier = "<=8.3.0" },
     { name = "termcolor", marker = "extra == 'agent'" },
-    { name = "tiktoken", marker = "extra == 'proxy-openai'", specifier = ">=0.8.0" },
+    { name = "tiktoken", specifier = ">=0.8.0" },
     { name = "tokenizers", marker = "extra == 'framework'", specifier = ">=0.14" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomlkit", marker = "extra == 'cli'" },

@@ -365,7 +365,9 @@ class TestSubAgentRunAsyncBranch:
 
         # mock coordinator
         mock_coordinator = MagicMock()
-        mock_coordinator.register_subagent = AsyncMock()
+        mock_coordinator.register_subagent = AsyncMock(
+            return_value=(MagicMock(sub_conv_id="sub_conv_x"), True)
+        )
         mock_coordinator.on_subagent_done = AsyncMock()
 
         # mock GptAppResource：_start_app 返回带 content 的 answer
@@ -446,7 +448,9 @@ class TestSubAgentRunAsyncBranch:
         sender.role = "main"
 
         mock_coordinator = MagicMock()
-        mock_coordinator.register_subagent = AsyncMock()
+        mock_coordinator.register_subagent = AsyncMock(
+            return_value=(MagicMock(sub_conv_id="sub_conv_x"), True)
+        )
         mock_coordinator.on_subagent_done = AsyncMock()
 
         mock_app_resource = MagicMock()
@@ -510,7 +514,9 @@ class TestSubAgentRunAsyncBranch:
         sender.role = "main"
 
         mock_coordinator = MagicMock()
-        mock_coordinator.register_subagent = AsyncMock()
+        mock_coordinator.register_subagent = AsyncMock(
+            return_value=(MagicMock(sub_conv_id="sub_conv_x"), True)
+        )
         mock_coordinator.on_subagent_failed = AsyncMock()
 
         mock_app_resource = MagicMock()

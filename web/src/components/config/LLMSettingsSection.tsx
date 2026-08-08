@@ -197,6 +197,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                     name: model.name || "",
                     temperature: model.temperature ?? 0.7,
                     max_new_tokens: model.max_new_tokens ?? 4096,
+                    context_window: model.context_window ?? 128000,
                     top_p: model.top_p,
                     reasoning_effort: model.reasoning_effort,
                     model_type: model.model_type || "llm",
@@ -353,6 +354,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
               name: model.name,
               temperature: model.temperature ?? 0.7,
               max_new_tokens: model.max_new_tokens ?? 4096,
+              context_window: model.context_window ?? 128000,
               top_p: model.top_p,
               reasoning_effort: model.reasoning_effort,
               model_type: modelType,
@@ -696,7 +698,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                               : "border-gray-100 bg-white hover:border-gray-200 hover:shadow-sm"
                                           }`}
                                         >
-                                          <div className="col-span-3">
+                                          <div className="col-span-2">
                                             <Form.Item
                                               name={[modelField.name, "name"]}
                                               rules={[
@@ -771,7 +773,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                           </div>
                                           <div className="col-span-2">
                                             <div className="flex items-center justify-between mb-1">
-                                              <span className="text-xs text-gray-400">Max Tokens</span>
+                                              <span className="text-xs text-gray-400">上下文空间</span>
                                               <span className="text-xs font-semibold text-blue-600">
                                                 {formatTokens(
                                                   form.getFieldValue([
@@ -780,7 +782,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                                     field.name,
                                                     "models",
                                                     modelField.name,
-                                                    "max_new_tokens",
+                                                    "context_window",
                                                   ])
                                                 )}
                                               </span>
@@ -788,10 +790,10 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                             <Form.Item
                                               name={[
                                                 modelField.name,
-                                                "max_new_tokens",
+                                                "context_window",
                                               ]}
                                               className="!mb-0"
-                                              tooltip="请根据模型实际支持的最大 token 数设置"
+                                              tooltip="模型上下文空间（输入+输出总预算），用于上下文压缩与用量统计"
                                             >
                                               <Slider
                                                 min={0}
@@ -802,6 +804,28 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                                   formatter: (value) =>
                                                     formatTokens(value),
                                                 }}
+                                              />
+                                            </Form.Item>
+                                          </div>
+                                          <div className="col-span-1">
+                                            <div className="mb-1">
+                                              <span className="text-xs text-gray-400">Max Tokens</span>
+                                            </div>
+                                            <Form.Item
+                                              name={[
+                                                modelField.name,
+                                                "max_new_tokens",
+                                              ]}
+                                              className="!mb-0"
+                                              tooltip="单次最大生成（输出）token 数，作为 max_tokens 发给模型"
+                                            >
+                                              <InputNumber
+                                                size="small"
+                                                style={{ width: "100%" }}
+                                                min={0}
+                                                max={131072}
+                                                step={1024}
+                                                placeholder="4096"
                                               />
                                             </Form.Item>
                                           </div>

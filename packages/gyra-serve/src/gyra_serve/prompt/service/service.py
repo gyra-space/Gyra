@@ -13,6 +13,7 @@ from gyra.storage.metadata import BaseDao
 from gyra.util.json_utils import compare_json_properties_ex, find_json_objects
 from gyra.util.pagination_utils import PaginationResult
 from gyra.util.tracer import root_tracer
+from gyra_core.config.schema import DEFAULT_MAX_NEW_TOKENS
 from gyra_serve.core import BaseService
 
 from ..api.schemas import PromptDebugInput, PromptType, ServeRequest, ServerResponse
@@ -20,6 +21,24 @@ from ..config import SERVE_SERVICE_COMPONENT_NAME, ServeConfig
 from ..models.models import ServeDao, ServeEntity
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_output_max_tokens(model_name: str) -> int:
+    """取模型配置的输出上限（max_new_tokens）；未配置回退默认。
+
+    不能用 context_length：那是上下文空间，作为 max_tokens 发出会超过 provider 的
+    输出上限触发 400（如 kimi-k2.5 的 [1, 98304]）。
+    """
+    try:
+        from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+        cfg = ModelConfigCache.get_config(model_name)
+        val = (cfg or {}).get("max_new_tokens")
+        if isinstance(val, int) and val > 0:
+            return val
+    except Exception as e:
+        logger.warning(f"resolve output max_tokens failed: {e}")
+    return DEFAULT_MAX_NEW_TOKENS
 
 
 class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
@@ -318,11 +337,13 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
             metadata: ModelMetadata = await llm_client.get_model_metadata(
                 debug_input.debug_model
             )
+            # 输出上限用模型配置的 max_new_tokens，不能用 context_length（那是上下文空间）
+            output_max_tokens = _resolve_output_max_tokens(debug_input.debug_model)
             payload = {
                 "model": debug_input.debug_model,
                 "messages": debug_messages,
                 "temperature": debug_input.temperature,
-                "max_new_tokens": metadata.context_length,
+                "max_new_tokens": output_max_tokens,
                 "echo": metadata.ext_metadata.prompt_sep,
                 "stop": None,
                 "stop_token_ids": None,
@@ -350,7 +371,7 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                 messages=debug_messages,
                 llm_model=debug_input.debug_model,
                 temperature=debug_input.temperature,
-                max_new_tokens=metadata.context_length,
+                max_new_tokens=output_max_tokens,
                 stream_out=True,
             ):
                 res_content = getattr(output, "text", None) or str(output)

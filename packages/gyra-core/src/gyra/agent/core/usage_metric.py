@@ -147,13 +147,13 @@ def get_context_window(model_name: str) -> int:
 
         cfg = ModelConfigCache.get_config(model_name)
         if cfg:
+            # 仅认上下文空间语义的字段；max_tokens/max_new_tokens 是输出上限，不能当上下文窗口
             for key in (
+                "context_window",
                 "context_length",
                 "max_context_length",
                 "max_context_len",
-                "context_window",
                 "max_context_window",
-                "max_tokens",
             ):
                 val = cfg.get(key)
                 if isinstance(val, int) and val > 0:
@@ -225,7 +225,7 @@ def emit_context_usage(
     - prompt_tokens: 全部消息 token（system + history + 当前用户消息）
     - completion_tokens: 工具列表 token
     - system_prompt_tokens / history_tokens / user_message_tokens: 消息内部分类
-    - layer_tokens: 分层 hot/warm/cold 的 token 占用
+    - layer_tokens: 分层 compressed/retained 的 token 占用
 
     明细统一写入 by_model["__context_detail__"]，由回调读取后透传给 SSE payload。
     若传入 context_window>0 一并写入，否则回调按 last_model_name 自行估算。
@@ -249,9 +249,8 @@ def emit_context_usage(
             "user_msg": int(user_message_tokens or 0),
             "tools": int(completion_tokens or 0),
             "layers": {
-                "hot": int((layer_tokens or {}).get("hot") or 0),
-                "warm": int((layer_tokens or {}).get("warm") or 0),
-                "cold": int((layer_tokens or {}).get("cold") or 0),
+                "compressed": int((layer_tokens or {}).get("compressed") or 0),
+                "retained": int((layer_tokens or {}).get("retained") or 0),
             },
         }
         callback = _usage_callbacks.get(conv_id)

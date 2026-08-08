@@ -122,6 +122,11 @@ class AsyncTaskCoordinator:
 
             by_conv: Dict[str, List[Any]] = {}
             for st in completed:
+                # 外部镜像任务（SubAgent async 经 register_external 登记）只作状态
+                # 查询，resume 由 SubagentCoordinator 回调驱动，这里跳过避免双重 resume。
+                ctx = getattr(getattr(st, "spec", None), "context", None) or {}
+                if ctx.get("external"):
+                    continue
                 cid = getattr(st, "spec", None) and getattr(st.spec, "conv_id", "") or ""
                 if cid:
                     by_conv.setdefault(cid, []).append(st)

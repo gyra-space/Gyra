@@ -53,6 +53,8 @@ export interface LLMModelConfig {
   name: string;
   temperature: number;
   max_new_tokens: number;
+  // 上下文空间（输入+输出总预算），用于上下文压缩与用量统计；未配置时默认 128000
+  context_window?: number;
   top_p?: number;
   reasoning_effort?: string;
   // 新增模型类型与能力标签

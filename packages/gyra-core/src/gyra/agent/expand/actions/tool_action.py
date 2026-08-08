@@ -788,9 +788,10 @@ class ToolAction(Action[ToolInput]):
             view=view,
             observations=None,
             ask_user=ask_user,
-            state=tool_result.get("state", status),  # ask_user 时为 WAITING
+            state=tool_result.get("state", status),  # ask_user/wait_async 时为 WAITING
             thoughts=param.thought,
             terminate=tool_result.get("terminate", False),  # 交互工具可终止 loop
+            wait_async=tool_result.get("wait_async", False),  # 异步任务阻塞等待
             cost_ms=cost_ms,
             eval_mode=eval_mode,
             metrics=metrics,
@@ -1109,9 +1110,14 @@ class ToolAction(Action[ToolInput]):
             flags["terminate"] = True
         if md.get("async_task"):
             # 工具提交了后台异步任务（media 生成 / spawn_agent_task）。登记该任务
-            # 到会话 pending 台账，供轮次结束置 WAITING 与跨进程恢复；不在此处置
-            # WAITING，因为 agent 提交后可能同轮继续工作。
+            # 到会话 pending 台账，供轮次结束置 WAITING 与跨进程恢复。
             flags["async_task"] = md["async_task"]
+            # 阻塞等待模式（工具声明 wait_async=True，为默认）：立即跳出本轮
+            # loop、会话置 WAITING，等任务完成后由 coordinator resume 恢复；
+            # fire-and-forget（wait_async=False）则继续 loop，结果经异步通知注入。
+            if md.get("wait_async"):
+                flags["wait_async"] = True
+                flags["state"] = Status.WAITING.value
         return flags
 
     async def _execute_tool(self, tool_info: BaseTool, args: Any, **kwargs) -> Any:

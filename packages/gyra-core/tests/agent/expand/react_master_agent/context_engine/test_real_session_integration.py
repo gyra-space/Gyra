@@ -21,10 +21,10 @@ from gyra.agent.expand.react_master_agent import ReActMasterAgent
 from gyra.agent.expand.react_master_agent.context_engine import (
     ContextEngine,
     EngineConfig,
-    InMemoryColdPersistence,
+    InMemoryCompressionPersistence,
 )
-from gyra.agent.expand.react_master_agent.context_engine.layering import (
-    LayerBudgetConfig,
+from gyra.agent.expand.react_master_agent.context_engine.compression import (
+    CompressionConfig,
 )
 
 from .conftest import CountingSummarizer, RecordingEmitter
@@ -64,7 +64,7 @@ async def _load_and_build(
 
     engine = ContextEngine(
         config=cfg or EngineConfig(),
-        cold_persistence=InMemoryColdPersistence(),
+        compression_persistence=InMemoryCompressionPersistence(),
         summarize_fn=summarizer,
         events=RecordingEmitter(),
     )
@@ -197,8 +197,8 @@ async def test_real_memory_long_session_triggers_cold_handoff():
     current = f"{session}_12"
     summ = CountingSummarizer("COMPRESSED_HISTORY")
     cfg = EngineConfig(
-        layer=LayerBudgetConfig(
-            hot_ratio=0.1, warm_ratio=0.1, cold_ratio=0.5, cold_batch_units=4
+        compression=CompressionConfig(
+            threshold_ratio=0.3, retain_ratio=0.2, min_interval_turns=0
         ),
         history_budget_ratio=1.0,
     )
@@ -208,7 +208,7 @@ async def test_real_memory_long_session_triggers_cold_handoff():
     )
     # 触发了压缩
     assert summ.calls >= 1
-    assert out.handoff is not None
+    assert out.compression_segment is not None
     # handoff 在最前
     assert out.messages[0]["role"] == "human"
     assert "COMPRESSED_HISTORY" in out.messages[0]["content"]

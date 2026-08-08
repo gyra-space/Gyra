@@ -182,12 +182,13 @@ try:
 except ImportError as e:
     logging.warning(f"Integrating gyra webserver command line tool failed: {e}")
 
-try:
-    from gyra_app.knowledge._cli.knowledge_cli import knowledge_cli_group
-
-    add_command_alias(knowledge_cli_group, name="knowledge", parent_group=cli)
-except ImportError as e:
-    logging.warning(f"Integrating gyra knowledge command line tool failed: {e}")
+# Knowledge CLI module not yet implemented
+# try:
+#     from gyra_app.knowledge._cli.knowledge_cli import knowledge_cli_group
+#
+#     add_command_alias(knowledge_cli_group, name="knowledge", parent_group=cli)
+# except ImportError as e:
+#     logging.warning(f"Integrating gyra knowledge command line tool failed: {e}")
 
 
 try:
