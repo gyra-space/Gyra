@@ -17,9 +17,11 @@ import {
 } from '@/client/api/job';
 import {
   listAsyncTasks,
+  recallAsyncTask,
   type AsyncTask,
 } from '@/client/api/async-task';
 import {
+  CloudDownloadOutlined,
   DeleteOutlined,
   DownloadOutlined,
   PlayCircleOutlined,
@@ -145,6 +147,7 @@ function AsyncArtifactLink({ artifact }: { artifact?: AsyncTask['artifact'] }) {
 /** Async tasks (media generation / spawn_agent_task subagent) merged into the task engine page. */
 function AsyncTasksTable() {
   const [filters, setFilters] = useState<{ status?: string; conv_id?: string }>({});
+  const { message } = App.useApp();
 
   const {
     data: tasks,
@@ -160,6 +163,28 @@ function AsyncTasksTable() {
     { refreshDeps: [JSON.stringify(filters)] },
   );
 
+  // 手动召回：按 provider_task_id 对已有 provider 任务重新轮询+下载（不重复扣费）
+  const { run: runRecall, loading: recallLoading } = useRequest(
+    async (taskId: string) => {
+      const [err, res] = await apiInterceptors(recallAsyncTask(taskId));
+      if (err) throw err;
+      return res;
+    },
+    {
+      manual: true,
+      onSuccess: (res) => {
+        message.success(res?.message || '已召回并交付');
+        refresh();
+      },
+      onError: (e: any) => message.error(e?.message || '召回失败'),
+    },
+  );
+
+  /** 可召回：媒体任务且非完成态（或完成但交付物缺失） */
+  const canRecall = (r: AsyncTask) =>
+    (r.kind === 'video' || r.kind === 'image') &&
+    (r.status !== 'completed' || !r.artifact?.url);
+
   const columns = [
     { title: 'Task ID', dataIndex: 'task_id', key: 'task_id', width: 200, ellipsis: true,
       render: (v: string) => <Text code className="text-xs">{v}</Text> },
@@ -174,9 +199,25 @@ function AsyncTasksTable() {
       render: (_: any, r: AsyncTask) => <AsyncArtifactLink artifact={r.artifact} /> },
     { title: 'Created', dataIndex: 'created_at', key: 'created_at', width: 160,
       render: (v?: string) => v ? moment(v).format('YYYY-MM-DD HH:mm:ss') : '-' },
-    { title: 'Operation', key: 'op', width: 90, fixed: 'right' as const,
+    { title: 'Operation', key: 'op', width: 160, fixed: 'right' as const,
       render: (_: any, r: AsyncTask) => (
-        <Button size="small" icon={<ReloadOutlined />} onClick={refresh}>refresh</Button>
+        <Space size="small">
+          {canRecall(r) && (
+            <Tooltip title="按 provider 任务记录重新轮询+下载已生成结果（不重新提交、不重复扣费）">
+              <Button
+                size="small"
+                type="primary"
+                ghost
+                icon={<CloudDownloadOutlined />}
+                loading={recallLoading}
+                onClick={() => runRecall(r.task_id)}
+              >
+                召回
+              </Button>
+            </Tooltip>
+          )}
+          <Button size="small" icon={<ReloadOutlined />} onClick={refresh} />
+        </Space>
       ) },
   ];
 

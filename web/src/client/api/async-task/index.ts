@@ -1,4 +1,4 @@
-import { GET } from '../index';
+import { GET, POST } from '../index';
 
 // ---- Types ----
 
@@ -36,4 +36,15 @@ export const listAsyncTasks = (
 
 export const getAsyncTask = (taskId: string) => {
   return GET<{}, AsyncTask>(`${API_PREFIX}/media-jobs/${taskId}`);
+};
+
+/**
+ * 手动召回媒体生成结果（不重新提交、不重复扣费）。
+ * 按任务记录里的 provider_task_id 对 provider 侧已有任务重新轮询 + 下载，
+ * 交付到原会话工作区并回写任务记录。
+ */
+export const recallAsyncTask = (taskId: string, timeout = 600) => {
+  return POST<{}, { task_id: string; message: string }>(
+    `${API_PREFIX}/media-jobs/${taskId}/recall?timeout=${timeout}`,
+  );
 };

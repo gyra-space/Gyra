@@ -162,6 +162,36 @@ async def get_media_job(job_id: str):
         return Result.failed(str(e))
 
 
+@router.post("/media-jobs/{job_id}/recall")
+async def recall_media_job(job_id: str, timeout: int = Query(600, ge=30, le=3600)):
+    """手动召回媒体生成结果（不走 Agent 流程）。
+
+    服务重启 / 流程中断后，按任务记录里的 provider_task_id 对 provider 侧
+    已有任务重新轮询 + 下载（不重新提交、不重复扣费），交付到原会话的
+    AFS 工作区并回写任务记录。
+    """
+    try:
+        from gyra.agent.multimedia.recall import recall_media_job_record
+        from gyra_serve.agent.db.async_task_db import AsyncTaskDao
+
+        dao = AsyncTaskDao()
+        job = dao.get(job_id)
+        if job is None:
+            return Result.failed(msg=f"async task {job_id} not found")
+
+        outcome = await recall_media_job_record(job, timeout=timeout)
+        if not outcome.get("success"):
+            return Result.failed(msg=outcome.get("message") or "recall failed")
+
+        # 回写记录（status/result_preview/artifact/detail）
+        updated = {**job, **(outcome.get("record_updates") or {})}
+        dao.upsert(updated)
+        return Result.succ({"task_id": job_id, "message": outcome["message"]})
+    except Exception as e:
+        logger.exception("recall_media_job exception!")
+        return Result.failed(str(e))
+
+
 def init_endpoints(system_app: SystemApp, config: ServeConfig) -> None:
     global global_system_app
     global_system_app = system_app

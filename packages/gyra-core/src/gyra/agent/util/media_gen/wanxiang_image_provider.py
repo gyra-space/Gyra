@@ -22,6 +22,7 @@ from gyra.agent.util.media_gen._dashscope_common import (
 from gyra.agent.util.media_gen.base import (
     MediaGenProvider,
     MediaGenResult,
+    MediaSubmission,
     download_media_with_retry,
 )
 from gyra.agent.util.media_gen.provider_registry import MediaGenProviderRegistry
@@ -155,6 +156,65 @@ class WanxiangImageProvider(MediaGenProvider):
             return await self._generate_via_legacy_api(
                 httpx, prompt, model, base_url, timeout, **kwargs
             )
+
+    async def resume_task(
+        self,
+        task_id: str,
+        model: str = "wan2.6-t2i",
+        **kwargs: Any,
+    ) -> MediaSubmission:
+        """按已有 task_id 召回：只轮询 + 下载，不重新提交（不重复扣费）。
+
+        适用于异步任务型接口（wan2.x-t2i 新 API / wanx legacy）；qwen-image
+        等同步接口不产生 task_id，无法召回。
+        """
+        import httpx
+
+        timeout = kwargs.get("timeout", 180)
+        base_url = normalize_base_url(self.base_url or _DEFAULT_BASE_URL)
+
+        def _extract(data: dict) -> str:
+            # 新 API 与 legacy 的任务响应结构不同，依次尝试
+            try:
+                return _extract_new_api_image(data)
+            except (ValueError, KeyError, IndexError, TypeError):
+                return _extract_legacy_image(data)
+
+        async def _complete() -> MediaGenResult:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                image_url = await poll_dashscope_task(
+                    client, base_url, task_id, self.api_key, timeout,
+                    extract_url=_extract,
+                    poll_interval=5,
+                    provider="wanxiang",
+                )
+                logger.info(
+                    f"[WanxiangImageProvider] Recalling image from {image_url}"
+                )
+                image_data = await download_media_with_retry(
+                    client, image_url, kind="image", provider="wanxiang"
+                )
+
+            return MediaGenResult(
+                data=image_data,
+                format="png",
+                mime_type="image/png",
+                metadata={
+                    "model": model,
+                    "task_id": task_id,
+                    "provider": "wanxiang",
+                    "image_url": image_url,
+                    "recalled": True,
+                },
+            )
+
+        return MediaSubmission(
+            task_id=task_id,
+            provider="wanxiang",
+            model=model,
+            complete=_complete,
+            metadata={"task_id": task_id, "model": model},
+        )
 
     async def _generate_via_new_api(
         self,

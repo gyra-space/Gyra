@@ -185,8 +185,9 @@ class MultimediaExecutor:
 
         # 5) 决定同步/异步
         wait = self._resolve_wait(request.wait)
+        description = request.description or (f"AI 生成内容: {request.prompt[:50]}")
         submission = None
-        if not wait and hasattr(provider, "submit_video") and kind == KIND_VIDEO:
+        if hasattr(provider, "submit_video") and kind == KIND_VIDEO:
             try:
                 submission = await provider.submit_video(
                     final_prompt, model, **gen_kwargs
@@ -195,26 +196,36 @@ class MultimediaExecutor:
                 submission = None  # provider 声明了 submit_video 但实际不支持 → 走同步
             except Exception as e:  # noqa: BLE001 - 提交失败立即返回
                 logger.error(f"[multimedia-executor] submit failed: {e}", exc_info=True)
-                cap = "视频" if kind == KIND_VIDEO else "图片"
                 return ToolResult.fail(
-                    error=f"{cap}生成提交失败: {e}",
+                    error=f"视频生成提交失败: {e}",
                     tool_name=self._tool_name(kind),
                 )
 
-        if submission is not None:
+        if submission is not None and not wait:
             return await self._run_async(
                 kind=kind,
                 model=model,
                 prompt=final_prompt,
-                description=request.description
-                or (f"AI 生成内容: {request.prompt[:50]}"),
+                description=description,
                 request=request,
                 submission=submission,
             )
 
+        # 5.5) 任务记录（媒体生成很贵，一个请求结果都不能丢）：同步路径（含
+        # SubAgent 内联轮询）在生成前登记持久化任务记录，provider_task_id/prompt/
+        # 原始链接落 gpts_async_tasks.detail，终态回写——进程重启也可按
+        # provider_task_id 找回结果。同时在途记录使防重复守卫覆盖同步路径。
+        mirror_id = await self._register_media_mirror(
+            kind, model, final_prompt, description, request, protocol, submission
+        )
+
         # 同步路径
         try:
-            if kind == KIND_VIDEO:
+            if submission is not None:
+                # 已显式提交（video + submit 支持）：就地轮询同一 submission，
+                # 与 provider.generate_video 内部行为一致，但 submission 在手可登记
+                result = await submission.complete()
+            elif kind == KIND_VIDEO:
                 result = await provider.generate_video(
                     final_prompt, model, **gen_kwargs
                 )
@@ -224,6 +235,9 @@ class MultimediaExecutor:
                 )
         except NotImplementedError:
             cap = "视频" if kind == KIND_VIDEO else "图片"
+            self._complete_media_mirror(
+                mirror_id, error=f"模型 '{model}' 不支持{cap}生成"
+            )
             return ToolResult.fail(
                 error=f"模型 '{model}' (protocol={protocol}) 不支持{cap}生成",
                 tool_name=self._tool_name(kind),
@@ -231,36 +245,46 @@ class MultimediaExecutor:
         except TimeoutError as e:
             # 提交已成功、仅本地轮询超时：转后台继续等待同一 provider task，
             # 不重复提交（重复扣费）。无 submission 的 provider 维持原报错。
-            submission = getattr(e, "submission", None)
+            submission = submission or getattr(e, "submission", None)
             if submission is not None:
                 logger.info(
                     f"[multimedia-executor] poll timed out after submit; "
                     f"continue polling provider task {submission.task_id} in background"
                 )
-                return await self._run_async(
+                tr = await self._run_async(
                     kind=kind,
                     model=model,
                     prompt=final_prompt,
-                    description=request.description
-                    or (f"AI 生成内容: {request.prompt[:50]}"),
+                    description=description,
                     request=request,
                     submission=submission,
                     resumed_after_timeout=str(e),
                 )
+                # 镜像记为"已转后台"并指向真正的 atask（不丢记录、不重复计费）
+                bg_job = (getattr(tr, "metadata", None) or {}).get("job_id", "")
+                self._complete_media_mirror(
+                    mirror_id,
+                    result=(
+                        f"前台等待超时，已转后台任务 {bg_job} 续等同一 "
+                        f"provider task {submission.task_id}（不重复扣费）"
+                    ),
+                )
+                return tr
+            self._complete_media_mirror(mirror_id, error=f"生成超时: {e}")
             return ToolResult.fail(
                 error=f"生成超时: {e}", tool_name=self._tool_name(kind)
             )
         except Exception as e:  # noqa: BLE001
             logger.error(f"[multimedia-executor] generation failed: {e}", exc_info=True)
             cap = "视频" if kind == KIND_VIDEO else "图片"
+            self._complete_media_mirror(mirror_id, error=f"{cap}生成失败: {e}")
             return ToolResult.fail(
                 error=f"{cap}生成失败: {e}",
                 tool_name=self._tool_name(kind),
             )
 
         file_name = f"{self.config.file_prefix}_{uuid.uuid4().hex[:8]}.{result.format}"
-        description = request.description or (f"AI 生成内容: {request.prompt[:50]}")
-        return await self._deliver(
+        tr = await self._deliver(
             kind=kind,
             result=result,
             file_name=file_name,
@@ -268,6 +292,25 @@ class MultimediaExecutor:
             prompt=final_prompt,
             afs=request.afs or self.afs,
         )
+        # 终态回写：补充 provider task_id / 原始下载地址后完成镜像（结果随
+        # ToolResult 入台账，含 artifact 信息）。已同步交付，标记 consumed
+        # 避免完成通知被重复注入主 agent 上下文。
+        meta = result.metadata or {}
+        self._complete_media_mirror(
+            mirror_id,
+            result=tr if getattr(tr, "success", False) else None,
+            error=None if getattr(tr, "success", False) else getattr(tr, "error", None),
+            extra_context={
+                k: v
+                for k, v in {
+                    "provider_task_id": meta.get("task_id"),
+                    "raw_url": meta.get("video_url") or meta.get("image_url"),
+                    "file_name": file_name,
+                }.items()
+                if v
+            },
+        )
+        return tr
 
     # ------------------------------------------------------------------
     # 模型 / 参数解析
@@ -389,6 +432,97 @@ class MultimediaExecutor:
     def name_for(self, kind: str = "") -> str:
         """供 ToolResult.tool_name 使用的稳定名称。"""
         return self._tool_name(kind or "")
+
+    # ------------------------------------------------------------------
+    # 持久化任务记录（同步路径镜像：一个请求结果都不能丢）
+    # ------------------------------------------------------------------
+
+    async def _register_media_mirror(
+        self,
+        kind: str,
+        model: str,
+        final_prompt: str,
+        description: str,
+        request: MultimediaRequest,
+        protocol: str,
+        submission: Any = None,
+    ) -> Optional[str]:
+        """同步生成路径在 AsyncTaskManager 登记持久化任务记录。
+
+        与 _run_async 的 atask 同构（kind/model/description/prompt/provider_task_id
+        落 gpts_async_tasks.detail），使 SubAgent 内联轮询等同步生成也有完整
+        记录：进程重启可按 provider_task_id 找回结果；在途状态同时供防重复
+        守卫（_find_in_flight_media）命中。任何失败返回 None，不影响生成。
+        """
+        try:
+            from gyra.agent.util.async_task_manager import (
+                AsyncTaskManager,
+                AsyncTaskSpec,
+            )
+
+            conv_id = request.conv_id or self.conv_id
+            gen_kwargs = (
+                {
+                    k: v
+                    for k, v in (getattr(submission, "metadata", {}) or {}).items()
+                    if isinstance(v, (str, int, float, bool))
+                }
+                if submission is not None
+                else {}
+            )
+            context: Dict[str, Any] = {
+                "provider": getattr(submission, "provider", "") or protocol or "",
+                "prompt": final_prompt[:2000],
+                "gen_kwargs": gen_kwargs,
+                "source": "multimedia_sync",
+            }
+            provider_task_id = getattr(submission, "task_id", "") if submission else ""
+            if provider_task_id:
+                context["provider_task_id"] = provider_task_id
+
+            task_id = f"atask_{uuid.uuid4().hex[:8]}"
+            await AsyncTaskManager.media_instance().register_external(
+                AsyncTaskSpec(
+                    task_id=task_id,
+                    kind=kind,
+                    model=model,
+                    task_description=description,
+                    conv_id=conv_id,
+                    context=context,
+                )
+            )
+            logger.info(
+                f"[multimedia-executor] registered sync media record {task_id} "
+                f"({kind}/{model}, provider_task={provider_task_id or 'pending'})"
+            )
+            return task_id
+        except Exception as e:  # noqa: BLE001 - 记录失败不影响生成主流程
+            logger.warning(f"[multimedia-executor] media mirror register failed: {e}")
+            return None
+
+    def _complete_media_mirror(
+        self,
+        mirror_id: Optional[str],
+        result: Any = None,
+        error: Optional[str] = None,
+        extra_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """回写同步路径任务记录的终态（并标记 consumed，结果已同步交付）。"""
+        if not mirror_id:
+            return
+        try:
+            from gyra.agent.util.async_task_manager import AsyncTaskManager
+
+            mgr = AsyncTaskManager.media_instance()
+            if extra_context:
+                mgr.merge_external_context(mirror_id, extra_context)
+            mgr.complete_external(mirror_id, result=result, error=error)
+            # 结果已同步交付给调用方，不再需要完成通知注入
+            state = mgr.get_status(mirror_id)
+            if state is not None:
+                state.consumed = True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[multimedia-executor] media mirror complete failed: {e}")
 
     # ------------------------------------------------------------------
     # 防重复提交（在途任务复用）

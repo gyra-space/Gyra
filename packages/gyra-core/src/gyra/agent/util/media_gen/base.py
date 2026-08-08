@@ -102,6 +102,21 @@ class MediaGenProvider(ABC):
     def supported_video_models(self) -> List[str]:
         """List supported video generation models."""
 
+    async def resume_task(
+        self,
+        task_id: str,
+        model: str,
+        **kwargs: Any,
+    ) -> "MediaSubmission":
+        """按已有 provider task_id 重建可轮询的 submission（不重新提交、不重复扣费）。
+
+        供服务重启 / 流程中断后的手动召回：只对已存在的 provider 任务做
+        轮询 + 下载。默认不支持，子类按需实现。
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} 不支持按 task_id 召回（resume_task 未实现）"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Validated media download

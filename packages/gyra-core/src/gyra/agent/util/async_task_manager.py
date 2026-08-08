@@ -524,6 +524,19 @@ class AsyncTaskManager:
         )
         return True
 
+    def merge_external_context(self, task_id: str, fields: Dict[str, Any]) -> bool:
+        """向外部任务的 spec.context 合并字段并重新持久化。
+
+        用于生成类任务在拿到 provider task_id / 原始下载地址后补充进台账
+        （gpts_async_tasks.detail），保证昂贵请求的结果可按记录找回。
+        """
+        state = self._tasks.get(task_id)
+        if state is None:
+            return False
+        state.spec.context = {**(state.spec.context or {}), **(fields or {})}
+        self._persist(state)
+        return True
+
     # ==================== 防重复提交查询 ====================
 
     def known_task_ids(self, task_ids: List[str]) -> List[str]:

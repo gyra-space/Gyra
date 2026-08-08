@@ -285,6 +285,59 @@ class HappyHorseVideoProvider(MediaGenProvider):
             metadata={"task_id": task_id, "scenario": scenario, "model": model},
         )
 
+    async def resume_task(
+        self,
+        task_id: str,
+        model: str = "happyhorse-1.1-t2v",
+        **kwargs: Any,
+    ) -> MediaSubmission:
+        """按已有 task_id 召回：只轮询 + 下载，不重新提交（不重复扣费）。
+
+        供服务重启 / 流程中断后找回已生成结果。
+        """
+        import httpx
+
+        timeout = kwargs.get("timeout", 1800)
+        base_url = normalize_base_url(self.base_url or _DEFAULT_BASE_URL)
+        scenario = _scenario_of(model) or "t2v"
+
+        async def _complete() -> MediaGenResult:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                video_url = await poll_dashscope_task(
+                    client, base_url, task_id, self.api_key, timeout,
+                    extract_url=_extract_video_url,
+                    poll_interval=15,
+                    provider="happyhorse",
+                )
+                logger.info(
+                    f"[HappyHorseVideoProvider] Recalling video from {video_url}"
+                )
+                video_data = await download_media_with_retry(
+                    client, video_url, kind="video", provider="happyhorse"
+                )
+
+            return MediaGenResult(
+                data=video_data,
+                format="mp4",
+                mime_type="video/mp4",
+                metadata={
+                    "model": model,
+                    "scenario": scenario,
+                    "task_id": task_id,
+                    "provider": "happyhorse",
+                    "video_url": video_url,
+                    "recalled": True,
+                },
+            )
+
+        return MediaSubmission(
+            task_id=task_id,
+            provider="happyhorse",
+            model=model,
+            complete=_complete,
+            metadata={"task_id": task_id, "scenario": scenario, "model": model},
+        )
+
     def _build_media(
         self,
         scenario: str,

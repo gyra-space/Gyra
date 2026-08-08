@@ -237,9 +237,23 @@ create_wrappers() {
 
     cat > "$BIN_DIR/gyra" << EOF
 #!/bin/bash
-# Gyra Launcher
+# Gyra Launcher with auto-dependency sync
 $gyra_home_line
 cd "$INSTALL_DIR" || exit 1
+
+# Auto-sync dependencies before running (skip with GYRA_NO_SYNC=1)
+if [ -f "uv.lock" ] && [ "\${GYRA_NO_SYNC:-}" != "1" ]; then
+    echo -e "\033[34m[Gyra]\033[0m Checking dependencies..."
+    uv sync --all-packages --frozen \\
+        --extra "proxy_openai" \\
+        --extra "rag" \\
+        --extra "storage_chromadb" \\
+        --extra "gyras" \\
+        --extra "storage_oss2" \\
+        --extra "client" \\
+        --extra "ext_base" 2>&1 | sed 's/^/  /'
+fi
+
 exec uv run gyra "\$@"
 EOF
     
@@ -248,11 +262,24 @@ EOF
     # Create gyra-server command
     cat > "$BIN_DIR/gyra-server" << EOF
 #!/bin/bash
-# Gyra Server Launcher
+# Gyra Server Launcher with auto-dependency sync
 $gyra_home_line
 DEFAULT_CONFIG="$CONFIG_DIR/$DEFAULT_CONFIG"
 
 cd "$INSTALL_DIR" || exit 1
+
+# Auto-sync dependencies before running (skip with GYRA_NO_SYNC=1)
+if [ -f "uv.lock" ] && [ "\${GYRA_NO_SYNC:-}" != "1" ]; then
+    echo -e "\033[34m[Gyra]\033[0m Checking dependencies..."
+    uv sync --all-packages --frozen \\
+        --extra "proxy_openai" \\
+        --extra "rag" \\
+        --extra "storage_chromadb" \\
+        --extra "gyras" \\
+        --extra "storage_oss2" \\
+        --extra "client" \\
+        --extra "ext_base" 2>&1 | sed 's/^/  /'
+fi
 
 # If no arguments provided and default config exists, use it
 if [ \$# -eq 0 ] && [ -f "\$DEFAULT_CONFIG" ]; then
@@ -315,6 +342,7 @@ Environment Variables:
   BIN_DIR        Binary directory (default: $HOME/.local/bin)
   CONFIG_DIR     Configuration directory (default: $HOME/.gyra/configs)
   VERSION        Version to install (default: latest)
+  GYRA_NO_SYNC   Set to '1' to skip automatic dependency sync on launch
 
 Options:
   --help         Show this help message
@@ -324,6 +352,11 @@ After Installation:
   1. Edit config and set your API keys
   2. gyra-server    Start Gyra Server (uses default config)
   3. gyra           Start Gyra CLI
+
+Notes:
+  - Dependencies are auto-synced on each launch (uses uv.lock)
+  - Skip auto-sync with: GYRA_NO_SYNC=1 gyra-server
+  - Independent install script: bash install.sh
 
 For more information, visit: https://github.com/gyra-ai/Gyra
 EOF

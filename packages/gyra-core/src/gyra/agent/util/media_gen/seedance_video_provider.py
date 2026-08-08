@@ -257,6 +257,51 @@ class SeedanceVideoProvider(MediaGenProvider):
             metadata={"task_id": task_id, "model": model},
         )
 
+    async def resume_task(
+        self,
+        task_id: str,
+        model: str = "doubao-seedance-1-0-pro-250428",
+        **kwargs: Any,
+    ) -> MediaSubmission:
+        """按已有 task_id 召回：只轮询 + 下载，不重新提交（不重复扣费）。"""
+        import httpx
+
+        timeout = kwargs.get("timeout", 600)
+        base_url = self.base_url or _DEFAULT_BASE_URL
+
+        async def _complete() -> MediaGenResult:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                video_url = await self._poll_task(
+                    client, base_url, task_id, timeout
+                )
+                logger.info(
+                    f"[SeedanceVideoProvider] Recalling video from {video_url}"
+                )
+                video_data = await download_media_with_retry(
+                    client, video_url, kind="video", provider="seedance"
+                )
+
+            return MediaGenResult(
+                data=video_data,
+                format="mp4",
+                mime_type="video/mp4",
+                metadata={
+                    "model": model,
+                    "task_id": task_id,
+                    "provider": "seedance",
+                    "video_url": video_url,
+                    "recalled": True,
+                },
+            )
+
+        return MediaSubmission(
+            task_id=task_id,
+            provider="seedance",
+            model=model,
+            complete=_complete,
+            metadata={"task_id": task_id, "model": model},
+        )
+
     async def _poll_task(
         self,
         client: Any,
