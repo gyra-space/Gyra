@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Dropdown, Form, Input, Modal } from 'antd';
-import { CheckOutlined, CommentOutlined, LinkOutlined, MoreOutlined, SearchOutlined } from '@ant-design/icons';
+import { CheckOutlined, CommentOutlined, DownOutlined, LinkOutlined, MoreOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { apiInterceptors, createAsset, resolveAndExecuteIntervention, abortIntervention, terminateTask, deleteTask, reassignTask } from '@/client/api';
 import { listInbox, updateInboxStatus, listMembers, type InboxItem } from '@/client/api/workspace';
@@ -286,6 +286,16 @@ export function SceneTaskRail({
   const [members, setMembers] = useState<any[]>([]);
   const [transferring, setTransferring] = useState(false);
 
+  const loadMembers = async () => {
+    if (!workspaceId) return;
+    const [err, res] = await apiInterceptors(listMembers({ workspace_id: workspaceId }));
+    if (err) return;
+    setMembers(Array.isArray(res) ? res : ((res as any)?.data || []));
+  };
+
+  // 进入时即拉取成员:用于把 created_by_user_id 解析成发起人名称
+  useEffect(() => { loadMembers(); }, [workspaceId]);
+
   const handleTransferOpen = async (taskId: number, wsId: number) => {
     setTransferTaskId(taskId);
     setTransferOpen(true);
@@ -306,6 +316,15 @@ export function SceneTaskRail({
     refreshInbox();
     onRefreshLists?.();
   };
+
+  // 成员 id -> 名称 映射,用于把任务发起人(created_by_user_id)解析成名字
+  const memberMap = useMemo(() => {
+    const m: Record<number, string> = {};
+    members.forEach((u: any) => {
+      if (u?.user_id != null) m[Number(u.user_id)] = u.user_name || `用户 ${u.user_id}`;
+    });
+    return m;
+  }, [members]);
 
   const [filter, setFilter] = useState('');
   const [tab, setTab] = useState<TaskTabKey>('all');
@@ -445,20 +464,30 @@ export function SceneTaskRail({
     return () => obs.disconnect();
   }, [hasMore]);
 
-  // 渐进渲染 + 时间分段:在 visible 窗口内插入段头(数据已按 updatedAt 倒序)
-  const grouped = useMemo(() => {
+  // 渐进渲染 + 时间分段分组:在 visible 窗口内按 updatedAt 分段(今天/昨天/本周/更早),
+  // 每组可折叠。折叠状态用 Set 记录段名。
+  const [collapsedSegs, setCollapsedSegs] = useState<Set<string>>(() => new Set());
+  const toggleSeg = (label: string) => {
+    setCollapsedSegs((prev) => {
+      const next = new Set(prev);
+      next.has(label) ? next.delete(label) : next.add(label);
+      return next;
+    });
+  };
+
+  const groups = useMemo(() => {
     const shown = filtered.slice(0, visibleCount);
-    const rows: Array<{ type: 'seg'; label: string } | { type: 'item'; item: (typeof shown)[number] }> = [];
+    const out: Array<{ label: string; items: (typeof shown)[number][] }> = [];
     let last = '';
     shown.forEach((item) => {
       const seg = segLabel(item.updatedAt);
       if (seg !== last) {
-        rows.push({ type: 'seg', label: seg });
+        out.push({ label: seg, items: [] });
         last = seg;
       }
-      rows.push({ type: 'item', item });
+      out[out.length - 1].items.push(item);
     });
-    return rows;
+    return out;
   }, [filtered, visibleCount]);
 
   const handleTerminate = (id: number) => {
@@ -549,6 +578,161 @@ export function SceneTaskRail({
       )}
     </div>
   );
+
+  // 发起人名称:优先成员表,其次当前用户显示"我",最后回退 `用户 <id>`
+  const initiatorName = (userId: any): string => {
+    if (userId == null) return '';
+    const name = memberMap[Number(userId)];
+    if (name) return name;
+    return String(userId) === String(getUserId()) ? '我' : `用户 ${userId}`;
+  };
+
+  const renderRailItem = (it: any) => {
+    if (it.kind === 'orphan-intervention') {
+      const iv = it.raw;
+      return (
+        <div key={`orphan-${iv.id}`} className="ws-rail-card ws-rail-card--int ws-rail-card--orphan">
+          <div className="ws-rail-ttl">{questionToText(iv.question) || `intervention_${iv.id}`}</div>
+          <div className="ws-rail-meta">
+            <span className="ws-rail-status ws-rail-status--requested"><span className="ws-rail-dot" />待响应</span>
+            <span className="ws-rail-meta-sep">·</span>
+            <span className="ws-rail-meta-pb">无关联任务</span>
+          </div>
+          <div className="ws-rail-foot">
+            <span className="ws-rail-tm">{fmtTime(it.updatedAt)}</span>
+            <span className="ws-rail-meta-sep">·</span>
+            <span className="ws-rail-src">人工介入</span>
+          </div>
+          {renderInterventionSub(iv)}
+        </div>
+      );
+    }
+    if (it.kind === 'lobby-conversation') {
+      const c = it.raw;
+      const isCurrent = c.conv_uid === currentConvUid;
+      const title = c.title || `会话 ${c.conv_uid?.slice(0, 8)}`;
+      const initiator = initiatorName(c.user_id);
+      return (
+        <div
+          key={`lobby-${c.conv_uid}`}
+          className={`ws-rail-card${isCurrent ? ' ws-rail-card--active' : ''}`}
+          role={disabled ? undefined : 'button'}
+          tabIndex={disabled ? -1 : 0}
+          aria-disabled={disabled}
+          onClick={() => !disabled && onOpenConversation?.(c.conv_uid, null)}
+          onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenConversation?.(c.conv_uid, null); } }}
+        >
+          <div className="ws-rail-ttl">{title}</div>
+          <div className="ws-rail-meta">
+            <span className="ws-rail-conv-kind ws-rail-conv-kind--lobby">大厅</span>
+            {initiator && (
+              <>
+                <span className="ws-rail-meta-sep">·</span>
+                <span className="ws-rail-meta-user" title={`发起人: ${initiator}`}>{initiator}</span>
+              </>
+            )}
+            {isCurrent && <span className="ws-rail-conv-cur">当前</span>}
+          </div>
+          <div className="ws-rail-foot">
+            <span className="ws-rail-tm">{fmtTime(it.updatedAt)}</span>
+            <span className="ws-rail-meta-sep">·</span>
+            <span className="ws-rail-src">大厅会话</span>
+          </div>
+        </div>
+      );
+    }
+    const t = it.raw;
+    const pbName = t.playbook_id ? pbNameById.get(t.playbook_id) : null;
+    const isActive = activeTaskId === t.id;
+    const canTerminate = t.status === 'running' || t.status === 'awaiting_human';
+    const moreItems = [
+      { key: 'reassign', label: '转交任务' },
+      ...(canTerminate
+        ? [{ key: 'terminate', danger: true, label: '终止任务' }]
+        : [{ key: 'delete', danger: true, label: '删除任务' }]),
+    ];
+    const initiator = initiatorName(t.created_by_user_id);
+    return (
+      <div
+        key={`task-${t.id}`}
+        className={`ws-rail-card${isActive ? ' ws-rail-card--active' : ''}`}
+        role={disabled ? undefined : 'button'}
+        tabIndex={disabled ? -1 : 0}
+        aria-disabled={disabled}
+        onClick={() => !disabled && onPreview(t, 'task')}
+        onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPreview(t, 'task'); } }}
+      >
+        <div className="ws-rail-ttl">{t.title || `task_${t.id}`}</div>
+        <div className="ws-rail-meta">
+          <span className={`ws-rail-status ws-rail-status--${t.status || 'draft'}`}>
+            <span className="ws-rail-dot" />
+            {statusLabel(t.status)}
+          </span>
+          {initiator && (
+            <>
+              <span className="ws-rail-meta-sep">·</span>
+              <span className="ws-rail-meta-user" title={initiator ? `发起人: ${initiator}` : undefined}>{initiator}</span>
+            </>
+          )}
+          {pbName && (
+            <>
+              <span className="ws-rail-meta-sep">·</span>
+              <span className="ws-rail-meta-pb" title={pbName}>{pbName}</span>
+            </>
+          )}
+        </div>
+        <div className="ws-rail-foot">
+          <span className="ws-rail-tm">{fmtTime(it.updatedAt)}</span>
+          <span className="ws-rail-meta-sep">·</span>
+          <span className="ws-rail-src">{triggerLabel(t)}</span>
+          <ElapsedTimer task={t} />
+          <div className="ws-rail-card-actions">
+            <span
+              className="ws-rail-card-act"
+              title="引用到输入框"
+              role="button"
+              tabIndex={disabled ? -1 : 0}
+              onClick={(e) => { e.stopPropagation(); if (!disabled) onReference?.(t); }}
+              onKeyDown={(e) => { if (!disabled && e.key === 'Enter') { e.preventDefault(); onReference?.(t); } }}
+            >
+              <LinkOutlined />
+            </span>
+            <span
+              className="ws-rail-card-act"
+              title="进入对话"
+              role="button"
+              tabIndex={disabled ? -1 : 0}
+              onClick={(e) => { e.stopPropagation(); if (!disabled) onEnterConversation(t.id); }}
+              onKeyDown={(e) => { if (!disabled && e.key === 'Enter') { e.preventDefault(); onEnterConversation(t.id); } }}
+            >
+              <CommentOutlined />
+            </span>
+            <Dropdown
+              menu={{
+                items: moreItems,
+                onClick: ({ key, domEvent }) => {
+                  domEvent.stopPropagation();
+                  if (key === 'terminate') handleTerminate(t.id);
+                  else if (key === 'reassign') handleTransferOpen(t.id, t.workspace_id);
+                  else handleDelete(t.id);
+                },
+              }}
+              trigger={['click']}
+            >
+              <span className="ws-rail-card-act" title="更多" onClick={(e) => e.stopPropagation()}>
+                <MoreOutlined />
+              </span>
+            </Dropdown>
+          </div>
+        </div>
+        {it.interventions.length > 0 && (
+          <div className="ws-rail-interventions">
+            {it.interventions.map(renderInterventionSub)}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="ws-scene-task-rail">
@@ -685,139 +869,22 @@ export function SceneTaskRail({
             <div className="ws-rail-empty-h">在右侧输入发起任务,选剧本 + 写目标,Agent 会跑起来。</div>
           </div>
         )}
-        {grouped.map((row) => {
-          if (row.type === 'seg') {
-            return <div key={`seg-${row.label}`} className="ws-rail-seg">{row.label}</div>;
-          }
-          const it = row.item;
-          if (it.kind === 'orphan-intervention') {
-            const iv = it.raw;
-            return (
-              <div key={`orphan-${iv.id}`} className="ws-rail-card ws-rail-card--int ws-rail-card--orphan">
-                <div className="ws-rail-ttl">{questionToText(iv.question) || `intervention_${iv.id}`}</div>
-                <div className="ws-rail-meta">
-                  <span className="ws-rail-status ws-rail-status--requested"><span className="ws-rail-dot" />待响应</span>
-                  <span className="ws-rail-meta-sep">·</span>
-                  <span className="ws-rail-meta-pb">无关联任务</span>
-                </div>
-                <div className="ws-rail-foot">
-                  <span className="ws-rail-tm">{fmtTime(it.updatedAt)}</span>
-                  <span className="ws-rail-meta-sep">·</span>
-                  <span className="ws-rail-src">人工介入</span>
-                </div>
-                {renderInterventionSub(iv)}
-              </div>
-            );
-          }
-          if (it.kind === 'lobby-conversation') {
-            const c = it.raw;
-            const isCurrent = c.conv_uid === currentConvUid;
-            const title = c.title || `会话 ${c.conv_uid?.slice(0, 8)}`;
-            return (
-              <div
-                key={`lobby-${c.conv_uid}`}
-                className={`ws-rail-card${isCurrent ? ' ws-rail-card--active' : ''}`}
-                role={disabled ? undefined : 'button'}
-                tabIndex={disabled ? -1 : 0}
-                aria-disabled={disabled}
-                onClick={() => !disabled && onOpenConversation?.(c.conv_uid, null)}
-                onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenConversation?.(c.conv_uid, null); } }}
-              >
-                <div className="ws-rail-ttl">{title}</div>
-                <div className="ws-rail-meta">
-                  <span className="ws-rail-conv-kind ws-rail-conv-kind--lobby">大厅</span>
-                  {isCurrent && <span className="ws-rail-conv-cur">当前</span>}
-                </div>
-                <div className="ws-rail-foot">
-                  <span className="ws-rail-tm">{fmtTime(it.updatedAt)}</span>
-                  <span className="ws-rail-meta-sep">·</span>
-                  <span className="ws-rail-src">大厅会话</span>
-                </div>
-              </div>
-            );
-          }
-          const t = it.raw;
-          const pbName = t.playbook_id ? pbNameById.get(t.playbook_id) : null;
-          const isActive = activeTaskId === t.id;
-          const canTerminate = t.status === 'running' || t.status === 'awaiting_human';
-          const moreItems = [
-            { key: 'reassign', label: '转交任务' },
-            ...(canTerminate
-              ? [{ key: 'terminate', danger: true, label: '终止任务' }]
-              : [{ key: 'delete', danger: true, label: '删除任务' }]),
-          ];
+        {groups.map((g) => {
+          const isCollapsed = collapsedSegs.has(g.label);
           return (
-            <div
-              key={`task-${t.id}`}
-              className={`ws-rail-card${isActive ? ' ws-rail-card--active' : ''}`}
-              role={disabled ? undefined : 'button'}
-              tabIndex={disabled ? -1 : 0}
-              aria-disabled={disabled}
-              onClick={() => !disabled && onPreview(t, 'task')}
-              onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPreview(t, 'task'); } }}
-            >
-              <div className="ws-rail-ttl">{t.title || `task_${t.id}`}</div>
-              <div className="ws-rail-meta">
-                <span className={`ws-rail-status ws-rail-status--${t.status || 'draft'}`}>
-                  <span className="ws-rail-dot" />
-                  {statusLabel(t.status)}
-                </span>
-                {pbName && (
-                  <>
-                    <span className="ws-rail-meta-sep">·</span>
-                    <span className="ws-rail-meta-pb" title={pbName}>{pbName}</span>
-                  </>
-                )}
+            <div key={`seg-${g.label}`} className="ws-rail-group">
+              <div
+                className={`ws-rail-seg${isCollapsed ? ' ws-rail-seg--collapsed' : ''}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleSeg(g.label)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSeg(g.label); } }}
+              >
+                <span className="ws-rail-seg-caret">{isCollapsed ? <RightOutlined /> : <DownOutlined />}</span>
+                <span className="ws-rail-seg-label">{g.label}</span>
+                <span className="ws-rail-seg-count">{g.items.length}</span>
               </div>
-              <div className="ws-rail-foot">
-                <span className="ws-rail-tm">{fmtTime(it.updatedAt)}</span>
-                <span className="ws-rail-meta-sep">·</span>
-                <span className="ws-rail-src">{triggerLabel(t)}</span>
-                <ElapsedTimer task={t} />
-                <div className="ws-rail-card-actions">
-                  <span
-                    className="ws-rail-card-act"
-                    title="引用到输入框"
-                    role="button"
-                    tabIndex={disabled ? -1 : 0}
-                    onClick={(e) => { e.stopPropagation(); if (!disabled) onReference?.(t); }}
-                    onKeyDown={(e) => { if (!disabled && e.key === 'Enter') { e.preventDefault(); onReference?.(t); } }}
-                  >
-                    <LinkOutlined />
-                  </span>
-                  <span
-                    className="ws-rail-card-act"
-                    title="进入对话"
-                    role="button"
-                    tabIndex={disabled ? -1 : 0}
-                    onClick={(e) => { e.stopPropagation(); if (!disabled) onEnterConversation(t.id); }}
-                    onKeyDown={(e) => { if (!disabled && e.key === 'Enter') { e.preventDefault(); onEnterConversation(t.id); } }}
-                  >
-                    <CommentOutlined />
-                  </span>
-                  <Dropdown
-                    menu={{
-                      items: moreItems,
-                      onClick: ({ key, domEvent }) => {
-                        domEvent.stopPropagation();
-                        if (key === 'terminate') handleTerminate(t.id);
-                        else if (key === 'reassign') handleTransferOpen(t.id, t.workspace_id);
-                        else handleDelete(t.id);
-                      },
-                    }}
-                    trigger={['click']}
-                  >
-                    <span className="ws-rail-card-act" title="更多" onClick={(e) => e.stopPropagation()}>
-                      <MoreOutlined />
-                    </span>
-                  </Dropdown>
-                </div>
-              </div>
-              {it.interventions.length > 0 && (
-                <div className="ws-rail-interventions">
-                  {it.interventions.map(renderInterventionSub)}
-                </div>
-              )}
+              {!isCollapsed && g.items.map(renderRailItem)}
             </div>
           );
         })}
