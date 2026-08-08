@@ -1901,6 +1901,32 @@ class AgentChat(BaseComponent, ABC):
             return True
         return False
 
+    async def _build_capability_pack(self, real_all_resources) -> Any:
+        """统一构建 CapabilityPack（新标准资源协议）。
+
+        所有 team_mode（SINGLE_AGENT/NATIVE_APP/AUTO_PLAN 等）统一走此入口，
+        把 workspace_scene/ecp/datasource 等能力类资源从 AgentResource 列表构建为
+        CapabilityPack，供主代理绑定承载。无 factory 的边角类资源留在旧 depend_resource
+        路径。构建失败仅告警，不阻断主流程。
+        """
+        cap_pack = None
+        try:
+            from gyra.agent.capabilities.registry_factory import (
+                get_default_factory_registry,
+            )
+            cap_pack = get_default_factory_registry().build_pack(
+                real_all_resources, self.system_app
+            )
+            if cap_pack and cap_pack.sub_resources:
+                logger.info(
+                    f"[AgentChat] CapabilityPack built: "
+                    f"{len(cap_pack.sub_resources)} caps "
+                    f"({[getattr(c, 'capability_id', '?') for c in cap_pack.sub_resources]})"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AgentChat] build CapabilityPack failed: {e}")
+        return cap_pack
+
     @trace("agent.build_agent_by_gpts")
     async def _build_agent_by_gpts(
         self,
@@ -2046,22 +2072,7 @@ class AgentChat(BaseComponent, ABC):
                 agent_context = deepcopy(context)
                 agent_context.agent_app_code = app.app_code
 
-                cap_pack = None
-                try:
-                    from gyra.agent.capabilities.registry_factory import (
-                        get_default_factory_registry,
-                    )
-                    cap_pack = get_default_factory_registry().build_pack(
-                        real_all_resources, self.system_app
-                    )
-                    if cap_pack and cap_pack.sub_resources:
-                        logger.info(
-                            f"[AgentChat] CapabilityPack built: "
-                            f"{len(cap_pack.sub_resources)} caps "
-                            f"({[getattr(c,'capability_id','?') for c in cap_pack.sub_resources]})"
-                        )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(f"[AgentChat] build CapabilityPack failed: {e}")
+                cap_pack = await self._build_capability_pack(real_all_resources)
 
                 recipient = (
                     await cls()
@@ -2568,6 +2579,14 @@ class AgentChat(BaseComponent, ABC):
                         real_all_resources, ignore_missing=True
                     )
                     manager.bind(depend_resource)
+
+                # 统一治理：与 SINGLE_AGENT/NATIVE_APP 一致，主代理也承载全部能力包
+                # （workspace_scene/ecp 等资产）。AUTO_PLAN 主代理此前只 bind 旧资源
+                # depend_resource（对 workspace_scene/ecp 均失败），导致场景空间资产
+                # 无法注入系统提示词；此处统一补上 CapabilityPack 绑定，确保资产可感知。
+                cap_pack = await self._build_capability_pack(real_all_resources)
+                if cap_pack is not None:
+                    manager.bind(cap_pack)
 
                 agent_context = deepcopy(context)
                 agent_context.agent_app_code = app.app_code

@@ -49,6 +49,9 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
 
     def after_start(self):
         """Execute after the application starts"""
+        # 降低 APScheduler 日志级别，避免频繁刷屏
+        logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
+        logging.getLogger('apscheduler.scheduler').setLevel(logging.WARNING)
 
         self.scheduler.add_job(
             self.config_auto_update,

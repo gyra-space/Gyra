@@ -3117,22 +3117,22 @@ class ConversableAgent(Role, Agent):
             except Exception as e:
                 succeed = False
                 logger.exception("push_context_event: " + repr(e))
-            finally:
-                digest(
-                    None,
-                    "push_context_event.operate",
-                    cost_ms=current_ms() - round_ms,
-                    succeed=succeed,
-                    event_type=event_type,
-                    operator_name=operator_cls.name,
-                )
-        digest(
-            logger,
-            "push_context_event",
-            cost_ms=current_ms() - start_ms,
-            event_type=event_type,
-            operator_size=len(operator_clss),
-        )
+            # finally:
+            #     digest(
+            #         None,
+            #         "push_context_event.operate",
+            #         cost_ms=current_ms() - round_ms,
+            #         succeed=succeed,
+            #         event_type=event_type,
+            #         operator_name=operator_cls.name,
+            #     )
+        # digest(
+        #     logger,
+        #     "push_context_event",
+        #     cost_ms=current_ms() - start_ms,
+        #     event_type=event_type,
+        #     operator_size=len(operator_clss),
+        # )
 
 
 def _new_system_message(content):

@@ -119,6 +119,10 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
             logger.warning("Cron scheduler is already running")
             return
 
+        # 降低 APScheduler 日志级别，避免频繁刷屏
+        logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
+        logging.getLogger('apscheduler.scheduler').setLevel(logging.WARNING)
+
         logger.info("Starting cron scheduler")
         self._scheduler.start()
         self._running = True
