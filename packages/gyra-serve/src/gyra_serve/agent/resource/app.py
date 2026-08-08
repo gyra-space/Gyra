@@ -1,5 +1,6 @@
 """Application Resources for the agent."""
 
+import logging
 import uuid
 from typing import List, Optional
 
@@ -8,6 +9,8 @@ from gyra.agent import AgentMessage, ConversableAgent
 from gyra.agent.core.agent import AgentContext
 from gyra.agent.resource.app import AppInfo, AppResource
 from gyra_serve.agent.agents.app_agent_manage import get_app_manager
+
+logger = logging.getLogger(__name__)
 
 CFG = Config()
 class GptAppResource(AppResource):
@@ -127,6 +130,23 @@ class GptAppResource(AppResource):
         app_agent = await get_app_manager().create_agent_by_app_code(
             gpts_app, conv_uid=conv_uid, context=child_context
         )
+
+        # 沙箱实例继承：子 Agent 共享父 Agent 的 sandbox_manager（只共享客户端，
+        # 不转移生命周期所有权——父会话清理时子任务通常已结束；场景空间共享
+        # 沙箱常驻进程，天然安全）。子 Agent 的 AFS 交付与沙箱工具因此落到与
+        # 主任务相同的工作目录，而不是各自为政或完全没有沙箱。
+        try:
+            parent_sandbox_mgr = getattr(sender, "sandbox_manager", None)
+            if parent_sandbox_mgr is not None and getattr(
+                app_agent, "sandbox_manager", None
+            ) is None:
+                app_agent.sandbox_manager = parent_sandbox_mgr
+                logger.info(
+                    f"[start_app] child agent inherits parent sandbox "
+                    f"(parent={getattr(sender, 'name', '?')}, app={self._app_code})"
+                )
+        except Exception as e:  # noqa: BLE001 - 继承失败不影响子 agent 运行
+            logger.warning(f"[start_app] inherit parent sandbox failed: {e}")
 
         agent_message = AgentMessage(
             content=user_input,

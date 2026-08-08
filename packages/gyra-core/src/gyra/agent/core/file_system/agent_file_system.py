@@ -249,6 +249,21 @@ class AgentFileSystem:
                     logger.warning(
                         f"[AFSv3] Skip sandbox copy (binary/unavailable): {sandbox_path} err={e}"
                     )
+            else:
+                # 无沙箱（SubAgent 后台子 Agent / 异步任务上下文）：落一份本地拷贝到
+                # base_path，避免文件只进 FileStorage、在工作目录完全不可见
+                try:
+                    self._ensure_dir()
+                    safe_key = self._sanitize_filename(file_key)
+                    if "." not in safe_key:
+                        safe_key = f"{safe_key}.{extension}"
+                    local_path = self.base_path / safe_key
+                    await asyncio.to_thread(local_path.write_bytes, content_bytes)
+                    logger.info(f"[AFSv3] Saved local copy (no sandbox): {local_path}")
+                except Exception as e:
+                    logger.warning(
+                        f"[AFSv3] Skip local copy (no sandbox): err={e}"
+                    )
 
             return uri, len(content_bytes)
         except Exception as e:

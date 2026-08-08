@@ -21,7 +21,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from gyra._private.pydantic import Field
@@ -33,6 +35,30 @@ from .config import MultimediaAgentConfig
 from .executor import KIND_IMAGE, KIND_VIDEO, MultimediaExecutor, MultimediaRequest
 
 logger = logging.getLogger(__name__)
+
+
+class _LocalDirSandboxAdapter:
+    """本地目录沙箱适配器：把 AFS 的沙箱拷贝落到本地工作区目录。
+
+    子 Agent（如 SubAgent 后台派发的多媒体 Agent）通常没有自己的沙箱，
+    AFS 的 sandbox 拷贝分支会被跳过，生成文件只进 FileStorage、不进用户
+    可见的工作区目录。本地沙箱部署下，用本适配器指向系统配置的同一
+    work_dir，仅实现 AFS 用到的最小接口（work_dir + file.write）。
+    """
+
+    def __init__(self, work_dir: str):
+        self.work_dir = work_dir
+        self.file = self._FileOps()
+
+    class _FileOps:
+        async def write(self, path: str, data: bytes) -> None:
+            from pathlib import Path
+
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(data, str):
+                data = data.encode("utf-8")
+            await asyncio.to_thread(p.write_bytes, data)
 
 
 class MultimediaAgent(ConversableAgent):
@@ -162,10 +188,14 @@ class MultimediaAgent(ConversableAgent):
             except Exception:  # noqa: BLE001 - FileStorageClient 不可用
                 pass
 
-            # sandbox 客户端（可选）
+            # sandbox 客户端（可选）；子 Agent（SubAgent 后台派发）通常没有自己的
+            # 沙箱，回退到系统配置的本地工作区目录，让交付文件落到与主 Agent
+            # 相同的「沙箱文件目录」（仅本地沙箱部署生效）
             sandbox = None
             if getattr(self, "sandbox_manager", None) and self.sandbox_manager.client:
                 sandbox = self.sandbox_manager.client
+            if sandbox is None:
+                sandbox = self._local_workspace_sandbox_fallback()
 
             self._agent_file_system = AgentFileSystem(
                 conv_id=conv_id,
@@ -189,6 +219,57 @@ class MultimediaAgent(ConversableAgent):
             logger.warning(
                 f"[multimedia-agent] AFS init failed: {e}", exc_info=True
             )
+            return None
+
+    def _local_workspace_sandbox_fallback(self) -> Optional[Any]:
+        """无沙箱客户端时的本地工作区兜底（仅本地沙箱部署）。
+
+        读系统沙箱配置（与 agent_chat 创建 sandbox_manager 同一来源）：
+        type 为本地（None/""/"local"）且 work_dir 存在时，返回指向该目录的
+        适配器，使 AFS 沙箱拷贝分支把交付文件写进用户可见的工作区。
+        子 Agent 上下文携带 workspace_id（场景空间）时优先用空间家目录。
+        """
+        try:
+            # 场景空间：子 Agent 经 _start_app 继承的 workspace_id → 空间家目录
+            ws_id = None
+            try:
+                ws_id = (self.agent_context.extra or {}).get("workspace_id")
+            except Exception:  # noqa: BLE001
+                ws_id = None
+            if ws_id:
+                try:
+                    from gyra_serve.workspace.dataset_service import (
+                        workspace_sandbox_root,
+                    )
+
+                    ws_root = workspace_sandbox_root(int(ws_id))
+                    if os.path.isdir(ws_root):
+                        return _LocalDirSandboxAdapter(ws_root)
+                except Exception:  # noqa: BLE001 - 回退到默认 work_dir
+                    pass
+
+            from gyra._private.config import Config
+
+            system_app = Config().SYSTEM_APP
+            if not system_app:
+                return None
+            app_config = system_app.config.configs.get("app_config")
+            sandbox_config = getattr(app_config, "sandbox", None) if app_config else None
+            if sandbox_config is None:
+                return None
+            s_type = getattr(sandbox_config, "type", None)
+            work_dir = getattr(sandbox_config, "work_dir", None)
+            if s_type not in (None, "", "local") or not work_dir:
+                return None
+            if not os.path.isdir(work_dir):
+                return None
+            logger.info(
+                f"[multimedia-agent] no sandbox client; "
+                f"fallback to local workspace dir: {work_dir}"
+            )
+            return _LocalDirSandboxAdapter(work_dir)
+        except Exception as e:  # noqa: BLE001 - 兜底失败不影响主流程
+            logger.debug(f"[multimedia-agent] local workspace fallback skip: {e}")
             return None
 
     async def thinking(  # type: ignore[override]
