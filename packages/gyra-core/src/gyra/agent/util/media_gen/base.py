@@ -76,23 +76,33 @@ class MediaGenProvider(ABC):
         self.base_url = base_url
         self.extra_kwargs = kwargs
 
-    @abstractmethod
     async def generate_image(
         self,
         prompt: str,
         model: str,
         **kwargs: Any,
     ) -> MediaGenResult:
-        """Generate an image from a text prompt."""
+        """Generate an image from a text prompt.
 
-    @abstractmethod
+        默认不支持。支持图片生成的 provider 需覆盖此方法。
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} 不支持图片生成（generate_image 未实现）"
+        )
+
     async def generate_video(
         self,
         prompt: str,
         model: str,
         **kwargs: Any,
     ) -> MediaGenResult:
-        """Generate a video from a text prompt."""
+        """Generate a video from a text prompt.
+
+        默认不支持。支持视频生成的 provider 需覆盖此方法。
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} 不支持视频生成（generate_video 未实现）"
+        )
 
     @abstractmethod
     def supported_image_models(self) -> List[str]:

@@ -78,6 +78,34 @@ class SubagentCoordinator:
         session.commit()
         session.close()
 
+    async def _read_extra(self, main_conv_id: str) -> Dict[str, Any]:
+        """读取 gpts_conversations.extra 字典（不存在/损坏时返回空 dict）。"""
+        conv = self._agent_chat.gpts_conversations.get_by_conv_id(main_conv_id)
+        if not conv or not getattr(conv, "extra", None):
+            return {}
+        try:
+            extra = json.loads(conv.extra) if isinstance(conv.extra, str) else conv.extra
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return extra if isinstance(extra, dict) else {}
+
+    async def _write_extra(self, main_conv_id: str, extra: Dict[str, Any]) -> None:
+        """写回 gpts_conversations.extra。"""
+        conv = self._agent_chat.gpts_conversations.get_by_conv_id(main_conv_id)
+        if not conv:
+            logger.warning(f"[subagent-coordinator] conv {main_conv_id} not found")
+            return
+        session = self._agent_chat.gpts_conversations.get_raw_session()
+        from gyra_serve.agent.db.gpts_conversations_db import GptsConversationsEntity
+        session.query(GptsConversationsEntity).filter(
+            GptsConversationsEntity.conv_id == main_conv_id
+        ).update(
+            {GptsConversationsEntity.extra: json.dumps(extra, ensure_ascii=False)},
+            synchronize_session="fetch",
+        )
+        session.commit()
+        session.close()
+
     # ---- 公开接口 ----
 
     async def register_subagent(
@@ -87,6 +115,8 @@ class SubagentCoordinator:
         mode: SubAgentMode,
         agent_name: Optional[str] = None,
         task: Optional[str] = None,
+        agent_display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> "tuple[SubAgentHandle, bool]":
         """注册一个子 agent 到 pending 列表。
 
@@ -113,6 +143,7 @@ class SubagentCoordinator:
                     )
                     return h, False
 
+        display_name = agent_display_name or await self._resolve_app_display_name(agent_name) or agent_name
         handle = SubAgentHandle(
             sub_conv_id=sub_conv_id,
             main_conv_id=main_conv_id,
@@ -121,6 +152,8 @@ class SubagentCoordinator:
             started_at=time.time(),
             agent_name=agent_name,
             task=task,
+            agent_display_name=display_name,
+            params=params or {},
         )
         handles = await self._read_pending(main_conv_id)
         handles.append(handle)
@@ -176,6 +209,26 @@ class SubagentCoordinator:
                 f"[subagent-coordinator] mirror complete failed for {sub_conv_id}: {e}"
             )
 
+    async def _resolve_app_display_name(self, app_code: Optional[str]) -> Optional[str]:
+        """把 app_code 解析为可读的 app_name（利于展示目标 Agent）。
+
+        解析失败时返回 None，交由调用方拿 app_code 兜底展示。
+        """
+        if not app_code:
+            return None
+        try:
+            from gyra_serve.agent.agents.chat.agent_chat import get_app_service
+
+            app_service = get_app_service()
+            resp = await app_service.app_detail(app_code, building_mode=False)
+            name = getattr(resp, "app_name", None) or getattr(resp, "agent_name", None)
+            return name or None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                f"[subagent-coordinator] resolve display name for {app_code} failed: {e}"
+            )
+            return None
+
     async def on_subagent_done(
         self, main_conv_id: str, sub_conv_id: str, result: str
     ) -> None:
@@ -230,13 +283,71 @@ class SubagentCoordinator:
                 {
                     "sub_conv_id": h.sub_conv_id,
                     "agent_name": h.agent_name,
+                    "agent_display_name": h.agent_display_name or h.agent_name,
                     "task": h.task,
                     "status": board_status,
                     "mode": h.mode.value,
                     "authorization": h.authorization,
+                    "params": h.params or {},
+                    "progress": h.progress,
+                    "steps": h.steps,
                 }
             )
         return items
+
+    async def persist_board(
+        self, main_conv_id: str, items: List[Dict[str, Any]]
+    ) -> None:
+        """把终态子任务看板持久化到 extra（key=subagent_board）。
+
+        pending_subagents 在 resume 时会被清空，若只靠 pending 回放，子任务
+        全部完成后看板会从对话页消失。这里单独持久化一份终态看板，供
+        _build_dock_frame 在 pending 为空时回退渲染，保证恢复/刷新后仍可见。
+        """
+        try:
+            extra = await self._read_extra(main_conv_id)
+            extra["subagent_board"] = items
+            await self._write_extra(main_conv_id, extra)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[subagent-coordinator] persist board failed for main={main_conv_id}: {e}"
+            )
+
+    async def list_persistent_board(
+        self, main_conv_id: str
+    ) -> List[Dict[str, Any]]:
+        """读取持久化的终态子任务看板（pending 清空后回放用）。"""
+        try:
+            extra = await self._read_extra(main_conv_id)
+            items = extra.get("subagent_board")
+            return items if isinstance(items, list) else []
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[subagent-coordinator] list persistent board failed for "
+                f"main={main_conv_id}: {e}"
+            )
+            return []
+
+    async def update_progress(
+        self,
+        main_conv_id: str,
+        sub_conv_id: str,
+        progress: int,
+        steps: Optional[list] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """更新某个子 agent 进度并推送 board 事件（供子 Agent 执行中上报）。"""
+        handles = await self._read_pending(main_conv_id)
+        for h in handles:
+            if h.sub_conv_id == sub_conv_id:
+                h.progress = progress
+                if steps is not None:
+                    h.steps = steps
+                if params is not None:
+                    h.params = {**(h.params or {}), **params}
+                break
+        await self._write_pending(main_conv_id, handles)
+        await self._emit_board_event(main_conv_id, handles)
 
     async def _emit_board_event(
         self, main_conv_id: str, handles: List[SubAgentHandle]
@@ -384,6 +495,36 @@ class SubagentCoordinator:
         )
         # 清空 pending 列表（resume 后不再 pending）
         await self._write_pending(main_conv_id, [])
+        # 用最后一次 handles 状态合成终态 items
+        terminal_items = []
+        for h in handles:
+            terminal_items.append(
+                {
+                    "sub_conv_id": h.sub_conv_id,
+                    "agent_name": h.agent_name,
+                    "agent_display_name": h.agent_display_name or h.agent_name,
+                    "task": h.task,
+                    "status": h.status.value,
+                    "mode": h.mode.value,
+                    "authorization": h.authorization,
+                    "params": h.params or {},
+                    "progress": h.progress,
+                    "steps": h.steps,
+                }
+            )
+        # 持久化终态看板：pending 清空后，恢复/刷新对话页仍能看到子任务完成情况
+        await self.persist_board(main_conv_id, terminal_items)
+        # 补发终态 board 事件：让前端子任务看板同步为全部完成态，避免残留「运行中」
+        try:
+            if self._agent_chat.memory:
+                widget = build_subagent_board_widget(terminal_items, main_conv_id)
+                await self._agent_chat.memory.push_dock_widget(
+                    conv_id=main_conv_id, widget=widget
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[subagent-coordinator] emit terminal board failed for main={main_conv_id}: {e}"
+            )
 
         # 读 main conv entity，拿 gpts_name(app_code) 与 state
         try:

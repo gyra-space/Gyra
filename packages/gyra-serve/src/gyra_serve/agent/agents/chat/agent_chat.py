@@ -3978,6 +3978,14 @@ class AgentChat(BaseComponent, ABC):
                 items = await coordinator.list_subagent_items(conv_id)
                 if items:
                     widgets.append(build_subagent_board_widget(items, conv_id))
+                else:
+                    # pending 已清空（子任务全部完成/resume 后）：回退到持久化的
+                    # 终态看板，保证恢复/刷新后对话页仍能看到子任务完成情况
+                    terminal_items = await coordinator.list_persistent_board(conv_id)
+                    if terminal_items:
+                        widgets.append(
+                            build_subagent_board_widget(terminal_items, conv_id)
+                        )
         except Exception as e:
             logger.warning(f"[dock] build subagent_board widget failed: {e}")
 

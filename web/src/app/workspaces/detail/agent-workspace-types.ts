@@ -134,10 +134,14 @@ export type WorkspacePanelView = 'execution' | 'deliverable' | 'summary' | 'task
 export interface WorkspaceSubagentItem {
   sub_conv_id: string;
   agent_name?: string;
+  agent_display_name?: string;
   task?: string;
   status: 'pending' | 'running' | 'done' | 'failed' | 'awaiting_authorization';
   mode?: string;
   authorization?: string;
+  params?: Record<string, any>;
+  progress?: number;
+  steps?: string[];
 }
 
 export interface WorkspaceView {

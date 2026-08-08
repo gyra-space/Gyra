@@ -241,8 +241,13 @@ const VisAgentPlanCard: React.FC<IProps> = ({ otherComponents, data }) => {
       onClick={(e: React.MouseEvent) => {
         e.stopPropagation();
         if (taskUid) {
+          const convId =
+            typeof window !== 'undefined'
+              ? new URLSearchParams(window.location.search).get('conv_uid') || ''
+              : '';
           ee.emit(EVENTS.CLICK_FOLDER, {
             uid: taskUid,
+            conv_id: convId,
           });
           ee.emit(EVENTS.OPEN_PANEL);
         }

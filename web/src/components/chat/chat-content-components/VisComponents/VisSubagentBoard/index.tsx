@@ -1,14 +1,25 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { VisSubagentBoardWrap } from './style';
-import { AppstoreOutlined, UpOutlined, DownOutlined } from '@ant-design/icons';
+import {
+  AppstoreOutlined,
+  UpOutlined,
+  DownOutlined,
+  RobotOutlined,
+  ThunderboltOutlined,
+} from '@ant-design/icons';
+import { Tooltip } from 'antd';
 
 export interface SubagentItemData {
   sub_conv_id: string;
   agent_name?: string;
+  agent_display_name?: string;
   task?: string;
   status: 'pending' | 'running' | 'done' | 'failed' | 'awaiting_authorization';
   mode?: string;
   authorization?: string;
+  params?: Record<string, any>;
+  progress?: number;
+  steps?: string[];
 }
 
 export interface ISubagentBoardData {
@@ -37,6 +48,20 @@ const STATUS_LABEL: Record<SubagentItemData['status'], string> = {
 };
 
 const isTerminal = (s: string) => s === 'done' || s === 'failed';
+
+/** 把 media 参数渲染成可读的摘要片段，如 "视频 · 1080p · 16:9"。 */
+const formatMediaParams = (params?: Record<string, any>): string | null => {
+  if (!params || !params.media) return null;
+  const m = params.media;
+  const kind = m.kind === 'video' ? '视频' : m.kind === 'audio' ? '音频' : '图片';
+  const bits: string[] = [kind];
+  if (m.resolution) bits.push(m.resolution);
+  if (m.aspect_ratio) bits.push(m.aspect_ratio);
+  if (m.size) bits.push(m.size);
+  if (m.duration) bits.push(`${m.duration}s`);
+  if (m.model) bits.push(m.model);
+  return bits.join(' · ');
+};
 
 const VisSubagentBoard: React.FC<IProps> = ({ data, onOpenSubagent, embedded = false }) => {
   const items: SubagentItemData[] = data.items || [];
@@ -67,6 +92,9 @@ const VisSubagentBoard: React.FC<IProps> = ({ data, onOpenSubagent, embedded = f
     window.open(`/chat?app_code=chat_normal&conv_uid=${subConvId}`, '_blank');
   };
 
+  const displayName = (item: SubagentItemData) =>
+    item.agent_display_name || item.agent_name || item.sub_conv_id.slice(0, 8);
+
   return (
     <VisSubagentBoardWrap className={embedded ? 'embedded' : undefined}>
       {!embedded && (
@@ -85,49 +113,70 @@ const VisSubagentBoard: React.FC<IProps> = ({ data, onOpenSubagent, embedded = f
 
       {(embedded || expanded) && (
         <div className="board-items">
-          {items.map((item) => (
-            <div
-              key={item.sub_conv_id}
-              className={`subagent-item ${item.status}`}
-              onClick={() => openSubagent(item.sub_conv_id)}
-            >
-              <div className="status-icon">
-                {item.status === 'running' && <span className="spinner" />}
-                {item.status === 'done' && <span className="dot done" />}
-                {item.status === 'failed' && <span className="dot failed" />}
-                {item.status === 'pending' && <span className="dot pending" />}
-                {item.status === 'awaiting_authorization' && <span className="dot awaiting" />}
-              </div>
-              <div className="item-content">
-                <div className="item-title-row">
-                  <span className={`item-title ${item.status}`}>
-                    {item.agent_name || item.sub_conv_id.slice(0, 8)}
-                  </span>
-                  {item.mode && (
-                    <span
-                      className={`item-mode mode-${item.mode}`}
-                      title={
-                        item.mode === 'async'
-                          ? '异步：主 Agent 不等待，子 Agent 后台运行，全部完成后触发主恢复'
-                          : '同步：主 Agent 等待子 Agent 完成后继续'
-                      }
-                    >
-                      {item.mode === 'async' ? '异步' : '同步'}
-                    </span>
+          {items.map((item) => {
+            const media = formatMediaParams(item.params);
+            return (
+              <div
+                key={item.sub_conv_id}
+                className={`subagent-item ${item.status}`}
+                onClick={() => openSubagent(item.sub_conv_id)}
+              >
+                <div className="status-icon">
+                  {item.status === 'running' && <span className="spinner" />}
+                  {item.status === 'done' && <span className="dot done" />}
+                  {item.status === 'failed' && <span className="dot failed" />}
+                  {item.status === 'pending' && <span className="dot pending" />}
+                  {item.status === 'awaiting_authorization' && <span className="dot awaiting" />}
+                </div>
+                <div className="item-content">
+                  <div className="item-title-row">
+                    <RobotOutlined className="item-robot" />
+                    <span className={`item-title ${item.status}`}>{displayName(item)}</span>
+                    {item.mode && (
+                      <span
+                        className={`item-mode mode-${item.mode}`}
+                        title={
+                          item.mode === 'async'
+                            ? '异步：主 Agent 不等待，子 Agent 后台运行，全部完成后触发主恢复'
+                            : '同步：主 Agent 等待子 Agent 完成后继续'
+                        }
+                      >
+                        {item.mode === 'async' ? '异步' : '同步'}
+                      </span>
+                    )}
+                  </div>
+                  {item.task && (
+                    <div className="item-task" title={item.task}>{item.task}</div>
+                  )}
+                  {media && (
+                    <div className="item-params">
+                      <ThunderboltOutlined />
+                      <span>{media}</span>
+                    </div>
+                  )}
+                  {item.authorization && (
+                    <div className="item-auth">⚠ {item.authorization}</div>
+                  )}
+                  {item.status === 'running' && typeof item.progress === 'number' && (
+                    <div className="item-progress">
+                      <div className="progress-track">
+                        <div
+                          className="progress-fill"
+                          style={{ width: `${Math.min(100, Math.max(0, item.progress))}%` }}
+                        />
+                      </div>
+                      <span className="progress-label">{item.progress}%</span>
+                    </div>
                   )}
                 </div>
-                {item.task && (
-                  <div className="item-task" title={item.task}>{item.task}</div>
-                )}
-                {item.authorization && (
-                  <div className="item-auth">⚠ {item.authorization}</div>
-                )}
+                <Tooltip title={STATUS_LABEL[item.status]}>
+                  <span className={`item-status-badge ${item.status}`}>
+                    {STATUS_LABEL[item.status]}
+                  </span>
+                </Tooltip>
               </div>
-              <span className={`item-status-badge ${item.status}`}>
-                {STATUS_LABEL[item.status]}
-              </span>
-            </div>
-          ))}
+            );
+          })}
 
           {items.length === 0 && (
             <div className="board-empty">

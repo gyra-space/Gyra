@@ -72,7 +72,7 @@ export const dockWidgetRegistry: Record<string, DockWidgetRegistration> = {
     getTitle: payload => {
       const items = (payload as ISubagentBoardData).items || [];
       if (items.length === 0) return '子任务';
-      const nameOf = (i: SubagentItemData) => i.agent_name || i.task || '子任务';
+      const nameOf = (i: SubagentItemData) => i.agent_display_name || i.agent_name || i.task || '子任务';
       const active = items.find(
         i => i.status === 'running' || i.status === 'awaiting_authorization',
       );

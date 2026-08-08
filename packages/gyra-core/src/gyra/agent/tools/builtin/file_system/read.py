@@ -19,6 +19,22 @@ from ...result import ToolResult
 logger = logging.getLogger(__name__)
 
 
+def _segmented_read_prompt(seg_start: int, seg_end: int, total: int, unit: str) -> str:
+    """构建分段读取提示。
+
+    当文件内容超过单次读取上限时，不静默截断，而是提示 Agent 通过
+    offset/limit 分段读取完整内容，避免在内容不完整的情况下继续后续操作。
+    """
+    chunk = max(1, seg_end - seg_start)
+    next_offset = seg_end + 1
+    return (
+        "\n\n> ⚠️ **内容不完整**：文件较大，本次仅展示了第 "
+        f"{seg_start}-{seg_end} {unit}（共 {total} {unit}）。\n"
+        "> 请继续分段读取获取完整内容，切勿在内容不完整时继续后续操作：\n"
+        f"> 继续读取：`Read(path=..., offset={next_offset}, limit={chunk})`"
+    )
+
+
 class ReadTool(SandboxToolBase):
     """统一文件读取工具 - 自动检测执行环境"""
 
@@ -176,7 +192,12 @@ class ReadTool(SandboxToolBase):
         result = "".join(result_lines)
 
         if has_more:
-            result += f"\n\n... (truncated, showing {len(selected)} characters from offset {offset}, total {total_chars} characters)"
+            result += _segmented_read_prompt(
+                seg_start=offset,
+                seg_end=offset + limit,
+                total=total_chars,
+                unit="字符",
+            )
 
         return ToolResult.ok(
             output=result,
@@ -189,6 +210,7 @@ class ReadTool(SandboxToolBase):
                 "chars_read": len(selected),
                 "total_chars": total_chars,
                 "total_lines": total_lines,
+                "truncated": has_more,
             },
         )
 
@@ -235,16 +257,26 @@ class ReadTool(SandboxToolBase):
         limit = args.get("limit", 2000)
 
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            lines = []
-            for i, line in enumerate(f, 1):
-                if i >= offset:
-                    lines.append(f"{i}: {line.rstrip()}")
-                if len(lines) >= limit:
-                    break
+            all_lines = f.readlines()
 
-            content = "\n".join(lines)
-            if len(lines) >= limit:
-                content += f"\n\n... (truncated, showing {limit} lines)"
+        total_lines = len(all_lines)
+        start_idx = max(0, offset - 1)
+        end_idx = min(start_idx + limit, total_lines)
+        selected = all_lines[start_idx:end_idx]
+
+        content = "\n".join(
+            f"{i}: {line.rstrip()}"
+            for i, line in enumerate(selected, start=start_idx + 1)
+        )
+
+        truncated = end_idx < total_lines
+        if truncated:
+            content += _segmented_read_prompt(
+                seg_start=offset,
+                seg_end=end_idx,
+                total=total_lines,
+                unit="行",
+            )
 
         return ToolResult.ok(
             output=content,
@@ -252,8 +284,10 @@ class ReadTool(SandboxToolBase):
             metadata={
                 "path": str(file_path),
                 "mode": "line",
-                "lines_read": len(lines),
+                "lines_read": len(selected),
                 "file_size": file_path.stat().st_size,
+                "total_lines": total_lines,
+                "truncated": truncated,
             },
         )
 
@@ -267,11 +301,16 @@ async def _read_char_mode(self, args: Dict[str, Any], file_path: Path) -> ToolRe
         content = f.read()
         total_chars = len(content)
         selected = content[offset : offset + limit]
-        has_more = offset + limit < total_chars
 
     result = selected
+    has_more = offset + limit < total_chars
     if has_more:
-        result += f"\n\n... (truncated, showing {len(selected)} characters from offset {offset}, total {total_chars} characters)"
+        result += _segmented_read_prompt(
+            seg_start=offset,
+            seg_end=offset + limit,
+            total=total_chars,
+            unit="字符",
+        )
 
     return ToolResult.ok(
         output=result,
@@ -284,5 +323,6 @@ async def _read_char_mode(self, args: Dict[str, Any], file_path: Path) -> ToolRe
             "chars_read": len(selected),
             "total_chars": total_chars,
             "file_size": file_path.stat().st_size,
+            "truncated": has_more,
         },
     )

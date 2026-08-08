@@ -207,10 +207,65 @@ export const VisSubagentBoardWrap = styled.div`
           white-space: nowrap;
         }
 
+        .item-robot {
+          font-size: 13px;
+          color: #4f46e5;
+          flex-shrink: 0;
+        }
+
+        .item-params {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          margin-top: 4px;
+          font-size: 11px;
+          color: #7c3aed;
+          background: #f5f3ff;
+          border: 1px solid #ede9fe;
+          padding: 1px 7px;
+          border-radius: 6px;
+          max-width: 100%;
+
+          span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+        }
+
         .item-auth {
           font-size: 12px;
           color: #f59e0b;
           margin-top: 2px;
+        }
+
+        .item-progress {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-top: 6px;
+
+          .progress-track {
+            flex: 1;
+            height: 4px;
+            border-radius: 2px;
+            background: #eef0f4;
+            overflow: hidden;
+
+            .progress-fill {
+              height: 100%;
+              border-radius: 2px;
+              background: linear-gradient(90deg, #6366f1, #8b5cf6);
+              transition: width 0.3s ease;
+            }
+          }
+
+          .progress-label {
+            flex-shrink: 0;
+            font-size: 11px;
+            color: #4f46e5;
+            font-weight: 500;
+          }
         }
       }
 

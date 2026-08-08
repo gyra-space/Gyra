@@ -960,12 +960,12 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
         cache = await self._get_or_create_cache(conv_id, start_round, vis_converter)
         if event_manager:
             cache.event_manager = event_manager
-            logger.info(f"[GptsMemory] 设置 SystemEventManager: conv_id={conv_id[:8]}")
+            logger.debug(f"[GptsMemory] 设置 SystemEventManager: conv_id={conv_id[:8]}")
         if history_messages:
             await self._cache_messages(conv_id, history_messages)
 
     async def set_agents(self, conv_id: str, main_agent: "ConversableAgent"):  # type:ignore
-        logger.info(f"set_main:{conv_id},{main_agent.name}")
+        logger.debug(f"set_main:{conv_id},{main_agent.name}")
         cache = await self._get_cache(conv_id)
         if cache:
             cache.main_agent_name = main_agent.name
@@ -1020,7 +1020,7 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
                 logger.warning(f"[vis_final] cache不存在 conv_id={conv_id}")
                 return None
             messages = await self.get_messages(conv_id)
-            logger.info(f"[vis_final] conv_id={conv_id}, messages数量={len(messages)}, start_round={cache.start_round}")
+            logger.debug(f"[vis_final] conv_id={conv_id}, messages数量={len(messages)}, start_round={cache.start_round}")
 
             messages = messages[cache.start_round :]
             plans = cache.plans  # 直接使用 dict
@@ -1028,7 +1028,7 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
             # 同 vis_messages:转换器 opt-in 保留 Human 消息时跳过合并屏蔽
             if not getattr(vis_convert, "include_user_messages", False):
                 messages = await self._merge_messages_async(messages)
-            logger.info(f"[vis_final] vis_converter类型={type(vis_convert).__name__}, main_agent_name={cache.main_agent_name}")
+            logger.debug(f"[vis_final] vis_converter类型={type(vis_convert).__name__}, main_agent_name={cache.main_agent_name}")
             final_view = await vis_convert.final_view(
                 messages=messages,
                 plans_map=plans,
@@ -1043,7 +1043,7 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
                 # 重算路径无 agent 实例，转换器据此直接访问文件/todo 等存储
                 gpts_memory=self,
             )
-            logger.info(f"[vis_final] final_view长度={len(final_view) if final_view else 0}, 内容前200字符={final_view[:200] if final_view else 'None'}")
+            logger.debug(f"[vis_final] final_view长度={len(final_view) if final_view else 0}, 内容前200字符={final_view[:200] if final_view else 'None'}")
             return final_view
         except Exception as e:
             logger.exception(f"vis_final exception!conv_id={conv_id}")
@@ -1147,7 +1147,7 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
             parent_id=task.parent_id, node=task
         )
         ## 新增节点的时候 推送前端展示
-        logger.info(f"推送新的任务节点[{task.node_id},{task.name}]")
+        logger.debug(f"推送新的任务节点[{task.node_id},{task.name}]")
         await self.push_message(conv_id, new_task_nodes=[task])
 
     async def get_task(

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Optional
+from typing import Any, Dict, Optional
 
 
 class SubAgentMode(str, Enum):
@@ -54,6 +54,10 @@ class SubAgentHandle:
     agent_name: Optional[str] = None    # 子 Agent 名（展示用，由 SubAgent.run 透传）
     task: Optional[str] = None          # 任务指令摘要（展示用）
     authorization: Optional[str] = None  # 待授权问题文本（None=无需授权）
+    agent_display_name: Optional[str] = None  # 子 Agent 可读名称（app_code → app_name 解析）
+    params: Dict[str, Any] = field(default_factory=dict)  # 调用参数（media/wait/mode 等）
+    progress: Optional[int] = None      # 进度 0-100（可选，仅部分子 Agent 上报）
+    steps: Optional[list] = None       # 子 Agent 内部步骤摘要（可选）
 
     def to_dict(self) -> dict:
         """序列化为 dict（用于持久化到 gpts_conversations.extra JSON）。"""
@@ -77,6 +81,10 @@ class SubAgentHandle:
             agent_name=d.get("agent_name"),
             task=d.get("task"),
             authorization=d.get("authorization"),
+            agent_display_name=d.get("agent_display_name"),
+            params=d.get("params") or {},
+            progress=d.get("progress"),
+            steps=d.get("steps"),
         )
 
     def is_terminal(self) -> bool:

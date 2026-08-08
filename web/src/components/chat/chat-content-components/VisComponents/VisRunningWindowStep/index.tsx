@@ -89,7 +89,7 @@ const VisRunningWindowStepCard = ({ data }: IProps) => {
               />
               <div style={{ flex: 1, margin: '0 12px' }}>{data?.tool_name || '--'}</div>
             </div>
-            {renderStatusIcon('FINISHED', 'tool')}
+            {renderStatusIcon(data?.status === 'EXECUTING' ? 'EXECUTING' : (data?.status || 'FINISHED'), 'tool')}
           </div>
           {showDetail && (
             <div style={{ marginTop: 12, width: '100%' }}>

@@ -38,6 +38,25 @@ _AGENT_START_PROMPT = """\
 logger = logging.getLogger(__name__)
 
 
+def _subagent_call_params(action_input: AgentActionInput) -> Dict[str, object]:
+    """抽取子 Agent 调用的关键参数（media/wait/background/mode），供看板展示。
+
+    只保留可展示、可序列化的字段，避免把内部对象塞进 gpts_conversations.extra。
+    """
+    params: Dict[str, object] = {}
+    mode = (action_input.mode or "sync")
+    if mode:
+        params["mode"] = mode
+    extra = action_input.extra_info or {}
+    if extra.get("media"):
+        params["media"] = extra["media"]
+    if "wait" in extra:
+        params["wait"] = extra["wait"]
+    if extra.get("background"):
+        params["background"] = extra["background"]
+    return params
+
+
 class AgentAction(Action[AgentActionInput]):
     name = "Agent"
 
@@ -627,6 +646,7 @@ class SubAgent(AgentAction, FunctionTool):
                 mode=SubAgentMode.ASYNC,
                 agent_name=action_input.agent_name,
                 task=action_input.content,
+                params=_subagent_call_params(action_input),
             )
 
             metrics.end_time_ms = time.time_ns() // 1_000_000
