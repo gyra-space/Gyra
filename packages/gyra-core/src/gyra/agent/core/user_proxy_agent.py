@@ -30,6 +30,8 @@ class UserProxyAgent(ConversableAgent):
 
     ask_user: bool = False
 
+    ask_type: Optional[str] = None
+
     show_message: bool = True
 
     def have_ask_user(self):
@@ -66,5 +68,12 @@ class UserProxyAgent(ConversableAgent):
                                                       description="结论"
                                                   ))
         if message.action_report:
-            if any([item.ask_user for item in message.action_report]):
-                self.ask_user = True
+            for item in message.action_report:
+                if item.ask_user:
+                    self.ask_user = True
+                    # 记录 ask_type：区分"工具授权"（BEFORE/AFTER_ACTION）与
+                    # "用户追问"（CONCLUSION_INCOMPLETE / ask_user 交互工具无类型），
+                    # 供 _inner_chat 决策 waiting_reason 时使用。
+                    _ask_type = getattr(item, "ask_type", None)
+                    if _ask_type:
+                        self.ask_type = _ask_type

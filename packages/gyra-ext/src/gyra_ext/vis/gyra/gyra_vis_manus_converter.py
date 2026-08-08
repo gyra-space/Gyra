@@ -2210,31 +2210,39 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                 ),
             }
 
-        # History replay: re-process messages to find the step
+        # History replay: re-process messages to find the step.
+        # 重放时 action_report 可能是 dict(从 DB 反序列化)或 ActionOutput 对象,
+        # 统一用 _get 兼容读取;否则 getattr 对 dict 返回 None -> 拿不到 outputs,
+        # 且 blank/terminate 跳过逻辑失效导致计数器与构建时不一致。
         if messages:
+            def _get(ao, key, default=None):
+                if isinstance(ao, dict):
+                    return ao.get(key, default)
+                return getattr(ao, key, default)
+
             temp_counter = 0
             for msg in messages:
                 if not msg.action_report:
                     continue
                 for act_out in msg.action_report:
-                    action_name = getattr(act_out, 'action', None) or getattr(act_out, 'name', '')
+                    action_name = _get(act_out, 'action') or _get(act_out, 'action_name') or _get(act_out, 'name')
                     is_batch = action_name and action_name.lower() in ("batchtasks", "batch_tasks")
                     if action_name == BlankAction.name:
                         continue
-                    if not is_batch and getattr(act_out, 'terminate', False):
+                    if not is_batch and _get(act_out, 'terminate', False):
                         continue
                     temp_counter += 1
                     # 使用与创建时相同的格式生成 temp_step_id
                     msg_id_prefix = msg.message_id[:8] if msg.message_id else "unknown"
                     temp_step_id = f"step_{msg_id_prefix}_{temp_counter}"
 
-                    action_id = getattr(act_out, 'action_id', None)
+                    action_id = _get(act_out, 'action_id')
                     if temp_step_id == resolved_step_id or action_id == step_id:
-                        action_input = getattr(act_out, 'action_input', None)
+                        action_input = _get(act_out, 'action_input')
                         step_type = self._map_action_to_step_type(action_name, action_input)
-                        is_success = getattr(act_out, 'is_exe_success', True)
-                        obs = getattr(act_out, 'observations', None)
-                        cnt = getattr(act_out, 'content', None)
+                        is_success = _get(act_out, 'is_exe_success', True)
+                        obs = _get(act_out, 'observations')
+                        cnt = _get(act_out, 'content')
                         display_content = obs or cnt
 
                         out_type = ManusOutputType.TEXT.value

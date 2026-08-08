@@ -72,6 +72,11 @@ class VolcengineMultimediaProvider(MediaGenProvider):
         return await self._video.submit_video(prompt, model, **kwargs)
 
     async def resume_task(
-        self, task_id: str, model: str, **kwargs: Any
+        self, task_id: str, model: str, kind: str = "", **kwargs: Any
     ) -> MediaSubmission:
+        # image+video 合并协议：按任务类型路由到正确的子 provider，避免图片召回
+        # 误打到视频 provider（用 provider_task_id 轮询会查错厂商任务而失败）。
+        # 单子类 provider 的 resume_task 均接受 **kwargs，kind 透传无害。
+        if kind == "image":
+            return await self._image.resume_task(task_id, model, **kwargs)
         return await self._video.resume_task(task_id, model, **kwargs)

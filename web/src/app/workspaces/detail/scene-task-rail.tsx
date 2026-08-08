@@ -341,7 +341,9 @@ export function SceneTaskRail({
       kind: 'task' as const,
       raw: t,
       interventions: interventionsByTask.get(t.id) || [],
-      updatedAt: itemTime(t.gmt_modified, t.gmt_created, t.updated_at),
+      // 优先显示对话开始时间(gmt_created),而非最后修改时间(gmt_modified):
+      // gmt_modified 会随任务更新/标题总结被反复刷新,导致卡片时间都聚类到最近同一分钟。
+      updatedAt: itemTime(t.gmt_created, t.started_at, t.gmt_modified),
     })),
     [tasks, interventionsByTask],
   );
@@ -360,14 +362,16 @@ export function SceneTaskRail({
 
   // 大厅会话:conversations 中 task_id 为空的(workspace 级对话)。
   // 任务≈会话(task 创建即建 conv),不再单列会话栏;这里把大厅会话混排进任务视图,
-  // 按 gmt_modified 倒序与任务统一展示,用类型 chip 区分剧本/大厅。
+  // 按对话开始时间(gmt_created)倒序与任务统一展示,用类型 chip 区分剧本/大厅。
   const lobbyConvItems = useMemo(
     () => (conversations || [])
       .filter((c) => c.task_id == null)
       .map((c) => ({
         kind: 'lobby-conversation' as const,
         raw: c,
-        updatedAt: itemTime(c.gmt_modified, c.gmt_created),
+        // 优先显示对话开始时间(gmt_created)以稳定区分各会话;gmt_modified
+        // 会随会话活动被反复刷新,导致卡片时间都聚类到最近同一分钟。
+        updatedAt: itemTime(c.gmt_created, c.gmt_modified),
       })),
     [conversations],
   );

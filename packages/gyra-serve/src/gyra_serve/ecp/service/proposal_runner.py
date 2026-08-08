@@ -255,34 +255,18 @@ async def generate(service, request) -> GenerateProposalsVO:
             domain_hint=request.domain_hint,
         )
 
-    # No datasource_id and no agent: iterate over ALL registered DB assets.
-    assets = service.list_assets(workspace_id=request.workspace_id, kind="db")
-    if not assets:
-        return GenerateProposalsVO(
-            datasource_id=0,
-            errors=[
-                f"工作空间 {request.workspace_id or 'default'} 未登记 DB 资产,"
-                "无法批量生成提案;请先登记数据源,或在 ECP 设置配置提案 Agent"
-            ],
-        )
-    aggregated = GenerateProposalsVO(datasource_id=0)
-    for asset in assets:
-        try:
-            ds_id = int(asset.ref_id)
-        except (TypeError, ValueError):
-            continue
-        sub = await proposer.generate(
-            datasource_id=ds_id,
-            workspace_id=request.workspace_id,
-            table_names=request.table_names,
-            max_tables=request.max_tables,
-            domain_hint=request.domain_hint,
-        )
-        aggregated.tables_processed += sub.tables_processed
-        aggregated.proposals_created += sub.proposals_created
-        aggregated.proposal_ids.extend(sub.proposal_ids)
-        aggregated.errors.extend(sub.errors)
-    return aggregated
+    # No datasource_id and no Agent: workspace-level all-asset generation REQUIRES
+    # the configured proposal Agent. A silent batch fallback here would produce 0
+    # proposals without surfacing any error, which is easy to miss on the UI——so
+    # fail loudly instead of pretending success.
+    return GenerateProposalsVO(
+        datasource_id=0,
+        errors=[
+            f"工作空间 {request.workspace_id or 'default'} 未配置提案 Agent"
+            "(proposal_agent_id),无法为全部资产生成提案;"
+            "请先在 ECP 设置中配置提案 Agent"
+        ],
+    )
 
 
 async def _deliver(result: str) -> str:

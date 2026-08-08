@@ -15,6 +15,7 @@ from gyra.agent.util.async_task_manager import (
     AsyncTaskManager,
     AsyncTaskSpec,
     AsyncTaskStatus,
+    TaskLedger,
     normalize_task_text,
 )
 
@@ -320,3 +321,126 @@ class TestSpawnAgentTaskToolDedup:
         )
         assert result.success
         assert result.metadata["wait_async"] is False
+
+
+# ---------------- 跨进程/重启后：台账去重与回退（修复回归） ----------------
+
+class TestLedgerCrossProcessDedup:
+    """覆盖「跨进程/重启后任务仅存于台账」的修复：
+    - known_task_ids 能识别台账里的任务 ID（不再与 check_tasks 行为矛盾）
+    - format_status_table 内存态查不到时回退台账并展示结果预览/交付物
+    - find_completed_equivalent 复用台账已完成任务，防止重复提交/重复扣费
+    - SpawnAgentTaskTool 命中台账已完成任务时复用并带 already_completed 标记
+    """
+
+    @pytest.fixture
+    def ledger_path(self, tmp_path):
+        return str(tmp_path / "ledger.jsonl")
+
+    @pytest.mark.asyncio
+    async def test_known_task_ids_recognizes_ledger_only_task(self, ledger_path):
+        mgr = AsyncTaskManager(ledger_path=ledger_path)
+        # 模拟另一进程已把任务写入台账，本进程内存态为空
+        TaskLedger(ledger_path).upsert(
+            {
+                "task_id": "atask_old",
+                "conv_id": "c1",
+                "agent_name": "a",
+                "description": "生成图片",
+                "status": "completed",
+                "result_preview": "✅ 完成",
+            }
+        )
+        assert mgr.known_task_ids(["atask_old", "ghost"]) == ["atask_old"]
+
+    @pytest.mark.asyncio
+    async def test_format_status_table_falls_back_to_ledger(self, ledger_path):
+        mgr = AsyncTaskManager(ledger_path=ledger_path)
+        TaskLedger(ledger_path).upsert(
+            {
+                "task_id": "atask_old",
+                "conv_id": "c1",
+                "agent_name": "图像生成助手",
+                "description": "生成架构图",
+                "status": "completed",
+                "result_preview": "✅ 已生成一张架构图",
+                "artifact": {"url": "https://afs.local/arch.png"},
+            }
+        )
+        out = mgr.format_status_table(["atask_old"])
+        # 不再误报「未找到」（避免引导 LLM 重复提交）
+        assert "未找到" not in out
+        assert "atask_old" in out
+        assert "结果: ✅ 已生成一张架构图" in out
+        assert "https://afs.local/arch.png" in out
+
+    @pytest.mark.asyncio
+    async def test_find_completed_equivalent_reuses_ledger_task(self, ledger_path):
+        mgr = AsyncTaskManager(ledger_path=ledger_path)
+        TaskLedger(ledger_path).upsert(
+            {
+                "task_id": "atask_old",
+                "conv_id": "c1",
+                "agent_name": "图像生成助手",
+                "description": "生成 Gyra 架构图",
+                "status": "completed",
+                "result_preview": "✅ 完成",
+            }
+        )
+        hit = mgr.find_completed_equivalent(
+            conv_id="c1",
+            agent_name="图像生成助手",
+            task_description=" 生成 gyra 架构图 ",  # 归一化后命中
+        )
+        assert hit is not None
+        assert hit.spec.task_id == "atask_old"
+        assert hit.status == AsyncTaskStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_find_completed_equivalent_ignores_running_ledger(self, ledger_path):
+        mgr = AsyncTaskManager(ledger_path=ledger_path)
+        TaskLedger(ledger_path).upsert(
+            {
+                "task_id": "atask_run",
+                "conv_id": "c1",
+                "agent_name": "图像生成助手",
+                "description": "生成图片",
+                "status": "running",
+            }
+        )
+        # 未完成的台账任务不参与「已完成复用」
+        assert (
+            mgr.find_completed_equivalent(
+                conv_id="c1",
+                agent_name="图像生成助手",
+                task_description="生成图片",
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_spawn_reuses_completed_ledger_task(self, ledger_path):
+        from gyra.agent.tools.builtin.async_task.async_task_tools import (
+            SpawnAgentTaskTool,
+        )
+
+        mgr = AsyncTaskManager(ledger_path=ledger_path)
+        TaskLedger(ledger_path).upsert(
+            {
+                "task_id": "atask_old",
+                "conv_id": "",  # 工具无 context 时 conv_id 为空，与在途去重场景一致
+                "agent_name": "图像生成助手",
+                "description": "生成架构图",
+                "status": "completed",
+                "result_preview": "✅ 已生成",
+            }
+        )
+        tool = SpawnAgentTaskTool(async_task_manager=mgr)
+        result = await tool.execute(
+            {"agent_name": "图像生成助手", "task": "生成架构图"},
+            context=None,
+        )
+        assert result.success
+        assert result.metadata["already_completed"] is True
+        assert result.metadata["task_id"] == "atask_old"
+        assert "未重复提交" in (result.output or "")

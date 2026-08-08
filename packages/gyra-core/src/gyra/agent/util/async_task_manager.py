@@ -258,6 +258,7 @@ class AsyncTaskState(BaseModel):
         return {
             "task_id": self.spec.task_id,
             "conv_id": self.spec.conv_id or "",
+            "agent_name": self.spec.agent_name,
             "kind": self.spec.kind,
             "model": self.spec.model,
             "description": (self.spec.task_description or "")[:200],
@@ -540,8 +541,45 @@ class AsyncTaskManager:
     # ==================== 防重复提交查询 ====================
 
     def known_task_ids(self, task_ids: List[str]) -> List[str]:
-        """返回 task_ids 中本管理器已知的部分（供工具层对未知 ID 显式报错）。"""
-        return [tid for tid in task_ids if tid in self._tasks]
+        """返回 task_ids 中本管理器已知的部分（供工具层对未知 ID 显式报错）。
+
+        同时检查进程内存态与持久化台账：跨进程/重启后任务仅存于台账时也应
+        视为已知，避免 check_tasks 报「未找到」/「completed」，而 wait_tasks 却报
+        「ID 不存在」的行为矛盾，引导 LLM 误判任务丢失而重复提交。
+        """
+        known = {tid for tid in task_ids if tid in self._tasks}
+        if self._ledger:
+            ledger_ids = set(self._ledger.read_all().keys())
+            known.update(tid for tid in task_ids if tid in ledger_ids)
+        return [tid for tid in task_ids if tid in known]
+
+    def _materialize_from_record(self, record: Dict[str, Any]) -> Optional["AsyncTaskState"]:
+        """从持久化台账记录重建一个轻量 AsyncTaskState。
+
+        跨进程/重启后，已完成任务不在内存态，但台账保留了状态与结果预览。
+        重建状态供 wait_tasks / 已完成任务复用读取，避免「查不到」造成 LLM 误判。
+        """
+        task_id = record.get("task_id")
+        if not task_id:
+            return None
+        try:
+            status = AsyncTaskStatus(record.get("status") or "pending")
+        except Exception:  # noqa: BLE001 - 脏状态兜底为 pending
+            status = AsyncTaskStatus.PENDING
+        spec = AsyncTaskSpec(
+            task_id=task_id,
+            agent_name=record.get("agent_name") or "",
+            task_description=record.get("description") or "",
+            conv_id=record.get("conv_id") or "",
+            kind=record.get("kind") or "",
+            model=record.get("model") or "",
+            context=record.get("detail") or {},
+        )
+        state = AsyncTaskState(spec=spec, status=status)
+        if record.get("result_preview"):
+            state.result = record["result_preview"]
+        state.error = record.get("error")
+        return state
 
     def find_in_flight(
         self,
@@ -557,10 +595,11 @@ class AsyncTaskManager:
         dedup key = (conv_id, agent_name, kind, model, 归一化 task_description)；
         提供的字段必须全部相等才算命中，task_description 为空时不参与匹配
         （此时必须至少提供 agent_name/kind/model 之一，避免误匹配）。
-        仅进程内存态生效（跨进程查 ledger 代价高，暂不覆盖）。
+        仅进程内存态生效。
 
         用于昂贵任务（图片/视频生成、子 Agent 委派）提交前去重：命中即复用，
-        不重复提交、不重复扣费。
+        不重复提交、不重复扣费。已完成任务不在此匹配（跨进程已完成任务的复用
+        由 find_completed_equivalent 单独处理）。
         """
         norm = normalize_task_text(task_description)
         if not norm and not (agent_name or kind or model):
@@ -580,6 +619,46 @@ class AsyncTaskManager:
             if norm and normalize_task_text(spec.task_description) != norm:
                 continue
             return state
+        return None
+
+    def find_completed_equivalent(
+        self,
+        *,
+        conv_id: str = "",
+        agent_name: str = "",
+        kind: str = "",
+        model: str = "",
+        task_description: str = "",
+    ) -> Optional["AsyncTaskState"]:
+        """查找持久化台账中内容相同的已完成任务（跨进程/重启后复用）。
+
+        dedup key 与 find_in_flight 一致；仅匹配台账里已终态(completed)的任务，
+        用于 spawn 提交前阻止对「此前已完成」的昂贵任务重复提交/重复扣费。
+        命中返回重建的轻量状态，未命中返回 None。
+        """
+        norm = normalize_task_text(task_description)
+        if not self._ledger:
+            return None
+
+        def _match(rec: Dict[str, Any]) -> bool:
+            if (rec.get("conv_id") or "") != (conv_id or ""):
+                return False
+            if agent_name and (rec.get("agent_name") or "") != agent_name:
+                return False
+            if kind and (rec.get("kind") or "") != kind:
+                return False
+            if model and (rec.get("model") or "") != model:
+                return False
+            if norm and normalize_task_text(rec.get("description") or "") != norm:
+                return False
+            return True
+
+        for tid, rec in self._ledger.read_all().items():
+            if str(rec.get("status") or "") != AsyncTaskStatus.COMPLETED.value:
+                continue
+            if not _match(rec):
+                continue
+            return self._materialize_from_record(rec)
         return None
 
     # ==================== 任务执行 ====================
@@ -870,6 +949,15 @@ class AsyncTaskManager:
                 if not state.consumed:
                     state.consumed = True
                 results.append(state)
+                continue
+            # 内存态缺失：回退台账（跨进程/重启后已完成任务）。此时无需等待，
+            # 直接返回其终态与结果预览，避免 wait_tasks 误报「暂无任务完成」。
+            if self._ledger:
+                rec = self.get_job(tid)
+                if rec:
+                    materialized = self._materialize_from_record(rec)
+                    if materialized is not None:
+                        results.append(materialized)
         return results
 
     # ==================== 取消 ====================
@@ -968,6 +1056,30 @@ class AsyncTaskManager:
         for tid in targets:
             state = self._tasks.get(tid)
             if not state:
+                # 内存态查不到时回退持久化台账（跨进程 / 重启后仍可见），
+                # 避免对已存在(如已完成)的任务误报「未找到」而触发重复提交。
+                rec = self.get_job(tid) if self._ledger else None
+                if rec:
+                    label = rec.get("model") or rec.get("agent_name") or rec.get("kind") or "?"
+                    status = rec.get("status") or "?"
+                    try:
+                        icon = STATUS_ICONS.get(AsyncTaskStatus(status), "?")
+                    except Exception:  # noqa: BLE001 - 脏状态值兜底
+                        icon = "?"
+                    lines.append(f"  [{icon}] {tid} ({label}): {status}（持久化台账记录）")
+                    if rec.get("description"):
+                        lines.append(f"      任务: {rec['description'][:80]}")
+                    # 展示台账沉淀的结果预览与交付物链接，让 LLM 能确认
+                    # 「已完成且拿到产物」，避免因看不到结果而反复轮询/重复提交。
+                    if rec.get("result_preview"):
+                        preview = rec["result_preview"][:200].replace("\n", " ")
+                        lines.append(f"      结果: {preview}")
+                    artifact = rec.get("artifact") or {}
+                    if artifact.get("url"):
+                        lines.append(f"      交付物: {artifact['url']}")
+                    if rec.get("error"):
+                        lines.append(f"      错误: {rec['error']}")
+                    continue
                 lines.append(f"  [?] {tid}: 未找到")
                 continue
 

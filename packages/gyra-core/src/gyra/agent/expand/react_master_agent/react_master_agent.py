@@ -291,6 +291,12 @@ class ReActMasterAgent(ConversableAgent, Team):
         # 初始化交互能力
         self._interaction_extension = None
 
+        # 背景异步任务完成通知是否在本轮 think 中下发（供 act() 判断是否强制续跑）
+        self._bg_notif_delivered = False
+        # 异步 resume 轮次强制续跑计数器及上限（避免 LLM 反复返回占位文本导致死循环）
+        self._async_resume_force_count = 0
+        self._async_resume_force_limit = 2
+
 
     async def preload_resource(self) -> None:
         """Preload resources and inject system tools.
@@ -2170,6 +2176,10 @@ class ReActMasterAgent(ConversableAgent, Team):
         from datetime import datetime
         from gyra.agent.core.base_agent import _new_system_message
 
+        # 每轮 think 开始时重置"背景异步任务通知已下发"标记，
+        # 仅本轮真正收集到完成通知时才置 True，供 act() 判断是否强制续跑。
+        self._bg_notif_delivered = False
+
         # ========== 确保核心组件已初始化 ==========
         await self._ensure_work_log_manager()
         await self._ensure_context_engine()
@@ -2263,6 +2273,7 @@ class ReActMasterAgent(ConversableAgent, Team):
             _fb_op = []
             _fb_notif = await self._collect_background_notifications()
             if _fb_notif:
+                self._bg_notif_delivered = True
                 _fb_op.append("[异步任务完成通知]\n" + _fb_notif)
             _fb_supp = await self._collect_supplemental_user_input(session_id)
             if _fb_supp:
@@ -2294,6 +2305,7 @@ class ReActMasterAgent(ConversableAgent, Team):
         _operational_parts = []
         async_notification = await self._collect_background_notifications()
         if async_notification:
+            self._bg_notif_delivered = True
             _operational_parts.append("[异步任务完成通知]\n" + async_notification)
         supplemental_input = await self._collect_supplemental_user_input(session_id)
         if supplemental_input:
@@ -2587,6 +2599,16 @@ class ReActMasterAgent(ConversableAgent, Team):
             raise ValueError("The message content is empty!")
 
         act_outs: List[ActionOutput] = []
+
+        # 异步任务完成后的 resume 轮次：LLM 若只返回占位文本（无工具调用），
+        # 不应就此 terminate 结束，而应强制其继续把异步结果加工成最终交付物，
+        # 避免主对话在子任务/媒体任务都完成后"卡住"。
+        is_async_resume_round = (
+            "[异步任务完成通知]" in (getattr(message, "content", None) or "")
+        ) or getattr(self, "_bg_notif_delivered", False)
+        # 非异步 resume 轮次时清零强制续跑计数，避免跨轮次累计
+        if not is_async_resume_round:
+            self._async_resume_force_count = 0
 
         # 阶段 1：解析所有可能的 action
         real_actions = self.agent_parser.parse_actions(
@@ -2957,6 +2979,26 @@ class ReActMasterAgent(ConversableAgent, Team):
                         else:
                             logger.info(
                                 f"📝 Skipping WorkLog record for {real_action.__class__.__name__} (not a tool)"
+                            )
+
+                        # ========== 异步任务完成 resume 的 BlankAction 兜底 ==========
+                        # LLM 对本轮完成通知只返回占位文本（BlankAction 无工具调用）时，
+                        # 取消 terminate，让 loop 继续并注入引导，强制把异步结果处理成最终交付物，
+                        # 否则主对话会在子任务/媒体任务都完成后直接 complete，看不到继续输出。
+                        # 用计数器兜底，避免 LLM 反复返回占位文本导致死循环。
+                        if (
+                            is_async_resume_round
+                            and getattr(result, "action", None) == "blank"
+                            and getattr(result, "terminate", False)
+                            and self._async_resume_force_count
+                            < self._async_resume_force_limit
+                        ):
+                            result.terminate = False
+                            self._async_resume_force_count += 1
+                            logger.info(
+                                f"[ReActMasterAgent] async-resume round returned BlankAction; "
+                                f"forcing continuation ({self._async_resume_force_count}/"
+                                f"{self._async_resume_force_limit}) instead of terminate"
                             )
 
                         # ========== 集成：判断是否需要自动生成报告 ==========

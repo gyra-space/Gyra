@@ -338,12 +338,48 @@ class AsyncTaskCoordinator:
             )
 
     async def _safe_set_waiting(self, conv_id: str) -> None:
-        """把会话置 WAITING（幂等，忽略状态机守卫告警）。"""
+        """把会话置 WAITING（幂等，忽略状态机守卫告警）并持久化等待原因。"""
         try:
             from gyra.agent.core.schema import Status
             self._agent_chat.gpts_conversations.update(conv_id, Status.WAITING.value)
+            # 异步任务等待：resume 由 AsyncTaskCoordinator 注入完成通知驱动，
+            # 明确记为 await_async_tasks，供 base_agent._update_recovering 决策
+            # （非工具授权 → 不重放，走 LLM 处理完成通知）。
+            await self._set_waiting_reason(conv_id, "await_async_tasks")
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[async-task-coordinator] set WAITING skip: {e}")
+
+    async def _set_waiting_reason(self, conv_id: str, waiting_reason: str) -> None:
+        """在 gpts_conversations.extra 写入等待原因（保留其他 extra 字段）。
+
+        必须从 DB 读取最新 extra 再合并写入，而不是用内存中的 conv 对象：
+        recover_main / _update_pending_terminal 刚把 pending 任务置为终态写入 DB，
+        若这里回读内存里的旧 extra（状态仍为 running）再整段写回，会把终态覆盖成
+        running，导致台账卡非终态、后续 check_tasks/has_pending_tasks 误判任务未完成，
+        进而引发 LLM 反复轮询同一任务（消息循环）。
+        """
+        try:
+            session = self._agent_chat.gpts_conversations.get_raw_session()
+            from gyra_serve.agent.db.gpts_conversations_db import GptsConversationsEntity
+            row = session.query(GptsConversationsEntity).filter(
+                GptsConversationsEntity.conv_id == conv_id
+            ).first()
+            if row is None:
+                return
+            extra = json.loads(row.extra) if isinstance(row.extra, str) else (row.extra or {})
+            if not isinstance(extra, dict):
+                extra = {}
+            extra["waiting_reason"] = waiting_reason
+            session.query(GptsConversationsEntity).filter(
+                GptsConversationsEntity.conv_id == conv_id
+            ).update(
+                {GptsConversationsEntity.extra: json.dumps(extra, ensure_ascii=False)},
+                synchronize_session="fetch",
+            )
+            session.commit()
+            session.close()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[async-task-coordinator] set waiting_reason skip: {e}")
 
     @staticmethod
     def _build_notification(states: List[Any]) -> str:

@@ -8,6 +8,7 @@ import {
   generateEcpProposals,
   getEcpProposalTask,
   getEcpReadiness,
+  getEcpWorkspaceConfig,
   listEcpAssets,
   registerEcpAsset,
 } from '@/client/api/ecp';
@@ -26,7 +27,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { Alert, App, Button, Input, Modal, Popconfirm, Select, Space, Spin } from 'antd';
+import { Alert, App, Button, Input, Modal, Popconfirm, Select, Space, Spin, Tooltip } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import DatabaseAddModal from '@/app/database/components/DatabaseAddModal';
@@ -286,6 +287,17 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
     return err ? [] : res ?? [];
   });
 
+  // 工作空间配置:全资产生成必须已配置提案 Agent,否则任务会在后台静默产出 0 条
+  // 提案而被误认为成功。这里提前读取配置,未配置时禁用「为所有资产生成提案」。
+  const { data: wsConfig } = useRequest(
+    async () => {
+      const [err, res] = await apiInterceptors(getEcpWorkspaceConfig(workspaceId));
+      return err ? null : res ?? null;
+    },
+    { refreshDeps: [workspaceId] },
+  );
+  const hasProposalAgent = !!wsConfig?.proposal_agent_id;
+
   // 数据库类型(内联创建数据源时按类型渲染表单)
   const { data: supportTypes } = useRequest(async () => {
     const [err, res] = await apiInterceptors(getDbSupportType());
@@ -423,10 +435,17 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
   );
 
   // Workspace-level proposal generation: runs the configured proposal Agent over
-  // ALL registered assets when proposal_agent_id is set; otherwise the backend
-  // iterates all registered DB assets with the batch proposer automatically.
+  // ALL registered assets. It REQUIRES a configured proposal Agent (proposal_agent_id);
+  // without one the backend reports an error instead of silently producing 0 proposals,
+  // and the button below is disabled with an explanatory tooltip.
   const { run: doGenerateAll } = useRequest(
     async () => {
+      if (!hasProposalAgent) {
+        message.warning(
+          '未配置提案 Agent,无法为全部资产生成提案;请先在 ECP 设置中配置提案 Agent',
+        );
+        return;
+      }
       const hint = domainHint;
       setDomainHint(undefined);
       const label = '正在为所有资产生成语义提案…';
@@ -508,15 +527,23 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
             onChange={e => setDomainHint(e.target.value)}
             style={{ width: 220 }}
           />
-          <Button
-            size="small"
-            type="primary"
-            icon={<ExperimentOutlined />}
-            disabled={!!genTask}
-            onClick={() => doGenerateAll()}
+          <Tooltip
+            title={
+              hasProposalAgent
+                ? undefined
+                : '未配置提案 Agent,无法为全部资产生成提案;请先在 ECP 设置中配置提案 Agent'
+            }
           >
-            为所有资产生成提案
-          </Button>
+            <Button
+              size="small"
+              type="primary"
+              icon={<ExperimentOutlined />}
+              disabled={!!genTask || !hasProposalAgent}
+              onClick={() => doGenerateAll()}
+            >
+              为所有资产生成提案
+            </Button>
+          </Tooltip>
           <Button icon={<ReloadOutlined />} onClick={refresh} />
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setRegisterOpen(true)}>
             登记资产

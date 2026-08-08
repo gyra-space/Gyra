@@ -145,10 +145,12 @@ async def recall_media_job_record(
         resume_kwargs = {
             k: v
             for k, v in (gen_kwargs or {}).items()
-            if k not in ("task_id", "model", "timeout")
+            if k not in ("task_id", "model", "timeout", "kind")
         }
+        # kind 显式传给 provider 的 resume_task：厂商级多媒体 provider（image+video
+        # 合并协议）靠它路由到正确的子 provider，否则图片召回会误打到视频 provider。
         submission = await resume_fn(
-            provider_task_id, model, timeout=timeout, **resume_kwargs
+            provider_task_id, model, kind=kind, timeout=timeout, **resume_kwargs
         )
         result = await submission.complete()
     except NotImplementedError as e:

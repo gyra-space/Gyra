@@ -1438,6 +1438,19 @@ class AgentChat(BaseComponent, ABC):
                     is_retry_chat = True
                     agent_conv_id = last_gpts_conversation.conv_id
 
+                    # 读取持久化的等待原因（extra["waiting_reason"]），供 _inner_chat
+                    # 传给 initiate_chat → base_agent._update_recovering：
+                    # 只有"工具授权"才重放，其余（追问/异步任务/子agent）走 LLM 处理新输入。
+                    try:
+                        _extra = json.loads(last_gpts_conversation.extra) if isinstance(
+                            last_gpts_conversation.extra, str
+                        ) else (last_gpts_conversation.extra or {})
+                    except (json.JSONDecodeError, TypeError):
+                        _extra = {}
+                    ext_info["waiting_reason"] = (
+                        _extra.get("waiting_reason") if isinstance(_extra, dict) else None
+                    )
+
                     gpts_messages: List[
                         GptsMessage
                     ] = await self.gpts_messages_dao.get_by_conv_id(agent_conv_id)  # type:ignore
@@ -3207,6 +3220,40 @@ class AgentChat(BaseComponent, ABC):
 
         return HumanMessage(content=new_content)
 
+    def _set_waiting_reason(self, conv_uid: str, waiting_reason: Optional[str]) -> None:
+        """在 gpts_conversations.extra 持久化等待原因。
+
+        WAITING 时写入具体原因（await_user_question / await_tool_authorization /
+        await_async_tasks / await_subagents），供 resume 时（aggregation_chat → 
+        initiate_chat → base_agent._update_recovering）决策是否重放；
+        置 None 时清空该字段，避免终态会话残留旧等待原因。
+        """
+        try:
+            conv = self.gpts_conversations.get_by_conv_id(conv_uid)
+            if not conv:
+                return
+            try:
+                extra = json.loads(conv.extra) if isinstance(conv.extra, str) else (conv.extra or {})
+            except (json.JSONDecodeError, TypeError):
+                extra = {}
+            if not isinstance(extra, dict):
+                extra = {}
+            if waiting_reason is None:
+                extra.pop("waiting_reason", None)
+            else:
+                extra["waiting_reason"] = waiting_reason
+            session = self.gpts_conversations.get_raw_session()
+            session.query(GptsConversationsEntity).filter(
+                GptsConversationsEntity.conv_id == conv_uid
+            ).update(
+                {GptsConversationsEntity.extra: json.dumps(extra, ensure_ascii=False)},
+                synchronize_session="fetch",
+            )
+            session.commit()
+            session.close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AgentChat] set_waiting_reason failed for {conv_uid}: {e}")
+
     async def _inner_chat(
         self,
         user_code: str,
@@ -3601,6 +3648,7 @@ class AgentChat(BaseComponent, ABC):
                 ),
                 rely_messages=rely_messages,
                 approval_message_id=ext_info.get("approval_message_id"),
+                waiting_reason=ext_info.get("waiting_reason"),
                 **llm_context,
             )
 
@@ -3608,8 +3656,22 @@ class AgentChat(BaseComponent, ABC):
                 await scheduler.schedule()
 
             # Check if the user has received a question.
+            waiting_reason = None
             if user_proxy.have_ask_user():
                 gpts_status = Status.WAITING.value
+                # 区分"工具授权"（BEFORE/AFTER_ACTION，resume 时需重放以复用缓存工具
+                # 结果）与"用户追问"（CONCLUSION_INCOMPLETE / ask_user 交互工具，resume
+                # 时走 follow-up 由 LLM 处理用户新回答）。
+                from gyra.agent.core.action.base import AskUserType
+                from gyra.agent.core.schema import WaitingReason as WR
+                _ask_type = getattr(user_proxy, "ask_type", None)
+                if _ask_type in (
+                    AskUserType.BEFORE_ACTION.value,
+                    AskUserType.AFTER_ACTION.value,
+                ):
+                    waiting_reason = WR.TOOL_AUTHORIZATION.value
+                else:
+                    waiting_reason = WR.USER_QUESTION.value
 
             # PR 2: 有 pending 子 agent 时，主会话也 WAITING（等子 agent 完成后 coordinator 触发 resume）
             if gpts_status != Status.WAITING.value:
@@ -3622,6 +3684,8 @@ class AgentChat(BaseComponent, ABC):
                         handles = await coordinator._read_pending(conv_uid)
                         if handles and any(not h.is_terminal() for h in handles):
                             gpts_status = Status.WAITING.value
+                            from gyra.agent.core.schema import WaitingReason as WR
+                            waiting_reason = WR.SUBAGENTS.value
                 except Exception as sub_err:
                     logger.debug(
                         f"[AgentChat] pending_subagents check skipped: {sub_err}"
@@ -3643,6 +3707,8 @@ class AgentChat(BaseComponent, ABC):
                             f"setting WAITING"
                         )
                         gpts_status = Status.WAITING.value
+                        from gyra.agent.core.schema import WaitingReason as WR
+                        waiting_reason = WR.ASYNC_TASKS.value
                 except Exception as async_err:
                     logger.debug(
                         f"[AgentChat] pending_async_tasks check skipped: {async_err}"
@@ -3650,6 +3716,9 @@ class AgentChat(BaseComponent, ABC):
 
             validate_session_transition(Status.RUNNING, Status(gpts_status))
             self.gpts_conversations.update(conv_uid, gpts_status)
+            # 持久化等待原因：WAITING 时写入具体原因供 resume 决策；非 WAITING（COMPLETE
+            # 等终态）时清空，避免残留旧等待原因误导后续恢复。
+            self._set_waiting_reason(conv_uid, waiting_reason if gpts_status == Status.WAITING.value else None)
         except asyncio.CancelledError:
             logger.info(f"Chat cancelled by user for conv_uid: {conv_uid}")
             gpts_status = Status.INTERRUPTED.value
@@ -3994,16 +4063,18 @@ class AgentChat(BaseComponent, ABC):
     async def query_step_detail(
         self, conv_id: str, step_uid: str,
     ) -> Optional[dict]:
-        """按 step uid 查询单个执行步骤的 VIS 渲染数据。"""
-        gpts_memory = GptsMemory(
-            plans_memory=MetaGyrasPlansMemory(),
-            message_memory=MetaGyrasMessageMemory(),
-            work_log_db_storage=MetaGyrasWorkLogStorage(),
-        )
+        """按 step uid 查询单个执行步骤的 VIS 渲染数据。
+
+        conv_id 入参实为 conv_session_id(前端 URL 的 conv_uid);消息持久化于
+        {conv_session_id}_{round},故按 session_id 解析会话并全量加载消息重放匹配。
+        """
         try:
-            gpts_conversation = self.gpts_conversations.get_by_conv_id(conv_id)
-            if not gpts_conversation:
+            # conv_id 入参为 conv_session_id,按 session_id 解析(消息存于 {base}_{round})
+            conversations = await self.gpts_conversations.get_by_session_id_asc(conv_id)
+            if not conversations:
                 return None
+            gpts_conversation = conversations[-1]  # 最新一轮
+            agent_conv_id = gpts_conversation.conv_id  # {conv_session_id}_{round}
 
             current_vis_render = gpts_conversation.vis_render or "nex_vis_window"
             app_config = self.system_app.config.configs.get("app_config")
@@ -4013,65 +4084,74 @@ class AgentChat(BaseComponent, ABC):
                 gyra_url=web_config.web_url
             )
 
-            await gpts_memory.init(conv_id=conv_id, vis_converter=vis_convert)
-            await gpts_memory.load_persistent_memory(conv_id)
-
-            cache = await gpts_memory._get_cache(conv_id)
-            if not cache:
-                return None
-
             # 优先用转换器的 get_step_detail:按 step_id(或 action_id)重放消息精确匹配,
             # 正确处理并行多工具调用(render_step_detail 只取消息内最后一个 action)。
-            # 统一返回 {active_step, outputs}。
+            # 全量加载该会话所有轮次消息(按 conv_session_id)。
             if hasattr(vis_convert, "get_step_detail"):
-                messages = list(cache.messages.values())
-                detail = vis_convert.get_step_detail(messages=messages, step_id=step_uid)
-                if detail:
-                    return detail
+                all_messages = self.gpts_messages_dao.get_by_conv_session_id(conv_id)
+                if all_messages:
+                    detail = vis_convert.get_step_detail(messages=all_messages, step_id=step_uid)
+                    if detail:
+                        return detail
 
             # Fallback:按 tool_call_id(=action_id)定位消息,再 render_step_detail
-            target_entry = None
-            for entry in cache.work_logs:
-                if entry.tool_call_id == step_uid:
-                    target_entry = entry
-                    break
+            gpts_memory = GptsMemory(
+                plans_memory=MetaGyrasPlansMemory(),
+                message_memory=MetaGyrasMessageMemory(),
+                work_log_db_storage=MetaGyrasWorkLogStorage(),
+            )
+            try:
+                await gpts_memory.init(conv_id=agent_conv_id, vis_converter=vis_convert)
+                await gpts_memory.load_persistent_memory(agent_conv_id)
+                cache = await gpts_memory._get_cache(agent_conv_id)
+                if not cache:
+                    return None
 
-            if not target_entry or not target_entry.message_id:
-                return None
+                target_entry = None
+                for entry in cache.work_logs:
+                    if entry.tool_call_id == step_uid:
+                        target_entry = entry
+                        break
 
-            target_msg = cache.messages.get(target_entry.message_id)
-            if not target_msg:
-                return None
+                if not target_entry or not target_entry.message_id:
+                    return None
 
-            entries = cache.work_entries_by_message.get(target_msg.message_id, [])
-            if entries and hasattr(target_msg, "is_new_format") and target_msg.is_new_format:
-                target_msg.set_work_entries(entries)
+                target_msg = cache.messages.get(target_entry.message_id)
+                if not target_msg:
+                    return None
 
-            if hasattr(vis_convert, "render_step_detail"):
-                rd = await vis_convert.render_step_detail(
-                    gpt_msg=target_msg,
-                    step_uid=step_uid,
-                )
-                if rd and rd.get("step_data"):
-                    return rd["step_data"]
+                entries = cache.work_entries_by_message.get(target_msg.message_id, [])
+                if entries and hasattr(target_msg, "is_new_format") and target_msg.is_new_format:
+                    target_msg.set_work_entries(entries)
 
-            action_name = target_entry.tool or ""
-            observation = getattr(target_entry, "output", None) or ""
-            return {
-                "active_step": {
-                    "id": step_uid,
-                    "type": action_name or "tool",
-                    "title": action_name or "Step",
-                    "status": "completed" if target_entry.success else "error",
-                    "action": action_name,
-                    "action_input": getattr(target_entry, "args", None),
-                },
-                "outputs": [{"output_type": "text", "content": observation}]
-                if observation
-                else [],
-            }
-        finally:
-            await gpts_memory.clear(conv_id)
+                if hasattr(vis_convert, "render_step_detail"):
+                    rd = await vis_convert.render_step_detail(
+                        gpt_msg=target_msg,
+                        step_uid=step_uid,
+                    )
+                    if rd and rd.get("step_data"):
+                        return rd["step_data"]
+
+                action_name = target_entry.tool or ""
+                observation = getattr(target_entry, "output", None) or ""
+                return {
+                    "active_step": {
+                        "id": step_uid,
+                        "type": action_name or "tool",
+                        "title": action_name or "Step",
+                        "status": "completed" if target_entry.success else "error",
+                        "action": action_name,
+                        "action_input": getattr(target_entry, "args", None),
+                    },
+                    "outputs": [{"output_type": "text", "content": observation}]
+                    if observation
+                    else [],
+                }
+            finally:
+                await gpts_memory.clear(agent_conv_id)
+        except Exception:
+            logger.exception(f"query_step_detail error: conv_id={conv_id}, step_uid={step_uid}")
+            return None
 
     async def dynamic_resource_adapter(
         self, gpt_app: GptsApp, ext_info: Optional[dict] = None

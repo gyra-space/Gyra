@@ -39,6 +39,23 @@ class Status(Enum):
     INTERRUPTED = "interrupted"
 
 
+class WaitingReason(Enum):
+    """Why a conversation is paused in the WAITING state.
+
+    `state=WAITING` 只表达"对话暂停"，具体在等什么由本枚举精确区分，
+    并据此决定 resume 时的恢复逻辑（避免靠 action_report 启发式猜测）：
+    - USER_QUESTION: 等用户就追问回答问题 → 用户发新消息走 follow-up
+    - TOOL_AUTHORIZATION: 等用户授权/拒绝工具 → 重放最后一条消息复用缓存工具结果
+    - ASYNC_TASKS: 等后台异步任务（media 生成等）完成 → 注入完成通知
+    - SUBAGENTS: 等子 Agent 任务完成 → 注入子任务结果
+    """
+
+    USER_QUESTION = "await_user_question"
+    TOOL_AUTHORIZATION = "await_tool_authorization"
+    ASYNC_TASKS = "await_async_tasks"
+    SUBAGENTS = "await_subagents"
+
+
 class DynamicParamType(Enum):
     SYSTEM = "system"
     AGENT = "agent"

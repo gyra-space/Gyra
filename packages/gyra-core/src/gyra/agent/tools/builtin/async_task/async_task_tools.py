@@ -233,6 +233,42 @@ class SpawnAgentTaskTool(ToolBase):
                         "task_id": existing_id,
                         "agent_name": agent_name,
                         "reused": True,
+                        "already_completed": False,
+                        "wait_async": wait_for_result,
+                        "async_task": {
+                            "task_id": existing_id,
+                            "kind": "subagent",
+                            "model": agent_name,
+                            "conv_id": conv_id,
+                        },
+                    },
+                )
+
+            # 跨进程/重启后：同会话同内容的任务此前已完成，直接复用，不重跑、不重扣费。
+            completed = manager.find_completed_equivalent(
+                conv_id=conv_id,
+                agent_name=agent_name,
+                task_description=task,
+            )
+            if completed is not None:
+                existing_id = completed.spec.task_id
+                result_preview = manager.format_status_table([existing_id])
+                return ToolResult.ok(
+                    output=(
+                        f"相同任务此前已完成，已复用、未重复提交。\n"
+                        f"- Task ID: {existing_id}\n"
+                        f"- Agent: {agent_name}\n"
+                        f"- 状态: {completed.status.value}\n"
+                        f"- 请勿再次提交相同任务；可直接用 check_tasks / wait_tasks "
+                        f"获取该任务的结果。\n\n"
+                        f"{result_preview}"
+                    ),
+                    tool_name=self.name,
+                    metadata={
+                        "task_id": existing_id,
+                        "agent_name": agent_name,
+                        "reused": True,
+                        "already_completed": True,
                         "wait_async": wait_for_result,
                         "async_task": {
                             "task_id": existing_id,
@@ -349,6 +385,10 @@ class CheckTasksTool(ToolBase):
 
         try:
             task_ids = args.get("task_ids", []) or None
+            # LLM 常把单个 id 传成字符串（如 "atask_xxx"），而工具字段声明为数组；
+            # 若不归一化，format_status_table 会按字符遍历导致全部「未找到」。
+            if isinstance(task_ids, str):
+                task_ids = [task_ids]
             output = manager.format_status_table(task_ids)
             if "未找到" in output:
                 output += (
@@ -432,6 +472,9 @@ class WaitTasksTool(ToolBase):
 
         try:
             task_ids = args.get("task_ids", [])
+            # 与 check_tasks 一致：LLM 常把单个 id 传为字符串，归一化为列表
+            if isinstance(task_ids, str):
+                task_ids = [task_ids]
             timeout = args.get("timeout", 60)
 
             # 对未知 task_id 显式报错，避免误导性的"等待超时"让 LLM 误判任务

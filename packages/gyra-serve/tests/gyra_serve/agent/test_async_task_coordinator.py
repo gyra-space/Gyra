@@ -360,10 +360,27 @@ class TestRecoverMain:
         )
         coord.add_manager(mgr)
 
+        # _set_waiting_reason 现在从 DB 读最新 extra（含 recover_main 写的终态），
+        # 需在 recover_main 调用前模拟该行数据：pending_async_tasks 已置为 failed。
+        session = agent_chat.gpts_conversations.get_raw_session.return_value
+        session.query.return_value.filter.return_value.first.return_value = MagicMock(
+            extra=json.dumps(
+                {
+                    "pending_async_tasks": [
+                        {
+                            "task_id": "atask_orphan",
+                            "kind": "video",
+                            "status": "failed",
+                            "finished_at": 0,
+                        }
+                    ]
+                }
+            )
+        )
+
         await coord.recover_main("conv_main_1", stale_conv=True)
         await asyncio.sleep(0.05)
 
-        session = agent_chat.gpts_conversations.get_raw_session.return_value
         extra = json.loads(_extract_extra_from_update_call(session))
         assert extra["pending_async_tasks"][0]["status"] == "failed"
         _reset_singleton()

@@ -47,6 +47,7 @@ from .role import AgentRunMode, Role
 from .sandbox_manager import SandboxManager
 from .schema import (
     Status,
+    WaitingReason,
     DynamicParam,
     DynamicParamView,
     DynamicParamRenderType,
@@ -417,6 +418,7 @@ class ConversableAgent(Role, Agent):
         last_speaker_name: Optional[str] = None,
         rely_messages: Optional[List[AgentMessage]] = None,
         historical_dialogues: Optional[List[AgentMessage]] = None,
+        waiting_reason: Optional[str] = None,
         **kwargs,
     ) -> Optional[AgentMessage]:
         """Send a message to recipient agent."""
@@ -448,6 +450,7 @@ class ConversableAgent(Role, Agent):
                 last_speaker_name=last_speaker_name,
                 historical_dialogues=historical_dialogues,
                 rely_messages=rely_messages,
+                waiting_reason=waiting_reason,
                 **kwargs,
             )
 
@@ -987,6 +990,7 @@ class ConversableAgent(Role, Agent):
         historical_dialogues: Optional[List[AgentMessage]] = None,
         is_retry_chat: bool = False,
         last_speaker_name: Optional[str] = None,
+        waiting_reason: Optional[str] = None,
         **kwargs,
     ) -> AgentMessage:
         """Generate a reply based on the received messages."""
@@ -1092,7 +1096,7 @@ class ConversableAgent(Role, Agent):
                         if self.run_mode != AgentRunMode.LOOP:
                             observation = reply_message.observation
                             rounds = reply_message.rounds + 1
-                    self._update_recovering(is_retry_chat)
+                    self._update_recovering(is_retry_chat, waiting_reason)
 
                     ### 0.生成当前轮次的新消息
 
@@ -1605,9 +1609,16 @@ class ConversableAgent(Role, Agent):
             incr_type="all",
         )
 
-    def _update_recovering(self, is_retry_chat: bool):
-        self.recovering = (
-            True if self.current_retry_counter == 0 and is_retry_chat else False
+    def _update_recovering(self, is_retry_chat: bool, waiting_reason: Optional[str] = None):
+        # 仅"工具授权确认"场景需要 recovering=True：重放最后一条 agent 消息，
+        # 让 step-resume 复用已缓存的工具结果以继续执行已授权的工具。
+        # 其余等待（用户追问 / 异步任务 / 子 agent）在 resume 时应让 LLM 处理
+        # 新输入（用户回答 / 完成通知），不能重放旧消息，否则会与用户输入脱节、
+        # 甚至误触发 BlankAction 提前结束对话。
+        self.recovering = bool(
+            is_retry_chat
+            and self.current_retry_counter == 0
+            and waiting_reason == WaitingReason.TOOL_AUTHORIZATION.value
         )
 
     async def _recovery_message(self) -> AgentMessage | None:
@@ -1628,6 +1639,10 @@ class ConversableAgent(Role, Agent):
         )
         if not last_speak_message:
             return None
+
+        # recovering 现在仅由 _update_recovering 在「工具授权确认」场景下置 True
+        # （waiting_reason == TOOL_AUTHORIZATION），因此这里直接重放最后一条 agent
+        # 消息，让 step-resume 复用已缓存的工具结果继续执行已授权的工具。
         reply_message = await self.init_reply_message(
             received_message=last_speak_message, rounds=len(messages)
         )
@@ -2223,6 +2238,7 @@ class ConversableAgent(Role, Agent):
         historical_dialogues: Optional[List[AgentMessage]] = None,
         rely_messages: Optional[List[AgentMessage]] = None,
         approval_message_id: Optional[str] = None,
+        waiting_reason: Optional[str] = None,
         **kwargs,
     ):
         """Initiate a chat with another agent.
@@ -2274,6 +2290,7 @@ class ConversableAgent(Role, Agent):
                 request_reply=request_reply,
                 is_retry_chat=is_retry_chat,
                 last_speaker_name=last_speaker_name,
+                waiting_reason=waiting_reason,
             )
 
     async def adjust_final_message(

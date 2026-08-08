@@ -12,10 +12,12 @@ import {
   CheckOutlined,
   ClockCircleOutlined,
   CloseOutlined,
+  CopyOutlined,
   LoadingOutlined,
 } from "@ant-design/icons";
 import { GPTVis } from "@antv/gpt-vis";
-import { Avatar } from "antd";
+import { Avatar, message } from "antd";
+import dayjs from "dayjs";
 import classNames from "classnames";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
@@ -60,6 +62,13 @@ const AgentIcon: React.FC = () => {
       {appInfo?.app_name?.charAt(0) || 'A'}
     </Avatar>
   );
+};
+
+const formatInputTime = (ts: number | string | null | undefined): string => {
+  if (!ts) return "";
+  const d = dayjs(ts);
+  if (!d.isValid()) return "";
+  return d.format("MM-DD HH:mm");
 };
 
 type DBGPTView = {
@@ -124,7 +133,8 @@ const COLLAPSE_HEIGHT = 160;
 const CollapsibleUserMessage: React.FC<{
   children: React.ReactNode;
   text: string;
-}> = ({ children, text }) => {
+  actions?: React.ReactNode;
+}> = ({ children, text, actions }) => {
   const [expanded, setExpanded] = useState(false);
   const [clamped, setClamped] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -167,15 +177,18 @@ const CollapsibleUserMessage: React.FC<{
       >
         {children}
       </div>
-      {clamped && (
-        <div className="text-right">
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="mt-1 text-[12px] text-[#4f46e5] hover:text-[#4338ca] transition-colors"
-          >
-            {expanded ? "收起" : "展开"}
-          </button>
+      {(clamped || actions) && (
+        <div className="flex items-center justify-end gap-3 mt-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+          {actions}
+          {clamped && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="text-[12px] text-[#4f46e5] hover:text-[#4338ca] transition-colors"
+            >
+              {expanded ? "收起" : "展开"}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -344,7 +357,7 @@ const ChatContent: React.FC<{
       {!isRobot && (
         <div className='flex flex-1 justify-end items-start pb-4 pt-6' style={{ gap: 12 }}>
           <span
-            className='break-words min-w-0'
+            className='group break-words min-w-0'
             style={{
               maxWidth: '95%',
               minWidth: 0,
@@ -355,7 +368,36 @@ const ChatContent: React.FC<{
                 className='flex-1 text-sm text-[#1c2533] dark:text-white'
                 style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
               >
-                <CollapsibleUserMessage text={value}>
+                <CollapsibleUserMessage
+                  text={value}
+                  actions={
+                    <div className='flex items-center gap-2'>
+                      <button
+                        type='button'
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigator.clipboard
+                            ?.writeText(
+                              typeof context === 'string'
+                                ? formatMarkdownVal(value)
+                                : ''
+                            )
+                            .then(() => message.success('已复制'))
+                            .catch(() => {});
+                        }}
+                        className='inline-flex items-center text-[#9aa3b2] dark:text-[#6b7280] hover:text-[#4f46e5] transition-colors'
+                        title='复制'
+                      >
+                        <CopyOutlined className='text-[13px]' />
+                      </button>
+                      {formatInputTime(content?.time_stamp) && (
+                        <span className='text-[11px] text-[#9aa3b2] dark:text-[#6b7280]'>
+                          {formatInputTime(content?.time_stamp)}
+                        </span>
+                      )}
+                    </div>
+                  }
+                >
                   {/* @ts-ignore */}
                   <GPTVis
                     components={{

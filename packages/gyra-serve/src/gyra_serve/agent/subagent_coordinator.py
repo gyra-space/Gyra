@@ -578,13 +578,19 @@ class SubagentCoordinator:
             )
 
     async def _safe_set_waiting(self, conv_id: str) -> None:
-        """把会话置 WAITING（幂等，忽略状态机守卫告警）。
+        """把会话置 WAITING（幂等，忽略状态机守卫告警）并持久化等待原因。
 
         aggregation_chat 内据此走 retry 恢复路径。
         """
         try:
             from gyra.agent.core.schema import Status
             self._agent_chat.gpts_conversations.update(conv_id, Status.WAITING.value)
+            # 子 agent 等待：resume 由 SubagentCoordinator 注入子任务结果驱动，
+            # 明确记为 await_subagents，供 base_agent._update_recovering 决策
+            # （非工具授权 → 不重放，走 LLM 处理子任务完成通知）。
+            extra = await self._read_extra(conv_id)
+            extra["waiting_reason"] = "await_subagents"
+            await self._write_extra(conv_id, extra)
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[subagent-coordinator] set WAITING skip: {e}")
 

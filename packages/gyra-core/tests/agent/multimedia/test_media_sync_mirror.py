@@ -384,3 +384,80 @@ async def test_recall_provider_without_resume(recall_providers, manager, monkeyp
     outcome = await recall_mod.recall_media_job_record(_job())
     assert outcome["success"] is False
     assert "不支持" in outcome["message"]
+
+
+@staticmethod
+async def _fake_sub_resume(kind_calls, tag):
+    async def _resume(task_id, model, **kwargs):
+        kind_calls.append((tag, task_id, model))
+        return SimpleNamespace(complete=lambda: None)
+
+    return _resume
+
+
+@pytest.mark.asyncio
+async def test_multimedia_provider_resume_routes_by_kind():
+    """厂商级多媒体 provider（image+video 合并协议）的 resume_task 必须按
+    kind 路由到正确的子 provider：图片召回打到 image，视频打到 video，避免
+    图片召回误用视频 provider（用 provider_task_id 查错厂商任务而失败）。"""
+    from gyra.agent.util.media_gen.dashscope_multimedia_provider import (
+        DashScopeMultimediaProvider,
+    )
+    from gyra.agent.util.media_gen.volcengine_multimedia_provider import (
+        VolcengineMultimediaProvider,
+    )
+
+    for ProviderCls in (
+        DashScopeMultimediaProvider,
+        VolcengineMultimediaProvider,
+    ):
+        provider = ProviderCls(api_key="k")
+
+        # 图片召回 → 路由到 image 子 provider
+        kind_calls = []
+        provider._image.resume_task = await _fake_sub_resume(kind_calls, "image")
+        provider._video.resume_task = await _fake_sub_resume(kind_calls, "video")
+        await provider.resume_task("tid-img", "img-model", kind="image")
+        assert kind_calls == [("image", "tid-img", "img-model")]
+
+        # 视频召回 → 路由到 video 子 provider
+        kind_calls = []
+        provider._image.resume_task = await _fake_sub_resume(kind_calls, "image")
+        provider._video.resume_task = await _fake_sub_resume(kind_calls, "video")
+        await provider.resume_task("tid-vid", "vid-model", kind="video")
+        assert kind_calls == [("video", "tid-vid", "vid-model")]
+
+
+@pytest.mark.asyncio
+async def test_recall_passes_kind_to_resume(recall_providers, manager, monkeypatch):
+    """召回链路必须把 kind 透传给 provider 的 resume_task，供多媒体 provider 路由。"""
+    from gyra.agent.multimedia import recall as recall_mod
+    from gyra.agent.util.media_gen.provider_registry import (
+        MediaGenProviderRegistry,
+    )
+
+    _patch_resolve(monkeypatch, "test_recall")
+    fake_afs = _FakeAFS()
+    monkeypatch.setattr(recall_mod, "_build_recall_afs", lambda conv_id: fake_afs)
+
+    seen = {}
+
+    provider = MediaGenProviderRegistry.create_provider_by_protocol(
+        protocol="test_recall", api_key="k"
+    )
+    original = provider.resume_task
+
+    async def _spy_resume(task_id, model, **kwargs):
+        seen["kind"] = kwargs.get("kind")
+        return await original(task_id, model, **kwargs)
+
+    provider.resume_task = _spy_resume
+    monkeypatch.setattr(
+        MediaGenProviderRegistry,
+        "create_provider_by_protocol",
+        staticmethod(lambda protocol, api_key="", base_url=None: provider),
+    )
+
+    outcome = await recall_mod.recall_media_job_record(_job(kind="video"))
+    assert outcome["success"] is True
+    assert seen.get("kind") == "video"

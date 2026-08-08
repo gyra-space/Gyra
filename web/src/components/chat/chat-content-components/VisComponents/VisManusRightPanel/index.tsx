@@ -42,7 +42,8 @@ import type {
   ManusStepData,
 } from '@/types/manus';
 import { ee, EVENTS } from '@/utils/event-emitter';
-import { transformFileUrl } from '@/utils';
+import { transformFileUrl, getUserId } from '@/utils';
+import { HEADER_USER_ID_KEY } from '@/utils/constants/index';
 import {
   OutputRenderer,
   TerminalRenderer,
@@ -891,7 +892,11 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
     setLoadingStepUid(uid);
     try {
       const resp = await fetch(
-        `${process.env.NEXT_PUBLIC_API_BASE_URL || ''}/api/unified/vis/step_detail?conv_id=${encodeURIComponent(convId)}&step_id=${encodeURIComponent(uid)}`
+        `${process.env.NEXT_PUBLIC_API_BASE_URL || ''}/api/unified/vis/step_detail?conv_id=${encodeURIComponent(convId)}&step_id=${encodeURIComponent(uid)}`,
+        {
+          credentials: 'include',
+          headers: { [HEADER_USER_ID_KEY]: getUserId() ?? '' },
+        }
       );
       if (resp.ok) {
         const data = await resp.json();

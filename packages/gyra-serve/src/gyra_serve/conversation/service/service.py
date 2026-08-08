@@ -493,6 +493,14 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                 f"[MESSAGES_HISTORY][PERF] 添加ViewMessage耗时: {(time.time() - _step_start) * 1000:.2f}ms"
             )
 
+            # 按 round 记录每条消息的创建时间,供前端展示"输入时间"
+            round_time_map = {}
+            for gpts_msg in gpts_messages:
+                if getattr(gpts_msg, "created_at", None):
+                    round_time_map[gpts_msg.rounds] = gpts_msg.created_at.strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+
             _step_start = time.time()
             result = []
             for msg in messages_with_view:
@@ -504,6 +512,7 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                         message_id=msg.additional_kwargs.get("message_id"),
                         model_name=None,
                         feedback={},
+                        time_stamp=round_time_map.get(msg.round_index),
                     )
                 )
             logger.info(
