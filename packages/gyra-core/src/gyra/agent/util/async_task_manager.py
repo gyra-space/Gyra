@@ -868,6 +868,37 @@ class AsyncTaskManager:
             for state in self._tasks.values()
         )
 
+    def collect_artifacts_for_main_conv(self, main_conv_id: str) -> List[Dict[str, Any]]:
+        """按主会话 ID 聚合子 Agent 名下媒体轮询任务的产物 artifact。
+
+        多媒体子 Agent 在子会话(sub_conv)运行时,轮询任务以 sub_conv 隔离
+        (conv_id=sub_conv,不触发主 resume),但其 spec.context 记录了 main_conv_id
+        (由 MultimediaExecutor 透传)。主会话完成通知构建时调本方法,把子 Agent
+        生成的图片/视频 URL 收集起来注入通知,使主对话页能看到产物而不止文本。
+
+        优先扫内存 _tasks;查不到(DB 重启后)回退 AsyncTaskDao 按 conv_id 不可达,
+        此时返回空(产物仍在子会话任务记录里,可后续按 sub_conv 查)。
+
+        Returns:
+            artifact dict 列表:[{name,type,url,mime_type,task_id}]
+        """
+        if not main_conv_id:
+            return []
+        arts: List[Dict[str, Any]] = []
+        seen: set = set()
+        for state in self._tasks.values():
+            ctx = state.spec.context or {}
+            if ctx.get("main_conv_id") != main_conv_id:
+                continue
+            rec = state.to_record()
+            a = rec.get("artifact")
+            if isinstance(a, dict) and a.get("url") and a["url"] not in seen:
+                seen.add(a["url"])
+                a = dict(a)
+                a["task_id"] = rec.get("task_id")
+                arts.append(a)
+        return arts
+
     def has_active_tasks_for_conv(self, conv_id: str) -> bool:
         """检查指定会话是否有未完成的（非终态）任务。
 

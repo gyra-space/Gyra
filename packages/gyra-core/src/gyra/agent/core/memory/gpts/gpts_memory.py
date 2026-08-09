@@ -647,6 +647,15 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
         if not cache.message_ids:
             messages = await self._message_memory.get_by_conv_id(conv_id)
             await self._cache_messages(conv_id, messages)
+            # 恢复/retry 会话：round 生成器从历史最大 round 续接，避免重置为 1，
+            # 防止异步任务恢复后页面消息时序错乱、上下文错乱。
+            # IdGenerator.next() 为自增后返回，故 _next_id = max_round + 1 时
+            # 首次 next() 返回 max_round + 2（对应通知(Human)之后的第一条回复）。
+            if messages:
+                max_round = max(
+                    (getattr(m, "rounds", 0) or 0) for m in messages
+                )
+                cache.round_generator._next_id = max_round + 1
 
         # 加载计划
         if not cache.plans:
@@ -1050,6 +1059,29 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
         finally:
             if cache:
                 cache.senders.clear()
+
+    async def push_final_view(self, conv_id: str) -> None:
+        """把终态可视化视图(is_running=False)推到流式 channel,写入 chunk 文件。
+
+        流式期间 d-system-events 以 INCR 推送 is_running=True;对话结束时若不显式
+        推一次终态视图,chunk 文件最后一条记录会永久卡在 is_running=True,页面刷新
+        后仍显示"思考中"。vis_final 只把终态视图 return 给 DB/query_chat,不进 channel,
+        故本方法在 save_conversation(终止)时调一次,确保 chunk 流以 is_running=False
+        收尾。best-effort:channel 已关/满则忽略,不影响保存主流程。
+        """
+        try:
+            final_view = await self.vis_final(conv_id)
+            if not final_view:
+                return
+            cache = await self._get_cache(conv_id)
+            if not cache or cache.channel is None:
+                return
+            cache.channel.put_nowait(final_view)
+            await asyncio.sleep(0)
+        except asyncio.QueueFull:
+            logger.warning(f"[push_final_view] channel full for {conv_id}, dropping final view")
+        except Exception as e:
+            logger.warning(f"[push_final_view] push failed for {conv_id}: {e}")
 
     async def user_answer(self, conv_id: str) -> str:
         messages = await self.get_messages(conv_id)

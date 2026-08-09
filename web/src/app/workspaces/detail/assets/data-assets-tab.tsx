@@ -595,15 +595,20 @@ export function DataAssetsTab({
         )}
       </Modal>
 
-      {/* 内联创建数据库:复用数据库模块的创建表单,创建后刷新列表并提示选择 */}
+      {/* 内联创建数据库:复用数据库模块的创建表单,创建后刷新列表并自动选中 */}
       <DatabaseAddModal
         open={addDbOpen}
         supportTypes={(supportTypes || []) as any}
         onCancel={() => setAddDbOpen(false)}
-        onSuccess={() => {
+        onSuccess={async (newDbId) => {
           setAddDbOpen(false);
-          refreshDbs();
-          message.success('数据库已创建,请在列表中选择并接入');
+          await refreshDbs();
+          if (newDbId) {
+            setSelectedDbId(newDbId);
+            message.success('数据库已创建并自动选中,点「接入空间」即可');
+          } else {
+            message.success('数据库已创建,请在列表中选择并接入');
+          }
         }}
       />
 

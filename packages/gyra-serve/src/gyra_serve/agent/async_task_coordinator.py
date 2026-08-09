@@ -386,6 +386,22 @@ class AsyncTaskCoordinator:
         if not states:
             return "[异步任务完成通知] 后台任务已完成，请根据结果继续。"
         lines = ["[异步任务完成通知] 以下后台任务已完成，请根据结果继续工作："]
+        # 按 main_conv_id 聚合子 Agent 媒体产物(图片/视频 URL),注入通知使主对话页
+        # 能直接看到产物,而非仅"图片生成成功"文本。轮询任务以 sub_conv 隔离,但其
+        # context.main_conv_id 指回主会话(见 MultimediaExecutor)。
+        main_conv_ids = {
+            st.spec.conv_id for st in states if getattr(st.spec, "conv_id", "")
+        }
+        artifacts: List[Dict[str, Any]] = []
+        if main_conv_ids:
+            try:
+                from gyra.agent.util.async_task_manager import AsyncTaskManager
+
+                mgr = AsyncTaskManager.media_instance()
+                for mc in main_conv_ids:
+                    artifacts.extend(mgr.collect_artifacts_for_main_conv(mc))
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[async-task-coordinator] collect artifacts failed: {e}")
         for st in states:
             label = (
                 st.spec.model
@@ -400,6 +416,18 @@ class AsyncTaskCoordinator:
                 lines.append(f"结果:\n{text}")
             if st.error:
                 lines.append(f"错误: {st.error}")
+            lines.append("")
+        if artifacts:
+            lines.append("### 生成产物")
+            for a in artifacts:
+                name = a.get("name") or "产物"
+                url = a.get("url") or ""
+                mt = a.get("mime_type") or ""
+                if url and mt.startswith("image/"):
+                    # markdown 图片:聊天渲染器直接展示缩略图
+                    lines.append(f"![{name}]({url})")
+                elif url:
+                    lines.append(f"- [{name}]({url})")
             lines.append("")
         return "\n".join(lines)
 

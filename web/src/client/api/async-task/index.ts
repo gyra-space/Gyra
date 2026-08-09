@@ -24,14 +24,19 @@ export interface AsyncTask {
   completed_at?: string;
 }
 
+export interface AsyncTaskListResponse {
+  items: AsyncTask[];
+  total: number;
+}
+
 // ---- API ----
 
 const API_PREFIX = '/api/v2/serve/multimodal';
 
 export const listAsyncTasks = (
-  params: { conv_id?: string; status?: string; limit?: number } = {},
+  params: { conv_id?: string; status?: string; kind?: string; limit?: number; offset?: number } = {},
 ) => {
-  return GET<Record<string, any>, AsyncTask[]>(`${API_PREFIX}/media-jobs`, params as any);
+  return GET<Record<string, any>, AsyncTaskListResponse>(`${API_PREFIX}/media-jobs`, params as any);
 };
 
 export const getAsyncTask = (taskId: string) => {

@@ -392,9 +392,14 @@ class TestSubAgentRunAsyncBranch:
             "gyra_serve.agent.resource.app.GptAppResource",
             return_value=mock_app_resource,
         ), patch(
+            "gyra_serve.agent.agents.app_agent_manage.get_app_manager"
+        ) as mock_app_mgr, patch(
             "gyra.agent.expand.actions.agent_action.asyncio.create_task",
             side_effect=capture_create_task,
         ):
+            mock_app_mgr.return_value.get_app = AsyncMock(
+                return_value=MagicMock(app_code="sub_app_code", app_name="Sub", language="zh")
+            )
             result = await action.run(
                 agent=sender,
                 agent_context=agent_context,
@@ -473,9 +478,14 @@ class TestSubAgentRunAsyncBranch:
             "gyra_serve.agent.resource.app.GptAppResource",
             return_value=mock_app_resource,
         ), patch(
+            "gyra_serve.agent.agents.app_agent_manage.get_app_manager"
+        ) as mock_app_mgr, patch(
             "gyra.agent.expand.actions.agent_action.asyncio.create_task",
             side_effect=capture_create_task,
         ):
+            mock_app_mgr.return_value.get_app = AsyncMock(
+                return_value=MagicMock(app_code="sub_app_code", app_name="Sub", language="zh")
+            )
             await action.run(
                 agent=sender,
                 agent_context=agent_context,
@@ -537,9 +547,14 @@ class TestSubAgentRunAsyncBranch:
             "gyra_serve.agent.resource.app.GptAppResource",
             return_value=mock_app_resource,
         ), patch(
+            "gyra_serve.agent.agents.app_agent_manage.get_app_manager"
+        ) as mock_app_mgr, patch(
             "gyra.agent.expand.actions.agent_action.asyncio.create_task",
             side_effect=capture_create_task,
         ):
+            mock_app_mgr.return_value.get_app = AsyncMock(
+                return_value=MagicMock(app_code="sub_app_code", app_name="Sub", language="zh")
+            )
             result = await action.run(
                 agent=sender,
                 agent_context=agent_context,

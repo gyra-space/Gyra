@@ -209,6 +209,36 @@ class SubagentCoordinator:
                 f"[subagent-coordinator] mirror complete failed for {sub_conv_id}: {e}"
             )
 
+    def _collect_child_artifacts(self, sub_conv_id: str) -> List[Dict[str, Any]]:
+        """聚合子 Agent 名下媒体生成(轮询)任务的交付物。
+
+        子 Agent 跑 react 循环时,内部 executor 以 wait=False 注册的轮询任务
+        (conv_id=sub_conv_id)持有真正的 artifact(图片/视频 URL)。子 Agent 自身的
+        镜像任务只记文本结果,产物挂在子轮询任务上。这里按 sub_conv_id 查异步任务
+        台账,把终态任务的 artifact 收集起来,供主会话看板直接展示,避免页面只看到
+        "图片生成成功" 文本却看不到图。
+
+        DB 查询持久化,进程重启后仍可聚合;查不到返回空列表。
+        """
+        if not sub_conv_id:
+            return []
+        try:
+            from gyra_serve.agent.db.async_task_db import AsyncTaskDao
+
+            records = AsyncTaskDao().list(conv_id=sub_conv_id)
+            arts: List[Dict[str, Any]] = []
+            for r in records:
+                a = r.get("artifact")
+                if isinstance(a, dict) and a.get("url"):
+                    arts.append(a)
+            return arts
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                f"[subagent-coordinator] collect child artifacts for "
+                f"{sub_conv_id} failed: {e}"
+            )
+            return []
+
     async def _resolve_app_display_name(self, app_code: Optional[str]) -> Optional[str]:
         """把 app_code 解析为可读的 app_name（利于展示目标 Agent）。
 
@@ -232,20 +262,40 @@ class SubagentCoordinator:
     async def on_subagent_done(
         self, main_conv_id: str, sub_conv_id: str, result: str
     ) -> None:
-        """子 agent 成功完成：标记 DONE，若全部完成则触发主 resume。"""
+        """子 agent 成功完成：标记 DONE，若全部完成则触发主 resume。
+
+        若子 agent 回复命中失败标记(如 MultimediaAgent 的"多媒体生成失败"前缀,
+        见 multimedia/agent.py thinking 失败分支),则改走 FAILED 路径--目标失败
+        不应标 DONE,否则任务台账/前端误显示"完成"。与 delegate 路径的
+        _result_from_answer 同语义,覆盖 SubAgent action 路径(spawn_agent_task
+        回退 / SubAgent action 走 on_subagent_done 而非 delegate)。
+        """
         handles = await self._read_pending(main_conv_id)
+        is_failure = isinstance(result, str) and result.startswith("多媒体生成失败")
         for h in handles:
             if h.sub_conv_id == sub_conv_id:
-                h.status = SubAgentStatus.DONE
+                if is_failure:
+                    h.status = SubAgentStatus.FAILED
+                    h.error = result
+                else:
+                    h.status = SubAgentStatus.DONE
                 h.result = result
+                h.artifacts = self._collect_child_artifacts(sub_conv_id)
                 h.finished_at = time.time()
                 break
         await self._write_pending(main_conv_id, handles)
         await self._emit_board_event(main_conv_id, handles)
-        self._mirror_complete(sub_conv_id, result=result)
-        logger.info(
-            f"[subagent-coordinator] subagent {sub_conv_id} done for main {main_conv_id}"
-        )
+        if is_failure:
+            self._mirror_complete(sub_conv_id, error=result)
+            logger.warning(
+                f"[subagent-coordinator] subagent {sub_conv_id} done-but-failed "
+                f"for main {main_conv_id}: {result[:80]}"
+            )
+        else:
+            self._mirror_complete(sub_conv_id, result=result)
+            logger.info(
+                f"[subagent-coordinator] subagent {sub_conv_id} done for main {main_conv_id}"
+            )
         if all(h.is_terminal() for h in handles):
             await self._trigger_main_resume(main_conv_id, handles)
 
@@ -258,6 +308,7 @@ class SubagentCoordinator:
             if h.sub_conv_id == sub_conv_id:
                 h.status = SubAgentStatus.FAILED
                 h.error = error
+                h.artifacts = self._collect_child_artifacts(sub_conv_id)
                 h.finished_at = time.time()
                 break
         await self._write_pending(main_conv_id, handles)
@@ -291,6 +342,7 @@ class SubagentCoordinator:
                     "params": h.params or {},
                     "progress": h.progress,
                     "steps": h.steps,
+                    "artifacts": h.artifacts or [],
                 }
             )
         return items
@@ -510,6 +562,7 @@ class SubagentCoordinator:
                     "params": h.params or {},
                     "progress": h.progress,
                     "steps": h.steps,
+                    "artifacts": h.artifacts or [],
                 }
             )
         # 持久化终态看板：pending 清空后，恢复/刷新对话页仍能看到子任务完成情况

@@ -26,6 +26,7 @@ import {
   DbListResponse,
   DbSpecResponse,
   DbSupportTypeResponse,
+  IChatDbSchema,
   LearningTaskRequest,
   LearningTaskResponse,
   MaskingPreviewRequest,
@@ -108,7 +109,7 @@ export const uploadDbFile = (file: File) => {
   );
 };
 export const postDbAdd = (data: PostDbParams) => {
-  return POST<PostDbParams, null>('/api/v2/serve/datasources', data);
+  return POST<PostDbParams, IChatDbSchema>('/api/v2/serve/datasources', data);
 };
 export const postDbTestConnect = (data: PostDbParams) => {
   return POST<PostDbParams, null>('/api/v2/serve/datasources/test-connection', data);

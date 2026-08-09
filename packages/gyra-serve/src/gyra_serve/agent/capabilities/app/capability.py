@@ -261,6 +261,9 @@ class AppCapability(Capability):
         agent_message = AgentMessage(
             content=user_input,
             current_goal=user_input,
+            # message_id 必传(同 GptAppResource._start_app):缺省 None 会导致子 Agent
+            # 上下文事件在 push_context_event 被 `if not task_id: return` 丢弃。
+            message_id=conv_uid,
             context={
                 "conv_uid": conv_uid,
                 **(extra_info or {}),

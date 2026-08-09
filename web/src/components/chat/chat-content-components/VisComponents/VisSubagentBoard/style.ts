@@ -267,6 +267,45 @@ export const VisSubagentBoardWrap = styled.div`
             font-weight: 500;
           }
         }
+
+        .item-artifacts {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin-top: 6px;
+
+          .artifact-thumb {
+            display: block;
+            width: 64px;
+            height: 64px;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #e8e8e8;
+            background: #fafafa;
+            flex-shrink: 0;
+
+            img {
+              width: 100%;
+              height: 100%;
+              object-fit: cover;
+              display: block;
+            }
+
+            &:hover {
+              border-color: #4f46e5;
+            }
+          }
+
+          .artifact-link {
+            font-size: 12px;
+            color: #4f46e5;
+            line-height: 20px;
+
+            &:hover {
+              text-decoration: underline;
+            }
+          }
+        }
       }
 
       .item-status-badge {

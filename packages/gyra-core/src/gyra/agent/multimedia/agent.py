@@ -211,6 +211,14 @@ class MultimediaAgent(ConversableAgent):
             # 注入到 executor，供同步/异步交付路径复用
             self._executor.afs = self._agent_file_system
             self._executor.conv_id = conv_id
+            # 子会话 context.extra 携带主会话 ID：透传给 executor，使媒体轮询任务
+            # 记录 main_conv_id（轮询任务仍按 sub_conv 隔离不触发主 resume），
+            # 主会话可据此查到子 Agent 生成的产物 artifact。
+            main_conv_id = (getattr(self.agent_context, "extra", None) or {}).get(
+                "main_conv_id", ""
+            )
+            if main_conv_id:
+                self._executor.main_conv_id = main_conv_id
             logger.info(
                 f"[multimedia-agent] AFS initialized for conv_id={conv_id}"
             )

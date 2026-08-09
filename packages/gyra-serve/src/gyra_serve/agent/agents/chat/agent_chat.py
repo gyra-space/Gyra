@@ -961,6 +961,13 @@ class AgentChat(BaseComponent, ABC):
                     logger.exception(f"获取{agent_conv_id}最终消息异常: {str(e)}")
                     final_message = str(e)
 
+            # 把终态视图(is_running=False)推到流式 channel,确保 chunk 文件以"非运行中"
+            # 收尾,否则页面刷新后右面板永久卡"思考中"(流式增量最后一条 is_running=True)。
+            try:
+                await self.memory.push_final_view(agent_conv_id)
+            except Exception as e:  # noqa: BLE001 - 终态推送失败不影响保存
+                logger.warning(f"[save_conversation] push_final_view failed for {agent_conv_id}: {e}")
+
             final_report = None
             if callable(chat_call_back):
                 try:

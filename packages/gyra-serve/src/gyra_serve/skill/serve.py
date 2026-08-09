@@ -115,12 +115,10 @@ class Serve(BaseServe):
     async def async_after_start(self):
         """Called after the application has started.
 
-        First normalize any existing skill records onto the canonical bare-name
-        identifier (repairs legacy hash-suffixed skill_code/directories), then
-        load default skills from the configured git repository.
+        Run the one-time, idempotent skill normalization migration to repair
+        legacy hash-suffixed skill_code/directories.
         """
         await self._normalize_existing_skills()
-        await self._load_default_skills()
 
     async def _normalize_existing_skills(self):
         """Run the one-time, idempotent skill normalization migration."""
@@ -135,39 +133,3 @@ class Serve(BaseServe):
             logger.info(f"Skill normalization result: {result}")
         except Exception as e:
             logger.warning(f"Failed to normalize existing skills: {e}", exc_info=True)
-
-    async def _load_default_skills(self):
-        """Load default skills from git repository on startup (non-blocking)."""
-        from .service.service import Service
-
-        # Check if auto-sync is enabled
-        if not getattr(self._config, 'enable_default_skill_sync', True):
-            logger.info("Default skill sync is disabled, skipping")
-            return
-
-        try:
-            service: Service = self._system_app.get_component(
-                Service.name, Service
-            )
-            if not service:
-                logger.info("Skill service not available, skipping default skill loading")
-                return
-
-            default_repo_url = self._config.get_default_skill_repo_url()
-            default_branch = self._config.get_default_skill_repo_branch()
-
-            if not default_repo_url:
-                logger.info("No default skill repository URL configured, skipping")
-                return
-            
-            logger.info(f"Starting background sync from default repository: {default_repo_url} (branch: {default_branch})")
-            
-            task = service.create_sync_task(
-                repo_url=default_repo_url,
-                branch=default_branch,
-                force_update=False
-            )
-            logger.info(f"Background sync task created: {task.task_id}")
-            
-        except Exception as e:
-            logger.warning(f"Failed to start default skill sync: {e}", exc_info=True)

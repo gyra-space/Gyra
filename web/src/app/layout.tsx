@@ -17,6 +17,7 @@ import React, { useContext, useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { usePathname, useSearchParams } from "next/navigation";
 import "./i18n";
+import "@fontsource-variable/inter";
 import "../styles/globals.css";
 import { Suspense } from 'react'
 import { authService } from "@/services/auth";

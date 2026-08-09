@@ -142,6 +142,7 @@ export interface WorkspaceSubagentItem {
   params?: Record<string, any>;
   progress?: number;
   steps?: string[];
+  artifacts?: Array<{ name?: string; type?: string; url?: string; mime_type?: string }>;
 }
 
 export interface WorkspaceView {

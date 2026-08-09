@@ -9,6 +9,13 @@ import {
 } from '@ant-design/icons';
 import { Tooltip } from 'antd';
 
+export interface SubagentArtifact {
+  name?: string;
+  type?: string;
+  url?: string;
+  mime_type?: string;
+}
+
 export interface SubagentItemData {
   sub_conv_id: string;
   agent_name?: string;
@@ -20,6 +27,7 @@ export interface SubagentItemData {
   params?: Record<string, any>;
   progress?: number;
   steps?: string[];
+  artifacts?: SubagentArtifact[];
 }
 
 export interface ISubagentBoardData {
@@ -166,6 +174,43 @@ const VisSubagentBoard: React.FC<IProps> = ({ data, onOpenSubagent, embedded = f
                         />
                       </div>
                       <span className="progress-label">{item.progress}%</span>
+                    </div>
+                  )}
+                  {isTerminal(item.status) && item.artifacts && item.artifacts.length > 0 && (
+                    <div
+                      className="item-artifacts"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {item.artifacts.map((art, idx) => {
+                        const isImage =
+                          art.type === 'image' ||
+                          (art.mime_type || '').startsWith('image/');
+                        if (isImage && art.url) {
+                          return (
+                            <a
+                              key={idx}
+                              className="artifact-thumb"
+                              href={art.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={art.name || '查看图片'}
+                            >
+                              <img src={art.url} alt={art.name || '生成图片'} loading="lazy" />
+                            </a>
+                          );
+                        }
+                        return art.url ? (
+                          <a
+                            key={idx}
+                            className="artifact-link"
+                            href={art.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {art.name || '查看产物'}
+                          </a>
+                        ) : null;
+                      })}
                     </div>
                   )}
                 </div>

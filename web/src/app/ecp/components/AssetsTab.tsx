@@ -718,15 +718,20 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
         </div>
       </Modal>
 
-      {/* 内联创建数据库:复用数据库模块创建表单,创建后刷新列表 */}
+      {/* 内联创建数据库:复用数据库模块创建表单,创建后刷新列表并自动选中 */}
       <DatabaseAddModal
         open={addDbOpen}
         supportTypes={(supportTypes ?? []) as any}
         onCancel={() => setAddDbOpen(false)}
-        onSuccess={() => {
+        onSuccess={async (newDbId) => {
           setAddDbOpen(false);
-          refreshDbList();
-          message.success('数据库已创建,请在列表中选择并登记');
+          await refreshDbList();
+          if (newDbId) {
+            setRefId(newDbId);
+            message.success('数据库已创建并自动选中,点「登记」即可引用');
+          } else {
+            message.success('数据库已创建,请在列表中选择并登记');
+          }
         }}
       />
 

@@ -6,6 +6,7 @@ import { App, Button } from 'antd';
 import { CloseOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation } from '@/client/api';
+import { getUserId } from '@/utils';
 import type { WorkspaceEvent } from '@/hooks/use-chat';
 import type { AgentStep, DetailContext } from './agent-types';
 import { AgentWorkspace } from './agent-workspace';
@@ -106,7 +107,7 @@ export function SceneWorkspaceShell({
     if (!workspaceId) return;
     const [, newConv] = await apiInterceptors(createConversation({ workspace_id: workspaceId }));
     if (!newConv?.conv_uid) return;
-    await apiInterceptors(linkConversation({ workspace_id: workspaceId, conv_uid: newConv.conv_uid, user_id: undefined }));
+    await apiInterceptors(linkConversation({ workspace_id: workspaceId, conv_uid: newConv.conv_uid, user_id: Number(getUserId()) || undefined }));
     await apiInterceptors(setCurrentConversation(workspaceId, newConv.conv_uid));
     onConvChanged?.(newConv.conv_uid);
     message.success(tip);
@@ -134,7 +135,7 @@ export function SceneWorkspaceShell({
   const { data: conversations } = useRequest(
     async () => {
       if (!workspaceId) return [];
-      const [, data] = await apiInterceptors(listConversations({ workspace_id: workspaceId, limit: 200 }));
+      const [, data] = await apiInterceptors(listConversations({ workspace_id: workspaceId, user_id: Number(getUserId()) || undefined, limit: 200 }));
       return data || [];
     },
     { refreshDeps: [workspaceId, workspaceConvUid, taskConvUid] },

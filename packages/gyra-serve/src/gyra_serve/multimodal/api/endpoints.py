@@ -122,7 +122,9 @@ async def list_models(
 async def list_media_jobs(
     conv_id: Optional[str] = None,
     status: Optional[str] = None,
+    kind: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ):
     """列出异步任务（media 生成 / spawn_agent_task 子 Agent）。
 
@@ -133,15 +135,19 @@ async def list_media_jobs(
     Args:
         conv_id: 按会话过滤
         status: 按状态过滤 (pending/running/completed/failed/timeout/cancelled)
-        limit: 返回条数上限
+        kind: 按类型过滤 (video/image/subagent/ecp_proposal)
+        limit: 每页条数上限
+        offset: 分页偏移量
     """
     try:
         from gyra_serve.agent.db.async_task_db import AsyncTaskDao
 
-        jobs = AsyncTaskDao().list(
-            conv_id=conv_id or "", status=status, limit=limit
+        dao = AsyncTaskDao()
+        items = dao.list(
+            conv_id=conv_id or "", status=status, kind=kind, limit=limit, offset=offset
         )
-        return Result.succ(jobs)
+        total = dao.count(conv_id=conv_id or "", status=status, kind=kind)
+        return Result.succ({"items": items, "total": total})
     except Exception as e:
         logger.exception("list_media_jobs exception!")
         return Result.failed(str(e))

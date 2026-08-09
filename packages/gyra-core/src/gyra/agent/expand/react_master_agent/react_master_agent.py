@@ -296,6 +296,9 @@ class ReActMasterAgent(ConversableAgent, Team):
         # 异步 resume 轮次强制续跑计数器及上限（避免 LLM 反复返回占位文本导致死循环）
         self._async_resume_force_count = 0
         self._async_resume_force_limit = 2
+        # 异步 resume 是否在"当前用户轮次"内持续生效（跨 LLM 迭代保持，换新用户消息时重置）
+        self._async_resume_active = False
+        self._async_resume_received_id = None
 
 
     async def preload_resource(self) -> None:
@@ -427,17 +430,7 @@ class ReActMasterAgent(ConversableAgent, Team):
                             request_sender_reply=False,
                         )
 
-                        result = type(
-                            "SubagentResult",
-                            (),
-                            {
-                                "success": True,
-                                "output": answer.content if answer else "",
-                                "error": None,
-                                "artifacts": {},
-                            },
-                        )()
-                        return result
+                        return self._result_from_answer(answer)
                     except Exception as e:
                         result = type(
                             "SubagentResult",
@@ -460,6 +453,31 @@ class ReActMasterAgent(ConversableAgent, Team):
                             "success": False,
                             "output": None,
                             "error": error,
+                            "artifacts": {},
+                        },
+                    )()
+
+                @staticmethod
+                def _result_from_answer(answer: Any):
+                    """从子 Agent 回复构造结果,并识别目标失败。
+
+                    子 Agent(如 MultimediaAgent)在媒体生成失败时回复 content 以
+                    "多媒体生成失败"开头(见 multimedia/agent.py thinking 的失败分支)。
+                    此处识别该标记把 success 置 False,使 AsyncTaskManager._run_task
+                    把任务标 FAILED 而非 completed--目标失败(如视频 403)不应算完成,
+                    否则前端误显示"完成"且 result_preview 带失败文本。
+                    """
+                    content = getattr(answer, "content", None) or ""
+                    is_failure = isinstance(content, str) and content.startswith(
+                        "多媒体生成失败"
+                    )
+                    return type(
+                        "SubagentResult",
+                        (),
+                        {
+                            "success": not is_failure,
+                            "output": None if is_failure else content,
+                            "error": content if is_failure else None,
                             "artifacts": {},
                         },
                     )()
@@ -544,16 +562,7 @@ class ReActMasterAgent(ConversableAgent, Team):
                             parent_depth=parent_depth or 0,
                             extra_info=None,
                         )
-                        return type(
-                            "SubagentResult",
-                            (),
-                            {
-                                "success": True,
-                                "output": getattr(answer, "content", None) or "",
-                                "error": None,
-                                "artifacts": {},
-                            },
-                        )()
+                        return self._result_from_answer(answer)
                     except Exception as e:
                         return self._fail_result(str(e))
 
@@ -2603,11 +2612,23 @@ class ReActMasterAgent(ConversableAgent, Team):
         # 异步任务完成后的 resume 轮次：LLM 若只返回占位文本（无工具调用），
         # 不应就此 terminate 结束，而应强制其继续把异步结果加工成最终交付物，
         # 避免主对话在子任务/媒体任务都完成后"卡住"。
+        # 用 received_message（当前用户指令）而非 message（助手回复）判定：
+        # coordinator 把完成通知作为 user 消息注入，整个 resume 轮次内 received_message
+        # 都带 "[异步任务完成通知]"，跨多次 LLM 迭代保持一致；think-time 注入路径则靠
+        # _bg_notif_delivered 抬升。任一命中即视为 async resume 轮次。
+        _rm_id = getattr(received_message, "message_id", None)
+        if self._async_resume_received_id != _rm_id:
+            # 新的用户消息：重置持久标记，避免跨用户轮次误判
+            self._async_resume_received_id = _rm_id
+            self._async_resume_active = False
         is_async_resume_round = (
-            "[异步任务完成通知]" in (getattr(message, "content", None) or "")
+            "[异步任务完成通知]"
+            in (getattr(received_message, "content", None) or "")
         ) or getattr(self, "_bg_notif_delivered", False)
+        if is_async_resume_round:
+            self._async_resume_active = True
         # 非异步 resume 轮次时清零强制续跑计数，避免跨轮次累计
-        if not is_async_resume_round:
+        if not self._async_resume_active:
             self._async_resume_force_count = 0
 
         # 阶段 1：解析所有可能的 action
@@ -2986,10 +3007,16 @@ class ReActMasterAgent(ConversableAgent, Team):
                         # 取消 terminate，让 loop 继续并注入引导，强制把异步结果处理成最终交付物，
                         # 否则主对话会在子任务/媒体任务都完成后直接 complete，看不到继续输出。
                         # 用计数器兜底，避免 LLM 反复返回占位文本导致死循环。
+                        #
+                        # 仅当 LLM 没有产出实质内容（空或极短占位，如"收到，继续"）时才强制
+                        # 续推；若已产出实质最终答案（长文本），说明本轮已有交付物，应直接
+                        # terminate，否则会把同一段最终答案重复输出多遍（1668/1669/1670）。
+                        _resume_content = (getattr(result, "content", "") or "").strip()
                         if (
-                            is_async_resume_round
+                            self._async_resume_active
                             and getattr(result, "action", None) == "blank"
                             and getattr(result, "terminate", False)
+                            and len(_resume_content) < 50
                             and self._async_resume_force_count
                             < self._async_resume_force_limit
                         ):

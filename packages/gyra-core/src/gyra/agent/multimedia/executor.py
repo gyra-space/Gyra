@@ -82,6 +82,11 @@ class MultimediaExecutor:
         self.config = config or MultimediaAgentConfig()
         self.afs = afs
         self.conv_id = conv_id
+        # 当多媒体 Agent 作为子 Agent 在子会话(sub_conv)运行时,主会话 ID 由
+        # MultimediaAgent 从 agent_context.extra["main_conv_id"] 注入。轮询任务
+        # 仍以 sub_conv 隔离(不触发主 resume),但记录 main_conv_id 使主会话能
+        # 查到子 Agent 生成的产物 artifact(图片/视频 URL),无需下钻子会话。
+        self.main_conv_id: str = ""
 
     # ------------------------------------------------------------------
     # 对外主入口
@@ -476,6 +481,8 @@ class MultimediaExecutor:
                 "gen_kwargs": gen_kwargs,
                 "source": "multimedia_sync",
             }
+            if self.main_conv_id:
+                context["main_conv_id"] = self.main_conv_id
             provider_task_id = getattr(submission, "task_id", "") if submission else ""
             if provider_task_id:
                 context["provider_task_id"] = provider_task_id
@@ -662,6 +669,7 @@ class MultimediaExecutor:
                     k: v for k, v in (getattr(submission, "metadata", {}) or {}).items()
                     if isinstance(v, (str, int, float, bool))
                 },
+                **({"main_conv_id": self.main_conv_id} if self.main_conv_id else {}),
                 **({"resumed_after_timeout": resumed_after_timeout} if resumed_after_timeout else {}),
             },
             resume=_resume,

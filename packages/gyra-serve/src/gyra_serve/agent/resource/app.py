@@ -151,6 +151,12 @@ class GptAppResource(AppResource):
         agent_message = AgentMessage(
             content=user_input,
             current_goal=user_input,
+            # message_id 必传:base_agent.push_context_event 经 task_id_by_received_message
+            # 取 received_message.message_id 作为 task_id,缺省 None 会导致子 Agent 的
+            # StepStart/StepEnd/ChatEnd 等上下文事件在 base_agent.py 的 `if not task_id:
+            # return` 被整体丢弃(子 Agent 执行轨迹无法入库/恢复)。用 sub_conv_id 作
+            # message_id,使事件可回溯到 pending_subagents 台账里的子任务。
+            message_id=conv_uid,
             context={
                 "conv_uid": conv_uid,
                 **(extra_info or {}),

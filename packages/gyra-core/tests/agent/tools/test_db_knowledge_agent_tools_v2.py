@@ -16,17 +16,6 @@ sys.modules["openai"].BaseModel = MagicMock()
 from gyra.agent.tools.context import ToolContext
 from gyra.agent.expand.actions.knowledge_action import KnowledgeSearch
 from gyra.agent.expand.actions.agent_action import AgentStart
-from gyra.agent.resource.database import DBResource
-
-
-def _make_db_resource(connector=None, datasource_id=7):
-    """创建模拟的 DBResource，用于测试 _resolve_db_from_agent 的 BAIZE 回退路径。"""
-    db_res = DBResource(name="test_db", db_name="test_db")
-    if connector:
-        db_res._connector = connector
-    if datasource_id:
-        db_res._datasource_id = datasource_id
-    return db_res
 
 
 class TestDBToolsV2Context:
@@ -34,7 +23,9 @@ class TestDBToolsV2Context:
 
     def test_resolve_db_from_v2_context(self):
         """V2 路径: context.get_resource("db_resource") 命中。"""
-        from gyra_serve.agent.resource.db_tools import _resolve_db_from_agent
+        from gyra_serve.agent.capabilities.db.tools._db_tools_impl import (
+            _resolve_db_from_agent,
+        )
 
         mock_connector = MagicMock()
         mock_db_resource = MagicMock()
@@ -50,7 +41,9 @@ class TestDBToolsV2Context:
 
     def test_resolve_db_from_v2_context_connector_attr(self):
         """V2 路径: db_resource 使用 connector 属性（非 _connector）。"""
-        from gyra_serve.agent.resource.db_tools import _resolve_db_from_agent
+        from gyra_serve.agent.capabilities.db.tools._db_tools_impl import (
+            _resolve_db_from_agent,
+        )
 
         mock_connector = MagicMock()
         mock_db_resource = MagicMock()
@@ -65,68 +58,58 @@ class TestDBToolsV2Context:
         assert connector is mock_connector
         assert ds_id == 99
 
-    def test_resolve_db_v2_priority_over_baize(self):
-        """V2 路径优先: 同时设置 context 和 agent kwargs 时，context 优先。"""
-        from gyra_serve.agent.resource.db_tools import _resolve_db_from_agent
+    def test_resolve_db_v2_priority_over_capability_pack(self):
+        """V2 路径优先: 同时设置 context 和 agent capability_pack 时，context 优先。"""
+        from types import SimpleNamespace
+
+        from gyra.core.interface.resource.capability import CapabilityPack
+        from gyra_serve.agent.capabilities.db.capability import DBCapability
+        from gyra_serve.agent.capabilities.db.tools._db_tools_impl import (
+            _resolve_db_from_agent,
+        )
 
         v2_connector = MagicMock()
         v2_db_resource = MagicMock()
         v2_db_resource._connector = v2_connector
         v2_db_resource._datasource_id = 1
 
-        baize_connector = MagicMock()
-        baize_db_res = _make_db_resource(connector=baize_connector, datasource_id=2)
-
-        mock_agent = MagicMock()
-        mock_agent.resource_map = {"DBResource": [baize_db_res]}
+        cap = DBCapability(db_name="test_db", db_id=2)
+        cap._connector = MagicMock()
+        agent = SimpleNamespace(capability_pack=CapabilityPack([cap]))
 
         ctx = ToolContext()
         ctx.set_resource("db_resource", v2_db_resource)
 
         connector, ds_id = _resolve_db_from_agent(
-            "test_db", {"agent": mock_agent}, context=ctx
+            "test_db", {"agent": agent}, context=ctx
         )
         assert connector is v2_connector
         assert ds_id == 1
 
-    def test_resolve_db_baize_fallback(self):
-        """BAIZE 回退: context=None 时从 agent.resource_map 获取。"""
-        from gyra_serve.agent.resource.db_tools import _resolve_db_from_agent
-
-        mock_connector = MagicMock()
-        db_res = _make_db_resource(connector=mock_connector, datasource_id=7)
-
-        mock_agent = MagicMock()
-        mock_agent.resource_map = {"DBResource": [db_res]}
-
-        connector, ds_id = _resolve_db_from_agent(
-            "test_db", {"agent": mock_agent}, context=None
-        )
-        assert connector is mock_connector
-        assert ds_id == 7
-
     def test_resolve_db_v2_context_no_resource(self):
-        """V2 context 激活但无 db_resource: 回退到 BAIZE 路径。"""
-        from gyra_serve.agent.resource.db_tools import _resolve_db_from_agent
+        """V2 context 激活但无 db_resource: 回退 capability_pack,无则 (None, None)。"""
+        from types import SimpleNamespace
 
-        mock_connector = MagicMock()
-        db_res = _make_db_resource(connector=mock_connector, datasource_id=7)
+        from gyra_serve.agent.capabilities.db.tools._db_tools_impl import (
+            _resolve_db_from_agent,
+        )
 
-        mock_agent = MagicMock()
-        mock_agent.resource_map = {"DBResource": [db_res]}
+        agent = SimpleNamespace(capability_pack=None)
 
         ctx = ToolContext()
         # 不设置 db_resource
 
         connector, ds_id = _resolve_db_from_agent(
-            "test_db", {"agent": mock_agent}, context=ctx
+            "test_db", {"agent": agent}, context=ctx
         )
-        assert connector is mock_connector
-        assert ds_id == 7
+        assert connector is None
+        assert ds_id is None
 
     def test_resolve_db_no_agent_no_context(self):
         """无 agent 无 context: 返回 None, None。"""
-        from gyra_serve.agent.resource.db_tools import _resolve_db_from_agent
+        from gyra_serve.agent.capabilities.db.tools._db_tools_impl import (
+            _resolve_db_from_agent,
+        )
 
         connector, ds_id = _resolve_db_from_agent("test_db", {}, context=None)
         assert connector is None

@@ -6,9 +6,12 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.6;
-  color: var(--ink-900);
+  /* 正文用软墨色 ink-800:长段中文阅读更松弛;标题/强调仍用 ink-900 拉开层级 */
+  color: var(--ink-800);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-optical-sizing: auto;
   --antd-primary-color: #4f46e5;
   -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
   -webkit-appearance: none;
@@ -27,8 +30,9 @@ body {
   --brand-active: #4338ca;
   --brand-soft: #eef0fe;
 
-  /* Ink —— 文字四级 */
+  /* Ink —— 文字五级(800 为正文软墨色) */
   --ink-900: #14161c;
+  --ink-800: #262b38;
   --ink-700: #3b4154;
   --ink-500: #5d6577;
   --ink-400: #8a92a6;
@@ -61,10 +65,10 @@ body {
   --sh-modal: 0 12px 40px rgba(16, 24, 40, 0.12);
   --sh-glow: 0 0 0 4px rgba(var(--brand-rgb), 0.08);
 
-  /* Typography */
-  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', 'Segoe UI', Roboto, 'Helvetica Neue',
-    Arial, sans-serif;
+  /* Typography —— Inter 承接 Latin/数字(可变字重),中文回落 PingFang SC */
+  --font-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont,
+    'SF Pro Text', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono',
     monospace;
   --fs-aux: 12px;
@@ -106,6 +110,7 @@ body {
 
 .dark {
   --ink-900: #f1f5f9;
+  --ink-800: #d9dfec;
   --ink-700: #cbd2e0;
   --ink-500: #8b95a8;
   --ink-400: #6b748c;
@@ -293,10 +298,17 @@ body {
   font-feature-settings: 'tnum';
 }
 
-/* 标题负字距(大字号更紧凑高级) */
+/* 标题负字距 + 深色(大字号更紧凑高级,与正文 ink-800 拉开层级) */
 h1,
 h2,
 h3,
+h4,
+h5,
+h6 {
+  letter-spacing: -0.02em;
+  color: var(--ink-900);
+}
+
 .ws-page-title,
 .ws-console-title {
   letter-spacing: -0.02em;

@@ -579,12 +579,13 @@ export function SceneTaskRail({
     </div>
   );
 
-  // 发起人名称:优先成员表,其次当前用户显示"我",最后回退 `用户 <id>`
+  // 发起人名称:仅显示能解析出的真实成员名(当前用户显示「我」);
+  // 解析不到(如不是空间成员)时不显示,避免出现「用户 <id>」这种原始 ID 兜底。
   const initiatorName = (userId: any): string => {
     if (userId == null) return '';
     const name = memberMap[Number(userId)];
     if (name) return name;
-    return String(userId) === String(getUserId()) ? '我' : `用户 ${userId}`;
+    return String(userId) === String(getUserId()) ? '我' : '';
   };
 
   const renderRailItem = (it: any) => {

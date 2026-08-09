@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 class SubAgentMode(str, Enum):
@@ -58,6 +58,10 @@ class SubAgentHandle:
     params: Dict[str, Any] = field(default_factory=dict)  # 调用参数（media/wait/mode 等）
     progress: Optional[int] = None      # 进度 0-100（可选，仅部分子 Agent 上报）
     steps: Optional[list] = None       # 子 Agent 内部步骤摘要（可选）
+    # 子 Agent 名下媒体生成（轮询）任务产出的交付物：[{name,type,url,mime_type}]。
+    # 完成时从子会话(conv_id=sub_conv_id)的异步任务台账聚合，使主会话看板能直接
+    # 展示子 Agent 生成的图片/视频，而不必下钻到子会话查询。
+    artifacts: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """序列化为 dict（用于持久化到 gpts_conversations.extra JSON）。"""
@@ -85,6 +89,7 @@ class SubAgentHandle:
             params=d.get("params") or {},
             progress=d.get("progress"),
             steps=d.get("steps"),
+            artifacts=d.get("artifacts") or [],
         )
 
     def is_terminal(self) -> bool:

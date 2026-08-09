@@ -11,6 +11,10 @@ from typing import Any, Dict, List, Optional
 from gyra.agent.tools.context import ToolContext
 from gyra.agent.core.v2.tool_call_types import V2ToolCall
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 # tool_name → ToolContext resource key 的映射
 _TOOL_RESOURCE_MAP = {
@@ -147,7 +151,16 @@ class ToolContextFactory:
                 afs=kwargs.get("afs") or self._agent_file_system,
                 conv_id=kwargs.get("conv_id", ""),
             )
-        except Exception:  # noqa: BLE001 - 注册表未就绪时静默回退
+        except Exception as e:  # noqa: BLE001 - 注册表未就绪时回退
+            # 不再静默:回退会让 spawn_agent_task 走 subagent_manager.delegate 的
+            # 完整 react 循环路径(独立子会话),与 delegate 直跑 executor 的预期不同,
+            # 且影响任务状态/success 判定(见 react_master_agent _delegate_via_app)。
+            # 记 warning 使该回退可观测,便于排查"任务状态异常/子会话意外创建"。
+            logger.warning(
+                f"[subagent_delegate_factory] build delegate for "
+                f"{kwargs.get('subagent_name', '')} failed, fallback to "
+                f"subagent_manager delegate path: {e}"
+            )
             return None
 
     def build(self, tool_call: V2ToolCall, tool: Optional[Any] = None) -> ToolContext:

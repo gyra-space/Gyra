@@ -1112,10 +1112,15 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                         )]
 
         def _step_to_info(s: ManusExecutionStep) -> ManusActiveStepInfo:
+            detail = s.description or ""
+            # lazy/流式模式截断 detail:它常承载整段通知/脚本(数百 KB),每个 chunk 全量
+            # 重发会让 chunk 文件膨胀到百 MB 级。前端按需经 /vis/step_detail 拉取完整内容。
+            if lazy and isinstance(detail, str) and len(detail) > 200:
+                detail = detail[:200] + "…"
             return ManusActiveStepInfo(
                 id=s.id, type=s.type, title=s.title,
                 subtitle=s.subtitle, status=s.status,
-                detail=s.description, action=s.action,
+                detail=detail, action=s.action,
                 action_input=s.action_input,
             )
 
@@ -1152,6 +1157,16 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         last_step = list(local_steps.values())[-1] if local_steps else None
         active_step_info = _step_to_info(last_step) if last_step else None
         current_outputs = local_outputs.get(last_step.id, []) if last_step else []
+        # lazy/流式模式截断 outputs 内容(工具输出可能很大,如读文件/长通知),
+        # 与 detail 截断同理,避免每个 chunk 全量重发;前端按需拉取完整内容。
+        if lazy and current_outputs:
+            _trunc = []
+            for o in current_outputs:
+                c = o.content
+                if isinstance(c, str) and len(c) > 2000:
+                    o = ManusExecutionOutput(output_type=o.output_type, content=c[:2000] + "…")
+                _trunc.append(o)
+            current_outputs = _trunc
 
         return steps_map, active_step_info, current_outputs
 

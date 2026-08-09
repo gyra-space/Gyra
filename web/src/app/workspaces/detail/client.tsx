@@ -11,6 +11,7 @@ import { useSearchParams, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { useCallback, useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { getUserId } from '@/utils';
 import {
   ScheduleOutlined,
   SettingOutlined,
@@ -69,7 +70,7 @@ export default function WorkspaceDetailPage() {
         return;
       }
       const [linkErr] = await apiInterceptors(
-        linkConversation({ workspace_id: workspaceId, conv_uid: newConv.conv_uid, user_id: undefined })
+        linkConversation({ workspace_id: workspaceId, conv_uid: newConv.conv_uid, user_id: Number(getUserId()) || undefined })
       );
       if (linkErr) {
         setConvLoadError(`会话关联空间失败：${linkErr.message || '未知错误'}`);

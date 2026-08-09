@@ -34,7 +34,7 @@ interface DatabaseAddModalProps {
   open: boolean;
   supportTypes: IChatDbSupportTypeSchema[];
   onCancel: () => void;
-  onSuccess: () => void;
+  onSuccess: (newDbId?: string) => void;
 }
 
 /** Fields that most users need to fill in */
@@ -153,15 +153,16 @@ export default function DatabaseAddModal({
         params: values.params || {},
         description: values.description,
       };
-      const [err] = await apiInterceptors(postDbAdd(submitData as any));
+      const [err, res] = await apiInterceptors(postDbAdd(submitData as any));
       if (err) {
         message.error(t('add_database_failed'));
       } else {
         message.success(t('add_database_success'));
+        const newDbId = res?.id != null ? String(res.id) : undefined;
         form.resetFields();
         setSelectedType('');
         setTestResult({ status: null });
-        onSuccess();
+        onSuccess(newDbId);
       }
     } catch {
       // validation failed

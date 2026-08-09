@@ -209,9 +209,11 @@ class AsyncTaskDao(BaseDao):
         self,
         conv_id: str = "",
         status: Optional[str] = None,
+        kind: Optional[str] = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """按 conv/status 过滤，创建时间倒序返回。"""
+        """按 conv/status/kind 过滤，创建时间倒序返回（支持分页）。"""
         session = self.get_raw_session()
         try:
             q = session.query(AsyncTaskEntity)
@@ -219,7 +221,34 @@ class AsyncTaskDao(BaseDao):
                 q = q.filter(AsyncTaskEntity.conv_id == conv_id)
             if status:
                 q = q.filter(AsyncTaskEntity.status == status)
-            rows = q.order_by(AsyncTaskEntity.id.desc()).limit(limit).all()
+            if kind:
+                q = q.filter(AsyncTaskEntity.kind == kind)
+            rows = (
+                q.order_by(AsyncTaskEntity.id.desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
             return [self._parse_entity(e) for e in rows]
+        finally:
+            session.close()
+
+    def count(
+        self,
+        conv_id: str = "",
+        status: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> int:
+        """按 conv/status/kind 过滤的任务总数（用于分页）。"""
+        session = self.get_raw_session()
+        try:
+            q = session.query(AsyncTaskEntity)
+            if conv_id:
+                q = q.filter(AsyncTaskEntity.conv_id == conv_id)
+            if status:
+                q = q.filter(AsyncTaskEntity.status == status)
+            if kind:
+                q = q.filter(AsyncTaskEntity.kind == kind)
+            return q.count()
         finally:
             session.close()

@@ -125,6 +125,13 @@ const ASYNC_STATUS_COLOR: Record<string, string> = {
   cancelled: 'default',
 };
 
+const KIND_META: Record<string, { label: string; color: string }> = {
+  video: { label: '视频', color: 'cyan' },
+  image: { label: '图片', color: 'geekblue' },
+  subagent: { label: '子Agent', color: 'purple' },
+  ecp_proposal: { label: '提案生成', color: 'gold' },
+};
+
 /** Render an async task's AFS deliverable (artifact) as a download link if present. */
 function AsyncArtifactLink({ artifact }: { artifact?: AsyncTask['artifact'] }) {
   if (!artifact || !artifact.url) return <Text type="secondary">-</Text>;
@@ -146,21 +153,26 @@ function AsyncArtifactLink({ artifact }: { artifact?: AsyncTask['artifact'] }) {
 
 /** Async tasks (media generation / spawn_agent_task subagent) merged into the task engine page. */
 function AsyncTasksTable() {
-  const [filters, setFilters] = useState<{ status?: string; conv_id?: string }>({});
+  const [filters, setFilters] = useState<{ status?: string; kind?: string }>({});
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+  const [descModal, setDescModal] = useState<string | null>(null);
   const { message } = App.useApp();
 
   const {
-    data: tasks,
+    data: tasksData,
     loading,
     refresh,
     error,
   } = useRequest(
     async () => {
-      const [err, res] = await apiInterceptors(listAsyncTasks(filters));
-      if (err) return [];
-      return res || [];
+      const [err, res] = await apiInterceptors(
+        listAsyncTasks({ ...filters, limit: pageSize, offset: (page - 1) * pageSize }),
+      );
+      if (err) return { items: [], total: 0 };
+      return res || { items: [], total: 0 };
     },
-    { refreshDeps: [JSON.stringify(filters)] },
+    { refreshDeps: [JSON.stringify(filters), page] },
   );
 
   // 手动召回：按 provider_task_id 对已有 provider 任务重新轮询+下载（不重复扣费）
@@ -188,11 +200,19 @@ function AsyncTasksTable() {
   const columns = [
     { title: 'Task ID', dataIndex: 'task_id', key: 'task_id', width: 200, ellipsis: true,
       render: (v: string) => <Text code className="text-xs">{v}</Text> },
+    { title: 'Conv ID', dataIndex: 'conv_id', key: 'conv_id', width: 200, ellipsis: true,
+      render: (v?: string) => v ? <Tooltip title={v}><Text code className="text-xs">{v}</Text></Tooltip> : '-' },
     { title: 'Kind', dataIndex: 'kind', key: 'kind', width: 110,
-      render: (v: string) => <Tag color={v === 'video' ? 'cyan' : v === 'image' ? 'geekblue' : 'purple'}>{v || '-'}</Tag> },
+      render: (v: string) => {
+        const m = KIND_META[v];
+        return <Tag color={m?.color || 'default'}>{m?.label || v || '-'}</Tag>;
+      } },
     { title: 'Model', dataIndex: 'model', key: 'model', width: 180, ellipsis: true,
       render: (v?: string) => v ? <Text code className="text-xs">{v}</Text> : '-' },
-    { title: 'Description', dataIndex: 'description', key: 'description', ellipsis: true },
+    { title: 'Description', dataIndex: 'description', key: 'description', ellipsis: true,
+      render: (v?: string) => v
+        ? <span className="cursor-pointer" onClick={() => setDescModal(v)}>{v}</span>
+        : '-' },
     { title: 'Status', dataIndex: 'status', key: 'status', width: 120,
       render: (s: string) => <Tag color={ASYNC_STATUS_COLOR[s] || 'default'}>{s}</Tag> },
     { title: 'Artifact', dataIndex: 'artifact', key: 'artifact', width: 140,
@@ -229,7 +249,14 @@ function AsyncTasksTable() {
           allowClear
           style={{ width: 140 }}
           options={['pending', 'running', 'completed', 'failed', 'timeout', 'cancelled'].map(s => ({ label: s, value: s }))}
-          onChange={v => setFilters(f => ({ ...f, status: v }))}
+          onChange={v => { setFilters(f => ({ ...f, status: v })); setPage(1); }}
+        />
+        <Select
+          placeholder="kind"
+          allowClear
+          style={{ width: 140 }}
+          options={Object.entries(KIND_META).map(([k, m]) => ({ label: m.label, value: k }))}
+          onChange={v => { setFilters(f => ({ ...f, kind: v })); setPage(1); }}
         />
         <Button icon={<ReloadOutlined />} onClick={refresh}>refresh</Button>
       </Space>
@@ -237,12 +264,27 @@ function AsyncTasksTable() {
         rowKey="task_id"
         size="small"
         loading={loading}
-        dataSource={tasks}
+        dataSource={tasksData?.items || []}
         columns={columns}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1300 }}
         locale={{ emptyText: error ? <TypeText msg={error?.message || '加载失败'} /> : <Empty /> }}
-        pagination={{ pageSize: 20, showSizeChanger: false }}
+        pagination={{
+          current: page,
+          pageSize,
+          total: tasksData?.total ?? 0,
+          showSizeChanger: false,
+          onChange: p => setPage(p),
+        }}
       />
+      <Modal
+        title="任务描述"
+        open={!!descModal}
+        onCancel={() => setDescModal(null)}
+        footer={null}
+        width={720}
+      >
+        <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>{descModal}</pre>
+      </Modal>
     </Card>
   );
 }
@@ -255,6 +297,8 @@ export default function JobsPage() {
   const { t } = useTranslation();
   const { message } = App.useApp();
   const [filters, setFilters] = useState<{ job_type?: string; status?: string; space_slug?: string }>({});
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedType, setSelectedType] = useState<string | undefined>();
   const [form] = Form.useForm<any>();
@@ -286,11 +330,13 @@ export default function JobsPage() {
     refresh: refreshJobs,
   } = useRequest(
     async () => {
-      const [err, res] = await apiInterceptors(listJobs(filters));
+      const [err, res] = await apiInterceptors(
+        listJobs({ ...filters, limit: pageSize, offset: (page - 1) * pageSize }),
+      );
       if (err) return { items: [], total: 0 };
       return res || { items: [], total: 0 };
     },
-    { refreshDeps: [JSON.stringify(filters)] },
+    { refreshDeps: [JSON.stringify(filters), page] },
   );
 
   const runRefresh = () => { refreshJobs(); refreshStats(); };
@@ -378,7 +424,7 @@ export default function JobsPage() {
   ];
 
   return (
-    <div className="p-4">
+    <div className="flex-1 min-h-0 overflow-auto p-4">
       <Title level={3}>任务引擎</Title>
 
       <Tabs
@@ -395,20 +441,20 @@ export default function JobsPage() {
                     allowClear
                     style={{ width: 200 }}
                     options={(jobTypes || []).map(jt => ({ label: jt.job_type, value: jt.job_type }))}
-                    onChange={v => setFilters(f => ({ ...f, job_type: v }))}
+                    onChange={v => { setFilters(f => ({ ...f, job_type: v })); setPage(1); }}
                   />
                   <Select
                     placeholder="status"
                     allowClear
                     style={{ width: 140 }}
                     options={['pending', 'running', 'done', 'failed'].map(s => ({ label: s, value: s }))}
-                    onChange={v => setFilters(f => ({ ...f, status: v }))}
+                    onChange={v => { setFilters(f => ({ ...f, status: v })); setPage(1); }}
                   />
                   <Input
                     placeholder="space slug"
                     allowClear
                     style={{ width: 180 }}
-                    onChange={e => setFilters(f => ({ ...f, space_slug: e.target.value || undefined }))}
+                    onChange={e => { setFilters(f => ({ ...f, space_slug: e.target.value || undefined })); setPage(1); }}
                   />
                   <Button icon={<ReloadOutlined />} onClick={runRefresh}>refresh</Button>
                   <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setSelectedType(undefined); setCreateOpen(true); }}>new job</Button>
@@ -430,7 +476,13 @@ export default function JobsPage() {
                     dataSource={jobs?.items || []}
                     columns={columns}
                     scroll={{ x: 1500 }}
-                    pagination={{ total: jobs?.total ?? 0, pageSize: 20, showSizeChanger: false }}
+                    pagination={{
+                      current: page,
+                      pageSize,
+                      total: jobs?.total ?? 0,
+                      showSizeChanger: false,
+                      onChange: p => setPage(p),
+                    }}
                   />
                 </Card>
               </>
