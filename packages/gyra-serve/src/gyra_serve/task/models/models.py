@@ -145,6 +145,30 @@ class TaskDao(BaseDao[TaskEntity, TaskRequest, TaskResponse]):
             gmt_modified=entity.gmt_modified.isoformat() if entity.gmt_modified else "",
         )
 
+    def list_by_conv(
+        self,
+        workspace_id: int,
+        conv_session_id: str,
+        status: Optional[str] = None,
+    ) -> List[TaskResponse]:
+        """按会话(session)维度列出任务。
+
+        用于大厅内联任务收尾:内联任务绑定到大厅会话(conv_session_id == conv_id),
+        会话结束后据其找出仍处于 running 的任务并流转到终态。
+        """
+        session = self.get_raw_session()
+        try:
+            query = session.query(TaskEntity).filter(
+                TaskEntity.workspace_id == workspace_id,
+                TaskEntity.conv_session_id == conv_session_id,
+            )
+            if status:
+                query = query.filter(TaskEntity.status == status)
+            entities = query.order_by(desc(TaskEntity.gmt_modified)).all()
+            return [self.to_response(e) for e in entities]
+        finally:
+            session.close()
+
     def list_by_filter(self, f: TaskListFilter) -> List[TaskResponse]:
         session = self.get_raw_session()
         try:

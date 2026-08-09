@@ -454,6 +454,8 @@ class AsyncTaskManager:
             f"[AsyncTaskManager] Spawned task {spec.task_id}: "
             f"mode={'media' if spec.resume else 'subagent'}, "
             f"agent={spec.agent_name or spec.model}, "
+            f"conv={spec.conv_id}, "
+            f"main_conv={(spec.context or {}).get('main_conv_id', '')}, "
             f"deps={spec.depend_on or 'none'}"
         )
 
@@ -488,7 +490,8 @@ class AsyncTaskManager:
         self._persist(state)
         logger.info(
             f"[AsyncTaskManager] Registered external task {spec.task_id}: "
-            f"agent={spec.agent_name or spec.model}, conv={spec.conv_id}"
+            f"agent={spec.agent_name or spec.model}, conv={spec.conv_id}, "
+            f"main_conv={(spec.context or {}).get('main_conv_id', '')}"
         )
         return spec.task_id
 
@@ -876,8 +879,9 @@ class AsyncTaskManager:
         (由 MultimediaExecutor 透传)。主会话完成通知构建时调本方法,把子 Agent
         生成的图片/视频 URL 收集起来注入通知,使主对话页能看到产物而不止文本。
 
-        优先扫内存 _tasks;查不到(DB 重启后)回退 AsyncTaskDao 按 conv_id 不可达,
-        此时返回空(产物仍在子会话任务记录里,可后续按 sub_conv 查)。
+        先扫内存 _tasks;再扫 DB 台账兜底(重启后内存为空;main_conv_id 在
+        detail JSON 里,DAO 无对应列,仿 find_completed_equivalent 全表读 +
+        Python 过滤),两路按 url 去重合并。DB 失败降级仅记 debug。
 
         Returns:
             artifact dict 列表:[{name,type,url,mime_type,task_id}]
@@ -886,17 +890,35 @@ class AsyncTaskManager:
             return []
         arts: List[Dict[str, Any]] = []
         seen: set = set()
+
+        def _add(a: Any, task_id: Any) -> None:
+            if isinstance(a, dict) and a.get("url") and a["url"] not in seen:
+                seen.add(a["url"])
+                a = dict(a)
+                a["task_id"] = task_id
+                arts.append(a)
+
         for state in self._tasks.values():
             ctx = state.spec.context or {}
             if ctx.get("main_conv_id") != main_conv_id:
                 continue
             rec = state.to_record()
-            a = rec.get("artifact")
-            if isinstance(a, dict) and a.get("url") and a["url"] not in seen:
-                seen.add(a["url"])
-                a = dict(a)
-                a["task_id"] = rec.get("task_id")
-                arts.append(a)
+            _add(rec.get("artifact"), rec.get("task_id"))
+
+        # DB 兜底:进程重启后 _tasks 为空,产物只在 gpts_async_tasks 里
+        try:
+            for rec in self._ledger.read_all().values():
+                detail = rec.get("detail") or {}
+                if not isinstance(detail, dict):
+                    continue
+                if detail.get("main_conv_id") != main_conv_id:
+                    continue
+                _add(rec.get("artifact"), rec.get("task_id"))
+        except Exception as e:  # noqa: BLE001 - 台账不可用时仅降级,不影响通知
+            logger.debug(
+                f"[AsyncTaskManager] collect artifacts DB fallback failed for "
+                f"main {main_conv_id}: {e}"
+            )
         return arts
 
     def has_active_tasks_for_conv(self, conv_id: str) -> bool:

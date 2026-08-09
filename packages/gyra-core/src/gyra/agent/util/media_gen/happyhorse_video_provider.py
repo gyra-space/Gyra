@@ -51,6 +51,64 @@ _SUPPORTED_RATIOS = {
     "16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9",
 }
 
+# ── 视频格式声明（声明驱动）─────────────────────────────────────────────
+# 请求参数格式由模型配置里的 `video_format` 声明决定，provider 统一读取并自动适配，
+# 新模型无需改代码只需在模型配置中声明。未声明时回退到内置默认格式（按模型名推断）。
+#
+# video_format 声明结构（可放模型配置 media model 的扩展字段）：
+#   {
+#     "style": "size" | "resolution",   # size=用 size("宽*高"); resolution=用 resolution+ratio
+#     "resolutions": ["360P","540P",...], # 支持的档位（大写）；缺省时用该项默认
+#     "ratios": ["16:9","4:3",...],       # 支持的宽高比；缺省时用该项默认
+#     "default_resolution": "720P",       # 兜底档位（分辨率不在支持集时降级）
+#     "size_map": { "720P": {"16:9": "1280*720", ...} },  # size 风格下 分辨率×宽高比→size
+#     "fallback_size": "1280*720",        # size 风格下组合不在 size_map 时的兜底
+#   }
+#
+# 内置默认：happyhorse（resolution 风格）、pixverse（size 风格，数据来自百炼官方文档）
+_DEFAULT_VIDEO_FORMATS: dict[str, dict[str, Any]] = {
+    "happyhorse": {
+        "style": "resolution",
+        "resolutions": ["480P", "720P", "1080P"],
+        "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
+        "default_resolution": "1080P",
+    },
+    "pixverse": {
+        "style": "size",
+        "resolutions": ["360P", "540P", "720P", "1080P"],
+        "ratios": ["16:9", "4:3", "1:1", "3:4", "9:16", "3:2", "2:3", "21:9"],
+        "default_resolution": "720P",
+        "fallback_size": "1280*720",
+        "size_map": {
+            "360P": {
+                "16:9": "640*360", "4:3": "640*480", "1:1": "640*640",
+                "3:4": "480*640", "9:16": "360*640", "3:2": "640*432",
+                "2:3": "432*640", "21:9": "640*288",
+            },
+            "540P": {
+                "16:9": "1024*576", "4:3": "1024*768", "1:1": "1024*1024",
+                "3:4": "768*1024", "9:16": "576*1024", "3:2": "1024*688",
+                "2:3": "688*1024", "21:9": "1024*448",
+            },
+            "720P": {
+                "16:9": "1280*720", "4:3": "1108*832", "1:1": "960*960",
+                "3:4": "832*1108", "9:16": "720*1280", "3:2": "1200*800",
+                "2:3": "800*1200", "21:9": "1280*560",
+            },
+            "1080P": {
+                "16:9": "1920*1080", "4:3": "1664*1248", "1:1": "1440*1440",
+                "3:4": "1248*1664", "9:16": "1080*1920", "3:2": "1776*1184",
+                "2:3": "1184*1776", "21:9": "1920*832",
+            },
+        },
+    },
+}
+
+# 模型名前缀 → 内置默认格式 key；未命中回退 happyhorse（resolution 风格）
+_PREFIX_DEFAULT_FORMAT = {
+    "pixverse/": "pixverse",
+}
+
 
 def _scenario_of(model: str) -> str:
     """Return the scenario tag (t2v / i2v / r2v) from a model name."""
@@ -87,6 +145,57 @@ class HappyHorseVideoProvider(MediaGenProvider):
 
     def supported_video_models(self) -> List[str]:
         return []
+
+    def _video_format_for(self, model: str) -> dict[str, Any]:
+        """解析模型的视频格式声明（声明驱动）。
+
+        优先级：模型配置里的 ``video_format`` 扩展字段 ＞ 内置默认（按模型名前缀）。
+        模型配置即 ModelConfigCache 中该媒体模型的完整配置（含用户自定义扩展字段）。
+        任何解析异常回退 happyhorse（resolution 风格），保证不阻断生成。
+        """
+        fmt: Optional[dict[str, Any]] = None
+        try:
+            from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+            cfg = ModelConfigCache.get_config(model) or {}
+            if isinstance(cfg.get("video_format"), dict):
+                fmt = cfg["video_format"]
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[HappyHorseVideoProvider] read video_format for '{model}' failed: {e}"
+            )
+
+        if not fmt:
+            m = model.lower()
+            prefix = next(
+                (p for p in _PREFIX_DEFAULT_FORMAT if m.startswith(p)),
+                None,
+            )
+            fmt_key = _PREFIX_DEFAULT_FORMAT.get(prefix, "happyhorse")
+            fmt = _DEFAULT_VIDEO_FORMATS.get(
+                fmt_key, _DEFAULT_VIDEO_FORMATS["happyhorse"]
+            )
+        return fmt
+
+    def _provider_label(self, model: str) -> str:
+        """返回该模型在配置里填写的提供商名（provider name）。
+
+        直接读取用户模型配置中的 ``provider`` 字段（如 ``alibaba``），
+        不硬编码，确保错误信息展示的就是用户配置时填的名字。
+        读取失败时回退到内部实现名，保证不阻断。
+        """
+        try:
+            from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+            cfg = ModelConfigCache.get_config(model) or {}
+            p = cfg.get("provider")
+            if p:
+                return str(p)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[HappyHorseVideoProvider] read provider for '{model}' failed: {e}"
+            )
+        return "happyhorse"
 
     async def generate_image(
         self,
@@ -161,7 +270,6 @@ class HappyHorseVideoProvider(MediaGenProvider):
         base_url = normalize_base_url(self.base_url or _DEFAULT_BASE_URL)
 
         duration = kwargs.get("duration", 5)
-        resolution = self._normalize_resolution(kwargs.get("resolution", "1080p"))
         aspect_ratio = kwargs.get("aspect_ratio", "16:9")
         seed = kwargs.get("seed")
         watermark = kwargs.get("watermark", False)
@@ -179,7 +287,7 @@ class HappyHorseVideoProvider(MediaGenProvider):
             else:
                 scenario = "t2v"
 
-        # Validate duration (HappyHorse range is 3-15)
+        # Validate duration (HappyHorse range is 3-15; PixVerse 也在此区间)
         if not isinstance(duration, int) or duration < 3 or duration > 15:
             raise ValueError(
                 f"HappyHorse duration must be an integer in [3, 15], got {duration}"
@@ -188,21 +296,61 @@ class HappyHorseVideoProvider(MediaGenProvider):
         # Build input.media based on scenario
         media = self._build_media(scenario, image_url, reference_images)
 
-        # Build parameters: ratio only applies to t2v / r2v (i2v follows first frame)
-        parameters: dict[str, Any] = {
-            "resolution": resolution,
-            "duration": duration,
-            "watermark": watermark,
-        }
-        if scenario in ("t2v", "r2v"):
-            if aspect_ratio not in _SUPPORTED_RATIOS:
-                raise ValueError(
-                    f"Unsupported aspect_ratio '{aspect_ratio}' for HappyHorse "
-                    f"{scenario}. Supported: {sorted(_SUPPORTED_RATIOS)}"
+        # 视频格式声明驱动：按模型配置的 video_format（或内置默认）决定请求参数。
+        # size 风格用 size("宽*高")，resolution 风格用 resolution + ratio。协议层
+        # 完成档位换算与兜底，Agent 侧声明分辨率/宽高比即可，新模型无需改代码。
+        fmt = self._video_format_for(model)
+        style = (fmt.get("style") or "resolution").lower()
+        resolutions = set(fmt.get("resolutions") or _SUPPORTED_RESOLUTIONS)
+        ratios = set(fmt.get("ratios") or _SUPPORTED_RATIOS)
+        default_res = (fmt.get("default_resolution") or "720P").upper()
+        size_map = fmt.get("size_map") or {}
+        fallback_size = fmt.get("fallback_size") or "1280*720"
+
+        if style == "size":
+            raw_res = (kwargs.get("resolution") or default_res).strip().upper()
+            # 分辨率不在支持集时降级到默认档位（协议层兜底，不阻断）
+            if raw_res not in resolutions:
+                logger.info(
+                    f"[HappyHorseVideoProvider] unsupported resolution '{raw_res}' "
+                    f"for '{model}', fell back to {default_res}"
                 )
-            parameters["ratio"] = aspect_ratio
-        if seed is not None:
-            parameters["seed"] = seed
+                raw_res = default_res
+            size = (size_map.get(raw_res) or {}).get(
+                aspect_ratio, fallback_size
+            )
+            parameters: dict[str, Any] = {
+                "size": size,
+                "duration": duration,
+                "watermark": watermark,
+            }
+            if seed is not None:
+                parameters["seed"] = seed
+            if scenario in ("t2v", "r2v") and aspect_ratio not in ratios:
+                # 不可用宽高比已兜底到默认档位，仅提示不阻断
+                logger.info(
+                    f"[HappyHorseVideoProvider] unsupported ratio "
+                    f"'{aspect_ratio}' for '{model}', fell back to size={size}"
+                )
+        else:
+            resolution = self._normalize_resolution(
+                kwargs.get("resolution", default_res), resolved_set=resolutions
+            )
+            # Build parameters: ratio only applies to t2v / r2v (i2v follows first frame)
+            parameters = {
+                "resolution": resolution,
+                "duration": duration,
+                "watermark": watermark,
+            }
+            if scenario in ("t2v", "r2v"):
+                if aspect_ratio not in ratios:
+                    raise ValueError(
+                        f"Unsupported aspect_ratio '{aspect_ratio}' for HappyHorse "
+                        f"{scenario}. Supported: {sorted(ratios)}"
+                    )
+                parameters["ratio"] = aspect_ratio
+            if seed is not None:
+                parameters["seed"] = seed
 
         body: dict[str, Any] = {
             "model": model,
@@ -216,14 +364,20 @@ class HappyHorseVideoProvider(MediaGenProvider):
 
         logger.info(
             f"[HappyHorseVideoProvider] Submitting {scenario} job: model={model}, "
-            f"duration={duration}s, resolution={resolution}, "
+            f"duration={duration}s, "
+            f"{'size=' + parameters['size'] if style == 'size' else 'resolution=' + resolution}, "
             f"ratio={parameters.get('ratio', 'n/a')}, "
             f"media_count={len(media) if media else 0}"
+        )
+        # 记录完整请求参数（含 prompt / media / parameters），便于排障。
+        # 不输出 headers（含 Authorization），避免泄露 api_key。
+        create_url = f"{base_url}{_CREATE_TASK_ENDPOINT}"
+        logger.info(
+            f"[HappyHorseVideoProvider] Request POST {create_url} body={body}"
         )
 
         # Submit (short-lived client; poll/download use their own).
         async with httpx.AsyncClient(timeout=timeout) as client:
-            create_url = f"{base_url}{_CREATE_TASK_ENDPOINT}"
             submit_resp = await client.post(create_url, headers=headers, json=body)
             result = raise_for_response(submit_resp, provider="happyhorse")
 
@@ -240,7 +394,8 @@ class HappyHorseVideoProvider(MediaGenProvider):
                     client, base_url, task_id, self.api_key, timeout,
                     extract_url=_extract_video_url,
                     poll_interval=15,
-                    provider="happyhorse",
+                    provider=self._provider_label(model),
+                    model=model,
                 )
                 # Download (validated: OSS may transiently return an XML
                 # error body right after task completion)
@@ -254,12 +409,17 @@ class HappyHorseVideoProvider(MediaGenProvider):
             metadata: dict[str, Any] = {
                 "model": model,
                 "scenario": scenario,
-                "resolution": resolution,
                 "duration": duration,
                 "task_id": task_id,
                 "provider": "happyhorse",
                 "video_url": video_url,
             }
+            if style == "size":
+                # size 风格（宽*高）记录档位与换算结果
+                metadata["resolution"] = default_res
+                metadata["size"] = parameters.get("size", fallback_size)
+            else:
+                metadata["resolution"] = resolution
             if scenario in ("t2v", "r2v"):
                 metadata["aspect_ratio"] = aspect_ratio
             if seed is not None:
@@ -307,7 +467,8 @@ class HappyHorseVideoProvider(MediaGenProvider):
                     client, base_url, task_id, self.api_key, timeout,
                     extract_url=_extract_video_url,
                     poll_interval=15,
-                    provider="happyhorse",
+                    provider=self._provider_label(model),
+                    model=model,
                 )
                 logger.info(
                     f"[HappyHorseVideoProvider] Recalling video from {video_url}"
@@ -374,12 +535,21 @@ class HappyHorseVideoProvider(MediaGenProvider):
             if url
         ]
 
-    def _normalize_resolution(self, resolution: str) -> str:
-        """Normalize resolution to HappyHorse's uppercase form (e.g. 720p -> 720P)."""
+    def _normalize_resolution(
+        self, resolution: str, *, resolved_set: Optional[set] = None
+    ) -> str:
+        """Normalize resolution to uppercase form (e.g. 720p -> 720P).
+
+        Args:
+            resolution: 分辨率输入（大小写不敏感，如 "720p" / "1080P"）。
+            resolved_set: 允许的档位集合（来自视频格式声明）；缺省用 HappyHorse
+                默认集（480P/720P/1080P）。不在集合内时报错。
+        """
+        allowed = resolved_set or _SUPPORTED_RESOLUTIONS
         normalized = resolution.strip().upper()
-        if normalized not in _SUPPORTED_RESOLUTIONS:
+        if normalized not in allowed:
             raise ValueError(
-                f"Unsupported resolution '{resolution}' for HappyHorse. "
-                f"Supported: {sorted(_SUPPORTED_RESOLUTIONS)}"
+                f"Unsupported resolution '{resolution}'. "
+                f"Supported: {sorted(allowed)}"
             )
         return normalized

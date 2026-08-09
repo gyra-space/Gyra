@@ -1102,9 +1102,12 @@ class ToolAction(Action[ToolInput]):
             # 仅置 ask_user=True 让 loop 经由 ask_user 分支跳出（base_agent
             # generate_reply 的 ask_user break），不设 terminate=True，避免触发
             # act() 里的任务完成逻辑（生成报告/set_phase complete）。
+            # ask_type 用 CONCLUSION_INCOMPLETE（与 memory 恢复路径 file_base.py
+            # WorkEntry.to_action_output 一致）：agent_chat 据此判为 USER_QUESTION，
+            # resume 时让 LLM 处理用户新回答而非当作 TOOL_AUTHORIZATION 重放旧消息。
             flags["ask_user"] = True
             flags["state"] = Status.WAITING.value
-            flags["ask_type"] = AskUserType.AFTER_ACTION.value
+            flags["ask_type"] = AskUserType.CONCLUSION_INCOMPLETE.value
             flags["ask_user_metadata"] = md
         elif md.get("terminate"):
             flags["terminate"] = True

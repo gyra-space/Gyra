@@ -524,21 +524,25 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         main_agent_name: Optional[str] = None,
         conv_id: Optional[str] = None,
         is_working: bool = True,
+        gpts_memory: Optional[Any] = None,
     ) -> None:
         """收集交付文件和任务文件,更新 self._deliverable_files / self._task_files。
 
         策略(与 manus converter 一致):
         - 任务结束(is_working=False):优先从 gpts_memory 获取完整文件列表
         - 增量推送(is_working=True)或 gpts_memory 兜底:从 messages 收集
+
+        gpts_memory 由 vis_final 重算路径透传(重算时无 agent 实例,据此直接回源
+        DB 文件元数据),避免 senders_map 为空时交付文件/任务文件丢失。
         """
         task_files: List[Any] = []
         deliverable_files: List[Any] = []
 
         # 任务结束时优先从 gpts_memory 获取完整文件列表
-        if not is_working and conv_id and senders_map and main_agent_name:
+        if not is_working and conv_id and (gpts_memory or (senders_map and main_agent_name)):
             try:
                 task_files, deliverable_files = await self._collect_files_from_gpts_memory(
-                    conv_id, senders_map, main_agent_name
+                    conv_id, senders_map, main_agent_name, gpts_memory=gpts_memory
                 )
             except Exception as e:
                 logger.warning(f"[SceneWorkspace] gpts_memory collection failed: {e}")
@@ -644,6 +648,7 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             main_agent_name=main_agent_name,
             conv_id=conv_id,
             is_working=is_working,
+            gpts_memory=kwargs.get("gpts_memory"),
         )
         await self._collect_subagents(conv_id)
 
@@ -672,12 +677,19 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         conv_id = kwargs.get("conv_id") or kwargs.get("cache")
         if conv_id and hasattr(conv_id, "conv_id"):
             conv_id = conv_id.conv_id
+        # vis_final 不传 conv_id,需从消息回源(与 manus converter 一致)
+        if not conv_id:
+            for msg in messages or []:
+                if getattr(msg, "conv_id", None):
+                    conv_id = msg.conv_id
+                    break
         await self._collect_scene_files(
             messages=messages or [],
             senders_map=senders_map,
             main_agent_name=main_agent_name,
             conv_id=conv_id,
             is_working=False,
+            gpts_memory=kwargs.get("gpts_memory"),
         )
         await self._collect_subagents(conv_id)
 

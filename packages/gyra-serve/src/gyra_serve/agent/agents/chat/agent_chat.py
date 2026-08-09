@@ -915,6 +915,16 @@ class AgentChat(BaseComponent, ABC):
         except Exception as e:
             logger.warning(f"[AgentChat] async task recovery launch failed: {e}")
 
+        # chunk 调试文件保留期清理(无任何接口消费,长期累积;启动扫一次+每日周期)
+        try:
+            from gyra_serve.agent.chunk_file_cleaner import ChunkFileCleaner
+
+            asyncio.create_task(ChunkFileCleaner().run_forever())
+        except RuntimeError:
+            logger.warning("[AgentChat] no running event loop, skip chunk cleaner")
+        except Exception as e:
+            logger.warning(f"[AgentChat] chunk cleaner launch failed: {e}")
+
     async def save_conversation(
         self,
         conv_session_id: str,
@@ -1159,6 +1169,11 @@ class AgentChat(BaseComponent, ABC):
                 "1" if not gpts_conversations else str(len(gpts_conversations) + 1)
             )
             agent_conv_id = conv_session_id + "_" + gpt_chat_order
+        # 三层嵌套 trace:L1 会话两个 id 的映射(chunk 文件名/SSE 用 agent_conv_id,
+        # 会话台账用 conv_session_id),便于 grep 串联主会话 -> 子会话 -> 轮询任务
+        logger.info(
+            f"[agent-conv] session={conv_session_id} -> agent_conv={agent_conv_id}"
+        )
         return agent_conv_id, gpts_conversations
 
     @abstractmethod
@@ -1783,6 +1798,28 @@ class AgentChat(BaseComponent, ABC):
             except Exception as e:
                 logger.warning(
                     f"[workspace] materialize lobby deliverables failed: {e}"
+                )
+            # 大厅内联任务收尾:内联任务绑定到当前会话(conv_session_id == conv_id),
+            # 由主 agent 在当前对话中直接执行,没有分离的 playbook runtime 收尾。
+            # 会话结束后把仍 running 的内联任务流转到终态,否则任务永久卡在 running。
+            try:
+                if _ws_id_for_bus and not ext_info.get("task_id"):
+                    from gyra_serve.workspace.agent_tools._task_creator import (
+                        finalize_inline_tasks,
+                    )
+
+                    _conv_state_ent = self.gpts_conversations.get_by_conv_id(
+                        conv_id
+                    )
+                    await finalize_inline_tasks(
+                        system_app=self.system_app,
+                        workspace_id=int(_ws_id_for_bus),
+                        conv_id=conv_id,
+                        conv_state=getattr(_conv_state_ent, "state", None),
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"[workspace] finalize inline tasks failed: {e}"
                 )
             if _ws_id_for_bus:
                 from gyra_serve.workspace.event_bus import (
@@ -4064,6 +4101,27 @@ class AgentChat(BaseComponent, ABC):
                         )
         except Exception as e:
             logger.warning(f"[dock] build subagent_board widget failed: {e}")
+
+        # 异步任务看板（spawn_agent_task / media wait=false 后台任务）：
+        # 与 SubagentCoordinator 的子任务看板同构，数据源为 pending_async_tasks。
+        # 复用 build_subagent_board_widget 渲染，保证刷新/恢复后主对话页可见。
+        try:
+            from gyra_serve.agent.async_task_coordinator import (
+                get_async_task_coordinator,
+            )
+            from gyra_serve.agent.subagent_coordinator import (
+                build_subagent_board_widget,
+            )
+
+            async_coord = get_async_task_coordinator()
+            if async_coord is not None:
+                async_items = await async_coord.list_board_items(conv_id)
+                if async_items:
+                    widgets.append(
+                        build_subagent_board_widget(async_items, conv_id)
+                    )
+        except Exception as e:
+            logger.warning(f"[dock] build async task board widget failed: {e}")
 
         return {"version": 1, "widgets": widgets}
 

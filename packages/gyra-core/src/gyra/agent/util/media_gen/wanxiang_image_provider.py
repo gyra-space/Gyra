@@ -274,6 +274,9 @@ class WanxiangImageProvider(MediaGenProvider):
         async with httpx_module.AsyncClient(timeout=timeout) as client:
             # Step 1: Create task
             create_url = f"{base_url}{_ASYNC_CREATE_ENDPOINT}"
+            logger.info(
+                f"[WanxiangImageProvider] Request POST {create_url} body={body}"
+            )
             resp = await client.post(create_url, headers=headers, json=body)
             result = raise_for_response(resp, provider="wanxiang")
 
@@ -371,6 +374,9 @@ class WanxiangImageProvider(MediaGenProvider):
         async with httpx_module.AsyncClient(timeout=timeout) as client:
             # Step 1: Create task
             create_url = f"{base_url}{_LEGACY_ASYNC_ENDPOINT}"
+            logger.info(
+                f"[WanxiangImageProvider] Request POST {create_url} body={body}"
+            )
             resp = await client.post(create_url, headers=headers, json=body)
             result = raise_for_response(resp, provider="wanxiang")
 
@@ -492,6 +498,9 @@ class WanxiangImageProvider(MediaGenProvider):
 
         async with httpx_module.AsyncClient(timeout=timeout) as client:
             create_url = f"{base_url}{_QWEN_SYNC_ENDPOINT}"
+            logger.info(
+                f"[WanxiangImageProvider] Request POST {create_url} body={body}"
+            )
             resp = await client.post(create_url, headers=headers, json=body)
             result = raise_for_response(resp, provider="qwen-image")
 

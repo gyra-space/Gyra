@@ -143,6 +143,8 @@ export interface WorkspaceSubagentItem {
   progress?: number;
   steps?: string[];
   artifacts?: Array<{ name?: string; type?: string; url?: string; mime_type?: string }>;
+  /** 子 Agent 回复文本(成功结果摘要 / 失败原因)。 */
+  result?: string;
 }
 
 export interface WorkspaceView {

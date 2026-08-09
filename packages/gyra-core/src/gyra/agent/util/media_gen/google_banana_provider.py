@@ -125,6 +125,15 @@ class GoogleBananaProvider(MediaGenProvider):
             response_modalities=["IMAGE", "TEXT"],
         )
 
+        body = {
+            "model": model,
+            "prompt": prompt,
+            "num_contents": len(contents),
+            "has_ref_image": bool(image_url),
+            "response_modalities": ["IMAGE", "TEXT"],
+        }
+        logger.info(f"[GoogleBananaProvider] Request generate_content body={body}")
+
         response = await client.aio.models.generate_content(
             model=model,
             contents=contents,
@@ -207,6 +216,15 @@ class GoogleBananaProvider(MediaGenProvider):
         logger.info(
             f"[GoogleBananaProvider] Generating via generativeai: model={model}"
         )
+
+        body = {
+            "model": model,
+            "prompt": prompt,
+            "num_contents": len(contents),
+            "has_ref_image": bool(image_url),
+            "response_modalities": ["IMAGE", "TEXT"],
+        }
+        logger.info(f"[GoogleBananaProvider] Request generate_content body={body}")
 
         response = gm.generate_content(
             contents,

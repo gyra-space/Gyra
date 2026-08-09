@@ -306,6 +306,36 @@ export const VisSubagentBoardWrap = styled.div`
             }
           }
         }
+
+        .item-result {
+          margin-top: 6px;
+          font-size: 12px;
+
+          summary {
+            cursor: pointer;
+            color: #6b7280;
+            user-select: none;
+            line-height: 18px;
+
+            &:hover {
+              color: #4f46e5;
+            }
+          }
+
+          .item-result-body {
+            margin-top: 4px;
+            padding: 6px 8px;
+            background: #f9fafb;
+            border: 1px solid #f0f0f0;
+            border-radius: 6px;
+            color: #525252;
+            line-height: 16px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 200px;
+            overflow-y: auto;
+          }
+        }
       }
 
       .item-status-badge {

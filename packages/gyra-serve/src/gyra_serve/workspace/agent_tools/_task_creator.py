@@ -118,6 +118,52 @@ async def _run_task_detached(
                 )
 
 
+async def finalize_inline_tasks(
+    system_app,
+    workspace_id: int,
+    conv_id: str,
+    conv_state: Optional[str],
+) -> None:
+    """大厅内联任务收尾:当前会话结束后,把仍 running 的内联任务流转到终态。
+
+    内联任务在 write_tools.start_task 中创建时绑定到大厅会话
+    (conv_session_id == conv_id),由主 agent 在当前对话中直接执行,没有分离的
+    playbook runtime 收尾。若会话结束时不做处理,任务会永久卡在 running。
+    这里按会话终态(complete→delivered / failed→failed)批量收尾;
+    会话仍在等待(waiting/其他)时不做处理,留给后续轮次继续。
+    注意:gpts_conversations.state 存的是 Status.X.value(小写),如 "complete"/"failed"。
+    """
+    if conv_state not in ("complete", "failed"):
+        return
+    final_status = "delivered" if conv_state == "complete" else "failed"
+    from gyra_serve.task.service.service import (
+        TASK_SERVICE_COMPONENT_NAME,
+        TaskService,
+    )
+
+    task_service: TaskService = system_app.get_component(
+        TASK_SERVICE_COMPONENT_NAME, TaskService
+    )
+    try:
+        running = task_service.dao.list_by_conv(
+            workspace_id, conv_id, status="running"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"finalize_inline_tasks query failed for conv {conv_id}: {e}"
+        )
+        return
+    for t in running or []:
+        try:
+            task_service.transition(t.id, final_status)
+            logger.info(
+                f"finalized inline task {t.id} -> {final_status} "
+                f"for conv {conv_id}"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"finalize inline task {t.id} failed: {e}")
+
+
 async def _summarize_title_detached(
     system_app, task_id: int, user_text: str, playbook_name: Optional[str], model: Optional[str]
 ) -> None:

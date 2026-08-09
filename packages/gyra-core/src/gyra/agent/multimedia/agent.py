@@ -95,6 +95,9 @@ class MultimediaAgent(ConversableAgent):
         self._executor = MultimediaExecutor(
             config=self._config, afs=afs, conv_id=conv_id
         )
+        # 结构化失败标记:thinking 失败分支置位,correctness_check 消费(置
+        # reply_message.success=False),替代消费端对"多媒体生成失败"前缀的字符串匹配
+        self._gen_failure: Optional[str] = None
 
     # ---- 身份 ----
 
@@ -326,6 +329,7 @@ class MultimediaAgent(ConversableAgent):
         result = await self._executor.run(request)
 
         if result is None:
+            self._gen_failure = "无返回结果"
             return AgentLLMOut(
                 llm_name=self._config.default_image_model or "multimedia",
                 content="多媒体生成失败：无返回结果。",
@@ -334,12 +338,14 @@ class MultimediaAgent(ConversableAgent):
             )
         if not getattr(result, "success", False):
             error = getattr(result, "error", None) or "多媒体生成失败"
+            self._gen_failure = str(error)
             return AgentLLMOut(
                 llm_name=self._config.default_image_model or "multimedia",
                 content=f"多媒体生成失败：{error}",
                 thinking_content="",
                 tool_calls=None,
             )
+        self._gen_failure = None
         return AgentLLMOut(
             llm_name=self._config.default_image_model or "multimedia",
             content=str(getattr(result, "output", "") or "已生成。"),
@@ -347,6 +353,25 @@ class MultimediaAgent(ConversableAgent):
             tool_calls=None,
             extra={"artifacts": getattr(result, "artifacts", None)},
         )
+
+    async def correctness_check(
+        self, message: AgentMessage, **kwargs
+    ) -> Tuple[bool, Optional[str]]:
+        """把媒体生成失败反映到 reply_message.success(结构化失败标记)。
+
+        thinking 的失败分支置 ``_gen_failure``;这里消费它返回 False,使
+        ``generate_reply`` 把 ``reply_message.success`` 置 False。消费端
+        (``_result_from_answer`` / ``on_subagent_done``)据此判失败,不再依赖
+        "多媒体生成失败" content 前缀匹配(前缀仍保留,供展示与旧路径兜底)。
+
+        安全:本 Agent 无 tool calls(act_outs 为空),verify 失败后
+        generate_reply 直接 break,不会重试导致重复生成/重复扣费。
+        """
+        if self._gen_failure:
+            reason = self._gen_failure
+            self._gen_failure = None
+            return False, reason
+        return True, None
 
     # ---- 标准接口 ----
 

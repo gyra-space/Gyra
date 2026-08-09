@@ -433,11 +433,12 @@ class SubAgent(AgentAction, FunctionTool):
                 name="media",
                 description=(
                     "可选的多媒体生成参数（仅当目标子 Agent 是多媒体 Agent 时生效）。"
+                    "当任务要求生成视频/图片时，若有明确档位要求（如时长、分辨率、宽高比），"
+                    "必须在此显式声明，否则会使用子 Agent 配置的默认值（可能不符合要求）。"
                     "支持字段：kind('image'|'video')、model(模型名)、size(图片尺寸，如 1024x1024)、"
                     "resolution(视频分辨率，如 1080p)、aspect_ratio(视频宽高比，如 16:9)、"
-                    "duration(视频时长，秒)、quality、reference_images(参考图 URL 列表)、"
+                    "duration(视频时长，秒，如 15)、quality、reference_images(参考图 URL 列表)、"
                     "image_url(首帧/参考图)、image_url_last(尾帧) 及其它 provider 参数。"
-                    "未传字段将回退到子 Agent 配置的默认值。"
                 ),
                 required=False
             ),
@@ -809,6 +810,9 @@ class SubAgent(AgentAction, FunctionTool):
                         main_conv_id=main_conv_id,
                         sub_conv_id=sub_conv_id,
                         result=content,
+                        # 结构化失败标记:MultimediaAgent 生成失败时 success=False
+                        # (见 multimedia/agent.py correctness_check),优先于前缀匹配
+                        success=getattr(answer, "success", None),
                     )
             except Exception as cb_err:
                 logger.warning(

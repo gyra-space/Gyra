@@ -270,9 +270,11 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
     try {
       const qr = await queryChatStatus(convId, currentVisRender || undefined);
       const result = qr?.data?.data;
-      // 终态会话(COMPLETE/FAILED)以 DB 保存的 final_view 为准:重算路径缺少运行时
-      // 状态(input_message_id/task_manager),planning_window 重建为空会丢左面板
-      if (!result?.vis_final || result.is_final) return;
+      // 终态会话(COMPLETE/FAILED)也必须用 queryChatStatus 的完整 vis_final 覆盖:
+      // DB 保存的 view 串可能因异步子任务恢复/后续轮次未同步而截断,漏掉子 Agent 回复
+      // 与后续执行步骤。重算路径确实缺少运行时状态,但 mergeVisFinalPreservingLeftPanel
+      // 会保留现有左面板,故此处不再因终态而提前返回。
+      if (!result?.vis_final) return;
       const visFinal = result.vis_final;
       setHistory(prev => {
         const updated = [...prev];

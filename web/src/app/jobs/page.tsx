@@ -204,14 +204,16 @@ function AsyncTasksTable() {
       render: (v?: string) => v ? <Tooltip title={v}><Text code className="text-xs">{v}</Text></Tooltip> : '-' },
     { title: 'Kind', dataIndex: 'kind', key: 'kind', width: 110,
       render: (v: string) => {
-        const m = KIND_META[v];
-        return <Tag color={m?.color || 'default'}>{m?.label || v || '-'}</Tag>;
+        const m = KIND_META[v] || (v ? { label: v, color: 'default' } : KIND_META['subagent']);
+        return <Tag color={m.color}>{m.label}</Tag>;
       } },
     { title: 'Model', dataIndex: 'model', key: 'model', width: 180, ellipsis: true,
       render: (v?: string) => v ? <Text code className="text-xs">{v}</Text> : '-' },
-    { title: 'Description', dataIndex: 'description', key: 'description', ellipsis: true,
+    { title: 'Description', dataIndex: 'description', key: 'description', width: 160,
       render: (v?: string) => v
-        ? <span className="cursor-pointer" onClick={() => setDescModal(v)}>{v}</span>
+        ? <span className="cursor-pointer" onClick={() => setDescModal(v)}>
+            {v.length > 10 ? `${v.slice(0, 10)}...` : v}
+          </span>
         : '-' },
     { title: 'Status', dataIndex: 'status', key: 'status', width: 120,
       render: (s: string) => <Tag color={ASYNC_STATUS_COLOR[s] || 'default'}>{s}</Tag> },

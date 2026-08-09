@@ -239,6 +239,90 @@ class SubagentCoordinator:
             )
             return []
 
+    async def _deliver_child_artifacts_to_main(
+        self,
+        main_conv_id: str,
+        conv_session_id: str,
+        handles: List[SubAgentHandle],
+    ) -> int:
+        """把子 Agent 产出的媒体文件(图片/视频)落库为主会话交付文件元数据。
+
+        子 Agent 生成的图片只存在于子任务台账(artifact dict 含 url),而主会话
+        文件信息/交付面板(vis_final 的 deliverable_files)通过
+        gpts_memory.list_files(main_conv_id) 读取。这里把子任务产物以
+        DELIVERABLE 类型登记到主会话,使主对话文件信息面板可见、可交付。
+        幂等:已存在的 url 跳过,避免重复登记。
+        """
+        if not handles:
+            return 0
+        arts: List[Dict[str, Any]] = []
+        seen: set = set()
+        for h in handles:
+            for a in (h.artifacts or []):
+                url = (a.get("url") or "").strip()
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                arts.append(a)
+        if not arts:
+            return 0
+        try:
+            import mimetypes
+            import uuid
+            from datetime import datetime
+
+            from gyra.agent.core.memory.gpts import AgentFileMetadata, FileType
+            from gyra_serve.agent.agents.gyras_memory import (
+                MetaGyrasFileMetadataStorage,
+            )
+
+            storage = MetaGyrasFileMetadataStorage()
+            existing = await storage.list_files(main_conv_id)
+            existing_urls = {
+                (f.oss_url or f.preview_url or f.download_url or "").strip()
+                for f in existing
+            }
+            saved = 0
+            for a in arts:
+                url = (a.get("url") or "").strip()
+                if url in existing_urls:
+                    continue
+                name = a.get("name") or url.rstrip("/").rsplit("/", 1)[-1] or "产物"
+                mime = a.get("mime_type") or mimetypes.guess_type(name)[0]
+                file_meta = AgentFileMetadata(
+                    file_id=uuid.uuid4().hex,
+                    conv_id=main_conv_id,
+                    conv_session_id=conv_session_id,
+                    file_key=f"subagent/{uuid.uuid4().hex}",
+                    file_name=name,
+                    file_type=FileType.DELIVERABLE.value,
+                    local_path=url,
+                    file_size=0,
+                    oss_url=url,
+                    preview_url=url,
+                    download_url=url,
+                    status="completed",
+                    created_by="subagent",
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                    metadata={"source": "subagent_artifact", "mime_type": mime},
+                    mime_type=mime,
+                )
+                await storage.save_file_metadata(file_meta)
+                saved += 1
+            if saved:
+                logger.info(
+                    f"[subagent-coordinator] delivered {saved} child artifacts "
+                    f"to main conv {main_conv_id} file panel"
+                )
+            return saved
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[subagent-coordinator] deliver child artifacts to main "
+                f"{main_conv_id} failed: {e}"
+            )
+            return 0
+
     async def _resolve_app_display_name(self, app_code: Optional[str]) -> Optional[str]:
         """把 app_code 解析为可读的 app_name（利于展示目标 Agent）。
 
@@ -260,18 +344,27 @@ class SubagentCoordinator:
             return None
 
     async def on_subagent_done(
-        self, main_conv_id: str, sub_conv_id: str, result: str
+        self,
+        main_conv_id: str,
+        sub_conv_id: str,
+        result: str,
+        success: Optional[bool] = None,
     ) -> None:
         """子 agent 成功完成：标记 DONE，若全部完成则触发主 resume。
 
-        若子 agent 回复命中失败标记(如 MultimediaAgent 的"多媒体生成失败"前缀,
-        见 multimedia/agent.py thinking 失败分支),则改走 FAILED 路径--目标失败
-        不应标 DONE,否则任务台账/前端误显示"完成"。与 delegate 路径的
-        _result_from_answer 同语义,覆盖 SubAgent action 路径(spawn_agent_task
-        回退 / SubAgent action 走 on_subagent_done 而非 delegate)。
+        失败判定优先用结构化标记 ``success``(子 Agent reply_message.success,
+        MultimediaAgent 生成失败时为 False,见 multimedia/agent.py
+        correctness_check);``success`` 缺失(旧调用方)才回退"多媒体生成失败"
+        前缀匹配。目标失败不应标 DONE,否则任务台账/前端误显示"完成"。与
+        delegate 路径的 _result_from_answer 同语义,覆盖 SubAgent action 路径。
         """
         handles = await self._read_pending(main_conv_id)
-        is_failure = isinstance(result, str) and result.startswith("多媒体生成失败")
+        if success is not None:
+            is_failure = not success
+        else:
+            is_failure = isinstance(result, str) and result.startswith(
+                "多媒体生成失败"
+            )
         for h in handles:
             if h.sub_conv_id == sub_conv_id:
                 if is_failure:
@@ -343,6 +436,7 @@ class SubagentCoordinator:
                     "progress": h.progress,
                     "steps": h.steps,
                     "artifacts": h.artifacts or [],
+                    "result": h.result,
                 }
             )
         return items
@@ -563,6 +657,7 @@ class SubagentCoordinator:
                     "progress": h.progress,
                     "steps": h.steps,
                     "artifacts": h.artifacts or [],
+                    "result": h.result,
                 }
             )
         # 持久化终态看板：pending 清空后，恢复/刷新对话页仍能看到子任务完成情况
@@ -594,6 +689,18 @@ class SubagentCoordinator:
             from gyra.agent.core.schema import Status as _Status
 
             conv.state = _Status.WAITING.value
+
+            # 把子 Agent 产出的媒体文件注册为主会话交付文件,使主对话文件信息面板
+            # 可见、可交付(vis_final 重算时会从 gpts_file_metadata 读到)。
+            try:
+                await self._deliver_child_artifacts_to_main(
+                    main_conv_id, conv.conv_session_id, handles
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"[subagent-coordinator] deliver child artifacts to main "
+                    f"{main_conv_id} failed: {e}"
+                )
 
             # aggregation_chat 是异步生成器（yield task/chunk/conv_id），必须 async for
             # 消费才会真正执行（直接 await 会抛 TypeError）。放进独立后台 task，

@@ -13,7 +13,7 @@ via multimodal-generation/generation) only use ``build_headers`` and
 
 import asyncio
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,7 @@ async def poll_dashscope_task(
     extract_url: Callable[[dict], str],
     poll_interval: int = 10,
     provider: str = "dashscope",
+    model: Optional[str] = None,
 ) -> str:
     """Poll a DashScope async task until completion, return the result URL.
 
@@ -130,6 +131,8 @@ async def poll_dashscope_task(
             ValueError if the URL cannot be located in a SUCCEEDED response.
         poll_interval: Seconds between polls.
         provider: Provider name for log/error messages.
+        model: Model name (e.g. ``pixverse/pixverse-v6-t2v``) appended to error
+            messages so failures clearly identify which model was used.
 
     Returns:
         Result URL string (image or video).
@@ -163,8 +166,11 @@ async def poll_dashscope_task(
                 or data.get("message", "")
                 or f"task status {status}"
             )
+            # 明确标注是哪个提供商 / 哪个模型，便于快速定位。
+            # provider 参数由调用方传入用户配置的提供商名（如 alibaba）。
+            label = f"{provider} [{model}]" if model else provider
             raise RuntimeError(
-                f"{provider} task failed (status={status}): {error_msg}"
+                f"{label} task failed (status={status}): {error_msg}"
             )
 
         logger.debug(

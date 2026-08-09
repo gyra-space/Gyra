@@ -28,6 +28,8 @@ export interface SubagentItemData {
   progress?: number;
   steps?: string[];
   artifacts?: SubagentArtifact[];
+  /** 子 Agent 的回复文本(成功为结果摘要,失败为"多媒体生成失败:..."等)。 */
+  result?: string;
 }
 
 export interface ISubagentBoardData {
@@ -212,6 +214,17 @@ const VisSubagentBoard: React.FC<IProps> = ({ data, onOpenSubagent, embedded = f
                         ) : null;
                       })}
                     </div>
+                  )}
+                  {isTerminal(item.status) && item.result && (
+                    <details
+                      className="item-result"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <summary>
+                        {item.status === 'failed' ? '子 Agent 失败回复' : '子 Agent 回复'}
+                      </summary>
+                      <div className="item-result-body">{item.result}</div>
+                    </details>
                   )}
                 </div>
                 <Tooltip title={STATUS_LABEL[item.status]}>

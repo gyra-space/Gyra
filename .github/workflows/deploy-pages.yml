@@ -1,0 +1,49 @@
+# 将 gyra-open-source-promo 推广文档自动部署到 GitHub Pages
+name: Deploy Promo to GitHub Pages
+
+on:
+  # 每次 push 到 main 时自动触发
+  push:
+    branches: [main]
+    paths:
+      - 'gyra-open-source-promo/**'
+  # 允许手动触发
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只允许一次部署
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      # 上传推广文档目录作为站点内容（站点根 = gyra-open-source-promo 内容）
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./gyra-open-source-promo
+
+  deploy:
+    # 必须依赖 build 完成后才能部署
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -113,10 +113,21 @@ def _tool_from_entry(entry: Any) -> Any:
 
     统一 builtin(ToolEntry,executor_id=agent:builtin)与资源工具(Contribution)
     的形态差异,供 function_calling_params 转 schema。
+
+    防御:若取出的句柄本身又是一个 ToolEntry(嵌套包装,如某些装配路径把
+    ToolEntry 直接当作工具句柄),递归解包到实际工具句柄,避免 _tool_to_function
+    遇到既无 to_openai_tool 也无 args 的 ToolEntry 时抛 AttributeError。
     """
     tool = getattr(entry, "tool", None)
     if tool is None:
         tool = getattr(entry, "content", None)
+    while (
+        tool is not None
+        and hasattr(tool, "tool_name")
+        and hasattr(tool, "tool")
+        and not hasattr(tool, "to_openai_tool")
+    ):
+        tool = tool.tool
     return tool
 
 
@@ -461,16 +472,22 @@ class ReActMasterAgent(ConversableAgent, Team):
                 def _result_from_answer(answer: Any):
                     """从子 Agent 回复构造结果,并识别目标失败。
 
-                    子 Agent(如 MultimediaAgent)在媒体生成失败时回复 content 以
-                    "多媒体生成失败"开头(见 multimedia/agent.py thinking 的失败分支)。
-                    此处识别该标记把 success 置 False,使 AsyncTaskManager._run_task
-                    把任务标 FAILED 而非 completed--目标失败(如视频 403)不应算完成,
-                    否则前端误显示"完成"且 result_preview 带失败文本。
+                    优先读结构化标记 ``answer.success``(MultimediaAgent 经
+                    correctness_check 在生成失败时置 False,见 multimedia/agent.py);
+                    该字段缺失(非 AgentMessage 等旧路径)才回退"多媒体生成失败"
+                    content 前缀匹配。识别为失败时 success=False,使
+                    AsyncTaskManager._run_task 把任务标 FAILED 而非 completed--
+                    目标失败(如视频 403)不应算完成,否则前端误显示"完成"且
+                    result_preview 带失败文本。
                     """
                     content = getattr(answer, "content", None) or ""
-                    is_failure = isinstance(content, str) and content.startswith(
-                        "多媒体生成失败"
-                    )
+                    structured = getattr(answer, "success", None)
+                    if structured is not None:
+                        is_failure = not structured
+                    else:
+                        is_failure = isinstance(
+                            content, str
+                        ) and content.startswith("多媒体生成失败")
                     return type(
                         "SubagentResult",
                         (),

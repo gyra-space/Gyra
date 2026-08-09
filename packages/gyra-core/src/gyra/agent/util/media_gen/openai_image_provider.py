@@ -72,6 +72,11 @@ class OpenAIImageProvider(MediaGenProvider):
 
         logger.info(f"[OpenAIImageProvider] Generating image: model={model}, size={size}")
 
+        base_url = self.base_url or "https://api.openai.com/v1"
+        logger.info(
+            f"[OpenAIImageProvider] Request POST {base_url}/images/generations body={gen_kwargs}"
+        )
+
         response = await client.images.generate(**gen_kwargs)
 
         image_data_b64 = response.data[0].b64_json

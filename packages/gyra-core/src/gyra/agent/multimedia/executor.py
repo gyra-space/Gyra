@@ -500,7 +500,8 @@ class MultimediaExecutor:
             )
             logger.info(
                 f"[multimedia-executor] registered sync media record {task_id} "
-                f"({kind}/{model}, provider_task={provider_task_id or 'pending'})"
+                f"({kind}/{model}, provider_task={provider_task_id or 'pending'}, "
+                f"conv={conv_id}, main_conv={self.main_conv_id or ''})"
             )
             return task_id
         except Exception as e:  # noqa: BLE001 - 记录失败不影响生成主流程

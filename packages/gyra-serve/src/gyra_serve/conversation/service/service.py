@@ -426,7 +426,6 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
 
             _step_start = time.time()
             base_messages = []
-            from gyra.core.interface.unified_message import UnifiedMessage
             from gyra.core.interface.message import HumanMessage, AIMessage, ViewMessage
 
             # Core agent 的消息存储策略：
@@ -460,10 +459,15 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                 msg_sender = gpts_msg.sender if hasattr(gpts_msg, 'sender') else ""
                 msg_round = gpts_msg.rounds
 
-                if msg_sender == "user" or msg_role == "user" or msg_role == "human":
-                    # 用户消息
-                    unified_msg = UnifiedMessage.from_gpts_message(gpts_msg)
-                    base_msg = unified_msg.to_base_message()
+                # 用户消息(含异步恢复注入的 Human 通知):角色可能为 "Human"/"user"，统一小写判定
+                is_user_msg = (
+                    msg_sender.lower() in ("user", "human")
+                    or msg_role.lower() in ("user", "human")
+                )
+                if is_user_msg:
+                    # 直接构造 HumanMessage：UnifiedMessage.to_base_message 按 message_type
+                    # 映射(Human 消息 message_type=assistant)，会产生 AIMessage 而非用户气泡。
+                    base_msg = HumanMessage(content=gpts_msg.content or "")
                     base_msg.round_index = msg_round
                     base_msg.additional_kwargs["message_id"] = gpts_msg.message_id
                     base_messages.append(base_msg)

@@ -130,6 +130,18 @@ class GptAppResource(AppResource):
         app_agent = await get_app_manager().create_agent_by_app_code(
             gpts_app, conv_uid=conv_uid, context=child_context
         )
+        # 三层嵌套 trace:L1 主会话 -> L2 子会话的串联日志(与 AsyncTaskManager
+        # spawn/register_external 日志里的 conv/main_conv 字段可 grep 拼接)
+        main_conv_id = ""
+        sub_depth = 0
+        if child_context is not None:
+            _extra = child_context.extra or {}
+            main_conv_id = _extra.get("main_conv_id", "")
+            sub_depth = _extra.get("subagent_depth", 0)
+        logger.info(
+            f"[start_app] created sub conv {conv_uid} for main {main_conv_id} "
+            f"(app={self._app_code}, depth={sub_depth})"
+        )
 
         # 沙箱实例继承：子 Agent 共享父 Agent 的 sandbox_manager（只共享客户端，
         # 不转移生命周期所有权——父会话清理时子任务通常已结束；场景空间共享

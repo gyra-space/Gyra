@@ -39,6 +39,8 @@ export interface AgentWorkspaceProps {
   convLoadError?: string | null;
   retryLoadConv?: () => void;
   playbooks?: { playbook_id: number; playbook_name: string }[];
+  /** 工作空间全量任务列表(用于恢复视图时重注入当前会话的任务卡片) */
+  tasks?: any[];
 }
 
 export function AgentWorkspace({
@@ -62,6 +64,7 @@ export function AgentWorkspace({
   convLoadError,
   retryLoadConv,
   playbooks,
+  tasks,
 }: AgentWorkspaceProps) {
   const inputRefInner = useRef<AgentWorkspaceInputHandle>(null);
   const inputRef = inputRefProp ?? inputRefInner;
@@ -71,6 +74,8 @@ export function AgentWorkspace({
     workspaceId,
     taskId,
     focusArtifactId: focus?.id,
+    tasks,
+    playbooks,
     onWorkspaceEvent,
     onConversationStart,
   });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import useChat from '@/hooks/use-chat';
 import type { WorkspaceEvent } from '@/hooks/use-chat';
 import type { UsageMetrics } from '@/types/context-metrics';
@@ -15,7 +15,7 @@ import {
   buildSceneAgentSendData,
   type SceneAgentSendPayload,
 } from './scene-agent-send-data';
-import type { WorkspaceView } from './agent-workspace-types';
+import type { WorkspaceExecutionStep, WorkspaceView } from './agent-workspace-types';
 import { parseSceneAgentWorkspaceString } from './parse-scene-agent-workspace-string';
 
 interface UseSceneAgentChatOptions {
@@ -24,6 +24,10 @@ interface UseSceneAgentChatOptions {
   workspaceId?: number | string;
   taskId?: number | string;
   focusArtifactId?: number | string;
+  /** 工作空间全量任务列表:用于恢复视图时重注入绑定到当前会话的任务卡片 */
+  tasks?: any[];
+  /** 剧本 id→名称映射:任务卡片展示剧本名 */
+  playbooks?: { playbook_id: number; playbook_name: string }[];
   onWorkspaceEvent?: (event: WorkspaceEvent) => void;
   /** 用户在 Agent 空间提交任务、开始一轮对话时触发(用于折叠中间内容区) */
   onConversationStart?: () => void;
@@ -54,6 +58,62 @@ const EMPTY_WORKSPACE_VIEW: WorkspaceView = { planning: null, execution: [], sum
 
 const MAX_RECENT_STEPS = 8;
 
+/** 任务 → task_created 步骤(与 SSE 事件注入的卡片同 id,便于去重合并)。 */
+function taskToCreatedStep(
+  task: any,
+  playbooks?: { playbook_id: number; playbook_name: string }[],
+): WorkspaceExecutionStep | null {
+  if (!task || typeof task.id !== 'number') return null;
+  const rawStatus = task.status || '';
+  const status: WorkspaceExecutionStep['status'] =
+    rawStatus === 'running' || rawStatus === 'pending_trigger' || rawStatus === 'awaiting_human'
+      ? 'running'
+      : rawStatus === 'delivered' || rawStatus === 'closed' || rawStatus === 'done'
+      ? 'done'
+      : 'failed';
+  const playbookName = playbooks?.find((p) => p.playbook_id === task.playbook_id)?.playbook_name;
+  return {
+    id: `task-created-${task.id}`,
+    type: 'task_created',
+    title: task.title || `任务 #${task.id}`,
+    status,
+    ts: typeof task.gmt_created === 'string' ? task.gmt_created : null,
+    task_id: task.id,
+    task_title: typeof task.title === 'string' ? task.title : undefined,
+    task_status: rawStatus,
+    playbook_name: playbookName,
+    triggered_by: typeof task.triggered_by === 'string' ? task.triggered_by : undefined,
+  };
+}
+
+/** 把绑定到当前会话(conv_session_id === convUid)的任务重注入执行记录。
+ *
+ * 任务卡片由 SSE task_created 事件在客户端注入,不落在后端 vis 数据里,
+ * 刷新(vis_final 恢复)后卡片会消失。这里依据任务列表按会话维度重新注入,
+ * 并按 task-created-{id} 去重/更新,保证刷新后卡片仍可见且状态正确。
+ */
+function mergeTaskCards(
+  prev: WorkspaceView,
+  tasks: any[] | undefined,
+  convUid: string | undefined,
+  playbooks?: { playbook_id: number; playbook_name: string }[],
+): WorkspaceView {
+  if (!convUid || !Array.isArray(tasks)) return prev;
+  const convTasks = tasks.filter((t) => t && t.conv_session_id === convUid);
+  if (!convTasks.length) return prev;
+  const byId = new Map(prev.execution.map((s) => [s.id, s]));
+  for (const task of convTasks) {
+    const step = taskToCreatedStep(task, playbooks);
+    if (!step) continue;
+    const existing = byId.get(step.id);
+    byId.set(step.id, existing
+      ? { ...existing, ...step, ts: existing.ts ?? step.ts }
+      : step);
+  }
+  const execution = Array.from(byId.values());
+  return { ...prev, execution };
+}
+
 // Re-export the fence→object helper so callers can import it from the hook
 // module. The implementation lives in a sibling file to keep it free of the
 // hook's ESM-only `use-chat.ts` dependency (testable in plain Node).
@@ -65,6 +125,8 @@ export function useSceneAgentChat({
   workspaceId,
   taskId,
   focusArtifactId,
+  tasks,
+  playbooks,
   onWorkspaceEvent,
   onConversationStart,
 }: UseSceneAgentChatOptions): UseSceneAgentChatResult {
@@ -78,6 +140,15 @@ export function useSceneAgentChat({
   // 乐观插入的用户消息:发送即上屏,服务端回显同文本 user 步骤后移除,避免重复
   const optimisticUserRef = useRef<{ id: string; text: string } | null>(null);
   const { chat, usageMetrics } = useChat({ app_code: appCode || '' });
+
+  // 刷新/恢复视图后重注入任务卡片:任务卡片由 SSE task_created 事件注入,
+  // 不落在后端 vis_final 数据中,刷新会消失。这里随任务列表/会话变化,
+  // 把绑定到当前会话的任务按 task-created-{id} 去重/更新回执行记录,
+  // 保证刷新后卡片仍可见且反映最新状态。
+  useEffect(() => {
+    if (!convUid) return;
+    setWorkspaceView((prev) => mergeTaskCards(prev, tasks, convUid, playbooks));
+  }, [tasks, convUid, playbooks]);
 
   // 拦截 task_created workspace 事件:把任务卡片注入对话执行记录,
   // 用户可在对话中直接看到任务已创建并点击进入任务对话。

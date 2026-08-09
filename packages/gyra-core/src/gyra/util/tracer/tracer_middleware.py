@@ -35,10 +35,10 @@ class TraceIDMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Read trace_id from request headers
         span_id = _parse_span_id(request)
-        logger.info(
+        logger.debug(
             f"TraceIDMiddleware: span_id={span_id}, schema={request.url.scheme}, path={request.url.path}, "
             # f"headers={request.headers}"
-        ) if request.url.path not in _DEFAULT_EXCLUDE_PATHS else None
+        )
         token: Optional[Token[TracerContext]] = None
         succeed = True
         start_ms = current_ms()

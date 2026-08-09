@@ -1363,19 +1363,16 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             right_panel.deliverable_files = deliverable_files
 
             # 任务结束时设置摘要和自动切换视图
-            if not is_working and messages:
+            # 流式阶段:若当前消息是发给用户的最终消息,直接取它的结论作为右面板摘要,
+            # 使最终结论在 SSE 阶段即可见(而非仅刷新后)。
+            if gpt_msg and gpt_msg.role != HUMAN_ROLE and gpt_msg.receiver == HUMAN_ROLE:
+                right_panel.summary_content = self._extract_msg_summary(gpt_msg)
+            if not is_working and not right_panel.summary_content and messages:
                 # 提取摘要内容
                 for msg in reversed(messages):
                     if msg.role == HUMAN_ROLE:
                         continue
-                    if msg.action_report:
-                        for act_out in msg.action_report:
-                            obs = getattr(act_out, 'observations', None)
-                            cnt = getattr(act_out, 'content', None)
-                            candidate = obs or cnt
-                            if candidate and isinstance(candidate, str) and candidate.strip():
-                                right_panel.summary_content = candidate
-                                break
+                    right_panel.summary_content = self._extract_msg_summary(msg)
                     if right_panel.summary_content:
                         break
 
@@ -2123,7 +2120,11 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         gpt_msg: "GptsMessage",
         senders_map: Optional[Dict[str, "ConversableAgent"]] = None,
     ) -> Optional[str]:
-        """Manus 布局不在 planning_window 渲染最终结论，但需要保留 ask_user/confirm 交互组件。"""
+        """Manus 布局：保留 ask_user/confirm 交互组件，并在流式阶段渲染最终结论。
+
+        流式推送时（visualization）也会调用本方法：当本轮是发给用户的最终消息时，
+        把最终结论追加到 planning_window，避免结论只在刷新（final_view）后才出现。
+        """
         plans_vis = []
 
         if gpt_msg and gpt_msg.action_report:
@@ -2131,7 +2132,31 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             if ask_user_vis:
                 plans_vis.append(ask_user_vis)
 
+            if gpt_msg.receiver == HUMAN_ROLE:
+                conclusion_vis = await self._render_final_conclusion(gpt_msg)
+                if conclusion_vis:
+                    plans_vis.append(conclusion_vis)
+
         return "\n".join(plans_vis) if plans_vis else None
+
+    @staticmethod
+    def _extract_msg_summary(msg: "GptsMessage") -> Optional[str]:
+        """从单条消息提取摘要/结论文本（优先 action_report 的 observations/content）。
+
+        供右面板 summary_content 使用；与 final_view 的摘要提取逻辑保持一致。
+        """
+        if msg.action_report:
+            for act_out in msg.action_report:
+                obs = getattr(act_out, 'observations', None)
+                cnt = getattr(act_out, 'content', None)
+                candidate = obs or cnt
+                if candidate and isinstance(candidate, str) and candidate.strip():
+                    return candidate
+        if msg.content:
+            c = msg.content
+            if isinstance(c, str) and c.strip():
+                return c
+        return None
 
     async def _render_final_conclusion(
         self, output_message: GptsMessage

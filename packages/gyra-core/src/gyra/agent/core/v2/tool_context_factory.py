@@ -11,10 +11,6 @@ from typing import Any, Dict, List, Optional
 from gyra.agent.tools.context import ToolContext
 from gyra.agent.core.v2.tool_call_types import V2ToolCall
 
-import logging
-
-logger = logging.getLogger(__name__)
-
 
 # tool_name → ToolContext resource key 的映射
 _TOOL_RESOURCE_MAP = {
@@ -78,90 +74,32 @@ class ToolContextFactory:
         优先用注入的 ``multimedia_resolver``，其次扫描 ``capability_pack`` 中匹配的
         ``AppCapability``（其 ``get_multimedia_config`` 只在 app 启用多媒体时返回配置）。
         """
-        # 1) 注入的解析器（serve 层：app_code → 多媒体配置）
-        if callable(self._multimedia_resolver):
-            try:
-                cfg = self._multimedia_resolver(name)
-                if cfg:
-                    return cfg, name, "", ""
-            except Exception:  # noqa: BLE001
-                pass
-        # 2) capability_pack 里的 AppCapability（按 app_code 或 app_name 匹配）
-        pack = self._capability_pack
-        for cap in (pack.get_all("app") if pack else []):
-            code = getattr(cap, "app_code", "") or ""
-            app_name = getattr(cap, "app_name", "") or ""
-            if name not in (code, app_name):
-                continue
-            getter = getattr(cap, "get_multimedia_config", None)
-            if not callable(getter):
-                continue
-            try:
-                cfg = getter()
-            except Exception:  # noqa: BLE001
-                cfg = None
-            return (
-                cfg,
-                code,
-                app_name or name,
-                getattr(cap, "app_desc", "") or "",
-            )
-        return None, "", "", ""
+        from gyra.agent.multimedia.delegate import resolve_multimedia_config
+
+        return resolve_multimedia_config(
+            name,
+            capability_pack=self._capability_pack,
+            multimedia_resolver=self._multimedia_resolver,
+        )
 
     def _build_subagent_delegate_factory(self, **kwargs: Any) -> Any:
         """把名称解析为委派协程（按 app_code 寻址，多实例各自独立）。
 
-        与普通子 agent 委派共用同一身份 id（app_code）。对多媒体子 agent：
-        - 按 ``subagent_name``（app_code / app_name）解析目标 app 自身的多媒体配置，
-          动态构造绑定该 app 配置的独立 ``MultimediaAgent`` 实例（互不覆盖）；
-        - 未命中 app_code 时回退到协议层 AgentManager 按 role/别名（MULTIMEDIA）
-          取共享模板（兼容既有行为）。
+        实现抽在 ``gyra.agent.multimedia.delegate.build_multimedia_delegate``,
+        与 v1 路径（SpawnAgentTaskTool,context 即 agent 本身）共用同一解析逻辑。
+        未命中/异常时返回 None,由 spawn_agent_task 回退 subagent_manager
+        delegate 的完整 react 循环路径（独立子会话）。
         """
-        try:
-            from gyra.agent.multimedia import MultimediaAgent
+        from gyra.agent.multimedia.delegate import build_multimedia_delegate
 
-            name = kwargs.get("subagent_name", "") or ""
-            if not name:
-                return None
-
-            config, code, app_name, app_desc = self._resolve_multimedia(name)
-            if config is not None:
-                cfg = dict(config)
-                if not cfg.get("name"):
-                    cfg["name"] = app_name or code or "multimedia_agent"
-                if not cfg.get("description"):
-                    cfg["description"] = (
-                        app_desc or f"多媒体生成 Agent（{app_name or code}）"
-                    )
-                inst = MultimediaAgent(config=cfg)
-            else:
-                # 回退：role/别名 寻址到共享模板（兼容既有行为）
-                from gyra.agent.core.agent_manage import get_agent_manager
-
-                inst = get_agent_manager().get_agent(name)
-                if not isinstance(inst, MultimediaAgent):
-                    return None
-                running_agent = kwargs.get("agent") or self._agent
-                if running_agent is not None and getattr(
-                    running_agent, "ext_config", None
-                ):
-                    inst.ext_config = running_agent.ext_config
-
-            return inst.to_async_delegate(
-                afs=kwargs.get("afs") or self._agent_file_system,
-                conv_id=kwargs.get("conv_id", ""),
-            )
-        except Exception as e:  # noqa: BLE001 - 注册表未就绪时回退
-            # 不再静默:回退会让 spawn_agent_task 走 subagent_manager.delegate 的
-            # 完整 react 循环路径(独立子会话),与 delegate 直跑 executor 的预期不同,
-            # 且影响任务状态/success 判定(见 react_master_agent _delegate_via_app)。
-            # 记 warning 使该回退可观测,便于排查"任务状态异常/子会话意外创建"。
-            logger.warning(
-                f"[subagent_delegate_factory] build delegate for "
-                f"{kwargs.get('subagent_name', '')} failed, fallback to "
-                f"subagent_manager delegate path: {e}"
-            )
-            return None
+        return build_multimedia_delegate(
+            kwargs.get("subagent_name", "") or "",
+            capability_pack=self._capability_pack,
+            multimedia_resolver=self._multimedia_resolver,
+            running_agent=kwargs.get("agent") or self._agent,
+            afs=kwargs.get("afs") or self._agent_file_system,
+            conv_id=kwargs.get("conv_id", ""),
+        )
 
     def build(self, tool_call: V2ToolCall, tool: Optional[Any] = None) -> ToolContext:
         ctx = ToolContext(

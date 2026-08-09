@@ -103,6 +103,9 @@ class VolcengineImageProvider(MediaGenProvider):
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             create_url = f"{base_url}{_IMAGE_ENDPOINT}"
+            logger.info(
+                f"[VolcengineImageProvider] Request POST {create_url} body={body}"
+            )
             resp = await client.post(create_url, headers=headers, json=body)
             if resp.is_error:
                 try:

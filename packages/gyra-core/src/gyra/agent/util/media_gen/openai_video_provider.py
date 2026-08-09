@@ -79,16 +79,19 @@ class OpenAIVideoProvider(MediaGenProvider):
         )
 
         async with httpx.AsyncClient(timeout=timeout) as client:
+            submit_url = f"{base_url}/videos/generations"
+            body = {
+                "model": model,
+                "prompt": prompt,
+                "duration": duration,
+                "resolution": resolution,
+                "aspect_ratio": aspect_ratio,
+            }
+            logger.info(f"[OpenAIVideoProvider] Request POST {submit_url} body={body}")
             submit_resp = await client.post(
-                f"{base_url}/videos/generations",
+                submit_url,
                 headers=headers,
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "duration": duration,
-                    "resolution": resolution,
-                    "aspect_ratio": aspect_ratio,
-                },
+                json=body,
             )
             submit_resp.raise_for_status()
             job = submit_resp.json()

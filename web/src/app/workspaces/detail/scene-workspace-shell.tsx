@@ -461,6 +461,7 @@ export function SceneWorkspaceShell({
           convLoadError={convLoadError}
           retryLoadConv={retryLoadConv}
           playbooks={playbooks}
+          tasks={tasks}
         />
       </div>
     </div>

@@ -182,14 +182,6 @@ class SandboxManager:
         command = f"bash -lc {shlex.quote(bootstrap_script)}"
         await self._exec(command, work_dir=self.work_dir, timeout=10.0)
 
-    async def _update_repo(self, repo_path: str) -> None:
-        """更新已有的 git 仓库"""
-        pull_cmd = "git fetch --depth=1 --no-tags --prune --quiet origin master && git reset --hard origin/master --quiet"
-        logger.info("更新知识库仓库: %s", repo_path)
-        result = await self._exec(pull_cmd, work_dir=repo_path, timeout=60.0)
-        output = collect_shell_output(result)
-        logger.info("git pull 完成: %s", output)
-
     async def initialize(
         self,
         sandbox: SandboxBase,
@@ -237,26 +229,10 @@ class SandboxManager:
             else:
                 self._skill_path = repo_path
                 logger.info(
-                    "知识库更新开始准备: sandbox_id=%s, repo_path=%s",
+                    "知识库已准备: sandbox_id=%s, repo_path=%s",
                     sandbox.sandbox_id,
                     repo_path,
                 )
-                try:
-                    await self._ensure_directory(repo_path)
-                    await self._update_repo(repo_path)
-                    logger.info(
-                        "知识库已准备: sandbox_id=%s, repo_path=%s",
-                        sandbox.sandbox_id,
-                        repo_path,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "知识库准备失败: sandbox_id=%s, repo_path=%s, error=%s",
-                        sandbox.sandbox_id,
-                        repo_path,
-                        exc,
-                        exc_info=True,
-                    )
         logger.info(f"Sandbox id={sandbox.sandbox_id} Initialized Success!")
         self._initialized = True
 

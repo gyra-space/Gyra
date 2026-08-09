@@ -37,7 +37,11 @@ _SPAWN_PROMPT = """启动一个后台 Agent 任务。任务会在后台异步执
 - 仅当结果与后续工作完全无关时传 wait_for_result=false（后台执行，结果经异步通知注入）
 - 可以一次提交多个任务实现并行执行
 - 通过 depend_on 参数可以设置任务依赖关系
-- 相同内容的任务会被去重：若已有相同任务在途，会直接返回在途 task_id，不会重复执行（图片/视频生成按次计费，切勿换个说法重复提交）"""
+- 相同内容的任务会被去重：若已有相同任务在途，会直接返回在途 task_id，不会重复执行（图片/视频生成按次计费，切勿换个说法重复提交）
+
+生成视频/图片时必读：
+- 目标子 Agent 是多媒体 Agent 时，用 media 参数显式声明生成档位（duration/resolution/aspect_ratio 等）。
+- 任务里明确了时长（如"15秒"）、分辨率（如"1080p"）、宽高比时，必须把这些字段放进 media 传给子 Agent，否则会使用子 Agent 默认档位（可能不符合要求）。"""
 
 _CHECK_PROMPT = """查看后台任务的当前状态，不阻塞。
 
@@ -117,9 +121,57 @@ class SpawnAgentTaskTool(ToolBase):
                     ),
                     "default": True,
                 },
+                "media": {
+                    "type": "object",
+                    "description": (
+                        "多媒体生成参数（仅当目标子 Agent 是多媒体/视频/图片生成 Agent 时使用）。"
+                        "当任务要求生成视频或图片时，在此显式声明生成档位，避免使用子 Agent 默认值"
+                        "（默认档位可能与任务要求不符，例如默认 5 秒而被要求 15 秒）。"
+                        "常用字段："
+                        "kind('image'|'video')、duration(视频时长，秒，如 15)、"
+                        "resolution(视频分辨率，如 1080p)、aspect_ratio(视频宽高比，如 16:9)、"
+                        "size(图片尺寸，如 1024x1024)、model(模型名)、quality、"
+                        "reference_images(参考图 URL 列表)、image_url(首帧/参考图)、"
+                        "image_url_last(尾帧)。"
+                        "任务里明确要求了时长/分辨率等档位时，必须把对应字段放进 media 传给子 Agent。"
+                    ),
+                    "default": {},
+                },
             },
             "required": ["agent_name", "task"],
         }
+
+    @staticmethod
+    def _merge_media_into_context(
+        context: Optional[Dict[str, Any]], media: Optional[Any]
+    ) -> Dict[str, Any]:
+        """把 spawn_agent_task 的 media 参数并入传给子 Agent 的 context。
+
+        多媒体 Agent 的 delegate（to_async_delegate）从 context 读取生成参数：
+        kind/model/reference_images/image_url/image_url_last 为顶层结构化字段，
+        其余 provider 档位参数(时长/分辨率/宽高比/质量等)放进 ``params``。
+        这里把 media 显式声明的内容合并进去,使其覆盖子 Agent 配置默认值。
+        """
+        ctx = dict(context or {})
+        if not isinstance(media, dict) or not media:
+            return ctx
+        structured = {
+            "kind",
+            "model",
+            "reference_images",
+            "image_url",
+            "image_url_last",
+        }
+        for key in structured:
+            if media.get(key) not in (None, ""):
+                ctx[key] = media[key]
+        provider_params = dict(ctx.get("params") or {})
+        for k, v in media.items():
+            if k not in structured and v not in (None, ""):
+                provider_params[k] = v
+        if provider_params:
+            ctx["params"] = provider_params
+        return ctx
 
     async def execute(
         self, args: Dict[str, Any], context: Optional[ToolContext] = None
@@ -174,10 +226,16 @@ class SpawnAgentTaskTool(ToolBase):
                     agent_ctx = getattr(context, "agent_context", None)
                     conv_id = getattr(agent_ctx, "conv_id", "") or ""
 
-            # 统一单例下 subagent 任务需经 delegate 委派；若 context 提供
-            # subagent_delegate_factory，则用其构造委派协程（否则回退 manager 内置
-            # subagent_manager，兼容非统一实例）。
+            # 统一单例下 subagent 任务需经 delegate 委派（Path A:多媒体 Agent
+            # 直跑 executor,单次确定性生成,success 直接来自 ToolResult）;
+            # 构造不出 delegate 时留 None,由 AsyncTaskManager._run_task 回退
+            # subagent_manager(Path B:独立子会话 react 循环)。
+            # delegate 来源按框架路径二选一（同一解析逻辑,见 multimedia/delegate.py）:
+            # - V2:ToolContext 资源 subagent_delegate_factory;
+            # - V1:tool_action 约定 context 即主 agent 本身(无 get_resource),
+            #   直接用其 capability_pack 解析构建。
             delegate = None
+            delegate_fn = None
             if context is not None:
                 factory = None
                 try:
@@ -189,17 +247,50 @@ class SpawnAgentTaskTool(ToolBase):
                 except Exception:  # noqa: BLE001
                     factory = None
                 if callable(factory):
-                    delegate = lambda: factory(  # noqa: E731
+                    delegate_fn = factory(
+                        subagent_name=agent_name,
+                        conv_id=conv_id,
+                    )
+                elif getattr(context, "agent_context", None) is not None:
+                    from gyra.agent.multimedia.delegate import (
+                        build_multimedia_delegate,
+                    )
+
+                    delegate_fn = build_multimedia_delegate(
+                        agent_name,
+                        capability_pack=getattr(context, "capability_pack", None),
+                        running_agent=context,
+                        # 主 agent 的 AFS 是私有懒加载属性;拿不到时 delegate 内部
+                        # 会自行 _ensure_agent_file_system,不影响可用性
+                        afs=getattr(context, "agent_file_system", None)
+                        or getattr(context, "_agent_file_system", None),
+                        conv_id=conv_id,
+                    )
+            if delegate_fn is not None:
+                # spec.delegate 契约:零参 async callable,_run_task 直接 await。
+                # task/context 在此真正传入(delegate_fn 是 to_async_delegate 返回
+                # 的 async 函数,必须先调用才是协程)。media 参数并入 context,
+                # 使时长/分辨率等档位能覆盖子 Agent 默认值。
+                task_context = self._merge_media_into_context(
+                    args.get("context", {}), args.get("media")
+                )
+
+                async def _delegate():
+                    return await delegate_fn(
                         subagent_name=agent_name,
                         task=task,
-                        conv_id=conv_id,
-                        context=args.get("context", {}),
+                        context=task_context,
                     )
+
+                delegate = _delegate
 
             spec = AsyncTaskSpec(
                 agent_name=agent_name,
+                kind="subagent",
                 task_description=task,
-                context=args.get("context", {}),
+                context=self._merge_media_into_context(
+                    args.get("context", {}), args.get("media")
+                ),
                 timeout=args.get("timeout", 300),
                 depend_on=args.get("depend_on", []),
                 conv_id=conv_id,

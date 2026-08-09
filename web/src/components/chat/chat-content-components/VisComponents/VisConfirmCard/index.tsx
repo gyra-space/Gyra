@@ -350,7 +350,7 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
     if (options.length === 0) return null;
 
     return (
-      <div style={{ marginTop: 16, marginBottom: 16 }}>
+      <div style={{ width: '100%', marginTop: 16, marginBottom: 16 }}>
         <div style={{ fontWeight: 500, marginBottom: 12, color: '#1890ff' }}>
           {hasQuestions ? confirmMessage : 'Please select:'}
         </div>
@@ -457,7 +457,7 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
 
   const renderInput = () => {
     return (
-      <div style={{ marginTop: 16, marginBottom: 16 }}>
+      <div style={{ width: '100%', marginTop: 16, marginBottom: 16 }}>
         <div style={{ fontWeight: 500, marginBottom: 12, color: '#1890ff' }}>
           {hasQuestions ? confirmMessage : 'Please enter:'}
         </div>

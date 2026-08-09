@@ -186,6 +186,9 @@ class SeedanceVideoProvider(MediaGenProvider):
         # Submit (short-lived client; poll/download use their own).
         async with httpx.AsyncClient(timeout=timeout) as client:
             create_url = f"{base_url}{_CREATE_TASK_ENDPOINT}"
+            logger.info(
+                f"[SeedanceVideoProvider] Request POST {create_url} body={body}"
+            )
             submit_resp = await client.post(create_url, headers=headers, json=body)
             if submit_resp.is_error:
                 # Surface Ark's error body (code/message) instead of the bare
