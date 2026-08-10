@@ -59,7 +59,7 @@ const EMPTY_WORKSPACE_VIEW: WorkspaceView = { planning: null, execution: [], sum
 const MAX_RECENT_STEPS = 8;
 
 /** 任务 → task_created 步骤(与 SSE 事件注入的卡片同 id,便于去重合并)。 */
-function taskToCreatedStep(
+export function taskToCreatedStep(
   task: any,
   playbooks?: { playbook_id: number; playbook_name: string }[],
 ): WorkspaceExecutionStep | null {
@@ -92,7 +92,7 @@ function taskToCreatedStep(
  * 刷新(vis_final 恢复)后卡片会消失。这里依据任务列表按会话维度重新注入,
  * 并按 task-created-{id} 去重/更新,保证刷新后卡片仍可见且状态正确。
  */
-function mergeTaskCards(
+export function mergeTaskCards(
   prev: WorkspaceView,
   tasks: any[] | undefined,
   convUid: string | undefined,

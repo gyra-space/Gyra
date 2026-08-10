@@ -75,11 +75,10 @@ def build_write_tools(
                 cron=kwargs.get("cron"),
                 trigger_config=kwargs.get("trigger_config"),
             )
-        # 大厅模式(task_id 为空)且立即执行:内联模式——任务绑定到当前会话,
-        # 主 agent 直接根据剧本声明在当前对话中执行,不创建分离任务会话。
-        # 这样 agent 的思考 + 执行在同一段对话中,不会因切换丢失上下文。
-        # 任务模式(task_id 非空)下仍走分离模式(可能创建子任务)。
-        inline = not task_id and bool(conv_uid)
+        # 任务走分离(异步)模式:创建任务后 detached 启动 run_task,让任务在后台
+        # 独立执行并正确完成(产出 artifact/交付物)。不再支持内联模式——分析类
+        # 请求默认由主 agent 在当前会话直接完成,不应创建任务包装;start_task
+        # 仅用于用户明确要求异步执行或订阅/触发类流程,交付后不再在当前会话重复执行。
         result = create_task_from_tool(
             system_app,
             workspace_id=workspace_id,
@@ -87,7 +86,6 @@ def build_write_tools(
             playbook_id=playbook_id,
             title=title,
             description=description,
-            inline_conv_uid=conv_uid if inline else None,
         )
         if on_event:
             on_event("task_created", {
@@ -180,7 +178,7 @@ def build_write_tools(
         )
 
     specs = [
-        ("start_task", "发起任务:默认立即创建并执行;传 trigger_type 则创建定时/条件触发规则,到点自动按剧本创建任务", start_task, {
+        ("start_task", "发起异步任务并后台执行:创建任务后立即后台运行,完成时产出 artifact/交付物。仅当用户明确要求异步/后台执行或属于订阅/触发类流程时才使用;普通分析类请求应直接在当前会话完成,不要调用本工具", start_task, {
             "playbook_id": _p("playbook_id", "integer", "剧本 ID,不传则为 ad-hoc 任务;创建触发规则时必传"),
             "title": _p("title", "string", "任务/规则名称(简短标识)"),
             "description": _p("description", "string", "任务目标指令:写给执行者的具体目标——分析什么方向、产出什么(剧本是通用能力,指令使其具体化);创建触发规则时作为每次任务的指令。调度时间不要写在这里,用 cron 表达"),

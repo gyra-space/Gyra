@@ -1,9 +1,11 @@
 /** @type {import("jest").Config }**/
 module.exports = {
-  testEnvironment: "node",
+  testEnvironment: "jsdom",
   preset: "ts-jest",
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
+    // CSS 引入在 Node 下无法解析,映射为空桩,保证含 import './*.css' 的组件测试可运行
+    "\\.(css|scss|sass|less)$": "<rootDir>/src/test-style-stub.ts",
   },
   testMatch: [
     "<rootDir>/src/**/__tests__/**/*.test.ts",
@@ -19,7 +21,7 @@ module.exports = {
   },
   // unified/remark 生态是纯 ESM,允许 ts-jest 转译这些依赖
   transformIgnorePatterns: [
-    "/node_modules/(?!(unified|remark-.*|mdast-.*|micromark.*|unist-.*|vfile.*|bail|trough|devlop|zwitch|html-void-elements|stringify-entities|character-entities.*|ccount|comma-separated-tokens|space-separated-tokens|hast-.*|property-information|web-namespaces|decode-named-character-reference|longest-streak|markdown-table|trim-lines|escape-string-regexp|is-plain-obj|extend|html-url-attributes|url-join)/)",
+    "node_modules/(?!(unified|remark-.*|mdast-.*|micromark.*|unist-.*|vfile.*|bail|trough|devlop|zwitch|html-void-elements|stringify-entities|character-entities.*|ccount|comma-separated-tokens|space-separated-tokens|hast-.*|property-information|web-namespaces|decode-named-character-reference|longest-streak|markdown-table|trim-lines|escape-string-regexp|is-plain-obj|extend|html-url-attributes|url-join)/)",
   ],
   // Registers @testing-library/jest-dom matchers (toBeInTheDocument, …) for
   // React component tests that run under the jsdom environment.

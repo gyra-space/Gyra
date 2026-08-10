@@ -1808,14 +1808,17 @@ class AgentChat(BaseComponent, ABC):
                         finalize_inline_tasks,
                     )
 
-                    _conv_state_ent = self.gpts_conversations.get_by_conv_id(
+                    # 会话行按 {base}_{round} 存储 conv_id,get_by_conv_id 精确匹配
+                    # base 会落空;改按 conv_session_id(与任务 conv_session_id 一致)取
+                    # 该会话全部轮次,以最新一轮的 state 作为收尾判定依据。
+                    _convs = await self.gpts_conversations.get_by_session_id_asc(
                         conv_id
                     )
                     await finalize_inline_tasks(
                         system_app=self.system_app,
                         workspace_id=int(_ws_id_for_bus),
                         conv_id=conv_id,
-                        conv_state=getattr(_conv_state_ent, "state", None),
+                        conv_state=_convs[-1].state if _convs else None,
                     )
             except Exception as e:
                 logger.warning(

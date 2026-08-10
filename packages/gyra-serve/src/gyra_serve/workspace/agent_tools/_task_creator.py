@@ -217,15 +217,10 @@ def create_task_from_tool(
     title: Optional[str] = None,
     description: Optional[str] = None,
     model_name: Optional[str] = None,
-    inline_conv_uid: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a real Task via TaskService, return task metadata.
 
     创建后:(1) detached 启动 run_task 让 Agent 真跑;(2) detached 总结短标题写回。
-
-    inline_conv_uid 非空时为内联模式:任务绑定到当前会话(conv_session_id=inline_conv_uid),
-    不启动 detached run_task,而是由调用方(主 agent)在当前对话中直接执行。
-    仍启动标题总结(独立于执行,互不影响)。
     """
     from gyra_serve.task.api.schemas import TaskRequest
     from gyra_serve.task.service.service import (
@@ -256,25 +251,16 @@ def create_task_from_tool(
         description=description or "",
         type="adhoc",
         triggered_by="manual",
-        conv_session_id=inline_conv_uid or None,
         created_by_user_id=int(user_id) if user_id and user_id.isdigit() else None,
     )
     entity = task_service.create(request)
 
-    if inline_conv_uid:
-        # 内联模式:不启动 detached run_task,由主 agent 在当前对话中直接执行。
-        # 仅将任务状态转为 running,让前端任务卡片显示"执行中"。
-        try:
-            task_service.start(entity.id)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("inline task start transition failed: %s", e)
-    else:
-        # 分离模式:detached 启动真实运行(不阻塞当前 SSE 流)
-        run_t = asyncio.create_task(
-            _run_task_detached(system_app, entity.id, user_id, entity.playbook_id)
-        )
-        _pending_detached_tasks.add(run_t)
-        run_t.add_done_callback(_pending_detached_tasks.discard)
+    # 分离模式:detached 启动真实运行(不阻塞当前 SSE 流)
+    run_t = asyncio.create_task(
+        _run_task_detached(system_app, entity.id, user_id, entity.playbook_id)
+    )
+    _pending_detached_tasks.add(run_t)
+    run_t.add_done_callback(_pending_detached_tasks.discard)
 
     # detached 启动标题总结(独立于 run_task,互不影响)
     if title:
@@ -289,14 +275,10 @@ def create_task_from_tool(
     result = {
         "task_id": entity.id,
         "title": entity.title,
-        "status": "running" if inline_conv_uid else entity.status,
+        "status": entity.status,
         "playbook_id": entity.playbook_id,
         "playbook_name": playbook.name if playbook else None,
         "triggered_by": entity.triggered_by,
-        "inline": bool(inline_conv_uid),
+        "inline": False,
     }
-    # 内联模式:返回剧本声明,让主 agent 直接根据声明执行任务
-    if inline_conv_uid and playbook:
-        declaration = getattr(playbook, "declaration", None) or {}
-        result["declaration"] = declaration
     return result

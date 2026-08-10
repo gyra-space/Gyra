@@ -179,12 +179,12 @@ class TestWriteToolsStartTask:
         system_app.get_component = get_component
         return system_app
 
-    def test_start_task_emits_event(self):
+    def test_start_task_emits_event(self, monkeypatch):
         """start_task should call on_event with task_created.
 
-        大厅模式(conv_uid 非空、task_id 为空)下 start_task 走内联模式:
-        任务绑定到当前会话,status 为 running。
+        start_task 走分离(异步)模式:创建任务并后台运行,status 来自 entity。
         """
+        from gyra_serve.workspace.agent_tools import _task_creator
         from gyra_serve.workspace.agent_tools.write_tools import build_write_tools
 
         mock_task = MagicMock()
@@ -195,6 +195,21 @@ class TestWriteToolsStartTask:
         mock_task.triggered_by = "manual"
 
         system_app = self._build_system_app(mock_task)
+
+        # 分离模式会调 asyncio.create_task(start detached run_task),
+        # 测试无运行事件循环,monkeypatch 掉避免 RuntimeError。
+        created_tasks = []
+
+        def fake_create_task(coro):
+            created_tasks.append(coro)
+            t = asyncio.ensure_future(coro)
+            return t
+
+        async def _noop_title(*a, **kw):
+            return None
+
+        monkeypatch.setattr(_task_creator.asyncio, "create_task", fake_create_task)
+        monkeypatch.setattr(_task_creator, "_summarize_title_detached", _noop_title)
 
         events = []
 
@@ -213,18 +228,19 @@ class TestWriteToolsStartTask:
         result = start_task_tool.execute()
 
         assert result["task_id"] == 42
-        assert result["inline"] is True
-        assert result["status"] == "running"
+        assert result["inline"] is False
+        assert result["status"] == "draft"
         assert len(events) == 1
         assert events[0][0] == "task_created"
         assert events[0][1]["task_id"] == 42
         assert events[0][1]["workspace_id"] == 1
         assert events[0][1]["title"] == "测试任务"
-        assert events[0][1]["status"] == "running"
+        assert events[0][1]["status"] == "draft"
         assert events[0][1]["triggered_by"] == "manual"
 
-    def test_start_task_without_event_callback(self):
+    def test_start_task_without_event_callback(self, monkeypatch):
         """start_task should work without on_event (no error)."""
+        from gyra_serve.workspace.agent_tools import _task_creator
         from gyra_serve.workspace.agent_tools.write_tools import build_write_tools
 
         mock_task = MagicMock()
@@ -235,6 +251,19 @@ class TestWriteToolsStartTask:
         mock_task.triggered_by = "manual"
 
         system_app = self._build_system_app(mock_task)
+
+        created_tasks = []
+
+        def fake_create_task(coro):
+            created_tasks.append(coro)
+            t = asyncio.ensure_future(coro)
+            return t
+
+        async def _noop_title(*a, **kw):
+            return None
+
+        monkeypatch.setattr(_task_creator.asyncio, "create_task", fake_create_task)
+        monkeypatch.setattr(_task_creator, "_summarize_title_detached", _noop_title)
 
         tools = build_write_tools(
             system_app,

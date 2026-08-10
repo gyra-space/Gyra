@@ -53,7 +53,7 @@ SCENE_MODE_CONFIGS: Dict[SceneMode, SceneModeConfig] = {
         output_asset_types=["historical_artifact", "case"],
         lobby_component="ArtifactsList",
         requires_playbook=True,
-        allows_inline=True,
+        allows_inline=False,  # 已移除内联任务:start_task 一律分离(异步)执行
     ),
     SceneMode.DECISION_DISCUSSION: SceneModeConfig(
         mode=SceneMode.DECISION_DISCUSSION,

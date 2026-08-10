@@ -141,6 +141,6 @@ describe('AgentWorkspaceInput', () => {
       />,
     );
     fireEvent.click(screen.getByRole('img', { name: /上下文空间使用率/ }));
-    expect(screen.getByText('上下文压缩监控')).toBeInTheDocument();
+    expect(screen.getByText('上下文空间占用明细')).toBeInTheDocument();
   });
 });
