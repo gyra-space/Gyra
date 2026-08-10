@@ -211,3 +211,6 @@ configs/local
 *.bak
 .tw-tmp-*
 *_output_*.png
+
+# Promo site (本地保留，不提交到远端)
+gyra-open-source-promo/

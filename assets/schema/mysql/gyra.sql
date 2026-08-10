@@ -1,7 +1,7 @@
 -- ============================================================
 -- MySQL DDL Script for Gyra
 -- Version: 0.3.0
--- Generated: 2026-08-09T22:44:42.415806
+-- Generated: 2026-08-10T23:02:31.615154
 -- ============================================================
 
 SET NAMES utf8mb4;
@@ -24,9 +24,9 @@ CREATE TABLE IF NOT EXISTS `chat_history` (
   `task_id` INT NULL COMMENT 'Task id this conversation belongs to',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_conv_uid` (`conv_uid`),
-  KEY `ix_chat_history_task_id` (`task_id`),
+  KEY `ix_chat_history_sys_code` (`sys_code`),
   KEY `ix_chat_history_workspace_id` (`workspace_id`),
-  KEY `ix_chat_history_sys_code` (`sys_code`)
+  KEY `ix_chat_history_task_id` (`task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: chat_history_message
@@ -145,8 +145,8 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_flow` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record update time',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_uid` (`uid`),
-  KEY `ix_gyra_serve_flow_user_name` (`user_name`),
   KEY `ix_gyra_serve_flow_uid` (`uid`),
+  KEY `ix_gyra_serve_flow_user_name` (`user_name`),
   KEY `ix_gyra_serve_flow_sys_code` (`sys_code`),
   KEY `ix_gyra_serve_flow_dag_id` (`dag_id`),
   KEY `ix_gyra_serve_flow_name` (`name`)
@@ -173,9 +173,9 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_variables` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record update time',
   PRIMARY KEY (`id`),
   KEY `ix_gyra_serve_variables_key_info` (`key_info`),
-  KEY `ix_gyra_serve_variables_user_name` (`user_name`),
   KEY `ix_gyra_serve_variables_sys_code` (`sys_code`),
-  KEY `ix_gyra_serve_variables_name` (`name`)
+  KEY `ix_gyra_serve_variables_name` (`name`),
+  KEY `ix_gyra_serve_variables_user_name` (`user_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: connect_config
@@ -198,11 +198,11 @@ CREATE TABLE IF NOT EXISTS `connect_config` (
   `owner_workspace_id` INT NULL COMMENT 'Owner workspace id for workspace-owned datasets; NULL means global',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_db` (`db_name`),
-  KEY `ix_connect_config_user_name` (`user_name`),
   KEY `idx_q_owner_workspace` (`owner_workspace_id`),
+  KEY `ix_connect_config_user_name` (`user_name`),
   KEY `ix_connect_config_user_id` (`user_id`),
-  KEY `ix_connect_config_sys_code` (`sys_code`),
-  KEY `idx_q_db_type` (`db_type`)
+  KEY `idx_q_db_type` (`db_type`),
+  KEY `ix_connect_config_sys_code` (`sys_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: db_spec
