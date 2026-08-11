@@ -156,6 +156,16 @@ export interface ExtConfig {
   home_scene?: HomeSceneConfig;
   /** 多媒体 Agent 模板配置 */
   multimedia_agent?: MultimediaAgentConfig;
+  /** 工程目录生态配置（Claude Code / Cursor 兼容） */
+  project_ecosystem?: ProjectEcosystemConfig;
+}
+
+/** 工程目录生态配置（Claude Code / Cursor 兼容） */
+export interface ProjectEcosystemConfig {
+  /** 工程目录（宿主机绝对路径，指向含 .claude / .cursor 的项目根目录） */
+  project_dir?: string;
+  /** 兼容方案类型：auto 自动识别 / claude_code / cursor */
+  type?: 'auto' | 'claude_code' | 'cursor';
 }
 
 // =============================================================================

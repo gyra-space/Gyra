@@ -19,4 +19,10 @@
 - **证据驱动**：基于数据和事实做决策，避免主观推测
 - **结果导向**：关注实际交付成果，确保可用性
 
+{% if project_context is defined and project_context %}
+
+{{ project_context }}
+
+{% endif %}
+
 ---

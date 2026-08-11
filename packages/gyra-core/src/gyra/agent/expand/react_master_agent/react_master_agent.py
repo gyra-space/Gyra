@@ -62,6 +62,11 @@ from ...core.file_system.agent_file_system import AgentFileSystem
 
 # 新增模块导入
 from .work_log import WorkLogManager, create_work_log_manager
+from gyra.agent.project_ecosystem import (
+    ECOSYSTEM_AUTO,
+    ProjectEcosystem,
+    ProjectEcosystemLoader,
+)
 from gyra.agent.core.memory.gpts.file_base import WorkLogStatus
 from gyra.agent.core.hook_context_builders import (
     build_conversation_complete_context,
@@ -150,6 +155,126 @@ def _get_sandbox_system_info(sandbox_client: SandboxBase) -> str:
             return f"{system}, 本地沙箱环境，路径映射到项目目录"
     else:
         return "Ubuntu 24.04 linux/amd64（已联网），用户：ubuntu（拥有免密 sudo 权限）"
+
+
+async def _build_project_context(instance: Any) -> str:
+    """构建工程目录生态上下文（项目记忆 + 项目技能），供 system 身份层注入。
+
+    数据源：``instance.ext_config.project_ecosystem``（agent 编辑里配置的
+    project_dir + 兼容类型）。探测缓存于 ``ProjectEcosystemLoader``。
+    """
+    try:
+        ext_config = getattr(instance, "ext_config", None) or {}
+        # app.ext_config.project_ecosystem = {project_dir, type}
+        eco_cfg = ext_config.get("project_ecosystem") or {}
+        project_dir = (eco_cfg.get("project_dir") or "").strip()
+        if not project_dir or not os.path.isdir(project_dir):
+            return ""
+        eco_type = (eco_cfg.get("type") or ECOSYSTEM_AUTO).strip() or ECOSYSTEM_AUTO
+        loaded = await asyncio.to_thread(
+            ProjectEcosystemLoader.load, project_dir, eco_type
+        )
+        if not loaded or not loaded.has_content:
+            return ""
+        return await asyncio.to_thread(_render_project_context, loaded)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[project-ecosystem] build project_context failed: {e}")
+        return ""
+
+
+def _render_project_context(eco: ProjectEcosystem) -> str:
+    """把探测结果渲染为 system 注入块。"""
+    lines: List[str] = [
+        "## 项目生态上下文（Claude Code / Cursor 兼容）",
+        f"项目目录：`{eco.project_dir}`（生态类型：{eco.ecosystem_type}）",
+        "",
+        "以下内容来自项目目录中的 CLAUDE.md / AGENTS.md 与 .claude / .cursor 配置，"
+        "是对项目的工作约定与技能指引，执行任务时必须遵循：",
+    ]
+    memory_text = eco.render_memory()
+    if memory_text:
+        lines.append("")
+        lines.append("### 项目记忆（CLAUDE.md / AGENTS.md）")
+        lines.append(memory_text)
+
+    if eco.skills:
+        lines.append("")
+        lines.append("### 项目技能（来自 .claude / .cursor 的 SKILL.md）")
+        lines.append(
+            "使用 `view` 工具读取对应 `<path>` 的 SKILL.md 内容，按其指导执行；"
+            "技能文件与项目代码同目录，可自由读取。"
+        )
+        for sk in eco.skills:
+            lines.append(
+                f"- <skill><name>{sk.name}</name>"
+                f"<description>{sk.description or '--'}</description>"
+                f"<path>{sk.path}</path><origin>{sk.origin}</origin></skill>"
+            )
+
+    if eco.rules:
+        lines.append("")
+        lines.append("### 项目规则（.claude/rules / .cursor/rules）")
+        for rule in eco.rules[:10]:
+            globs = ",".join(rule.globs) if rule.globs else "*"
+            head = rule.content.strip().splitlines()[0][:80] if rule.content.strip() else ""
+            lines.append(
+                f"- <rule><path>{rule.path}</path><globs>{globs}</globs>"
+                f"<summary>{head}</summary></rule>"
+            )
+
+    if eco.commands:
+        lines.append("")
+        lines.append("### 项目命令（.claude/commands 斜杠命令）")
+        lines.append(
+            "这些是项目预定义的 `/命令`，任务相关时用 `view` 读取 `<path>` 的提示词内容并按其执行："
+        )
+        for cmd in eco.commands:
+            lines.append(
+                f"- <command><name>/{cmd.name}</name>"
+                f"<description>{cmd.description or '--'}</description>"
+                f"<path>{cmd.path}</path></command>"
+            )
+
+    if eco.subagents:
+        lines.append("")
+        lines.append("### 项目子 Agent（.claude/agents 定义）")
+        lines.append(
+            "这些是项目声明的子 Agent 角色；任务相关时读取 `<path>` 定义，"
+            "把其系统提示作为委托子 Agent 的执行指令（或用 SubAgent 工具按其角色分工）："
+        )
+        for sa in eco.subagents:
+            lines.append(
+                f"- <subagent><name>{sa.name}</name>"
+                f"<description>{sa.description or '--'}</description>"
+                f"<path>{sa.path}</path>"
+                f"<tools>{sa.tools or '--'}</tools></subagent>"
+            )
+
+    if eco.mcp_servers:
+        lines.append("")
+        lines.append("### 项目 MCP 服务器（.mcp.json / settings.json mcpServers）")
+        for mcp in eco.mcp_servers:
+            endpoint = (
+                mcp.url
+                if mcp.transport == "http"
+                else f"{mcp.command} {' '.join(mcp.args)}"
+            )
+            lines.append(
+                f"- <mcp><name>{mcp.name}</name><transport>{mcp.transport}</transport>"
+                f"<endpoint>{endpoint}</endpoint><source>{mcp.source}</source></mcp>"
+            )
+
+    if eco.env:
+        lines.append("")
+        lines.append("### 项目环境变量（.claude/settings.json env）")
+        lines.append(
+            "项目声明了以下环境变量（真实值不注入，按需向用户确认或读取 `.env` 等）："
+        )
+        for item in eco.env:
+            value = f"={item.value}" if item.value else ""
+            lines.append(f"- <env><key>{item.key}</key>{value}</env>")
+
+    return "\n".join(lines)
 
 
 class ReActMasterAgent(ConversableAgent, Team):
@@ -3587,6 +3712,16 @@ class ReActMasterAgent(ConversableAgent, Team):
                         )
 
             return prompts
+
+        @self._vm.register("project_context", "项目生态上下文(Claude Code / Cursor)")
+        async def var_project_context(instance):
+            """注入工程目录生态配置：CLAUDE.md / AGENTS.md 项目记忆 + 项目技能列表。
+
+            配置来源：app.ext_config.project_ecosystem = {project_dir, type}。
+            探测结果按 (project_dir, type) 缓存，仅首轮做 FS 扫描。无配置/无内容
+            返回空串（模板层 `is defined` 保护，不影响其它资源渲染）。
+            """
+            return await _build_project_context(instance)
 
         @self._vm.register("other_resources", "其他资源")
         async def var_other_resources(instance):

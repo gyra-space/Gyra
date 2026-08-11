@@ -9,7 +9,7 @@ import { useContext, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ChatLayoutConfig from './chat-layout-config';
 import MultimediaAgentConfig from './multimedia-agent-config';
-import { ThunderboltOutlined, PictureOutlined, CloudServerOutlined, HomeOutlined, HeartOutlined, CodeOutlined, SwapOutlined, DatabaseOutlined, AlertOutlined, GlobalOutlined, SafetyOutlined, DashboardOutlined, BugOutlined, ApiOutlined } from '@ant-design/icons';
+import { ThunderboltOutlined, PictureOutlined, CloudServerOutlined, HomeOutlined, HeartOutlined, CodeOutlined, SwapOutlined, DatabaseOutlined, AlertOutlined, GlobalOutlined, SafetyOutlined, DashboardOutlined, BugOutlined, ApiOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { AgentAvatarPicker } from '@/components/common/agent-avatar-picker';
 
 const layoutConfigChangeList = [
@@ -106,6 +106,7 @@ export default function TabOverview() {
         : (appInfo.agent || defaultV1Agent);
 
       const homeScene = appInfo?.ext_config?.home_scene;
+      const projectEco = appInfo?.ext_config?.project_ecosystem;
       const formValues: any = {
         app_name: appInfo.app_name,
         app_describe: appInfo.app_describe,
@@ -117,6 +118,8 @@ export default function TabOverview() {
         chat_in_layout: chat_in_layout_list || [],
         reasoning_engine: engineItemValue?.key ?? engineItemValue?.name,
         use_sandbox: parsedTeamContext?.use_sandbox ?? false,
+        project_eco_dir: projectEco?.project_dir || '',
+        project_eco_type: projectEco?.type || 'auto',
         ...chat_in_layout_obj,
       };
       // 仅当后端返回了 ext_config 时才更新 home_scene 表单值，避免空响应覆盖用户操作
@@ -219,6 +222,22 @@ export default function TabOverview() {
   };
 
   const onInputBlur = (name: string) => {
+    if (name === 'project_eco_dir') {
+      // 工程目录（文本字段，失焦保存）
+      const currentExtConfig = appInfo?.ext_config || {};
+      const currentEco = currentExtConfig.project_ecosystem || {};
+      fetchUpdateApp({
+        ...appInfo,
+        ext_config: {
+          ...currentExtConfig,
+          project_ecosystem: {
+            ...currentEco,
+            project_dir: (form.getFieldValue('project_eco_dir') || '').trim(),
+          },
+        },
+      });
+      return;
+    }
     if (layoutConfigValueChangeList.includes(name)) {
       layoutConfigChange();
     } else {
@@ -291,6 +310,17 @@ export default function TabOverview() {
         use_sandbox: fieldValue as boolean,
       };
       fetchUpdateApp({ ...appInfo, agent_version: currentAgentVersion, team_context: newTeamContext });
+    } else if (fieldName === 'project_eco_type') {
+      // 工程目录生态兼容类型（Claude Code / Cursor）
+      const currentExtConfig = appInfo?.ext_config || {};
+      const currentEco = currentExtConfig.project_ecosystem || {};
+      fetchUpdateApp({
+        ...appInfo,
+        ext_config: {
+          ...currentExtConfig,
+          project_ecosystem: { ...currentEco, type: fieldValue as string },
+        },
+      });
     } else if (['home_scene_featured', 'home_scene_position', 'home_scene_icon', 'home_scene_color'].includes(fieldName)) {
       const currentExtConfig = appInfo?.ext_config || {};
       const currentHomeScene = currentExtConfig.home_scene || {};
@@ -493,7 +523,47 @@ export default function TabOverview() {
                 </div>
               </Tooltip>
             </div>
-            {/* 沙箱子配置预留区：后续子项在此扩展 */}
+
+            {/* 工程目录生态（Claude Code / Cursor 兼容）：配置后沙箱工作目录指向该工程目录 */}
+            <div className="mt-4 pt-4 border-t border-violet-100/60">
+              <div className="flex items-center gap-2 mb-1">
+                <CodeOutlined className="text-violet-400 text-sm" />
+                <span className="text-[13px] font-semibold text-gray-700">工程目录生态（Claude Code / Cursor 兼容）</span>
+              </div>
+              <div className="text-[11px] text-gray-400 mb-3">
+                配置含 .claude / .cursor 的项目根目录后，沙箱工作目录同步指向该目录，运行时自动扫描并加载
+                CLAUDE.md / AGENTS.md 与 SKILL.md 技能
+              </div>
+              <div className="grid grid-cols-2 gap-x-5 gap-y-4">
+                <Form.Item
+                  label={<span className="text-gray-600 font-medium text-[13px] flex items-center gap-1">工程目录<Tooltip title="宿主机绝对路径，指向项目根目录（含 .claude / .cursor）"><QuestionCircleOutlined className="text-gray-400 text-[11px]" /></Tooltip></span>}
+                  name="project_eco_dir"
+                  className="mb-0 col-span-2"
+                >
+                  <Input
+                    placeholder="如 /Users/you/code/my-project"
+                    autoComplete="off"
+                    className="rounded-xl border-gray-200 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 transition-all font-mono text-xs"
+                    onBlur={() => onInputBlur('project_eco_dir')}
+                  />
+                </Form.Item>
+                <Form.Item
+                  label={<span className="text-gray-600 font-medium text-[13px]">兼容方案</span>}
+                  name="project_eco_type"
+                  className="mb-0 col-span-2"
+                  tooltip="auto 自动识别 .claude / .cursor；也可按生态显式指定"
+                >
+                  <Select
+                    className="w-full [&_.ant-select-selector]:!rounded-xl [&_.ant-select-selector]:border-gray-200"
+                    options={[
+                      { value: 'auto', label: '自动识别（.claude + .cursor）' },
+                      { value: 'claude_code', label: 'Claude Code（.claude + CLAUDE.md）' },
+                      { value: 'cursor', label: 'Cursor（.cursor + AGENTS.md）' },
+                    ]}
+                  />
+                </Form.Item>
+              </div>
+            </div>
           </div>
 
           {/* 界面布局 */}

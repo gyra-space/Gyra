@@ -474,14 +474,20 @@ class MySQLAdapter(DialectAdapter):
         else:
             parts.append("NULL")
 
-        # AUTO_INCREMENT
-        if col_def.primary_key and (col_def.autoincrement or "INTEGER" in col_def.type.upper()):
-            parts.append("AUTO_INCREMENT")
+        # AUTO_INCREMENT - only for integer types
+        if col_def.primary_key and col_def.autoincrement:
+            # Only add AUTO_INCREMENT for integer types
+            mysql_type_upper = mysql_type.upper()
+            if 'INT' in mysql_type_upper or 'BIGINT' in mysql_type_upper or 'SMALLINT' in mysql_type_upper:
+                parts.append("AUTO_INCREMENT")
 
-        # DEFAULT
+        # DEFAULT (not allowed for JSON/TEXT/BLOB in MySQL)
         if col_def.default:
-            default_val = self._process_default_value(col_def.default)
-            parts.append(f"DEFAULT {default_val}")
+            # MySQL doesn't allow DEFAULT for JSON, TEXT, BLOB, GEOMETRY
+            mysql_type_upper = mysql_type.upper()
+            if not any(t in mysql_type_upper for t in ['JSON', 'TEXT', 'BLOB', 'GEOMETRY']):
+                default_val = self._process_default_value(col_def.default)
+                parts.append(f"DEFAULT {default_val}")
 
         # COMMENT
         if col_def.comment:
@@ -506,6 +512,7 @@ class MySQLAdapter(DialectAdapter):
             'STRING': 'VARCHAR',
             'INTEGER': 'INT',
             'BIGINT': 'BIGINT',
+            'BIGINTEGER': 'BIGINT',
             'SMALLINT': 'SMALLINT',
             'SMALLINTEGER': 'SMALLINT',
             'DATETIME': 'DATETIME',
@@ -565,7 +572,7 @@ class MySQLAdapter(DialectAdapter):
             return "NULL"
 
         # Default: treat as string literal (quote it)
-        return default
+        return f"'{default}'"
 
     def generate_incremental_ddl(
         self, old_schema: UnifiedSchema, new_schema: UnifiedSchema
@@ -1277,15 +1284,48 @@ def discover_metadata() -> MetaData:
             sys.path.insert(0, pkg_root_str)
 
     # Model files to import (relative to package roots)
-    model_modules = [
-        "gyra.storage.chat_history.chat_history_db",
-        "gyra_serve.conversation.models.models",
-        "gyra_serve.artifact.models.models",
-        "gyra_serve.cron.models.models",
-        "gyra_serve.flow.models.models",
-        "gyra_serve.datasource.file_learning.models",
-        "gyra_serve.sql_guard.models",
-    ]
+    # Auto-discover all model modules by scanning for __tablename__
+    model_modules = []
+
+    # Scan gyra-core for model files
+    core_src = Path(__file__).parent.parent.parent / "packages" / "gyra-core" / "src"
+    if core_src.exists():
+        for py_file in core_src.rglob("*.py"):
+            if "__pycache__" in str(py_file) or "test" in str(py_file).lower():
+                continue
+            if "def __tablename__" in py_file.read_text(encoding="utf-8", errors="ignore") or "__tablename__ = " in py_file.read_text(encoding="utf-8", errors="ignore"):
+                rel_path = py_file.relative_to(core_src)
+                module_name = str(rel_path).replace("/", ".").replace(".py", "")
+                if module_name not in model_modules:
+                    model_modules.append(module_name)
+
+    # Scan gyra-serve for model files
+    serve_src = Path(__file__).parent.parent.parent / "packages" / "gyra-serve" / "src"
+    if serve_src.exists():
+        for py_file in serve_src.rglob("*.py"):
+            if "__pycache__" in str(py_file) or "test" in str(py_file).lower():
+                continue
+            content = py_file.read_text(encoding="utf-8", errors="ignore")
+            if "__tablename__ = " in content and "def __tablename__" not in content:
+                rel_path = py_file.relative_to(serve_src)
+                module_name = str(rel_path).replace("/", ".").replace(".py", "")
+                if "_template" not in module_name and module_name not in model_modules:
+                    model_modules.append(module_name)
+
+    # Scan gyra-app for model files
+    app_src = Path(__file__).parent.parent.parent / "packages" / "gyra-app" / "src"
+    if app_src.exists():
+        for py_file in app_src.rglob("*.py"):
+            if "__pycache__" in str(py_file) or "test" in str(py_file).lower():
+                continue
+            content = py_file.read_text(encoding="utf-8", errors="ignore")
+            if "__tablename__ = " in content and "def __tablename__" not in content:
+                rel_path = py_file.relative_to(app_src)
+                module_name = str(rel_path).replace("/", ".").replace(".py", "")
+                if module_name not in model_modules:
+                    model_modules.append(module_name)
+
+    logger.info(f"Discovered {len(model_modules)} model modules to import")
 
     # Import all model modules
     imported_count = 0

@@ -19,4 +19,10 @@ You are a **technical problem-solving expert**, skilled in systematic analysis, 
 - **Evidence-Driven**: Make decisions based on data and facts, avoid subjective speculation
 - **Results-Oriented**: Focus on actual deliverables, ensure usability
 
+{% if project_context is defined and project_context %}
+
+{{ project_context }}
+
+{% endif %}
+
 ---

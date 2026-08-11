@@ -140,13 +140,11 @@ def _migrate_mysql_chat_tables_utf8mb4(db_url: str) -> None:
     if "mysql" not in (db_url or "").lower():
         return
     try:
-        from sqlalchemy import text
-        from gyra.storage.metadata.db_manager import db
+        from sqlalchemy import text, create_engine
 
-        if not db.is_initialized:
-            return
-
-        engine = db.engine
+        # Use the provided db_url directly instead of global db object
+        # to avoid using stale/default connection config
+        engine = create_engine(db_url)
         with engine.connect() as conn:
             tables = conn.execute(
                 text(
@@ -411,7 +409,6 @@ def _enable_sqlite_wal_mode(db) -> None:
     try:
         from sqlalchemy import text
 
-        engine = db.engine
         with engine.connect() as conn:
             # 启用 WAL 模式 - 支持读写并发,并确认返回值
             result = conn.execute(text("PRAGMA journal_mode=WAL"))

@@ -525,6 +525,9 @@ def generate_table_ddl(table_info):
                 col_parts.append(f'DEFAULT {default_val}')
             elif 'True' in default_val or 'False' in default_val:
                 col_parts.append(f'DEFAULT {1 if "True" in default_val else 0}')
+            else:
+                # String literal: quote it
+                col_parts.append(f"DEFAULT '{default_val}'")
         
         if col['comment']:
             comment = col['comment'].replace("'", "''")

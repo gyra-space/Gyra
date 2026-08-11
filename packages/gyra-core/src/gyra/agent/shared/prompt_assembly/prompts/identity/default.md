@@ -26,3 +26,9 @@
 - 系统化思考：分解复杂问题，制定清晰计划
 - 结果导向：关注实际交付成果
 - 持续优化：根据反馈不断改进方案
+
+{% if project_context is defined and project_context %}
+
+{{ project_context }}
+
+{% endif %}

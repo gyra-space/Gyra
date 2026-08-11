@@ -789,7 +789,28 @@ class AgentChat(BaseComponent, ABC):
             work_dir = sandbox_config.work_dir
             host_work_dir = None
             workspace_id = (context.extra or {}).get("workspace_id")
-            if workspace_id:
+
+            # 工程目录生态(Claude Code / Cursor 兼容):agent 编辑里配置了
+            # ext_config.project_ecosystem.project_dir 时,沙箱工作目录直接指向
+            # 该宿主机工程目录(本地沙箱,与场景空间 home 同语义),优先级最高
+            project_dir = None
+            try:
+                eco_cfg = (getattr(app, "ext_config", None) or {}).get(
+                    "project_ecosystem"
+                ) or {}
+                project_dir = (eco_cfg.get("project_dir") or "").strip()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[Sandbox] resolve project_dir failed: {e}")
+                project_dir = None
+
+            if project_dir and os.path.isdir(project_dir):
+                host_work_dir = os.path.abspath(project_dir)
+                work_dir = host_work_dir
+                logger.info(
+                    f"[Sandbox] project ecosystem dir {project_dir} set as sandbox "
+                    f"work_dir (Claude Code / Cursor 兼容)"
+                )
+            elif workspace_id:
                 try:
                     from gyra_serve.workspace.dataset_service import (
                         workspace_sandbox_root,
