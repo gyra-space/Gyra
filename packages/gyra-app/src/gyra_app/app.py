@@ -101,13 +101,31 @@ def _apply_json_database_config(app_config: ApplicationConfig) -> None:
         db = cfg.web.database
         db_type = (db.type or "sqlite").lower()
 
-        password = "${env:GYRA_DB_PASSWORD}"
-        password_source = "env"
+        # Password resolution order:
+        # 1. password_ref (secrets reference) - highest priority
+        # 2. password (direct value in config)
+        # 3. GYRA_DB_PASSWORD env var - fallback
+        password = ""
+        password_source = "default"
+
+        # Try password_ref first (secrets reference)
         if getattr(db, "password_ref", ""):
+            from gyra_core.config.encryption import get_secret as get_secret_value
             resolved = get_secret_value(db.password_ref)
             if resolved:
                 password = resolved
                 password_source = f"secret:{db.password_ref}"
+
+        # Try direct password field if password_ref not set
+        if not password and getattr(db, "password", ""):
+            password = db.password
+            password_source = "config"
+
+        # Fallback to environment variable
+        if not password:
+            password = os.getenv("GYRA_DB_PASSWORD", "")
+            if password:
+                password_source = "env"
 
         logger.info("=" * 80)
         logger.info("[DB Config] Applying database configuration from JSON config:")

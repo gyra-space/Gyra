@@ -333,7 +333,8 @@ class DatabaseConfig(BaseModel):
     host: str = "localhost"
     port: int = 3306
     user: str = "root"
-    password_ref: str = ""  # 引用 secrets 中的密码
+    password: str = ""  # 直接密码（明文或环境变量引用）
+    password_ref: str = ""  # 引用 secrets 中的密码（优先级更高）
     name: str = "gyra"
 
 
