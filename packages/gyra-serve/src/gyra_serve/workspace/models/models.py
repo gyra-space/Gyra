@@ -422,7 +422,11 @@ class WorkspaceDao(BaseDao[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]
     def filter_list(
         self, filter_request: WorkspaceListFilter
     ) -> List[WorkspaceResponse]:
-        """List workspaces. If user_id is provided, only workspaces where the user is a member."""
+        """List workspaces. If user_id is provided, only workspaces where the user is a member.
+
+        ``bypass_membership=True`` (admin/superadmin) 时跳过成员过滤,返回全部
+        未删除空间 —— 满足「超管可见所有数据」的预期。
+        """
         session = self.get_raw_session()
         try:
             query = session.query(WorkspaceEntity)
@@ -432,7 +436,10 @@ class WorkspaceDao(BaseDao[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]
                 query = query.filter(_is_false(WorkspaceEntity.is_archived))
             if filter_request.scenario_type:
                 query = query.filter(WorkspaceEntity.scenario_type == filter_request.scenario_type)
-            if filter_request.user_id is not None:
+            if (
+                filter_request.user_id is not None
+                and not filter_request.bypass_membership
+            ):
                 member_subq = (
                     session.query(WorkspaceMemberEntity.workspace_id)
                     .filter(WorkspaceMemberEntity.user_id == filter_request.user_id)

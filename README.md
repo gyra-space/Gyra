@@ -197,7 +197,7 @@ Edit this file and set your API keys:
 vi ~/.gyra/configs/gyra-proxy-aliyun.toml
 ```
 
-#### Start 
+#### Start
 ```
 gyra-server
 ```
@@ -254,7 +254,7 @@ uv run gyra quickstart
 uv run gyra quickstart -p 8888
 ```
 
-After starting, visit http://localhost:7777 and configure models and settings through the web UI.
+After starting, visit http://localhost:8888 and configure models and settings through the web UI.
 
 For detailed instructions, see: [Quick Start Guide](QUICKSTART.md)
 
@@ -272,7 +272,7 @@ uv run python packages/gyra-app/src/gyra_app/gyra_server.py --config configs/gyr
 
 #### Access Web UI
 
-Open your browser and visit [`http://localhost:7777`](http://localhost:7777)
+Open your browser and visit [`http://localhost:8888`](http://localhost:8888)
 
 ### Usage
 
@@ -317,17 +317,17 @@ Multi-Agent collaborating to handle a complex task — from one query to a deliv
 If you find this repository helpful, please cite:
 ```
 @misc{di2025opengyraindustrialframeworkaidriven,
-      title={Gyra: An Industrial Framework for AI-Driven SRE, with Design, Implementation, and Case Studies}, 
+      title={Gyra: An Industrial Framework for AI-Driven SRE, with Design, Implementation, and Case Studies},
       author={Peng Di and Faqiang Chen and Xiao Bai and Hongjun Yang and Qingfeng Li and Ganglin Wei and Jian Mou and Feng Shi and Keting Chen and Peng Tang and Zhitao Shen and Zheng Li and Wenhui Shi and Junwei Guo and Hang Yu},
       year={2025},
       eprint={2510.13561},
       archivePrefix={arXiv},
       primaryClass={cs.SE},
-      url={https://arxiv.org/abs/2510.13561}, 
+      url={https://arxiv.org/abs/2510.13561},
 }
 ```
 
-### Acknowledgement 
+### Acknowledgement
 - [DB-GPT](https://github.com/eosphoros-ai/DB-GPT)
 - [GPT-Vis](https://github.com/antvis/GPT-Vis)
 - [MetaGPT](https://github.com/FoundationAgents/MetaGPT)

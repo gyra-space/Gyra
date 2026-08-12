@@ -373,6 +373,96 @@ def _ensure_default_permission_definitions(dao: PermissionDao) -> None:
 
 # Track whether migration has run in this process
 _migration_done = False
+_workspace_migration_done = False
+
+
+def migrate_workspace_owners() -> None:
+    """One-time migration: mock 用户(owner_user_id=0)创建的空间迁移给 admin。
+
+    登录未开启时,前端用 mock 用户身份(user_no="0")建空间,owner 记录为 0。
+    开启系统登录后 admin 是真实 DB 用户,而 workspace 列表按成员过滤,
+    导致这些空间在 admin 名下不可见。本迁移把这些空间的 owner 和成员记录
+    一并转移给第一个 admin 用户,使其成为正式 owner(配合列表 admin 绕过)。
+    """
+    global _workspace_migration_done
+    if _workspace_migration_done:
+        return
+    _workspace_migration_done = True
+
+    try:
+        from gyra_app.auth.user_service import UserEntity
+        from gyra.storage.metadata.db_manager import db
+        from gyra_serve.workspace.models.models import (
+            WorkspaceEntity,
+            WorkspaceMemberEntity,
+        )
+
+        with db.session(commit=False) as s:
+            # 找到第一个 admin 用户作为空间归属目标
+            admin_user = (
+                s.query(UserEntity)
+                .filter(UserEntity.name == "admin")
+                .first()
+            )
+            if not admin_user:
+                logger.debug("migrate_workspace_owners: no admin user found, skip")
+                return
+            admin_id = admin_user.id
+
+            migrated_ws = 0
+            migrated_members = 0
+
+            # 1. mock 用户(owner_user_id=0)拥有的空间 -> owner 改给 admin
+            mock_ws = (
+                s.query(WorkspaceEntity)
+                .filter(WorkspaceEntity.owner_user_id == 0)
+                .all()
+            )
+            mock_ws_ids = [w.id for w in mock_ws]
+            for w in mock_ws:
+                w.owner_user_id = admin_id
+                migrated_ws += 1
+
+            # 2. 这些空间里 user_id=0 的成员记录 -> 改给 admin(避免 owner 无成员记录)
+            if mock_ws_ids:
+                mock_members = (
+                    s.query(WorkspaceMemberEntity)
+                    .filter(
+                        WorkspaceMemberEntity.workspace_id.in_(mock_ws_ids),
+                        WorkspaceMemberEntity.user_id == 0,
+                    )
+                    .all()
+                )
+                for m in mock_members:
+                    existing = (
+                        s.query(WorkspaceMemberEntity)
+                        .filter(
+                            WorkspaceMemberEntity.workspace_id == m.workspace_id,
+                            WorkspaceMemberEntity.user_id == admin_id,
+                        )
+                        .first()
+                    )
+                    if existing:
+                        # admin 已是成员:owner 记录保留,删掉 mock 冗余成员行
+                        if m.role == "owner" and existing.role not in ("owner", "admin"):
+                            existing.role = "owner"
+                        s.delete(m)
+                    else:
+                        m.user_id = admin_id
+                    migrated_members += 1
+
+            if migrated_ws or migrated_members:
+                s.commit()
+                logger.info(
+                    "migrate_workspace_owners: migrated %d workspaces and "
+                    "%d member records from mock user(0) to admin user id=%s",
+                    migrated_ws, migrated_members, admin_id,
+                )
+            else:
+                logger.debug("migrate_workspace_owners: no workspaces owned by mock user")
+
+    except Exception as e:
+        logger.warning(f"migrate_workspace_owners: migration failed: {e}")
 
 
 def migrate_conversation_user_names() -> None:

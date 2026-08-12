@@ -43,6 +43,42 @@ def _is_permissions_enabled() -> bool:
         return False
 
 
+def is_admin_user(user_id: Optional[int]) -> bool:
+    """判断用户是否为 admin/superadmin(超管可见所有数据)。
+
+    判定依据(任一命中即返回 True,全部失败兜底 False):
+    1. RBAC 角色名含 ``admin`` / ``superadmin``(user_role 关联表,最可靠);
+    2. 兼容存量:user 表 legacy ``role`` 列 == "admin"。
+
+    全程防御式实现:权限表不存在 / 数据库异常时不抛错,视为非 admin。
+    """
+    if user_id is None:
+        return False
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    try:
+        from gyra_app.feature_plugins.permissions.service import PermissionService
+
+        perms = PermissionService().get_user_permissions(uid)
+        if "admin" in perms.role_names or "superadmin" in perms.role_names:
+            return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"is_admin_user: RBAC role check failed for user {uid}: {e}")
+    try:
+        from gyra_app.auth.user_service import UserEntity
+        from gyra.storage.metadata.db_manager import db
+
+        with db.session(commit=False) as s:
+            user_obj = s.query(UserEntity).filter(UserEntity.id == uid).first()
+            if user_obj and user_obj.role == "admin":
+                return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"is_admin_user: legacy role check failed for user {uid}: {e}")
+    return False
+
+
 def get_user_from_headers(
     request: Request = None,
     x_user_id: Optional[str] = Header(None, alias="X-User-ID"),

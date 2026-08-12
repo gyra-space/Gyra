@@ -81,3 +81,9 @@ def register_enabled_feature_plugin_routers(app: FastAPI) -> None:
         # Migrate old conversation user_name from mock IDs to real usernames
         from gyra_app.feature_plugins.permissions.seed import migrate_conversation_user_names
         migrate_conversation_user_names()
+
+    # Migrate workspaces owned by the mock user (owner_user_id=0) to admin,
+    # so they remain visible/manageable after enabling auth. 幂等且廉价,
+    # 每次启动兜底执行,覆盖「仅开启 OAuth 登录、未启用权限插件」的场景。
+    from gyra_app.feature_plugins.permissions.seed import migrate_workspace_owners
+    migrate_workspace_owners()

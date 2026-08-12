@@ -65,6 +65,9 @@ class WorkspaceListFilter(BaseModel):
     )
     scenario_type: Optional[str] = None
     include_archived: bool = False
+    bypass_membership: bool = Field(
+        False, description="admin/superadmin bypass: 返回全部未删除空间(忽略成员过滤)"
+    )
 
 
 class HomeWorkspaceRequest(BaseModel):

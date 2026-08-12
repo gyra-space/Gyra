@@ -123,10 +123,16 @@ async def list_workspaces(
     service: Service = Depends(get_service),
 ) -> Result:
     try:
+        # admin/superadmin 全量可见:跳过成员过滤,返回全部未删除空间;
+        # 其余用户仍只看「自己的 + 作为成员加入的」空间。
+        from gyra_serve.utils.auth import is_admin_user
+
+        bypass = is_admin_user(filter_request.user_id)
         return Result.succ(service.list_workspaces(
             user_id=filter_request.user_id,
             scenario_type=filter_request.scenario_type,
             include_archived=filter_request.include_archived,
+            bypass_membership=bypass,
         ))
     except Exception as e:
         logger.exception("workspace list exception!")

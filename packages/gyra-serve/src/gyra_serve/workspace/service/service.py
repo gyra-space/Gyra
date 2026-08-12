@@ -246,13 +246,14 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
 
     def list_workspaces(
         self, user_id: Optional[int], scenario_type: Optional[str] = None,
-        include_archived: bool = False,
+        include_archived: bool = False, bypass_membership: bool = False,
     ) -> List[WorkspaceResponse]:
         return self._dao.filter_list(
             WorkspaceListFilter(
                 user_id=user_id,
                 scenario_type=scenario_type,
                 include_archived=include_archived,
+                bypass_membership=bypass_membership,
             )
         )
 

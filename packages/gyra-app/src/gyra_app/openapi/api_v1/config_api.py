@@ -1136,6 +1136,18 @@ async def update_oauth2_config(oauth2_data: Dict[str, Any]):
         except Exception as e:
             logger.warning(f"Failed to save OAuth2 to file (non-critical): {e}")
 
+        # 开启系统登录后,mock 用户(owner_user_id=0)创建的空间对真实 admin 不可见,
+        # 这里幂等触发存量迁移:把 mock 用户的空间/成员记录转移给 admin。
+        if enabled:
+            try:
+                from gyra_app.feature_plugins.permissions.seed import (
+                    migrate_workspace_owners,
+                )
+
+                migrate_workspace_owners()
+            except Exception as e:
+                logger.warning(f"migrate_workspace_owners on oauth enable failed: {e}")
+
         return JSONResponse(
             content={
                 "success": True,

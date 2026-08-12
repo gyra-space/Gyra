@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union
+import threading
+from typing import Any, Dict, List, Optional, Set, Union
 
 from fastapi import HTTPException
 
@@ -39,6 +40,11 @@ from .spec_service import DbSpecService
 logger = logging.getLogger(__name__)
 CFG = Config()
 
+# 周期扫描间隔（秒）：后台线程定期扫描残留的学习任务并恢复。
+# stale 判定本身有 SUBTASK_STALE_TIMEOUT(默认 300s) 窗口，快速重启时任务
+# gmt_modified 尚未超时不会被首轮扫到，靠此周期扫描兜底续跑。
+RECOVERY_SCAN_INTERVAL_SECONDS = 60
+
 
 class Service(
     BaseService[ConnectConfigEntity, DatasourceServeRequest, DatasourceServeResponse]
@@ -61,6 +67,11 @@ class Service(
         self._learning_service: Optional[SchemaLearningService] = None
         self._spec_service: Optional[DbSpecService] = None
         self._file_learning: Optional[Any] = None
+        # 后台学习任务恢复扫描线程（快速重启兜底）
+        self._recovery_stop_event: Optional[threading.Event] = None
+        self._recovery_thread: Optional[threading.Thread] = None
+        # 进程内已提交恢复的任务 ID，防止周期扫描重复提交同一任务
+        self._recovering_task_ids: Set[int] = set()
 
         super().__init__(system_app)
 
@@ -77,10 +88,53 @@ class Service(
 
     def after_start(self):
         """Execute after the application starts"""
+        # 启动时立即扫描一次（处理正常停机时间较长的场景）
         try:
             self._recover_stale_tasks()
         except Exception as e:
             logger.error(f"[RECOVERY] Failed to recover stale tasks: {e}")
+        # 再启动周期扫描线程兜底：快速重启时任务 gmt_modified 未超时，
+        # 首轮扫不到，待 stale 窗口过后由后台线程自动恢复
+        self._start_recovery_loop()
+
+    def before_stop(self):
+        """Execute before the application stops"""
+        self._stop_recovery_loop()
+        super().before_stop()
+
+    def _start_recovery_loop(self) -> None:
+        """Start a daemon thread that periodically scans stale learning tasks."""
+        if self._recovery_thread is not None:
+            return
+        self._recovery_stop_event = threading.Event()
+        self._recovery_thread = threading.Thread(
+            target=self._recovery_loop,
+            name="learning-task-recovery",
+            daemon=True,
+        )
+        self._recovery_thread.start()
+        logger.info(
+            f"[RECOVERY] Periodic scan started (interval={RECOVERY_SCAN_INTERVAL_SECONDS}s)"
+        )
+
+    def _recovery_loop(self) -> None:
+        """Periodically recover learning tasks interrupted by a restart."""
+        assert self._recovery_stop_event is not None
+        while not self._recovery_stop_event.wait(RECOVERY_SCAN_INTERVAL_SECONDS):
+            try:
+                self._recover_stale_tasks()
+            except Exception as e:
+                logger.error(f"[RECOVERY] Periodic scan failed: {e}")
+
+    def _stop_recovery_loop(self) -> None:
+        """Stop the periodic recovery scan thread."""
+        if self._recovery_thread is None:
+            return
+        if self._recovery_stop_event is not None:
+            self._recovery_stop_event.set()
+        self._recovery_thread.join(timeout=5)
+        self._recovery_thread = None
+        self._recovery_stop_event = None
 
     def _recover_stale_tasks(self):
         """Auto-recover learning tasks that were interrupted by a crash/restart."""
@@ -100,22 +154,38 @@ class Service(
 
         for task in stale_tasks:
             ds_id = task["datasource_id"]
+            task_id = task["id"]
+            # 进程内防重：同一任务（如 finalizing 耗时超过扫描间隔）不重复恢复
+            if task_id in self._recovering_task_ids:
+                continue
             db_config = self._dao.get_one({"id": ds_id})
             if not db_config:
                 logger.warning(
-                    f"[RECOVERY] Datasource {ds_id} not found, skipping task {task['id']}"
+                    f"[RECOVERY] Datasource {ds_id} not found, skipping task {task_id}"
                 )
                 continue
             logger.info(
-                f"[RECOVERY] Resuming task {task['id']} for datasource {ds_id}"
+                f"[RECOVERY] Resuming task {task_id} for datasource {ds_id}"
             )
+            self._recovering_task_ids.add(task_id)
             executor.submit(
-                self.learning_service.resume_stale_task,
-                task["id"],
+                self._run_recovery,
+                task_id,
                 ds_id,
                 db_config.db_name,
                 db_config.db_type,
             )
+
+    def _run_recovery(
+        self, task_id: int, datasource_id: int, db_name: str, db_type: str
+    ) -> None:
+        """Run recovery for one task, releasing the in-process dedup lock."""
+        try:
+            self.learning_service.resume_stale_task(
+                task_id, datasource_id, db_name, db_type
+            )
+        finally:
+            self._recovering_task_ids.discard(task_id)
 
     @property
     def dao(
