@@ -162,6 +162,11 @@ class DbLearningSubtaskDao(BaseDao):
         on both SQLite (database-level write lock) and MySQL InnoDB
         (row-level lock on the subquery result).
 
+        The inner SELECT is wrapped in a derived table so MySQL does not
+        reject it with error 1093 ("can't specify target table for update
+        in FROM clause"). SQLite has no such restriction and accepts the
+        extra layer unchanged.
+
         Returns {"id": ..., "table_name": ...} or None if no work left.
         """
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -174,12 +179,14 @@ class DbLearningSubtaskDao(BaseDao):
                     claimed_at = :now,
                     gmt_modified = :now
                 WHERE id = (
-                    SELECT id FROM db_learning_subtask
-                    WHERE task_id = :task_id
-                      AND status = 'pending'
-                      AND attempt_count < max_attempts
-                    ORDER BY id
-                    LIMIT 1
+                    SELECT id FROM (
+                        SELECT id FROM db_learning_subtask
+                        WHERE task_id = :task_id
+                          AND status = 'pending'
+                          AND attempt_count < max_attempts
+                        ORDER BY id
+                        LIMIT 1
+                    ) AS t
                 )
             """), {
                 "worker_id": worker_id,
