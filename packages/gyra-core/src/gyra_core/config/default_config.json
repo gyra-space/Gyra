@@ -15,9 +15,9 @@
   },
   "web": {
     "host": "0.0.0.0",
-    "port": 7777,
+    "port": 8888,
     "model_storage": "database",
-    "web_url": "http://localhost:7777",
+    "web_url": "http://localhost:8888",
     "database": {
       "type": "sqlite",
       "path": "pilot/meta_data/gyra.db",

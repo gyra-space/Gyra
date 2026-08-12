@@ -145,7 +145,7 @@ class RagParameters(BaseParameters):
 class ServiceWebParameters(BaseParameters):
     host: str = field(default="0.0.0.0", metadata={"help": _("Webserver deploy host")})
     port: int = field(
-        default=7777, metadata={"help": _("Webserver deploy port, default is 7777")}
+        default=8888, metadata={"help": _("Webserver deploy port, default is 8888")}
     )
     light: Optional[bool] = field(
         default=False, metadata={"help": _("Run Webserver in light mode")}

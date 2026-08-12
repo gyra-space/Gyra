@@ -92,8 +92,8 @@ def run():
     "-p",
     "--port",
     type=int,
-    default=7777,
-    help="Server port (default: 7777)",
+    default=8888,
+    help="Server port (default: 8888)",
 )
 @click.option(
     "-h",
@@ -110,14 +110,14 @@ def quickstart(config: str, port: int, host: str):
         gyra quickstart -p 8888            # Start on port 8888
         gyra quickstart -c config.toml     # Start with config file
 
-    After starting, open http://localhost:7777 to configure models and settings.
+    After starting, open http://localhost:8888 to configure models and settings.
     """
     import os
     import sys
 
     if config:
         os.environ["GYRA_CONFIG_FILE"] = config
-    if port != 7777:
+    if port != 8888:
         os.environ["GYRA_WEB_PORT"] = str(port)
     if host != "0.0.0.0":
         os.environ["GYRA_WEB_HOST"] = host

@@ -1244,7 +1244,7 @@ class SimpleDistributedStorage(StorageBackend):
 
         # Construct URL. For non-public bind addresses (e.g. 0.0.0.0, localhost),
         # return a relative URL so the browser uses whatever host it is currently
-        # accessing. This avoids broken absolute URLs like http://0.0.0.0:7777
+        # accessing. This avoids broken absolute URLs like http://0.0.0.0:8888
         # when the service is deployed behind a reverse proxy or on a remote host.
         if public_host:
             url = f"http://{node_address}{self._api_prefix}/{bucket}/{file_id}"

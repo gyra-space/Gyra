@@ -63,7 +63,7 @@ class Client:
 
         Args:
             api_base: Optional[str], a full URL for the GYRA API.
-                Defaults to the `http://localhost:7777/api/v2`.
+                Defaults to the `http://localhost:8888/api/v2`.
             api_key: Optional[str], The gyra api key to use for authentication.
                 Defaults to None.
             timeout: Optional[httpx._types.TimeoutTypes]: The timeout to use.
@@ -79,14 +79,14 @@ class Client:
 
             from gyra_client import Client
 
-            GYRA_API_BASE = "http://localhost:7777/api/v2"
+            GYRA_API_BASE = "http://localhost:8888/api/v2"
             GYRA_API_KEY = "gyra"
             client = Client(api_base=GYRA_API_BASE, api_key=GYRA_API_KEY)
             client.chat(model="chatgpt_proxyllm", messages="Hello?")
         """
         if not api_base:
             api_base = os.getenv(
-                "GYRA_API_BASE", f"http://localhost:7777/{CLIENT_API_PATH}/{version}"
+                "GYRA_API_BASE", f"http://localhost:8888/{CLIENT_API_PATH}/{version}"
             )
         if not api_key:
             api_key = os.getenv("GYRA_API_KEY")
@@ -157,7 +157,7 @@ class Client:
 
             from gyra_client import Client
 
-            GYRA_API_BASE = "http://localhost:7777/api/v2"
+            GYRA_API_BASE = "http://localhost:8888/api/v2"
             GYRA_API_KEY = "gyra"
             client = Client(api_base=GYRA_API_BASE, api_key=GYRA_API_KEY)
             res = await client.chat(model="chatgpt_proxyllm", messages="Hello?")
@@ -233,7 +233,7 @@ class Client:
 
             from gyra_client import Client
 
-            GYRA_API_BASE = "http://localhost:7777/api/v2"
+            GYRA_API_BASE = "http://localhost:8888/api/v2"
             GYRA_API_KEY = "gyra"
             client = Client(api_base=GYRA_API_BASE, api_key=GYRA_API_KEY)
             res = await client.chat_stream(model="chatgpt_proxyllm", messages="Hello?")

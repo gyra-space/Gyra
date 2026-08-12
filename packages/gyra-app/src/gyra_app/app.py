@@ -210,7 +210,7 @@ def load_config(config_file: str = None) -> ApplicationConfig:
         logger.info("[Config] No TOML file found, using zero configuration mode")
         logger.info(
             f"Starting with zero configuration (no TOML file needed). "
-            f"Configure models and settings through the web UI at http://localhost:7777"
+            f"Configure models and settings through the web UI at http://localhost:8888"
         )
 
         # 支持环境变量覆盖端口和主机
@@ -226,7 +226,7 @@ def load_config(config_file: str = None) -> ApplicationConfig:
             service=ServiceConfig(
                 web=ServiceWebParameters(
                     host=env_host or "0.0.0.0",
-                    port=int(env_port) if env_port else 7777,
+                    port=int(env_port) if env_port else 8888,
                     database=SQLiteConnectorParameters(
                         path="pilot/meta_data/gyra.db",
                         check_same_thread=False,
@@ -738,7 +738,7 @@ def _verify_model_cache_on_startup():
                 "[Startup Verification]   1. Configure agent_llm in ~/.gyra/gyra.json"
             )
             logger.warning(
-                "[Startup Verification]   2. Or call: curl -X POST http://localhost:7777/api/v1/config/refresh-model-cache"
+                "[Startup Verification]   2. Or call: curl -X POST http://localhost:8888/api/v1/config/refresh-model-cache"
             )
     except Exception as e:
         logger.error(

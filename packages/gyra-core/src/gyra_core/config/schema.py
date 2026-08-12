@@ -342,9 +342,9 @@ class WebServiceConfig(BaseModel):
     """Web 服务配置"""
 
     host: str = "0.0.0.0"
-    port: int = 7777
+    port: int = 8888
     model_storage: str = "database"
-    web_url: str = "http://localhost:7777"
+    web_url: str = "http://localhost:8888"
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
 
 

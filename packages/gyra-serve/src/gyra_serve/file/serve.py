@@ -163,7 +163,7 @@ class Serve(BaseServe):
             """Rewrite absolute file-API URLs that point to a non-routable host.
 
             Storage backends such as SimpleDistributedStorage may return
-            ``http://0.0.0.0:7777/api/v2/serve/file/files/...``. When the host is
+            ``http://0.0.0.0:8888/api/v2/serve/file/files/...``. When the host is
             not public, convert to a relative URL so browsers use the host they
             are currently accessing.
             """
@@ -205,7 +205,7 @@ class Serve(BaseServe):
             if _is_public_host(host):
                 return f"http://{node_address}{api_prefix}/files/{bucket}/{file_id}"
             # Use a relative URL so the browser uses whatever host it is currently
-            # accessing. This avoids broken absolute URLs like http://0.0.0.0:7777
+            # accessing. This avoids broken absolute URLs like http://0.0.0.0:8888
             # when the service is deployed behind a reverse proxy or on a remote host.
             # If an absolute public URL is required (e.g. for external LLM providers),
             # configure gyra.serve.file.host to the public hostname/IP.

@@ -24,7 +24,7 @@ encrypt_key = "${env:ENCRYPT_KEY:-your_secret_key_change_in_production}"
 # ---------- 应用数据库 (复用为分布式关系库) ----------
 [service.web]
 host = "0.0.0.0"
-port = "${env:WEB_SERVER_PORT:-7777}"
+port = "${env:WEB_SERVER_PORT:-8888}"
 
 # 单库模式：直接配 Postgres，配合 pgvector 扩展即可同时承担关系 + 向量
 [service.web.database]

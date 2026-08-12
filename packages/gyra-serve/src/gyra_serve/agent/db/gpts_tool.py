@@ -22,8 +22,8 @@ from gyra.storage.metadata import BaseDao, Model
 
 logger = logging.getLogger(__name__)
 NEX_DOMAIN = {
-    "prepub": "http://localhost:7777",
-    "prod": "http://localhost:7777",
+    "prepub": "http://localhost:8888",
+    "prod": "http://localhost:8888",
 }
 
 

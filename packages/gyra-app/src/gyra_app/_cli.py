@@ -40,7 +40,7 @@ def start_webserver(config: str, daemon: bool):
     """Start webserver(gyra_server.py)
 
     If no config file is provided, starts with zero configuration.
-    Configure models and settings through the web UI at http://localhost:7777
+    Configure models and settings through the web UI at http://localhost:8888
     """
     if daemon:
         log_file = os.path.join(LOGDIR, "webserver_uvicorn.log")
