@@ -90,32 +90,28 @@ export function useChatPolling({
 
   const startPolling = useCallback(() => {
     if (!convId || !enabled) return;
-    
+
     setIsPolling(true);
-    
-    // 立即检查一次
-    checkStatus().then(result => {
-      if (result && !isInProgress(result.state)) {
-        // 已是终态，不开始轮询
-        setIsPolling(false);
-        return;
-      }
-      
-      // 开始轮询
-      intervalRef.current = setInterval(async () => {
-        const status = await checkStatus();
-        
-        if (status && !isInProgress(status.state)) {
-          // 对话完成或失败，停止轮询
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-          }
-          setIsPolling(false);
-          onCompleteRef.current?.(status);
+
+    // convId effect 已确认会话处于 inProgress(RUNNING/WAITING)才调本方法,这里
+    // 不再重复 checkStatus:第二次查询会与后端 save_conversation(可能瞬时把状态
+    // 置 COMPLETE)/resume 竞争,误读终态而放弃轮询,导致异步任务 resume 后的输出
+    // 页面收不到(用户只看到"已提交后台执行"就结束,看不到子 Agent 回复/后续)。
+    // setInterval 内部 checkStatus 负责在真正到达终态时停止,且每次都触发 onPoll
+    // 合并 vis_final(含 resume 内容),终态那次也会刷新视图。
+    intervalRef.current = setInterval(async () => {
+      const status = await checkStatus();
+
+      if (status && !isInProgress(status.state)) {
+        // 对话完成或失败，停止轮询
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
         }
-      }, interval);
-    });
+        setIsPolling(false);
+        onCompleteRef.current?.(status);
+      }
+    }, interval);
   }, [convId, enabled, checkStatus, interval]);
 
   const stopPolling = useCallback(() => {
