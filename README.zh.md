@@ -28,7 +28,7 @@ Gyra 是一个 AI 原生的**可信业务循环工作空间** —— 基于**三
 </div>
 
 <p align="center">
-  <img src="./docs/img/gyra_flywheel_cover.jpg" width="100%" />
+  <img src="./docs/img/gyra_flywheel_cover.png" width="100%" />
 </p>
 
 ### 为什么是 Loop 工程？
@@ -252,7 +252,7 @@ uv run gyra quickstart
 uv run gyra quickstart -p 8888
 ```
 
-启动后访问 http://localhost:7777，通过 Web UI 配置模型和其他设置。
+启动后访问 http://localhost:8888，通过 Web UI 配置模型和其他设置。
 
 详细说明请查看: [快速启动指南](QUICKSTART.md)
 
@@ -270,7 +270,7 @@ uv run python packages/gyra-app/src/gyra_app/gyra_server.py --config configs/gyr
 
 #### 访问 Web 界面
 
-打开浏览器访问 [`http://localhost:7777`](http://localhost:7777)
+打开浏览器访问 [`http://localhost:8888`](http://localhost:8888)
 
 ### 使用说明
 
