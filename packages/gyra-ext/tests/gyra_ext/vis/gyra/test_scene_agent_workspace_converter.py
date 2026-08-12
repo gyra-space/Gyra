@@ -194,7 +194,23 @@ async def test_text_after_tool_stays_summary():
     )
     assert payload["summary"] == "已找到可用模型"
     steps = payload["execution"]
-    assert [s["type"] for s in steps] == ["thinking", "tool_call"]
+    # 最终回复同时作为 answer step 进 execution(跨轮保留),顺序仍在工具之后
+    assert [s["type"] for s in steps] == ["thinking", "tool_call", "answer"]
+    assert steps[-1]["output"] == "已找到可用模型"
+
+
+@pytest.mark.asyncio
+async def test_final_reply_also_becomes_answer_step():
+    """本轮最终回复除进 summary 外,也作为 answer step 进 execution(稳定 id=answer-{mid}),
+    跨轮按 id 合并保留,避免前端 summary 单值被新轮覆盖丢失历史回复。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    msgs = [_make_gpt_msg(content="这是最终回答", message_id="m7")]
+    payload = _extract_payload(await conv.final_view(messages=msgs))
+    assert payload["summary"] == "这是最终回答"
+    answer_steps = [s for s in payload["execution"] if s["type"] == "answer"]
+    assert len(answer_steps) == 1
+    assert answer_steps[0]["id"] == "answer-m7"
+    assert answer_steps[0]["output"] == "这是最终回答"
 
 
 @pytest.mark.asyncio

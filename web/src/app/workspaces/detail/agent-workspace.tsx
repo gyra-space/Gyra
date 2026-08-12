@@ -11,6 +11,8 @@ import DockPanel from '@/components/chat/dock/dock-panel';
 import type { AgentWorkspaceInputHandle, WorkspaceDeliverableFile } from './agent-workspace-types';
 import { useSceneAgentChat } from './use-scene-agent-chat';
 import { useUserInput } from '@/hooks/use-user-input';
+import { useRequest } from 'ahooks';
+import { getAppInfo } from '@/client/api/request';
 
 export interface AgentWorkspaceProps {
   convUid?: string;
@@ -68,7 +70,7 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps) {
   const inputRefInner = useRef<AgentWorkspaceInputHandle>(null);
   const inputRef = inputRefProp ?? inputRefInner;
-  const { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, dockWidgets, send, abort, clearSteps, clearWorkspaceView } = useSceneAgentChat({
+  const { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView } = useSceneAgentChat({
     convUid,
     appCode,
     workspaceId,
@@ -89,6 +91,11 @@ export function AgentWorkspace({
   const running = loading || convState === 'RUNNING';
   // 运行中提交作为"补充输入"投递到后端队列(不开新 SSE 流,不中止当前生成)
   const { submitUserInput } = useUserInput(convUid);
+  // Agent 头像数据:appCode 对应 app 的 icon/name(与通用聊天页同源)
+  const { data: appInfo } = useRequest(
+    () => (appCode ? getAppInfo({ app_code: appCode }) : Promise.resolve(null)),
+    { refreshDeps: [appCode] },
+  );
 
   // ask_user 交互确认后续跑:复用同一 conv_uid 发一条新消息,后端
   // `_initialize_agent_conversation` 检测到 WAITING 会话后恢复 Agent loop。
@@ -172,6 +179,8 @@ export function AgentWorkspace({
               onTaskClick={onTaskClick}
               onSubagentClick={onSubagentClick}
               onInteractionResume={resumeInteraction}
+              agentIcon={appInfo?.icon}
+              agentName={appInfo?.app_name}
             />
           )}
         </div>
@@ -181,7 +190,15 @@ export function AgentWorkspace({
           <AgentWorkspaceInput
             ref={inputRef}
             convUid={convUid}
-            onSend={(p) => (running ? submitUserInput(p.text) : send(p))}
+            onSend={(p) => {
+              if (running) {
+                // 运行中追问:乐观上屏用户气泡 + 投递补充输入队列
+                appendOptimisticUser(p.text);
+                submitUserInput(p.text);
+              } else {
+                send(p);
+              }
+            }}
             loading={loading}
             onStop={abort}
             disabled={!convUid || switchingTask}

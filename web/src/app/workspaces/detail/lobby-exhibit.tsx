@@ -29,6 +29,17 @@ import type { LobbyExhibit } from './agent-workspace-types';
    公共辅助
    ═══════════════════════════════════════════════════════════════ */
 
+/** 将 agent_files 直接下载路径路由到 preview 端点。
+ * 直接下载端点(/files/agent_files/{id})恒返回 octet-stream+attachment,iframe 无法内联渲染
+ * HTML 等可预览类型;preview 端点按文件名推断 MIME,对 text/html 等返回 inline 使其可渲染
+ * (与对话侧交付文件预览行为保持一致)。 */
+export function resolveAgentFilePreviewUrl(raw: string): string {
+  const m = raw.match(/\/api\/v2\/serve\/file\/files\/agent_files\/([^?#]+)/);
+  if (!m) return '';
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+  return `${apiBaseUrl}/api/v2/serve/file/files/preview?bucket=agent_files&file_id=${encodeURIComponent(m[1])}`;
+}
+
 /** 解析 Exhibit 来源为可访问 URL(inline 内容无 URL,返回 '') */
 export function resolveExhibitUrl(exhibit: LobbyExhibit): string {
   const { uri, url } = exhibit.source;
@@ -38,6 +49,9 @@ export function resolveExhibitUrl(exhibit: LobbyExhibit): string {
   if (raw.startsWith('gyra-fs://')) {
     return `${apiBaseUrl}/api/v2/serve/file/files/preview?uri=${encodeURIComponent(raw)}`;
   }
+  // agent_files 直接下载路径 → 走 preview 端点(返回 inline,HTML 可内联渲染)
+  const agentFilePreview = resolveAgentFilePreviewUrl(raw);
+  if (agentFilePreview) return agentFilePreview;
   if (raw.startsWith('/')) return `${apiBaseUrl}${raw}`;
   return transformFileUrl(raw);
 }

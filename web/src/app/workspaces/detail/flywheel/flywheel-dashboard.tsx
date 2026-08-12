@@ -19,6 +19,7 @@ import {
 import { useRequest } from 'ahooks';
 import {
   listAgentMaturity,
+  listAssetsByMaturity,
   listEvolutionProposals,
 } from '@/client/api/flywheel';
 
@@ -249,11 +250,33 @@ export function FlywheelDashboard({ workspaceId }: FlywheelDashboardProps) {
     { refreshDeps: [workspaceId] },
   );
 
-  // 资产成熟度分布(TODO: 接入真实资产聚合 API)
-  const maturityStats = useMemo(
-    () => ({ draft: 3, proposed: 5, confirmed: 8, published: 2, canonical: 1 }),
-    [],
+  // 资产成熟度分布(按真实资产成熟度聚合)
+  const { data: assetData } = useRequest(
+    async () => {
+      const res = await listAssetsByMaturity({
+        workspace_id: workspaceId,
+        min_maturity: 'draft',
+        limit: 1000,
+      });
+      return res.data?.data || [];
+    },
+    { refreshDeps: [workspaceId] },
   );
+
+  const maturityStats = useMemo(() => {
+    const stats: Record<string, number> = {
+      draft: 0,
+      proposed: 0,
+      confirmed: 0,
+      published: 0,
+      canonical: 0,
+    };
+    (assetData || []).forEach((a) => {
+      const key = a.maturity || 'draft';
+      stats[key] = (stats[key] || 0) + 1;
+    });
+    return stats;
+  }, [assetData]);
 
   const stageStats = useMemo(() => {
     if (!agentData) return {};

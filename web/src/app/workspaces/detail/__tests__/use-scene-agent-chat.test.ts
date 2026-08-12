@@ -1,4 +1,6 @@
 import { buildSceneAgentSendData, type SceneAgentSendPayload } from '../scene-agent-send-data';
+import { dedupOptimisticUser } from '../dedup-optimistic-user';
+import type { WorkspaceExecutionStep } from '../agent-workspace-types';
 import { parseSceneAgentWorkspaceString } from '../parse-scene-agent-workspace-string';
 
 describe('buildSceneAgentSendData', () => {
@@ -139,5 +141,39 @@ describe('parseSceneAgentWorkspaceString', () => {
   test('bare JSON that is not an object (e.g. array or number string) → null for non-object', () => {
     expect(parseSceneAgentWorkspaceString('[1,2,3]')).toBeNull();
     expect(parseSceneAgentWorkspaceString('"a string"')).toBeNull();
+  });
+});
+
+
+describe('dedupOptimisticUser', () => {
+  test('后端回显同文本 user 步骤后移除乐观步骤', () => {
+    const exec: WorkspaceExecutionStep[] = [
+      { id: 'user-optimistic-1', type: 'user', title: '我', status: 'done', output: '你好' },
+      { id: 'user-msg-1', type: 'user', title: '我', status: 'done', output: '你好' },
+    ];
+    expect(dedupOptimisticUser(exec).map(e => e.id)).toEqual(['user-msg-1']);
+  });
+
+  test('服务端 output 截断时用前缀匹配去重(乐观文本以后端回显开头)', () => {
+    const exec: WorkspaceExecutionStep[] = [
+      { id: 'user-optimistic-1', type: 'user', title: '我', status: 'done', output: '这是一段很长的提问内容' },
+      { id: 'user-msg-1', type: 'user', title: '我', status: 'done', output: '这是一段' },
+    ];
+    expect(dedupOptimisticUser(exec).map(e => e.id)).toEqual(['user-msg-1']);
+  });
+
+  test('无后端回显时保留乐观步骤', () => {
+    const exec: WorkspaceExecutionStep[] = [
+      { id: 'user-optimistic-1', type: 'user', title: '我', status: 'done', output: '你好' },
+    ];
+    expect(dedupOptimisticUser(exec).map(e => e.id)).toEqual(['user-optimistic-1']);
+  });
+
+  test('不同文本的乐观步骤不去重', () => {
+    const exec: WorkspaceExecutionStep[] = [
+      { id: 'user-optimistic-1', type: 'user', title: '我', status: 'done', output: '问题A' },
+      { id: 'user-msg-1', type: 'user', title: '我', status: 'done', output: '问题B' },
+    ];
+    expect(dedupOptimisticUser(exec).map(e => e.id).sort()).toEqual(['user-msg-1', 'user-optimistic-1']);
   });
 });

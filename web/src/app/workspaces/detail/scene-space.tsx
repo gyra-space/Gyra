@@ -16,7 +16,7 @@ import { AgentWorkspaceRenderer } from './agent-workspace-renderer';
 import { extractAskUserData } from './scene-ask-user-card';
 import { parseWorkspaceView, deliverableFileToExhibit } from './parse-workspace-view';
 import { parseSceneAgentWorkspaceString } from './parse-scene-agent-workspace-string';
-import { ExhibitHost } from './lobby-exhibit';
+import { ExhibitHost, resolveAgentFilePreviewUrl } from './lobby-exhibit';
 import { statusLabel, triggerLabel } from './scene-task-rail';
 import { EcpProposalDetail } from './ecp-proposal-detail';
 import { DataAssetsTab } from './assets/data-assets-tab';
@@ -306,13 +306,17 @@ function PayloadFields({ payload }: { payload: Record<string, any> }) {
   );
 }
 
-/** 解析 artifact content_ref 为可访问 URL(支持 gyra-fs:// / 相对路径) */
+/** 解析 artifact content_ref 为可访问 URL(支持 gyra-fs:// / agent_files 下载 / 相对路径)。
+ * agent_files 直接下载路径恒返回 octet-stream+attachment,iframe 无法内联渲染 HTML 等类型;
+ * 统一路由到 preview 端点(按文件名推断 MIME,对 text/html 返回 inline),与对话侧交付文件预览行为一致。 */
 function resolveArtifactFileUrl(raw: string): string {
   if (!raw) return '';
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
   if (raw.startsWith('gyra-fs://')) {
     return `${apiBaseUrl}/api/v2/serve/file/files/preview?uri=${encodeURIComponent(raw)}`;
   }
+  const agentFilePreview = resolveAgentFilePreviewUrl(raw);
+  if (agentFilePreview) return agentFilePreview;
   if (raw.startsWith('/')) return `${apiBaseUrl}${raw}`;
   return transformFileUrl(raw);
 }

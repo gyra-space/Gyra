@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { GPTVis } from '@antv/gpt-vis';
 import {
   LoadingOutlined,
@@ -26,6 +26,10 @@ import {
 import { Tooltip } from 'antd';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
 import { transformFileUrl } from '@/utils';
+import { AgentAvatar } from '@/components/common/agent-avatar';
+import UserAvatar from '@/components/common/user-avatar';
+import { STORAGE_USERINFO_KEY } from '@/utils/constants/index';
+import type { UserInfoResponse } from '@/types/userinfo';
 import VisSubagentBoard from '@/components/chat/chat-content-components/VisComponents/VisSubagentBoard';
 import { SceneAskUserCard, extractAskUserData } from './scene-ask-user-card';
 import type {
@@ -94,11 +98,33 @@ function getToolStepIcon(action?: string | null, title?: string) {
   return <FileTextOutlined className="text-gray-400" />;
 }
 
-/** 用户消息气泡(manus left panel 风格) */
-function UserBubble({ text }: { text: string }) {
+/** 用户消息气泡(manus left panel 风格):气泡 + 用户头像(右侧) */
+function UserBubble({ text, avatarUrl, name }: { text: string; avatarUrl?: string | null; name?: string | null }) {
   return (
     <div className="ws-step-user">
       <div className="ws-step-user__bubble">{text}</div>
+      <span className="ws-step-user__avatar">
+        <UserAvatar avatarUrl={avatarUrl} name={name} size={28} />
+      </span>
+    </div>
+  );
+}
+
+/** Agent 最终回复:Agent 头像(左侧) + markdown 回复(与 summary 区同渲染管线) */
+function AnswerBlock({ step, agentIcon, agentName }: { step: WorkspaceExecutionStep; agentIcon?: string | null; agentName?: string | null }) {
+  const text = step.output || '';
+  if (!text) return null;
+  return (
+    <div className="ws-step-answer">
+      <span className="ws-step-answer__avatar">
+        <AgentAvatar icon={agentIcon} name={agentName} size={28} />
+      </span>
+      <div className="ws-step-answer__content">
+        {/* @ts-ignore rehypePlugins type mismatch is pre-existing repo-wide (see chat-detail-content.tsx) */}
+        <GPTVis components={markdownComponents} {...markdownPlugins}>
+          {preprocessLaTeX(text)}
+        </GPTVis>
+      </div>
     </div>
   );
 }
@@ -471,12 +497,26 @@ export interface AgentWorkspaceRendererProps {
   onSubagentClick?: (subConvId: string) => void;
   /** ask_user 交互确认后续跑 Agent 对话(复用同一 conv_uid 恢复 WAITING 会话) */
   onInteractionResume?: (userMessage: string) => void;
+  /** Agent 头像 icon(appCode 对应 app 的 icon) */
+  agentIcon?: string | null;
+  /** Agent 名称(头像回退首字母) */
+  agentName?: string | null;
 }
 
-export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, onTaskClick, onSubagentClick, onInteractionResume }: AgentWorkspaceRendererProps) {
+export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, onTaskClick, onSubagentClick, onInteractionResume, agentIcon, agentName }: AgentWorkspaceRendererProps) {
   const deliverable_files = view.deliverable_files ?? [];
   const task_files = view.task_files ?? [];
   const hasDeliverables = deliverable_files.length > 0;
+  // 用户头像数据:localStorage 一次性读取(全 feed 共享,避免每个 UserBubble 重复 parse)
+  const userInfo = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_USERINFO_KEY) ?? '') as UserInfoResponse | null;
+    } catch {
+      return null;
+    }
+  }, []);
+  // 已有 answer step(每轮最终回复)时,summary 不再单独渲染,避免重复
+  const hasAnswer = view.execution.some((s) => s.type === 'answer');
   // 任务文件含交付文件,过滤掉已在交付卡片中展示的,避免重复
   const extraTaskFiles = task_files.filter(
     (f) => !deliverable_files.some((d) => d.file_id === f.file_id),
@@ -508,7 +548,10 @@ export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, 
       )}
       {view.execution.map((step) => {
         if (step.type === 'user') {
-          return <UserBubble key={step.id} text={step.output || ''} />;
+          return <UserBubble key={step.id} text={step.output || ''} avatarUrl={userInfo?.avatar_url} name={userInfo?.nick_name} />;
+        }
+        if (step.type === 'answer') {
+          return <AnswerBlock key={step.id} step={step} agentIcon={agentIcon} agentName={agentName} />;
         }
         if (step.type === 'thinking') {
           return <ThinkingBlock key={step.id} step={step} />;
@@ -524,12 +567,17 @@ export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, 
         return <ToolStepRow key={step.id} step={step} onStepClick={onStepClick} />;
       })}
       {!view.execution.length && !view.summary && <EmptyState />}
-      {view.summary && (
-        <div className="ws-agent-renderer__summary">
-          {/* @ts-ignore rehypePlugins type mismatch is pre-existing repo-wide (see chat-detail-content.tsx) */}
-          <GPTVis components={markdownComponents} {...markdownPlugins}>
-            {preprocessLaTeX(view.summary)}
-          </GPTVis>
+      {view.summary && !hasAnswer && (
+        <div className="ws-step-answer">
+          <span className="ws-step-answer__avatar">
+            <AgentAvatar icon={agentIcon} name={agentName} size={28} />
+          </span>
+          <div className="ws-step-answer__content">
+            {/* @ts-ignore rehypePlugins type mismatch is pre-existing repo-wide (see chat-detail-content.tsx) */}
+            <GPTVis components={markdownComponents} {...markdownPlugins}>
+              {preprocessLaTeX(view.summary)}
+            </GPTVis>
+          </div>
         </div>
       )}
       {/* 执行记录结尾:交付文件卡片,点击在中间容器打开 */}

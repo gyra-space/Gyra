@@ -11,6 +11,7 @@ import type { DockWidget } from '@/components/chat/dock/dock-types';
 import type { AgentStep } from './agent-types';
 import { parseAgentSteps } from './parse-agent-steps';
 import { parseWorkspaceView } from './parse-workspace-view';
+import { dedupOptimisticUser } from './dedup-optimistic-user';
 import {
   buildSceneAgentSendData,
   type SceneAgentSendPayload,
@@ -45,6 +46,8 @@ interface UseSceneAgentChatResult {
   usageMetrics: UsageMetrics | null;
   /** Composer Dock 协议:输入框上方固定区域 widget map(by id),由 SSE onDock/轮询 dock 帧合并而来 */
   dockWidgets: Record<string, DockWidget>;
+  /** 乐观上屏用户消息(发送/追问即插入视图,不等后端回显) */
+  appendOptimisticUser: (text: string) => void;
   send: (payload: SceneAgentSendPayload) => void;
   abort: () => void;
   clearSteps: () => void;
@@ -137,8 +140,6 @@ export function useSceneAgentChat({
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(EMPTY_WORKSPACE_VIEW);
   const [dockWidgets, setDockWidgets] = useState<Record<string, DockWidget>>({});
   const abortRef = useRef<AbortController | null>(null);
-  // 乐观插入的用户消息:发送即上屏,服务端回显同文本 user 步骤后移除,避免重复
-  const optimisticUserRef = useRef<{ id: string; text: string } | null>(null);
   const { chat, usageMetrics } = useChat({ app_code: appCode || '' });
 
   // 刷新/恢复视图后重注入任务卡片:任务卡片由 SSE task_created 事件注入,
@@ -198,12 +199,38 @@ export function useSceneAgentChat({
     setSteps([]);
     setWorkspaceView(EMPTY_WORKSPACE_VIEW);
     setDockWidgets({});
-    optimisticUserRef.current = null;
   }, []);
 
   const clearWorkspaceView = useCallback(() => {
     setWorkspaceView(EMPTY_WORKSPACE_VIEW);
-    optimisticUserRef.current = null;
+  }, []);
+
+  // 乐观上屏:发送/追问即把用户消息插入视图,不等后端首帧。服务端回显同文本
+  // user 步骤时由 dedupOptimisticUser 移除乐观步骤,避免重复。
+  const appendOptimisticUser = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const optimisticId = `user-optimistic-${Date.now()}`;
+    setWorkspaceView((prev) =>
+      parseWorkspaceView(
+        {
+          render_name: 'scene_agent_workspace',
+          planning: null,
+          execution: [
+            {
+              id: optimisticId,
+              type: 'user',
+              title: '我',
+              status: 'done',
+              output: trimmed,
+              ts: new Date().toISOString(),
+            },
+          ],
+          summary: null,
+        },
+        prev,
+      ),
+    );
   }, []);
 
   // 历史恢复 + 运行中续传(关闭页面后重开可继续接收产出):
@@ -222,7 +249,11 @@ export function useSceneAgentChat({
       }
       const parsed = parseSceneAgentWorkspaceString(res.vis_final);
       if (parsed && Array.isArray(parsed.execution)) {
-        setWorkspaceView((prev) => parseWorkspaceView(parsed, prev));
+        // 合并后去重乐观用户步骤(submitUserInput 追问路径仅靠轮询回显)
+        setWorkspaceView((prev) => {
+          const merged = parseWorkspaceView(parsed, prev);
+          return { ...merged, execution: dedupOptimisticUser(merged.execution) };
+        });
       }
     },
     [convUid],
@@ -249,30 +280,9 @@ export function useSceneAgentChat({
       // 提交任务、开始对话 → 通知外层(如自动折叠中间内容区)
       onConversationStart?.();
 
-      // 乐观上屏:不等 SSE 首帧,先把用户消息插入视图;服务端回显同文本
-      // user 步骤时在 routeObject 里去重(服务端 output 会截断,用前缀匹配)
-      const optimisticId = `user-optimistic-${Date.now()}`;
-      optimisticUserRef.current = { id: optimisticId, text: text.trim() };
-      setWorkspaceView((prev) =>
-        parseWorkspaceView(
-          {
-            render_name: 'scene_agent_workspace',
-            planning: null,
-            execution: [
-              {
-                id: optimisticId,
-                type: 'user',
-                title: '我',
-                status: 'done',
-                output: text.trim(),
-                ts: new Date().toISOString(),
-              },
-            ],
-            summary: null,
-          },
-          prev,
-        ),
-      );
+      // 乐观上屏:不等 SSE 首帧,先把用户消息插入视图;服务端回显同文本 user 步骤
+      // 时在 routeObject 里去重(服务端 output 会截断,用前缀匹配)
+      appendOptimisticUser(text);
 
       const data = buildSceneAgentSendData(payload, { workspaceId, taskId, focusArtifactId }, convUid);
 
@@ -302,23 +312,8 @@ export function useSceneAgentChat({
             const mv = obj as Record<string, unknown>;
             if (mv.render_name === 'scene_agent_workspace' || Array.isArray(mv.execution)) {
               setWorkspaceView((prev) => {
-                // 服务端回显了同文本 user 步骤 → 先移除乐观步骤再合并,避免重复
-                const opt = optimisticUserRef.current;
-                let base = prev;
-                if (opt && Array.isArray(mv.execution)) {
-                  const echoed = (mv.execution as any[]).some(
-                    (e) =>
-                      e?.type === 'user' &&
-                      typeof e?.output === 'string' &&
-                      e.output.length > 0 &&
-                      (opt.text === e.output || opt.text.startsWith(e.output)),
-                  );
-                  if (echoed) {
-                    base = { ...prev, execution: prev.execution.filter((s) => s.id !== opt.id) };
-                    optimisticUserRef.current = null;
-                  }
-                }
-                return parseWorkspaceView(obj, base);
+                const merged = parseWorkspaceView(obj, prev);
+                return { ...merged, execution: dedupOptimisticUser(merged.execution) };
               });
             }
           };
@@ -360,7 +355,7 @@ export function useSceneAgentChat({
         onDock: (frame) => setDockWidgets((prev) => applyDockFrame(prev, frame)),
       });
     },
-    [convUid, workspaceId, taskId, focusArtifactId, chat, appendStep, handleWorkspaceEventInternal, onConversationStart],
+    [convUid, workspaceId, taskId, focusArtifactId, chat, appendStep, appendOptimisticUser, handleWorkspaceEventInternal, onConversationStart],
   );
 
   const abort = useCallback(() => {
@@ -375,5 +370,5 @@ export function useSceneAgentChat({
     }
   }, [convUid]);
 
-  return { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, dockWidgets, send, abort, clearSteps, clearWorkspaceView };
+  return { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
 }

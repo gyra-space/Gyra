@@ -132,6 +132,45 @@ describe('parseWorkspaceView', () => {
     expect(taskStep?.type).toBe('task_created');
     expect(taskStep?.task_id).toBe(42);
   });
+
+  test('answer 步骤被解析(type=answer,承载 Agent 最终回复)', () => {
+    const chunk = {
+      render_name: 'scene_agent_workspace',
+      planning: null,
+      execution: [{ id: 'answer-m1', type: 'answer', title: '回复', status: 'done', output: '最终回复内容' }],
+      summary: '最终回复内容',
+    };
+    const view = parseWorkspaceView(chunk, null);
+    expect(view.execution).toHaveLength(1);
+    expect(view.execution[0].type).toBe('answer');
+    expect(view.execution[0].output).toBe('最终回复内容');
+    expect(view.summary).toBe('最终回复内容');
+  });
+
+  test('跨轮 answer step 保留:新轮 chunk 不含前轮 answer 时 leftover 保留 + ts 交错排序', () => {
+    // 后端每轮独立 conv,vis_final 只返最新轮。前端靠 leftover 保留前轮 answer step,
+    // 避免历史回复丢失(summary 单值会被新轮覆盖,但 answer step 留在 execution)。
+    const prev: WorkspaceView = {
+      planning: null,
+      execution: [
+        { id: 'user-r1', type: 'user', title: '我', status: 'done', output: '问题1', ts: '2026-08-12T10:00:00' },
+        { id: 'answer-r1', type: 'answer', title: '回复', status: 'done', output: '回复1', ts: '2026-08-12T10:00:05' },
+      ],
+      summary: '回复1',
+    };
+    const chunk = {
+      render_name: 'scene_agent_workspace',
+      planning: null,
+      execution: [
+        { id: 'user-r2', type: 'user', title: '我', status: 'done', output: '问题2', ts: '2026-08-12T10:01:00' },
+        { id: 'answer-r2', type: 'answer', title: '回复', status: 'done', output: '回复2', ts: '2026-08-12T10:01:05' },
+      ],
+      summary: '回复2',
+    };
+    const view = parseWorkspaceView(chunk, prev);
+    expect(view.execution.map(e => e.id)).toEqual(['user-r1', 'answer-r1', 'user-r2', 'answer-r2']);
+    expect(view.summary).toBe('回复2'); // summary 被新轮覆盖,但 answer-r1 仍保留在 execution
+  });
 });
 
 describe('subagents(异步子 agent 任务看板)', () => {

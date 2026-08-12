@@ -428,6 +428,18 @@ export const createReconcileIntervention = (data: {
     data,
   );
 
+/** 列出介入记录(待评委列表) */
+export const listInterventions = (data: {
+  workspace_id: number;
+  task_id?: number;
+  status?: string;
+  limit?: number;
+}) =>
+  POST<typeof data, InterventionRecord[]>(
+    `${INTERVENTION_PREFIX}/interventions/list`,
+    data,
+  );
+
 // ---------------------------------------------------------------------------
 // 剧本演化 API
 // ---------------------------------------------------------------------------

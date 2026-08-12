@@ -445,6 +445,9 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         narr_ids = list(self._scene_narrations.keys())
         summary: Optional[str] = None
         frozen_narr: List[Tuple[str, str]] = []  # (text, ts)
+        # 最终回复也作为 answer step 进 execution(稳定 id=answer-{mid}),跨轮按 id
+        # 合并保留;否则前端 summary 单值会被下一轮覆盖,历史回复丢失。
+        answer_step: Optional[Tuple[Dict[str, Any], str]] = None
         if narr_ids:
             last_text, last_ts = self._scene_narrations[narr_ids[-1]]
             item_ts_max = max(
@@ -456,6 +459,17 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             else:
                 summary = last_text
                 frozen_narr = [self._scene_narrations[mid] for mid in narr_ids[:-1]]
+                answer_step = ({
+                    "id": f"answer-{narr_ids[-1]}",
+                    "type": "answer",
+                    "title": "回复",
+                    "status": "done",
+                    "action": None,
+                    "action_input": None,
+                    "output": last_text[:_MAX_OUTPUT_CHARS],
+                    "artifact": None,
+                    "vis": None,
+                }, last_ts)
 
         execution: List[Tuple[Dict[str, Any], str]] = list(self._scene_items.values())
         for text, ts in frozen_narr:
@@ -470,6 +484,8 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                 "artifact": None,
                 "vis": None,
             }, ts))
+        if answer_step is not None:
+            execution.append(answer_step)
 
         # 按时间交错排序(无 ts 的排后,稳定)
         execution.sort(key=lambda item: item[1] or "￿")

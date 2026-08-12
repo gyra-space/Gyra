@@ -6,7 +6,7 @@
  * 视觉:四动作色块矩阵(背书/纠偏/升级/对账),
  * 待评委列表复用 ws item 语言,行内图标按钮触发动作。
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { App, Modal, Select, Tooltip } from 'antd';
 import {
   AuditOutlined,
@@ -22,6 +22,8 @@ import {
   createEscalateIntervention,
   createReconcileIntervention,
   listAgentMaturity,
+  listInterventions,
+  type InterventionRecord,
 } from '@/client/api/flywheel';
 
 interface JudgeBenchProps {
@@ -94,28 +96,29 @@ export function JudgeBench({ workspaceId, onActionComplete }: JudgeBenchProps) {
     { refreshDeps: [workspaceId] },
   );
 
-  // 待评委列表(TODO: 接入真实待评委 API)
-  const { data: pendingItems, refresh: refreshPending } = useRequest(
-    async () =>
-      [
-        {
-          id: 1,
-          title: '资产 #1: 月报模板',
-          type: 'asset' as const,
-          agent_id: 'analyst_v1',
-          description: 'Agent 产出的月报模板,待确认',
-          status: 'proposed',
-        },
-        {
-          id: 2,
-          title: '资产 #2: 数据口径定义',
-          type: 'asset' as const,
-          agent_id: 'fetcher_v1',
-          description: '新增数据口径定义,待背书',
-          status: 'proposed',
-        },
-      ],
+  // 待评委列表(真实介入记录:status=requested 待处理)
+  const { data: pendingRecords, refresh: refreshPending } = useRequest(
+    async () => {
+      const res = await listInterventions({
+        workspace_id: workspaceId,
+        status: 'requested',
+        limit: 50,
+      });
+      return res.data?.data || [];
+    },
     { refreshDeps: [workspaceId] },
+  );
+
+  const pendingItems = useMemo<JudgeItem[]>(
+    () =>
+      (pendingRecords || []).map((r: InterventionRecord) => ({
+        id: r.id,
+        title: `${r.type} 介入 #${r.id}`,
+        type: 'intervention' as const,
+        description: r.requested_by ? `由 ${r.requested_by} 发起` : undefined,
+        status: r.status,
+      })),
+    [pendingRecords],
   );
 
   const handleActionClick = (action: ActionKey, item: JudgeItem) => {

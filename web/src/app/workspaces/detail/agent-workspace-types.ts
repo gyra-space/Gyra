@@ -74,7 +74,7 @@ export interface LobbyExhibit {
 
 export interface WorkspaceExecutionStep {
   id: string;
-  type: 'tool_call' | 'thinking' | 'artifact' | 'delivery' | 'user' | 'task_created';
+  type: 'tool_call' | 'thinking' | 'artifact' | 'delivery' | 'user' | 'task_created' | 'answer';
   title: string;
   status: 'running' | 'done' | 'failed';
   /** 时间戳(ISO 字符串),跨轮次合并时按此交错排序 */

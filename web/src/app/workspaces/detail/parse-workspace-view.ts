@@ -9,7 +9,7 @@ import type {
   WorkspaceView,
 } from './agent-workspace-types';
 
-const VALID_TYPES = ['tool_call', 'thinking', 'artifact', 'delivery', 'user', 'task_created'];
+const VALID_TYPES = ['tool_call', 'thinking', 'artifact', 'delivery', 'user', 'task_created', 'answer'];
 const VALID_STATUS = ['running', 'done', 'failed'];
 const VALID_PANEL_VIEWS = ['execution', 'deliverable', 'summary', 'task_files'];
 const VALID_SUBAGENT_STATUS = ['pending', 'running', 'done', 'failed', 'awaiting_authorization'];

@@ -474,11 +474,18 @@ class OracleConnector(RDBMSConnector):
 
     # --- Dialect overrides (from upstream) ---
     def quote_identifier(self, id: str) -> str:
-        """Quote identifier, handling 'owner.table_name' format."""
+        """Quote identifier, handling 'owner.table_name' format.
+
+        Oracle stores unquoted identifiers uppercase, but SQLAlchemy
+        reflection normalizes them to lowercase. Denormalize each part
+        back to the stored case before quoting, so a reflected column
+        like ``temp_name`` resolves to ``TEMP_NAME`` instead of ORA-00904.
+        """
+        dialect = self._engine.dialect
         if '.' in id:
             owner, tbl = id.split('.', 1)
-            return f'"{owner}"."{tbl}"'
-        return f'"{id}"'
+            return f'"{dialect.denormalize_name(owner)}"."{dialect.denormalize_name(tbl)}"'
+        return f'"{dialect.denormalize_name(id)}"'
 
     def limit_sql(self, sql: str, limit: int, offset: int = 0) -> str:
         """Limit SQL based on Oracle version.
