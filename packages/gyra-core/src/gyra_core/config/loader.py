@@ -54,12 +54,28 @@ class ConfigLoader:
         if not path.exists():
             raise FileNotFoundError(f"配置文件不存在: {path}")
 
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error(
+                f"JSON 解析失败: {path}\n"
+                f"  位置: line {e.lineno}, column {e.colno}, char {e.pos}\n"
+                f"  错误: {e.msg}"
+            )
+            raise
 
-        data = cls._resolve_env_vars(data)
+        try:
+            data = cls._resolve_env_vars(data)
+        except Exception as e:
+            logger.error(f"环境变量解析失败: {e}")
+            raise
 
-        return AppConfig(**data)
+        try:
+            return AppConfig(**data)
+        except Exception as e:
+            logger.error(f"配置验证失败: {e}")
+            raise
 
     @classmethod
     def _load_defaults(cls) -> AppConfig:

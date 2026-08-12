@@ -521,6 +521,7 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                 Service as KnowledgeService,
             )
             from gyra.knowledge.schema import default_memory_schema_md
+            from gyra.knowledge.schema import default_agents_md
 
             ks = KnowledgeService.get_instance(self._system_app)
             if ks is None:
@@ -555,6 +556,17 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
             except Exception as e:
                 logger.warning(
                     "[enable_memory] write_schema_md failed for slug=%s: %s",
+                    slug, e,
+                )
+
+            # Seed AGENTS.md（Agent 整体记忆文档）。vault 初始化已保证文件
+            # 存在；这里用记忆空间专属模板覆盖占位内容（只写一次语义由
+            # 管线维护层保证——用户手改后管线不会覆盖）。
+            try:
+                await vault.write_agents_md(default_agents_md(app.app_name))
+            except Exception as e:
+                logger.warning(
+                    "[enable_memory] write_agents_md failed for slug=%s: %s",
                     slug, e,
                 )
 

@@ -40,6 +40,9 @@ logger = logging.getLogger(__name__)
 # the whole session) rather than dynamically retrieved per turn.
 STATIC_ROOMS: List[str] = ["profile", "preference"]
 
+# Agent 整体记忆文档（AGENTS.md）注入预算（字符数，超长截断尾部）。
+DEFAULT_AGENTS_MD_MAX_CHARS = 4000
+
 
 # ---------------------------------------------------------------------------
 # Context fencing helpers (ported from hermes-agent)
@@ -390,6 +393,34 @@ class MemoryReadPipeline:
                 memory_lines.append(entry)
                 used += len(entry)
 
+        # Agent 整体记忆文档（AGENTS.md）：从绑定的记忆空间读取根级
+        # AGENTS.md（由 tier3 管线维护），作为静态记忆块的第一节注入。
+        agents_md_sections: List[str] = []
+        agents_budget = DEFAULT_AGENTS_MD_MAX_CHARS
+        for space_id, store in stores.items():
+            vault = getattr(store, "vault", None)
+            if vault is None:
+                continue
+            try:
+                raw = await vault.read_agents_md()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "AGENTS.md load failed for space=%s: %s", space_id, e
+                )
+                continue
+            content = (raw or "").strip()
+            if not content:
+                continue
+            # 跳过仍是播种占位内容的文件（只有结构模板、没有实质事实）。
+            if _is_agents_md_placeholder(content):
+                continue
+            if len(content) > agents_budget:
+                content = content[:agents_budget] + "\n...(内容过长已截断)"
+            agents_md_sections.append(content)
+            agents_budget -= len(content)
+            if agents_budget <= 0:
+                break
+
         # MEMORY_GUIDANCE + 画像 + L1 索引
         guidance = (
             "## 记忆使用指南\n"
@@ -399,6 +430,8 @@ class MemoryReadPipeline:
         )
 
         sections: List[str] = [guidance]
+        if agents_md_sections:
+            sections.append("## Agent 整体记忆（AGENTS.md）\n\n" + "\n\n".join(agents_md_sections))
         if lines:
             sections.append("## 用户画像与偏好\n\n" + "\n".join(lines))
         if memory_lines:
@@ -435,6 +468,23 @@ async def _fetch_room_entries(store: Any, room: str, wing: str) -> List[Any]:
         except Exception:
             return []
     return []
+
+
+def _is_agents_md_placeholder(content: str) -> bool:
+    """判断 AGENTS.md 是否仍是播种占位内容（没有实质事实）。
+
+    占位特征：全文去掉标题、`<...>` 模板占位符后没有实质文字。
+    管线未写过实质内容前，不注入 system prompt，避免模板噪音。
+    """
+    import re as _re
+    text = (content or "").strip()
+    if not text:
+        return True
+    # 去掉标题行（# / ## / ###）与 `---` frontmatter
+    body = _re.sub(r"^\s*(#{1,6}\s.*|---+)\s*$", "", text, flags=_re.MULTILINE)
+    # 去掉 <...> 模板占位符
+    body = _re.sub(r"<[^>]*>", "", body)
+    return not body.strip()
 
 
 __all__ = [

@@ -12,6 +12,7 @@ from gyra.agent.core.memory.read_pipeline import (
     StreamingContextScrubber,
     build_memory_context_block,
     sanitize_context,
+    _is_agents_md_placeholder,
 )
 
 
@@ -214,6 +215,91 @@ class TestReadPipeline:
         assert "dark mode" in result
         assert "Go developer" in result
         assert p.static_loaded
+
+    def test_load_static_block_includes_agents_md(self):
+        from unittest.mock import MagicMock
+
+        store = MagicMock()
+        async def _alist(room, wing):
+            return []
+        store.alist_by_room = _alist
+
+        # vault 暴露 read_agents_md，返回有实质内容的 AGENTS.md
+        vault = MagicMock()
+        async def _read_agents_md():
+            return (
+                "# 测试 Agent\n\n"
+                "## Identity\n"
+                "我是测试 Agent，为工程师团队服务。\n\n"
+                "## Preferences\n"
+                "用户偏好简洁的中文回答。\n\n"
+                "## Decisions\n"
+                "- 采用事件驱动架构\n"
+            )
+        vault.read_agents_md = _read_agents_md
+        store.vault = vault
+
+        manager = MagicMock()
+        manager.memory_stores = {"space1": store}
+        manager.config = MagicMock(wing="default")
+
+        bundle = MagicMock()
+        bundle.manager = manager
+
+        p = MemoryReadPipeline()
+        loop = asyncio.get_event_loop()
+        result = loop.run_until_complete(p.load_static_block(bundle))
+        assert result is not None
+        assert "Agent 整体记忆（AGENTS.md）" in result
+        assert "测试 Agent" in result
+        assert "事件驱动架构" in result
+
+    def test_load_static_block_skips_placeholder_agents_md(self):
+        from unittest.mock import MagicMock
+
+        # vault 只返回播种模板（占位内容），不应注入 system prompt
+        store = MagicMock()
+        async def _alist(room, wing):
+            return [MagicMock(content="user prefers dark mode", room=room)]
+        store.alist_by_room = _alist
+        vault = MagicMock()
+        async def _read_agents_md():
+            return (
+                "# 测试 Agent Agent 整体记忆（AGENTS.md）\n\n"
+                "## Identity\n<身份画像：Agent 是谁>\n\n"
+                "## Preferences\n<稳定偏好>\n"
+            )
+        vault.read_agents_md = _read_agents_md
+        store.vault = vault
+
+        manager = MagicMock()
+        manager.memory_stores = {"space1": store}
+        manager.config = MagicMock(wing="default")
+
+        bundle = MagicMock()
+        bundle.manager = manager
+
+        p = MemoryReadPipeline()
+        loop = asyncio.get_event_loop()
+        result = loop.run_until_complete(p.load_static_block(bundle))
+        assert result is not None
+        # 占位 AGENTS.md 不注入
+        assert "Agent 整体记忆（AGENTS.md）" not in result
+        # 画像照常注入
+        assert "用户画像与偏好" in result
+        assert "dark mode" in result
+
+    def test_is_agents_md_placeholder(self):
+        assert _is_agents_md_placeholder("") is True
+        assert _is_agents_md_placeholder(
+            "# X\n\n## Identity\n<身份画像：谁>\n\n## Preferences\n<偏好>\n"
+        ) is True
+        assert _is_agents_md_placeholder(
+            "# X\n\n## Identity\n我是测试 Agent。\n"
+        ) is False
+        assert _is_agents_md_placeholder(
+            "# X\n\n## Identity\n<身份画像>\n## Preferences\n用户偏好简洁。\n"
+        ) is False
 
 
 def MagicMock_bundle() -> Any:

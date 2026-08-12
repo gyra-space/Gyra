@@ -23,6 +23,7 @@ import {
   ReloadOutlined,
   TeamOutlined,
   UserAddOutlined,
+  KeyOutlined,
 } from '@ant-design/icons';
 import UserAvatar from '@/components/common/user-avatar';
 import { useTranslation } from 'react-i18next';
@@ -74,6 +75,10 @@ export default function UserManagement({ roles: externalRoles }: UserManagementP
   const [createUserOpen, setCreateUserOpen] = useState(false);
   const [createUserSaving, setCreateUserSaving] = useState(false);
   const [createForm] = Form.useForm();
+  const [resetPwdOpen, setResetPwdOpen] = useState(false);
+  const [resetPwdSaving, setResetPwdSaving] = useState(false);
+  const [resetPwdUser, setResetPwdUser] = useState<UnifiedUserRow | null>(null);
+  const [resetPwdForm] = Form.useForm();
 
   const loadUsers = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -310,6 +315,34 @@ export default function UserManagement({ roles: externalRoles }: UserManagementP
     }
   };
 
+  const handleResetPassword = async () => {
+    if (!resetPwdUser) return;
+    let values: { password: string };
+    try {
+      values = await resetPwdForm.validateFields();
+    } catch {
+      return; // validation failed
+    }
+    setResetPwdSaving(true);
+    try {
+      await usersService.updateUser(resetPwdUser.id, { password: values.password });
+      message.success(t('permissions_password_reset_success') || '密码已重置');
+      setResetPwdOpen(false);
+      resetPwdForm.resetFields();
+      setResetPwdUser(null);
+    } catch (e: unknown) {
+      message.error(t('permissions_operation_failed') + ': ' + (e as Error).message);
+    } finally {
+      setResetPwdSaving(false);
+    }
+  };
+
+  const openResetPassword = (user: UnifiedUserRow) => {
+    setResetPwdUser(user);
+    resetPwdForm.resetFields();
+    setResetPwdOpen(true);
+  };
+
   const handlePageChange = (newPage: number, newPageSize: number) => {
     setPage(newPage);
     setPageSize(newPageSize);
@@ -430,6 +463,14 @@ export default function UserManagement({ roles: externalRoles }: UserManagementP
             </Button>
             <Button type="link" size="small" onClick={() => handleToggleRole(record)}>
               {record.legacy_role === 'admin' ? t('permissions_unset_admin') : t('permissions_set_admin')}
+            </Button>
+            <Button
+              type="link"
+              size="small"
+              icon={<KeyOutlined />}
+              onClick={() => openResetPassword(record)}
+            >
+              {t('permissions_reset_password') || '重置密码'}
             </Button>
             {isCurrentUserAdmin && currentUser?.id !== record.id && (
               <Popconfirm
@@ -562,6 +603,55 @@ export default function UserManagement({ roles: externalRoles }: UserManagementP
             <UserPermissionsPanel userId={selectedUser.id} />
           </div>
         ) : null}
+      </Modal>
+
+      {/* Reset Password Modal */}
+      <Modal
+        title={
+          resetPwdUser
+            ? `${t('permissions_reset_password') || '重置密码'} - ${resetPwdUser.name || resetPwdUser.email || resetPwdUser.id}`
+            : t('permissions_reset_password') || '重置密码'
+        }
+        open={resetPwdOpen}
+        onOk={handleResetPassword}
+        onCancel={() => {
+          setResetPwdOpen(false);
+          setResetPwdUser(null);
+          resetPwdForm.resetFields();
+        }}
+        confirmLoading={resetPwdSaving}
+        destroyOnClose
+      >
+        <Form form={resetPwdForm} layout="vertical">
+          <Form.Item
+            name="password"
+            label={t('permissions_new_password') || '新密码'}
+            rules={[
+              { required: true, message: t('permissions_name_required') },
+              { min: 6, message: t('permissions_password_min_length') },
+            ]}
+          >
+            <Input.Password placeholder={t('permissions_password_placeholder')} />
+          </Form.Item>
+          <Form.Item
+            name="confirm_password"
+            label={t('permissions_confirm_password') || '确认新密码'}
+            dependencies={['password']}
+            rules={[
+              { required: true, message: t('permissions_name_required') },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('password') === value) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error(t('permissions_password_mismatch') || '两次输入的密码不一致'));
+                },
+              }),
+            ]}
+          >
+            <Input.Password placeholder={t('permissions_password_placeholder')} />
+          </Form.Item>
+        </Form>
       </Modal>
 
       {/* Create User Modal */}

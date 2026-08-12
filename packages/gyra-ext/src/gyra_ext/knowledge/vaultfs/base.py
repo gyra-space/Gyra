@@ -256,6 +256,29 @@ class BaseVaultFS(ABC):
     @abstractmethod
     async def read_purpose_md(self) -> str: ...
 
+    # ----- Agent 整体记忆文档（AGENTS.md）-----
+    # 与 purpose.md 同为 space 根级保护文件。承载 Agent 稳定事实（身份、
+    # 偏好、长期决策、工作约定），由记忆管线自动维护，会话启动时注入
+    # system prompt（见 gyra-core read_pipeline.load_static_block）。
+    @abstractmethod
+    async def read_agents_md(self) -> str: ...
+
+    async def write_agents_md(self, content: str) -> None:
+        """Write AGENTS.md (space root). Publishes a change event."""
+        await self._write_agents_md(content)
+        await self.publish_event(
+            ChangeEvent(
+                space_id=self._space_id,
+                layer="L1",
+                op="update",
+                id="AGENTS.md",
+                path="AGENTS.md",
+            )
+        )
+
+    @abstractmethod
+    async def _write_agents_md(self, content: str) -> None: ...
+
     async def _get_schema(self):
         """Read and parse schema.md. Cached by raw content hash."""
         raw = await self.read_schema_md()

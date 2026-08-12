@@ -35,6 +35,8 @@ export interface SceneAgentSendData {
     vis_render: 'scene_agent_workspace';
     workspace_id?: number;
     task_id?: number;
+    /** 显式命中的剧本:后端回合前路由据此预建会话内任务(in_session 同步执行) */
+    playbook_id?: number;
   };
 }
 
@@ -97,6 +99,10 @@ export function buildSceneAgentSendData(
       vis_render: 'scene_agent_workspace',
       ...(workspaceId !== undefined ? { workspace_id: Number(workspaceId) } : {}),
       ...(taskId !== undefined ? { task_id: Number(taskId) } : {}),
+      // 显式命中剧本:透传 playbook_id 给后端回合前路由,预建会话内任务
+      // (execution_mode=in_session)并在当前对话同步执行。已绑定任务的
+      // workbench 对话不受影响(路由对 task_id 已有时跳过)。
+      ...(playbookCommand ? { playbook_id: Number(playbookCommand.playbook_id) } : {}),
       ...(focusArtifactId !== undefined ? { focus_artifact_id: Number(focusArtifactId) } : {}),
     },
   };

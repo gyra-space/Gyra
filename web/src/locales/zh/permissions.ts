@@ -261,4 +261,11 @@ export const PermissionsZh = {
   permissions_username_min_length: '用户名至少2个字符',
   permissions_password_min_length: '密码至少6个字符',
   permissions_username_exists: '用户名已存在',
+
+  // Reset Password
+  permissions_reset_password: '重置密码',
+  permissions_password_reset_success: '密码已重置',
+  permissions_new_password: '新密码',
+  permissions_confirm_password: '确认新密码',
+  permissions_password_mismatch: '两次输入的密码不一致',
 };

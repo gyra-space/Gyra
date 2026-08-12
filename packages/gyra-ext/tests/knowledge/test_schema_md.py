@@ -3,9 +3,11 @@
 import pytest
 
 from gyra.knowledge.schema import (
+    AGENTS_MD_SECTION_NAMES,
     DEFAULT_PAGE_TYPES,
     DEFAULT_RELATION_TYPES,
     Schema,
+    default_agents_md,
     default_schema_md,
     inverse_predicate,
     parse_schema,
@@ -13,6 +15,13 @@ from gyra.knowledge.schema import (
     validate_predicate,
     validate_schema,
 )
+
+
+def test_default_agents_md_contains_all_sections():
+    md = default_agents_md("测试 Agent")
+    assert "测试 Agent" in md
+    for section in AGENTS_MD_SECTION_NAMES:
+        assert f"## {section.title()}" in md or f"## {section.replace('-', ' ').title()}" in md
 
 
 def test_default_schema_md_parses():

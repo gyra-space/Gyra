@@ -31,4 +31,6 @@ export type DetailContext =
   | 'ecp-proposal'
   | 'exhibit'
   | 'flywheel'
-  | 'subagent';
+  | 'subagent'
+  | 'triggers'
+  | 'data-assets';

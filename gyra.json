@@ -8,22 +8,6 @@
     "temperature": 0.7,
     "max_tokens": 4096
   },
-  "agents": {
-    "primary": {
-      "name": "primary",
-      "description": "主Agent",
-      "permission": {
-        "default_action": "ask",
-        "rules": {
-          "*": "allow",
-          "*.env": "ask",
-          "*.secret*": "ask"
-        }
-      },
-      "max_steps": 20,
-      "color": "#4A90E2"
-    }
-  },
   "sandbox": {
     "enabled": false,
     "image": "python:3.11-slim",

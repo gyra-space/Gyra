@@ -28,6 +28,9 @@ PROTECTED_FILES = {
     "overview.md",
     "schema.md",
     "purpose.md",
+    # Agent 整体记忆文档（类似 Claude Code 的 AGENTS.md）：记忆管线自动
+    # 维护的稳定事实摘要，会话启动时注入 system prompt。
+    "AGENTS.md",
 }
 
 # Inline content threshold: verbats smaller than this are stored inline,

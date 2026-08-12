@@ -72,7 +72,7 @@ class UsersService {
 
   async updateUser(
     id: number,
-    patch: { role?: string; is_active?: number },
+    patch: { role?: string; is_active?: number; password?: string },
   ): Promise<User> {
     const res = await axios.patch(`${API_BASE}/users/${id}`, patch);
     return res.data.data as User;

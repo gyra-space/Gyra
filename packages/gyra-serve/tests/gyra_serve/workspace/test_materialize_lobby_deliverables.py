@@ -96,6 +96,26 @@ def test_skips_file_without_url(artifact_service):
     assert _materialize(artifact_service, 3, files) == 0
 
 
+def test_materializes_with_task_id_binds_artifact(artifact_service):
+    """会话内任务(in_session)交付:传入真实 task_id,产物绑定该任务而非哨兵 0。"""
+    files = [_make_file("f1", "a.txt", "https://x/a.txt")]
+    with patch.object(md, "_collect_deliverable_files", return_value=files), \
+         patch.object(md, "_get_artifact_service", return_value=artifact_service), \
+         patch("gyra_serve.workspace.event_bus.emit_workspace_event"):
+        n = asyncio.run(md.materialize_direct_conversation_deliverables(
+            MagicMock(), workspace_id=7, conv_id="c1",
+            agent_conv_id="a1", created_by_agent="scene-workspace-agent",
+            task_id=42,
+        ))
+
+    assert n == 1
+    listed = artifact_service.list_artifacts(
+        ArtifactListFilter(workspace_id=7, limit=100)
+    )
+    assert len(listed) == 1
+    assert listed[0].task_id == 42
+
+
 def test_aggregation_chat_finally_materializes_lobby_only():
     """收尾仅在 workspace + task_id 空(大厅)时调用物化,任务模式跳过。"""
     src = (

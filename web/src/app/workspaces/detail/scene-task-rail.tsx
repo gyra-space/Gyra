@@ -814,7 +814,7 @@ export function SceneTaskRail({
               <div className="ws-rail-foot">
                 <span className="ws-rail-tm">{dayjs(item.gmt_modified).format('MM-DD HH:mm')}</span>
                 <div className="ws-rail-card-actions">
-                  {item.inbox_status !== 'done' && quickResolveMap[item.source_type] && (
+                  {item.inbox_status !== 'done' && quickResolveMap[item.source_type] ? (
                     <span
                       className="ws-rail-card-act"
                       title={quickResolveMap[item.source_type]?.title}
@@ -825,7 +825,9 @@ export function SceneTaskRail({
                     >
                       <CheckOutlined />
                     </span>
-                  )}
+                  ) : item.inbox_status !== 'done' ? (
+                    <span className="ws-rail-int-hint">点击进入处理</span>
+                  ) : null}
                 </div>
               </div>
             </div>

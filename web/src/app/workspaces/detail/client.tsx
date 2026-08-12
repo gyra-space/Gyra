@@ -19,7 +19,6 @@ import {
   AppstoreOutlined,
   HomeOutlined,
   DatabaseOutlined,
-  ToolOutlined,
 } from '@ant-design/icons';
 import { SceneWorkspaceShell } from './scene-workspace-shell';
 import { ChatContext } from '@/contexts';
@@ -32,6 +31,8 @@ export default function WorkspaceDetailPage() {
   // 当前子页面导航激活态(分段控件高亮)
   const navActive = (segment: string) =>
     pathname?.includes(`/workspaces/detail/${segment}`) ? ' ws-console-nav-link--active' : '';
+  // 资产页内部 tab:数据/能力/交付统一在「资产」导航下切换
+  const isAssetsPage = !!pathname?.includes('/workspaces/detail/assets');
   const { t } = useTranslation();
   const [convUid, setConvUid] = useState<string>('');
   const [convLoadError, setConvLoadError] = useState<string | null>(null);
@@ -169,16 +170,13 @@ export default function WorkspaceDetailPage() {
               <HomeOutlined />{t('workspaces.lobby') || '工作台'}
             </Link>
             <Link href={`/workspaces/detail/tasks?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('tasks')}`}>
-              <ScheduleOutlined />{t('workspaces.subscriptions') || '订阅'}
+              <ScheduleOutlined />{t('workspaces.tasks') || '任务'}
             </Link>
             <Link href={`/workspaces/detail/playbooks?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('playbooks')}`}>
               <BookOutlined />{t('workspaces.playbooks') || '剧本'}
             </Link>
-            <Link href={`/workspaces/detail/assets?id=${workspaceCode}&tab=semantic`} className={`ws-console-nav-link${navActive('assets')}`}>
+            <Link href={`/workspaces/detail/assets?id=${workspaceCode}&tab=semantic`} className={`ws-console-nav-link${isAssetsPage ? ' ws-console-nav-link--active' : ''}`}>
               <DatabaseOutlined />{t('workspaces.assets') || '资产'}
-            </Link>
-            <Link href={`/workspaces/detail/capability?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('capability')}`}>
-              <ToolOutlined />{t('workspaces.capability') || '能力'}
             </Link>
             <Link href={`/workspaces/detail/settings?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('settings')}`}>
               <SettingOutlined />{t('workspaces.settings') || '设置'}
@@ -193,6 +191,7 @@ export default function WorkspaceDetailPage() {
           workspaceConvUid={convUid}
           appCode={appCode}
           onRefreshLists={handleRefreshLists}
+          listsRefreshKey={listsRefreshKey}
           onConvChanged={(uid: string, tid?: number | null) => {
             setConvUid(uid);
             setPendingTaskId(tid ?? null);

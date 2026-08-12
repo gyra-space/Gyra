@@ -128,9 +128,9 @@ export default function TaskListPage() {
             <div className="ws-page-icon"><ScheduleOutlined /></div>
             <div>
               <div className="ws-page-eyebrow">
-                {t('workspaces.subscriptions') || '订阅'}
+                {t('workspaces.tasks') || '任务'}
               </div>
-              <h1 className="ws-page-title">{t('workspaces.subscriptions') || '订阅'}</h1>
+              <h1 className="ws-page-title">{t('workspaces.tasks') || '任务'}</h1>
               <p className="ws-page-subtitle">
                 {t('tasks.subtitle') || '给场景订阅触发源:定时 / Webhook / 告警,到点或事件发生时自动按剧本创建任务;「执行记录」查看每次运行。'}
               </p>

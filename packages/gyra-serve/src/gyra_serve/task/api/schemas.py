@@ -24,7 +24,7 @@ class TaskRequest(BaseModel):
     description: Optional[str] = None
     status: str = Field("draft", description="draft/pending_trigger/running/awaiting_human/blocked/delivered/closed/archived/failed")
     priority: Optional[str] = "normal"
-    triggered_by: str = Field("manual", description="timer/webhook/alert/manual")
+    triggered_by: str = Field("manual", description="page/api/cron/webhook/alert/manual(page=页面输入命中剧本,会话内执行;api/cron/webhook/alert=后台异步)")
     trigger_ref: Optional[str] = None
     playbook_id: Optional[int] = None
     playbook_version_id: Optional[int] = None

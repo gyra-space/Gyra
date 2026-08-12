@@ -173,7 +173,7 @@ class TaskService(BaseService[TaskEntity, TaskRequest, TaskResponse]):
     def archive(self, task_id: int) -> TaskResponse:
         return self.transition(task_id, "archived")
 
-    def spawn(
+    def create_subtask(
         self, parent_task_id: int, child_request: TaskRequest,
         relation_type: str = "spawned_by",
     ) -> TaskResponse:

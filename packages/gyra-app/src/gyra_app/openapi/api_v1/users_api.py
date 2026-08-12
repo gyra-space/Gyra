@@ -32,6 +32,9 @@ class CreateUserRequest(BaseModel):
 class UpdateUserRequest(BaseModel):
     role: Optional[str] = None
     is_active: Optional[int] = None
+    password: Optional[str] = Field(
+        None, min_length=6, max_length=100, description="New password (will be hashed)"
+    )
 
 
 def _get_user_service():
@@ -139,8 +142,8 @@ async def get_user(user_id: int):
 
 @router.patch("/{user_id}")
 async def update_user(user_id: int, body: UpdateUserRequest):
-    """Update user role or is_active status."""
-    if body.role is None and body.is_active is None:
+    """Update user role, is_active status or password."""
+    if body.role is None and body.is_active is None and body.password is None:
         raise HTTPException(status_code=400, detail="Nothing to update")
     if body.role is not None and body.role not in ("normal", "admin"):
         raise HTTPException(
@@ -151,7 +154,12 @@ async def update_user(user_id: int, body: UpdateUserRequest):
             status_code=400, detail="is_active must be 0 or 1"
         )
     svc = _get_user_service()
-    user = svc.update_user(user_id, role=body.role, is_active=body.is_active)
+    user = svc.update_user(
+        user_id,
+        role=body.role,
+        is_active=body.is_active,
+        password=body.password,
+    )
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
     return JSONResponse(content={"success": True, "data": user})

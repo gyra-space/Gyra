@@ -11,6 +11,7 @@ this manager operates as a framework-level hook:
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,6 +28,10 @@ from gyra.storage.memory.promotion import MemoryPromotionEngine
 
 logger = logging.getLogger(__name__)
 CFG = Config()
+
+# AGENTS.md 硬容量上限（字符）。对齐 Hermes 的"容量即筛选器"设计：
+# 超限由 LLM/兜底淘汰最低价值非用户条目，保证文档有界、注入可控。
+AGENTS_MD_MAX_CHARS = 4000
 
 
 @dataclass
@@ -756,6 +761,23 @@ class LongTermMemoryManager:
         for space_id, store in self._memory_stores.items():
             space_summary: Dict[str, Any] = {}
             try:
+                # Agent 整体记忆文档（AGENTS.md）维护：优先用 LLM 从会话
+                # 历史筛出高价值项（lesson/decision/event/data）合并进
+                # AGENTS.md；无 LLM/无历史时退化为静态房间事实。用户手改
+                # 内容不被覆盖，只做增量合并。
+                agents_maintained = False
+                try:
+                    agents_maintained = await self.maintain_agents_md(
+                        space_id=space_id,
+                        store=store,
+                        conversation_history=history,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        f"[Tier3] maintain_agents_md skipped for {space_id}: {e}"
+                    )
+                space_summary["agents_md_updated"] = agents_maintained
+
                 # 会话结束轻量版：只跑 promotion + snapshot。
                 # L1 doc 的 umbrella 合并 + 三信号分类 + tar.gz 回滚
                 # 已搬到 idle curator（curate_space + cron job），不再在此处执行。
@@ -809,6 +831,277 @@ class LongTermMemoryManager:
         )
         return summary
 
+    async def maintain_agents_md(
+        self,
+        space_id: str,
+        store: Any,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> bool:
+        """Tier 3: screen high-value items and merge into AGENTS.md.
+
+        AGENTS.md is the agent's overall memory document (analogue of
+        Claude Code's CLAUDE.md / AGENTS.md), injected into the system
+        prompt at session start. This method:
+
+        1. Reads the current AGENTS.md from the space vault.
+        2. Screens the session's conversation history for high-value
+           items (lesson / decision / event / data) via LLM when a
+           processor is available; falls back to profile/preference
+           static rooms when no history / no LLM.
+        3. Merges new items into the document's sections; semantic
+           duplicates are skipped, user-authored content is preserved.
+        4. Enforces a hard capacity limit — if the document exceeds it,
+           the LLM (or deterministic fallback) evicts the lowest-value
+           non-user entries.
+
+        Returns True when the document was rewritten.
+        """
+        vault = getattr(store, "vault", None)
+        if vault is None or not hasattr(vault, "read_agents_md"):
+            return False
+
+        try:
+            existing = await vault.read_agents_md()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[AGENTS.md] read failed for {space_id}: {e}")
+            return False
+        existing = (existing or "").strip()
+
+        # 1) 高价值筛选：优先 LLM 从对话历史筛，退化为静态房间
+        items: List[Dict[str, str]] = []
+        processor = self._processors.get(space_id)
+        history = conversation_history or []
+        if processor is not None and history:
+            try:
+                items = await self._screen_high_value_items(
+                    processor, history
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    f"[AGENTS.md] LLM screening failed for {space_id}: {e}"
+                )
+        if not items:
+            # 兜底：静态房间（profile/preference）作为稳定事实源
+            static_facts = await self._collect_stable_facts(store)
+            items = _facts_to_items(static_facts)
+
+        if not items:
+            logger.debug(f"[AGENTS.md] no high-value items for {space_id}; skip")
+            return False
+
+        # 2) 合并（LLM 优先，确定性兜底）
+        merged = None
+        if processor is not None:
+            try:
+                merged = await self._llm_merge_agents_md(
+                    processor, existing, items
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    f"[AGENTS.md] LLM merge failed for {space_id}: {e}"
+                )
+        if not merged:
+            merged = _merge_agents_md_fallback(existing, items)
+
+        merged = (merged or "").strip()
+        if not merged or merged == existing:
+            return False
+
+        # 3) 容量上限：超限则由 LLM / 兜底淘汰低价值非用户条目
+        if len(merged) > AGENTS_MD_MAX_CHARS:
+            try:
+                trimmed = await self._trim_agents_md(
+                    processor, merged, AGENTS_MD_MAX_CHARS
+                )
+                if trimmed and trimmed.strip():
+                    merged = trimmed.strip()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[AGENTS.md] trim failed for {space_id}: {e}")
+                trimmed = _trim_agents_md_fallback(merged, AGENTS_MD_MAX_CHARS)
+                if trimmed and trimmed.strip():
+                    merged = trimmed.strip()
+
+        if merged == existing:
+            return False
+
+        try:
+            await vault.write_agents_md(merged)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[AGENTS.md] write failed for {space_id}: {e}"
+            )
+            return False
+        logger.info(
+            f"[AGENTS.md] maintained for space {space_id} "
+            f"(len {len(existing)} -> {len(merged)}, items={len(items)})"
+        )
+        return True
+
+    async def _screen_high_value_items(
+        self,
+        processor: Any,
+        conversation_history: List[Dict[str, Any]],
+    ) -> List[Dict[str, str]]:
+        """LLM 从对话历史筛出高价值项（lesson/decision/event/data）。
+
+        Returns a list of {"category", "content"}. 语义重复/低价值内容
+        由 LLM 直接丢弃；只有高价值信息才会返回。
+        """
+        transcript_parts = []
+        for msg in conversation_history:
+            role = (msg.get("role") or "").lower()
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            label = "用户" if role in ("user", "human") else "助手"
+            transcript_parts.append(f"{label}: {content}")
+        if not transcript_parts:
+            return []
+        transcript = "\n".join(transcript_parts)[:8000]
+
+        prompt = (
+            "你是 Agent 整体记忆（AGENTS.md）的筛选器。AGENTS.md 只记录"
+            "跨会话仍然有价值的高价值信息，避免重复和低价值噪音。\n\n"
+            "从下面的对话中提取高价值项，分类：\n"
+            "- lesson: 易错点、踩坑、用户纠正、失败经验（以后别再犯）\n"
+            "- decision: 关键逻辑、架构决策、重要结论\n"
+            "- event: 重要事件、里程碑、重大变更（含时间点）\n"
+            "- data: 关键数据、配置、路径、链接、外部引用\n"
+            "- preference: 稳定的用户偏好/习惯/风格（只记稳定、长期的，"
+            "忽略一次性的）\n\n"
+            "规则：\n"
+            "1. 只输出真正高价值、跨会话有用的条目；寒暄、临时指令、"
+            "PR 号、纯执行流水不记录。\n"
+            "2. 内容要提炼为简洁陈述句（可含 [[wikilink]]），不要照抄原文。\n"
+            "3. 语义重复只输出一条。\n"
+            "4. 没有高价值内容时返回 {\"items\": []}。\n\n"
+            "对话：\n"
+            f"{transcript}\n\n"
+            "请以 JSON 输出，格式：\n"
+            '{{"items": [{{"category": "lesson|decision|event|data|preference", '
+            '"content": "..."}}]}}'
+        )
+        try:
+            text = await processor._call_llm(prompt)  # noqa: SLF001
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AGENTS.md] screening LLM call failed: {e}")
+            return []
+        data = _parse_json_lenient_cluster(text) or {}
+        raw_items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(raw_items, list):
+            return []
+        items: List[Dict[str, str]] = []
+        for it in raw_items:
+            if not isinstance(it, dict):
+                continue
+            category = (it.get("category") or "").strip().lower()
+            content = (it.get("content") or "").strip()
+            if not content:
+                continue
+            if category not in ("lesson", "decision", "event", "data", "preference"):
+                category = "decision"
+            items.append({"category": category, "content": content})
+        return items
+
+    async def _collect_stable_facts(self, store: Any) -> str:
+        """Collect stable facts from profile/preference rooms + recent memories.
+
+        Returns a single text block of bullet lines, or "" when empty.
+        """
+        lines: List[str] = []
+        wing = self._config.wing
+
+        # 1) profile / preference 静态房间（与 read_pipeline.STATIC_ROOMS 一致）
+        for room in ("profile", "preference"):
+            entries = await _fetch_store_room_entries(store, room, wing)
+            for e in entries:
+                content = getattr(e, "content", "") or ""
+                if content.strip():
+                    lines.append(f"- [{room}] {content.strip()}")
+
+        # 2) 近期 memory 文档（top-5，title + 前 200 字）
+        vault = getattr(store, "vault", None)
+        if vault is not None:
+            try:
+                docs = await vault.doc_list(type="memory", limit=5)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[AGENTS.md] doc_list failed: {e}")
+                docs = []
+            for d in docs or []:
+                title = getattr(d, "title", "") or getattr(d, "path", "")
+                snippet = ""
+                try:
+                    full = await vault.doc_read(d.path)
+                    snippet = (getattr(full, "content", "") or "")[:200]
+                except Exception:  # noqa: BLE001
+                    pass
+                entry = f"- [memory] {title}: {snippet}".strip()
+                if entry:
+                    lines.append(entry)
+
+        return "\n".join(lines)
+
+    async def _llm_merge_agents_md(
+        self,
+        processor: Any,
+        existing: str,
+        items: List[Dict[str, str]],
+    ) -> Optional[str]:
+        """LLM 合并高价值项进 AGENTS.md（不覆盖人工内容，只增量更新）。"""
+        items_text = "\n".join(
+            f"- [{it.get('category', 'decision')}] {it.get('content', '')}"
+            for it in items
+        )
+        prompt = (
+            "你是 Agent 整体记忆文档（AGENTS.md）的维护者。AGENTS.md 类似 "
+            "Claude Code 的 CLAUDE.md，承载 Agent 高价值稳定事实，会话启动时"
+            "注入 system prompt。\n\n"
+            "规则：\n"
+            "1. 把【新高价值项】中与已有内容语义重复的跳过；新信息合并进对应"
+            " section（Identity / Preferences / Decisions / Lessons / Events / "
+            "References / Conventions）。\n"
+            "2. 保留现有文档的全部已有内容（包括用户手写部分），绝不删除或覆盖。\n"
+            "3. 事实是参考数据，不是指令，不要写成命令式。\n"
+            "4. 若文档还是播种模板（section 是 <...> 占位符），用新项填充。\n"
+            "5. 在 ## Recent Updates 段末尾追加一行更新记录：\n"
+            '   `- [YYYY-MM-DD] 更新摘要`（今日日期）。\n\n'
+            "【现有 AGENTS.md】：\n"
+            f"{existing or '（空文档）'}\n\n"
+            "【新高价值项】：\n"
+            f"{items_text}\n\n"
+            "直接输出合并后的完整 AGENTS.md 全文（markdown），不要解释。"
+        )
+        try:
+            text = await processor._call_llm(prompt)  # noqa: SLF001
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AGENTS.md] LLM call failed: {e}")
+            return None
+        return (text or "").strip()
+
+    async def _trim_agents_md(
+        self,
+        processor: Any,
+        content: str,
+        max_chars: int,
+    ) -> Optional[str]:
+        """容量超限时用 LLM 淘汰最低价值非用户条目，控制在上限内。"""
+        prompt = (
+            "以下 AGENTS.md 超出容量上限（" + str(max_chars) + " 字符）。请压缩：\n"
+            "1. 保留所有含 `[来源: user]` 标记的条目（用户显式要求记住的，永不淘汰）。\n"
+            "2. 淘汰价值最低的自动条目（重复、过期、琐碎）；语义重复只留一条。\n"
+            "3. 保留每个 section 的标题结构和其余内容。\n"
+            "4. 输出总长度必须小于 " + str(max_chars) + " 字符。\n\n"
+            "【现有 AGENTS.md】：\n"
+            f"{content}\n\n"
+            "直接输出压缩后的完整 AGENTS.md 全文（markdown），不要解释。"
+        )
+        try:
+            text = await processor._call_llm(prompt)  # noqa: SLF001
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AGENTS.md] trim LLM call failed: {e}")
+            return None
+        return (text or "").strip()
+
     @staticmethod
     async def curate_space(
         space_slug: str,
@@ -825,7 +1118,8 @@ class LongTermMemoryManager:
         2. LLM 聚类：把全部 L1 doc 摘要喂给 LLM，输出 merge groups
         3. 对每个 merge group 调 curate_merge（创建 umbrella doc +
            merged-into/supersedes 边 + delete source docs）
-        4. 写 REPORT.md
+        4. AGENTS.md Auto Dream 整理（合并重复/清理过期/压缩，保 user 条目）
+        5. 写 REPORT.md
 
         Args:
             space_slug: llm-wiki Space slug（如 memory-canvas-agent）
@@ -833,7 +1127,8 @@ class LongTermMemoryManager:
             llm_client: 可选 LLMClient；None 时尝试从 default LLM 取
 
         Returns:
-            摘要 dict：{backed_up, merge_groups, merged_docs, report_path}
+            摘要 dict：{backed_up, merge_groups, merged_docs,
+                        agents_md_dreamed, report_path}
         """
         import os
         import shutil
@@ -845,6 +1140,9 @@ class LongTermMemoryManager:
             "merge_groups": [],
             "merged_docs": 0,
             "report_path": None,
+            "agents_md_dreamed": False,
+            "agents_md_len_before": 0,
+            "agents_md_len_after": 0,
         }
 
         # 1. 解析 vault
@@ -980,7 +1278,26 @@ class LongTermMemoryManager:
             logger.warning("[curate_space] merge phase failed: %s", e)
         report["merged_docs"] = merged_total
 
-        # 6. REPORT.md
+        # 6. AGENTS.md 定期整理（Auto Dream）：合并语义重复、清理过期/
+        #    低价值自动条目、压缩超限文档；用户（[来源: user]）条目永不淘汰。
+        agents_dreamed = False
+        agents_len_before = 0
+        agents_len_after = 0
+        try:
+            raw_agents = (await vault.read_agents_md() or "").strip()
+            agents_len_before = len(raw_agents)
+            dreamed = await _dream_agents_md(raw_agents, llm_client, AGENTS_MD_MAX_CHARS)
+            if dreamed is not None and dreamed.strip() != raw_agents:
+                await vault.write_agents_md(dreamed.strip())
+                agents_dreamed = True
+                agents_len_after = len(dreamed.strip())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[curate_space] AGENTS.md dream failed: %s", e)
+        report["agents_md_dreamed"] = agents_dreamed
+        report["agents_md_len_before"] = agents_len_before
+        report["agents_md_len_after"] = agents_len_after
+
+        # 7. REPORT.md
         report_dir = None
         if space_root:
             report_dir = os.path.join(space_root, ".curator", ts)
@@ -994,6 +1311,9 @@ class LongTermMemoryManager:
                     f"- l1_docs_before: {len(l1_docs)}",
                     f"- merge_groups: {len(merge_groups)}",
                     f"- merged_docs: {merged_total}",
+                    f"- agents_md_dreamed: {report['agents_md_dreamed']}",
+                    f"- agents_md_len: {report['agents_md_len_before']} -> "
+                    f"{report['agents_md_len_after']}",
                     "",
                     "## Merge Groups",
                 ]
@@ -1236,6 +1556,259 @@ def _is_knowledge_vault_store(store: Any) -> bool:
         and hasattr(store, "curate_merge")
         and hasattr(store, "vault")
     )
+
+
+async def _fetch_store_room_entries(store: Any, room: str, wing: str) -> List[Any]:
+    """Best-effort fetch of all entries in a room from a memory store.
+
+    Prefers `alist_by_room` if exposed; falls back to `asearch_memory`
+    with an empty query and a large top_k.
+    """
+    if hasattr(store, "alist_by_room"):
+        try:
+            return await store.alist_by_room(room=room, wing=wing)
+        except Exception:  # noqa: BLE001
+            pass
+    if hasattr(store, "asearch_memory"):
+        try:
+            return await store.asearch_memory(
+                query="",
+                top_k=200,
+                wing=wing,
+                room=room,
+                max_distance=10.0,  # accept everything when no real query
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return []
+
+
+# AGENTS.md 各 section 标题 → 对应来源 room/分类（确定性兜底合并用）
+_AGENTS_MD_ROOM_TO_SECTION = {
+    "profile": "Identity",
+    "preference": "Preferences",
+    "decision": "Decisions",
+    "lesson": "Lessons",
+    "event": "Events",
+    "data": "References",
+    "fact": "Identity",
+    "memory": "Decisions",
+}
+
+
+def _split_agents_md_sections(text: str) -> Dict[str, str]:
+    """按 `## ` 标题切分 AGENTS.md，返回 {section_title: body}。"""
+    sections: Dict[str, str] = {}
+    current_title: Optional[str] = None
+    current_lines: List[str] = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if current_title is not None:
+                sections[current_title] = "\n".join(current_lines).strip()
+            current_title = stripped[3:].strip()
+            current_lines = []
+        elif current_title is not None:
+            current_lines.append(line)
+    if current_title is not None:
+        sections[current_title] = "\n".join(current_lines).strip()
+    return sections
+
+
+def _strip_bullet(line: str) -> str:
+    """去掉列表项前缀（`- ` / `* ` / `1. `）用于去重比较。"""
+    m = re.match(r"^\s*(?:[-*+]|\d+[.)])\s*(.*)$", line)
+    return m.group(1).strip() if m else line.strip()
+
+
+def _facts_to_items(facts: str) -> List[Dict[str, str]]:
+    """把静态事实块（`- [room] content` 行）转成 items 列表。
+
+    room 保留原值：profile → Identity、preference → Preferences 由
+    `_AGENTS_MD_ROOM_TO_SECTION` 在合并时路由。
+    """
+    items: List[Dict[str, str]] = []
+    for line in (facts or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^-\s*\[([^\]]+)\]\s*(.*)$", line)
+        if m:
+            category = m.group(1).strip().lower()
+            content = m.group(2).strip()
+        else:
+            category = "decision"
+            content = line.lstrip("- ").strip()
+        if not content:
+            continue
+        if category not in ("lesson", "decision", "event", "data", "preference", "profile", "memory"):
+            category = "decision"
+        items.append({"category": category, "content": content})
+    return items
+
+
+def _merge_agents_md_fallback(
+    existing: str,
+    items: List[Dict[str, str]],
+) -> str:
+    """无 LLM 时的确定性兜底：把高价值项按分类归入 section。
+
+    - 保留现有全文（含用户手写内容）
+    - 每条 item 按 category 归入 Identity / Preferences / Decisions /
+      Lessons / Events / References / Conventions
+    - 语义重复（规范化去重）不追加
+    - 追加/更新 Recent Updates 段
+    """
+    sections = _split_agents_md_sections(existing)
+    # 标准 section 顺序；缺失的补上
+    ordered = ["Identity", "Preferences", "Decisions", "Lessons", "Events",
+               "References", "Conventions", "Recent Updates"]
+    for name in ordered:
+        if name not in sections:
+            sections[name] = ""
+
+    grouped: Dict[str, List[str]] = {name: [] for name in ordered}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        category = (it.get("category") or "decision").strip().lower()
+        content = (it.get("content") or "").strip()
+        if not content:
+            continue
+        section = _AGENTS_MD_ROOM_TO_SECTION.get(category, "Conventions")
+        if section not in grouped:
+            section = "Conventions"
+        grouped[section].append(f"- {content}")
+
+    changed = False
+    for section, new_lines in grouped.items():
+        if not new_lines:
+            continue
+        body = sections[section]
+        existing_lines = {
+            _strip_bullet(ln) for ln in body.splitlines() if ln.strip()
+        }
+        add = [ln for ln in new_lines if _strip_bullet(ln) not in existing_lines]
+        if add:
+            if body:
+                sections[section] = body + "\n" + "\n".join(add)
+            else:
+                sections[section] = "\n".join(add)
+            changed = True
+
+    # Recent Updates 追加一行
+    if changed:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        ru = sections["Recent Updates"]
+        update_line = f"- [{today}] 记忆管线合并高价值信息更新"
+        if update_line not in {ln.strip() for ln in ru.splitlines()}:
+            ru = ru + "\n" + update_line if ru else update_line
+            sections["Recent Updates"] = ru
+
+    # 组装（保留文档头——第一个 # 标题行之前的内容）
+    header = ""
+    body_start = existing.find("\n## ")
+    if body_start != -1:
+        header = existing[: body_start + 1]
+    else:
+        header = ""
+    parts = [header]
+    for name in ordered:
+        body = sections[name].strip()
+        parts.append(f"## {name}\n\n{body}".rstrip() if body else f"## {name}\n")
+    out = "\n\n".join(p.strip() for p in parts if p.strip()).rstrip()
+    return out
+
+
+def _trim_agents_md_fallback(content: str, max_chars: int) -> str:
+    """容量超限的确定性兜底：先保 user 标记条目，再按 section 裁剪。
+
+    策略（无 LLM）：逐 section 处理，含 `[来源: user]` 的行始终保留，
+    自动条目按出现顺序保留，直到总长逼近 max_chars。
+    """
+    if not content or len(content) <= max_chars:
+        return content
+
+    sections = _split_agents_md_sections(content)
+    ordered = ["Identity", "Preferences", "Decisions", "Lessons", "Events",
+               "References", "Conventions", "Recent Updates"]
+    header = ""
+    body_start = content.find("\n## ")
+    if body_start != -1:
+        header = content[: body_start + 1].rstrip()
+    else:
+        header = "# Agent 整体记忆（AGENTS.md）"
+
+    out_lines = [header]
+    current_len = len(header)
+    for name in ordered:
+        body = sections.get(name, "").strip()
+        if not body:
+            continue
+        lines = body.splitlines()
+        user_lines = [ln for ln in lines if "[来源: user]" in ln]
+        auto_lines = [ln for ln in lines if "[来源: user]" not in ln]
+        kept = list(user_lines)
+        for ln in auto_lines:
+            candidate = "\n".join(kept + [ln]) if kept else ln
+            if current_len + len(f"## {name}\n\n{candidate}\n") > max_chars:
+                break
+            kept.append(ln)
+        if not kept:
+            continue
+        block = f"## {name}\n\n" + "\n".join(kept)
+        out_lines.append(block)
+        current_len += len(block) + 2
+        if current_len >= max_chars:
+            break
+    out = "\n\n".join(out_lines).strip()
+    if len(out) > max_chars:
+        out = out[:max_chars].rstrip()
+    return out
+
+
+async def _dream_agents_md(
+    content: str,
+    llm_client: Any,
+    max_chars: int,
+) -> Optional[str]:
+    """Auto Dream：定期整理 AGENTS.md。
+
+    - 有 LLM：合并语义重复、清理过期/低价值自动条目、压缩到 max_chars。
+    - 无 LLM：仅做确定性去重 + 容量裁剪（_trim_agents_md_fallback）。
+    - 用户（[来源: user]）条目永不淘汰。
+
+    Returns: 整理后的全文；无变化或不可用时返回 None。
+    """
+    content = (content or "").strip()
+    if not content:
+        return None
+
+    if llm_client is not None:
+        try:
+            from gyra.storage.memory.llm_processor import LLMMemoryProcessor
+            processor = LLMMemoryProcessor(llm_client=llm_client)
+            prompt = (
+                "你是 Agent 整体记忆（AGENTS.md）的整理器。请整理以下文档：\n"
+                "1. 合并语义重复的条目，同一事实只留一条。\n"
+                "2. 删除过期、已失效、琐碎低价值的自动条目。\n"
+                "3. 保留所有含 `[来源: user]` 标记的条目，绝不删除。\n"
+                "4. 保留每个 section 标题与其余内容，保持 markdown 结构。\n"
+                "5. 输出总长度必须小于 " + str(max_chars) + " 字符。\n\n"
+                "【现有 AGENTS.md】：\n"
+                f"{content}\n\n"
+                "直接输出整理后的完整 AGENTS.md 全文（markdown），不要解释。"
+            )
+            text = await processor._call_llm(prompt)  # noqa: SLF001
+            out = (text or "").strip()
+            if out:
+                return out
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AGENTS.md] dream LLM call failed: {e}")
+    # 无 LLM 兜底
+    if len(content) <= max_chars:
+        return content  # 未超限，无 LLM 时不做语义整理（避免误删）
+    return _trim_agents_md_fallback(content, max_chars)
 
 
 async def _cluster_l1_docs(

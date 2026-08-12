@@ -360,6 +360,172 @@ async def get_workspace_growth(
         return Result.failed(str(e))
 
 
+# ----------------------- Overview (空间首屏聚合) -----------------------
+async def build_workspace_overview(
+    workspace_id: int, user_id: Optional[int], service: Service
+) -> dict:
+    """聚合空间首屏所需全部数据,一次请求返回,消灭首屏多请求与数字跳变。
+
+    每个板块独立 try/except,单个来源失败不影响其余板块(返回空值兜底)。
+    返回结构:
+      workspace / deliveries / artifacts / inbox / resources /
+      playbooks / triggers / semantics / growth / ecp_confirmed_count / ecp_pending_count
+    """
+    result: dict = {
+        "workspace": None,
+        "deliveries": [],
+        "artifacts": [],
+        "inbox": [],
+        "resources": [],
+        "playbooks": [],
+        "triggers": [],
+        "semantics": [],
+        "growth": None,
+        "ecp_confirmed_count": 0,
+        "ecp_pending_count": 0,
+    }
+
+    # workspace(含 workspace_code,用于派生 ECP 工作区)
+    ws = service.get_by_id(workspace_id)
+    result["workspace"] = ws
+    workspace_code = ws.workspace_code if ws else None
+    ecp_ws_id = f"ecp_{workspace_code}" if workspace_code else None
+
+    # deliveries
+    try:
+        from gyra_serve.delivery.api.schemas import DeliveryListFilter
+        from gyra_serve.delivery.service.service import (
+            DELIVERY_SERVICE_COMPONENT_NAME,
+            DeliveryService,
+        )
+
+        svc = global_system_app.get_component(
+            DELIVERY_SERVICE_COMPONENT_NAME, DeliveryService
+        )
+        result["deliveries"] = svc.list_deliveries(
+            DeliveryListFilter(workspace_id=workspace_id, limit=20)
+        )
+    except Exception as e:
+        logger.warning(f"overview deliveries failed: {e}")
+
+    # artifacts
+    try:
+        from gyra_serve.artifact.api.schemas import ArtifactListFilter
+        from gyra_serve.artifact.service.service import (
+            ARTIFACT_SERVICE_COMPONENT_NAME,
+            ArtifactService,
+        )
+
+        svc = global_system_app.get_component(
+            ARTIFACT_SERVICE_COMPONENT_NAME, ArtifactService
+        )
+        result["artifacts"] = svc.list_artifacts(
+            ArtifactListFilter(workspace_id=workspace_id, limit=20)
+        )
+    except Exception as e:
+        logger.warning(f"overview artifacts failed: {e}")
+
+    # inbox(个人待办)
+    if user_id is not None:
+        try:
+            inbox_svc = global_system_app.get_component(
+                INBOX_SERVICE_COMPONENT_NAME, InboxService
+            )
+            items = inbox_svc.list_inbox(
+                InboxListFilter(workspace_id=workspace_id, user_id=user_id, limit=100)
+            )
+            result["inbox"] = items
+        except Exception as e:
+            logger.warning(f"overview inbox failed: {e}")
+
+    # resources
+    try:
+        result["resources"] = service.list_resources(workspace_id)
+    except Exception as e:
+        logger.warning(f"overview resources failed: {e}")
+
+    # playbooks
+    try:
+        from gyra_serve.playbook.api.schemas import PlaybookListFilter
+        from gyra_serve.playbook.service.service import (
+            PLAYBOOK_SERVICE_COMPONENT_NAME,
+            PlaybookService,
+        )
+
+        svc = global_system_app.get_component(
+            PLAYBOOK_SERVICE_COMPONENT_NAME, PlaybookService
+        )
+        result["playbooks"] = svc.list_playbooks(
+            PlaybookListFilter(workspace_id=workspace_id)
+        )
+    except Exception as e:
+        logger.warning(f"overview playbooks failed: {e}")
+
+    # triggers
+    try:
+        from gyra_serve.trigger.api.schemas import TriggerListFilter
+        from gyra_serve.trigger.service.service import (
+            TRIGGER_SERVICE_COMPONENT_NAME,
+            TriggerService,
+        )
+
+        svc = global_system_app.get_component(
+            TRIGGER_SERVICE_COMPONENT_NAME, TriggerService
+        )
+        result["triggers"] = svc.list_triggers(
+            TriggerListFilter(workspace_id=workspace_id, limit=200)
+        )
+    except Exception as e:
+        logger.warning(f"overview triggers failed: {e}")
+
+    # ECP 语义:已确认对象 + 待确认计数(只要派生工作区存在才查询)
+    if ecp_ws_id:
+        try:
+            from gyra_serve.ecp.config import SERVE_SERVICE_COMPONENT_NAME as ECP_SERVICE_COMPONENT_NAME
+            from gyra_serve.ecp.service.service import Service as EcpService
+
+            ecp_svc = global_system_app.get_component(
+                ECP_SERVICE_COMPONENT_NAME, EcpService
+            )
+            confirmed = ecp_svc.list_objects(
+                workspace_id=ecp_ws_id, status="confirmed", page_size=50
+            )
+            result["semantics"] = getattr(confirmed, "items", []) or []
+            result["ecp_confirmed_count"] = getattr(confirmed, "total_count", None) or len(result["semantics"])
+            pending = ecp_svc.inbox(workspace_id=ecp_ws_id, page_size=1)
+            result["ecp_pending_count"] = (
+                getattr(pending, "total_count", None)
+                or len(getattr(pending, "items", []) or [])
+            )
+        except Exception as e:
+            logger.warning(f"overview ecp failed: {e}")
+
+    # growth
+    try:
+        result["growth"] = service.get_growth(workspace_id)
+    except Exception as e:
+        logger.warning(f"overview growth failed: {e}")
+
+    return result
+
+
+@router.get("/workspaces/{workspace_id}/overview", response_model=Result,
+            dependencies=[Depends(check_api_key)])
+async def get_workspace_overview(
+    workspace_id: int,
+    user_id: Optional[int] = Header(None, alias="X-User-ID"),
+    service: Service = Depends(get_service),
+) -> Result:
+    """空间首屏聚合端点:一次请求返回工作台所需全部数据,减少首屏请求数。"""
+    try:
+        if user_id is None:
+            return Result.failed("X-User-ID header required")
+        return Result.succ(await build_workspace_overview(workspace_id, user_id, service))
+    except Exception as e:
+        logger.exception("workspace overview exception!")
+        return Result.failed(str(e))
+
+
 # ----------------------- Scene Mode (场景空间模式) -----------------------
 def _scene_mode_config_to_dict(config) -> dict:
     """SceneModeConfig -> 可序列化 dict。"""

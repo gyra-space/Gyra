@@ -60,6 +60,14 @@ class VaultFS(Protocol):
 
     async def read_purpose_md(self) -> str: ...
 
+    async def read_agents_md(self) -> str:
+        """Return the raw content of AGENTS.md (agent overall memory doc)."""
+        ...
+
+    async def write_agents_md(self, content: str) -> None:
+        """Update AGENTS.md. Publishes a change event."""
+        ...
+
     # ===== L0 Verbatim =====
     async def verbat_add(self, v: Verbat) -> VerbatId:
         """Add a verbatim. Dedupes by content_hash within the space.
@@ -106,7 +114,7 @@ class VaultFS(Protocol):
 
     async def doc_delete(self, path: str) -> None:
         """Delete a document. Refuses to delete protected files
-        (log.md, overview.md, index.md, schema.md, purpose.md)."""
+        (log.md, overview.md, index.md, schema.md, purpose.md, AGENTS.md)."""
         ...
 
     async def doc_list(

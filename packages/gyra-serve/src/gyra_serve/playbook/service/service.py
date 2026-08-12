@@ -154,10 +154,126 @@ class PlaybookService(BaseService[PlaybookEntity, PlaybookRequest, PlaybookRespo
 
         return {"valid": len(errors) == 0, "errors": errors}
 
+    # ------------------------------------------------------------------ #
+    # 引用完整性:剧本 = 空间池子集(空间=注册/治理池,剧本=选配/编排子集)
+    # ------------------------------------------------------------------ #
+    def _load_workspace_pool(self, workspace_id: int) -> Dict[str, Any]:
+        """加载空间资源池,按引用键(physical_ref / name)索引。
+
+        查询失败或取不到 service 时返回空 dict——校验降级为只提示不阻断,
+        保证 create/update/seed 在任何异常下都不被误伤。
+        """
+        pool: Dict[str, Any] = {}
+        try:
+            from gyra_serve.workspace.service.service import (
+                WorkspaceService, WORKSPACE_SERVICE_COMPONENT_NAME,
+            )
+            ws_service = self._system_app.get_component(
+                WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService, default=None,
+            )
+            records = ws_service.list_resources(workspace_id) if ws_service else []
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[playbook validate] load workspace pool failed: {e}")
+            return pool
+        for rec in records or []:
+            if not getattr(rec, "is_active", True):
+                continue
+            for key in (getattr(rec, "physical_ref", None), getattr(rec, "name", None)):
+                if key:
+                    pool.setdefault(key, rec)
+        return pool
+
+    def _skill_exists(self, skill_code: str) -> Optional[bool]:
+        """全局技能库是否存在该 skill_code(尽力校验)。返回 None 表示无法校验。"""
+        try:
+            from gyra_serve.skill.service.service import (
+                Service, SKILL_SERVICE_COMPONENT_NAME,
+            )
+            skill_service = self._system_app.get_component(
+                SKILL_SERVICE_COMPONENT_NAME, Service, default=None,
+            )
+            if skill_service is None:
+                return None
+            return skill_service.get_by_skill_code(skill_code) is not None
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[playbook validate] skill check failed: {e}")
+            return None
+
+    def _mcp_exists(self, mcp_code: str) -> Optional[bool]:
+        """全局 MCP 注册表是否存在该 mcp_code(尽力校验)。返回 None 表示无法校验。"""
+        try:
+            from gyra_serve.agent.resource.tool.mcp_collect import get_mcp_info
+            return get_mcp_info(mcp_code) is not None
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[playbook validate] mcp check failed: {e}")
+            return None
+
+    def validate_references(
+        self, workspace_id: int, declaration: Dict[str, Any]
+    ) -> Dict[str, List[str]]:
+        """引用完整性校验:剧本引用的资产/能力应对齐空间资源池。
+
+        规则(消除"空间与剧本都能挂资源"的误解,收敛为单向依赖):
+        - 引用命中空间池(workspace_resource.physical_ref/name) -> OK;
+        - 未命中但全局可解析(skill/mcp 可确定存在) -> warning(不阻断,兼容存量
+          seed/历史剧本,提示绑定以获得空间治理与权限投影);
+        - 未命中且全局确认不存在(skill/mcp) -> error(阻断保存,防悬空引用);
+        - 其他类型(datasource/knowledge/app/llm_model/ecp)无法低成本核验全局
+          -> 仅 warning 提示绑定。
+
+        Returns {"errors": [...], "warnings": [...]}
+        """
+        errors: List[str] = []
+        warnings: List[str] = []
+        pool_by_ref = self._load_workspace_pool(workspace_id)
+
+        def _check(ref: str, ref_type: Optional[str], label: str) -> None:
+            if not ref or ref in pool_by_ref:
+                return
+            exists: Optional[bool] = None
+            if ref_type in ("skill", "agent_skill"):
+                exists = self._skill_exists(ref)
+            elif ref_type == "mcp":
+                exists = self._mcp_exists(ref)
+            if exists is False:
+                errors.append(
+                    f"{label} '{ref}' 不存在或未绑定到当前空间:请先在全局注册,"
+                    f"再到空间「能力/资源」页绑定"
+                )
+            else:
+                warnings.append(
+                    f"{label} '{ref}' 未绑定到当前空间:运行时可用,但无法获得"
+                    f"空间治理/权限投影;建议到空间「能力/资源」页绑定"
+                )
+
+        for item in declaration.get("skills") or []:
+            if isinstance(item, str):
+                _check(item, "skill", "技能")
+            elif isinstance(item, dict):
+                ref = item.get("name") or item.get("skill_code") or item.get("ref")
+                _check(ref, item.get("type") or "skill", "技能")
+
+        ctx = declaration.get("context") or {}
+        for res in ctx.get("resources") or []:
+            if isinstance(res, str):
+                _check(res, None, "资源")
+            elif isinstance(res, dict):
+                ref = res.get("name") or res.get("ref") or res.get("server_name")
+                _check(ref, res.get("type"), "资源")
+
+        return {"errors": errors, "warnings": warnings}
+
     def create(self, request: PlaybookRequest) -> PlaybookResponse:
         validation = self.validate_declaration(request.declaration or {})
         if not validation["valid"]:
             raise ValueError(f"invalid declaration DSL: {validation['errors']}")
+        refs = self.validate_references(request.workspace_id, request.declaration or {})
+        if refs["errors"]:
+            raise ValueError(
+                f"invalid declaration references: {'; '.join(refs['errors'])}"
+            )
+        for w in refs["warnings"]:
+            logger.warning(f"[playbook create] {request.name}: {w}")
         response = self._dao.create(request)
         # record initial version
         self._version_dao.create_version(
@@ -175,6 +291,13 @@ class PlaybookService(BaseService[PlaybookEntity, PlaybookRequest, PlaybookRespo
         validation = self.validate_declaration(request.declaration or {})
         if not validation["valid"]:
             raise ValueError(f"invalid declaration DSL: {validation['errors']}")
+        refs = self.validate_references(request.workspace_id, request.declaration or {})
+        if refs["errors"]:
+            raise ValueError(
+                f"invalid declaration references: {'; '.join(refs['errors'])}"
+            )
+        for w in refs["warnings"]:
+            logger.warning(f"[playbook update] {request.name}: {w}")
         # 必须用局部 session 变量:db._session 是 sessionmaker(非 scoped_session),
         # get_raw_session() 每次返回新 session。若写成 self._dao.get_raw_session()
         # .commit() 会 commit 到另一个空 session,existing 的改动从未提交 -> 返回的

@@ -6,6 +6,7 @@ import { Button, Card, Empty, Spin, Tabs } from 'antd';
 import {
   DatabaseOutlined,
   DeploymentUnitOutlined,
+  RobotOutlined,
   SendOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
@@ -13,6 +14,7 @@ import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { useTranslation } from 'react-i18next';
 import { DataAssetsTab } from './data-assets-tab';
+import { CapabilityTab } from './capability-tab';
 import { DeliveryPanel } from './delivery-panel';
 import { EcpConsole } from '@/app/ecp/components/ecp-console';
 
@@ -99,7 +101,8 @@ export default function AssetsPage() {
           {t('assets.tab_support') || '支撑资源'}
         </span>
       ),
-      // 数据资源:ECP 语义层覆盖不到时,降级关联的原始数据(数据库/数据集/知识库/环境)。
+      // 支撑资源:ECP 语义层覆盖不到时,降级关联的数据(数据库/数据集/知识库/环境)
+      // 与能力(技能/MCP/子智能体/专属模型)——"空间 = 注册/治理池"的统一货架。
       children: (
         <div className="ws-support-wrap">
           <section className="ws-support-section">
@@ -113,6 +116,18 @@ export default function AssetsPage() {
               </div>
             </header>
             <DataAssetsTab workspaceId={ws.id} workspaceCode={ws.workspace_code} />
+          </section>
+          <section className="ws-support-section">
+            <header className="ws-support-section__head">
+              <span className="ws-support-section__icon"><RobotOutlined /></span>
+              <div>
+                <div className="ws-support-section__title">{t('assets.support_capability') || '能力'}</div>
+                <div className="ws-support-section__desc">
+                  {t('assets.support_capability_desc') || '主 Agent 会"干"什么:技能 / MCP / 子智能体 / 专属模型,按需注入给空间内的 Agent。'}
+                </div>
+              </div>
+            </header>
+            <CapabilityTab workspaceId={ws.id} workspaceCode={ws.workspace_code} canManage={canManage} />
           </section>
         </div>
       ),

@@ -261,4 +261,11 @@ export const PermissionsEn = {
   permissions_username_min_length: 'Username must be at least 2 characters',
   permissions_password_min_length: 'Password must be at least 6 characters',
   permissions_username_exists: 'Username already exists',
+
+  // Reset Password
+  permissions_reset_password: 'Reset Password',
+  permissions_password_reset_success: 'Password reset successfully',
+  permissions_new_password: 'New Password',
+  permissions_confirm_password: 'Confirm New Password',
+  permissions_password_mismatch: 'The two passwords do not match',
 };

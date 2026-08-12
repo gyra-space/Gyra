@@ -14,6 +14,7 @@ Key layout (deterministic file_id, namespaced by space_id):
 - wiki doc:   `kswiki-{space_id}-{slug(wiki_path)}`
 - schema.md:  `ksschema-{space_id}`
 - purpose.md: `kspurpose-{space_id}`
+- AGENTS.md:  `ksagents-{space_id}`
 """
 
 from __future__ import annotations
@@ -113,6 +114,9 @@ class S3FileStore:
     def _file_id_for_purpose(self) -> str:
         return f"kspurpose-{_slugify(self._space_id)}"
 
+    def _file_id_for_agents(self) -> str:
+        return f"ksagents-{_slugify(self._space_id)}"
+
     def _file_id_for_root(self, name: str) -> str:
         return f"ksroot-{_slugify(self._space_id)}-{_slugify(name)}"
 
@@ -209,6 +213,17 @@ class S3FileStore:
         file_id = self._file_id_for_purpose()
         return await asyncio.to_thread(self._read_text_sync, file_id) or ""
 
+    # Agent 整体记忆文档（AGENTS.md）—— space 根级，与 purpose.md 同级
+    async def write_agents(self, content: str) -> None:
+        file_id = self._file_id_for_agents()
+        await asyncio.to_thread(
+            self._save_text_sync, file_id, content, "AGENTS.md"
+        )
+
+    async def read_agents(self) -> str:
+        file_id = self._file_id_for_agents()
+        return await asyncio.to_thread(self._read_text_sync, file_id) or ""
+
     async def exists_wiki(self, norm_path: str) -> bool:
         file_id = self._file_id_for_wiki(norm_path)
         return await asyncio.to_thread(self._exists_sync, file_id)
@@ -226,6 +241,8 @@ class S3FileStore:
             await self.write_schema(schema_md)
         if not await asyncio.to_thread(self._exists_sync, self._file_id_for_purpose()):
             await self.write_purpose("# Purpose\n\n")
+        if not await asyncio.to_thread(self._exists_sync, self._file_id_for_agents()):
+            await self.write_agents("# AGENTS.md\n\n# Agent 整体记忆\n\n")
         for path, default in protected.items():
             file_id = self._file_id_for_wiki(path)
             if not await asyncio.to_thread(self._exists_sync, file_id):

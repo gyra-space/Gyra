@@ -210,3 +210,82 @@ def test_materialize_knowledge_space_emits_knowledge_pack_v2():
     assert ar.type == "knowledge_pack"
     value = ar.value if isinstance(ar.value, dict) else json.loads(ar.value)
     assert value["knowledges"] == [{"knowledge_id": "kid-1"}]
+
+
+# --------------------------------------------------------------------------- #
+# 剧本声明物化:引用对齐空间资源池(空间=注册/治理池,剧本=选配/编排子集)
+# --------------------------------------------------------------------------- #
+
+def test_materialize_playbook_declaration_pool_hit_uses_pool_config():
+    """命中空间池的引用按绑定记录物化(type/physical_ref/config 以绑定为准)。"""
+    from gyra_serve.workspace.materializer import materialize_playbook_declaration
+
+    system_app = MagicMock()
+    pool_record = MagicMock(
+        type="data_source",
+        name="生产核心库",
+        physical_ref="prod_core_db",
+        config={"schema_filter": ["orders"]},
+        is_active=True,
+    )
+    declaration = {
+        "skills": [],
+        "context": {"resources": [{"type": "datasource", "ref": "prod_core_db"}]},
+    }
+    with patch(
+        "gyra_serve.workspace.materializer.WorkspaceService"
+    ) as MockWsService:
+        MockWsService.return_value.list_resources.return_value = [pool_record]
+        result = materialize_playbook_declaration(
+            system_app, declaration, workspace_id=1
+        )
+
+    assert len(result) == 1
+    assert result[0].type == "datasource"
+    assert result[0].value["db_name"] == "prod_core_db"
+    assert result[0].value["schema_filter"] == ["orders"]
+
+
+def test_materialize_playbook_declaration_unbound_falls_back_global():
+    """未绑定到空间池的引用走全局兜底(存量/seed 兼容)。"""
+    from gyra_serve.workspace.materializer import materialize_playbook_declaration
+
+    system_app = MagicMock()
+    declaration = {
+        "skills": ["ghost_skill"],
+        "context": {"resources": []},
+    }
+    with patch(
+        "gyra_serve.workspace.materializer.WorkspaceService"
+    ) as MockWsService:
+        MockWsService.return_value.list_resources.return_value = []
+        result = materialize_playbook_declaration(
+            system_app, declaration, workspace_id=1
+        )
+
+    assert len(result) == 1
+    assert result[0].type == "skill(gyra)"
+    assert result[0].name == "ghost_skill"
+
+
+def test_materialize_playbook_declaration_without_workspace_unchanged():
+    """不传 workspace_id 保持原行为:直接按声明类型全局物化。"""
+    from gyra_serve.workspace.materializer import materialize_playbook_declaration
+
+    system_app = MagicMock()
+    declaration = {
+        "skills": ["a_skill"],
+        "context": {"resources": [{"type": "mcp", "ref": "mcp_code"}]},
+    }
+    with patch(
+        "gyra_serve.workspace.materializer.WorkspaceService"
+    ) as MockWsService:
+        MockWsService.return_value.list_resources.return_value = []
+        with patch(
+            "gyra_serve.agent.resource.tool.mcp_collect.get_mcp_info",
+            return_value={"name": "m", "type": "sse", "sse_url": "http://x/sse"},
+        ):
+            result = materialize_playbook_declaration(system_app, declaration)
+
+    assert len(result) == 2
+    assert {r.type for r in result} == {"skill(gyra)", "mcp(gyra)"}

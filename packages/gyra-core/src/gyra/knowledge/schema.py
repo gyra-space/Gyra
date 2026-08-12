@@ -270,6 +270,76 @@ tier1 每轮对话片段落 L0 Verbat（extract_mode=convo），tier2 每 N 轮
 
 
 # ---------------------------------------------------------------------------
+# Default AGENTS.md for per-agent memory spaces
+# ---------------------------------------------------------------------------
+
+AGENTS_MD_SECTION_NAMES = (
+    "identity", "preferences", "decisions", "lessons", "events",
+    "references", "conventions", "recent-updates",
+)
+
+# AGENTS.md 高价值分类 → section 标题映射（与 memory_tool / longterm_manager 一致）
+AGENTS_MD_CATEGORY_SECTION = {
+    "identity": "Identity",
+    "preference": "Preferences",
+    "decision": "Decisions",
+    "lesson": "Lessons",
+    "event": "Events",
+    "data": "References",
+    "convention": "Conventions",
+}
+
+
+def default_agents_md(app_name: str) -> str:
+    """Generate the seed AGENTS.md for an agent memory space.
+
+    AGENTS.md is the agent's overall memory document (the analogue of
+    Claude Code's CLAUDE.md / AGENTS.md, but stored in the agent's own
+    memory space). It is:
+    - auto-maintained by the hermes 4-tier memory pipeline (tier3 curate
+      rewrites it from high-value facts screened by LLM)
+    - injected into the system prompt at session start via the static
+      memory block (read_pipeline.load_static_block)
+
+    The seed provides the document structure; the pipeline fills the
+    sections over time. Users may also hand-edit it via the memory space
+    UI — the pipeline never clobbers content, only merges.
+    """
+    return f"""# {app_name} Agent 整体记忆（AGENTS.md）
+
+本文件是 Agent 的整体记忆文档，类似 Claude Code 的 CLAUDE.md / AGENTS.md。
+只记录高价值信息：易错点（Lessons）、关键逻辑/决策（Decisions）、重要事件
+（Events）、关键数据（References）、稳定偏好（Preferences）。由记忆管线在
+会话策展（tier3）时用 LLM 筛选写入，会话启动时注入 system prompt。也可以
+手动编辑或对 Agent 说"记住 XXX"显式写入——管线不会覆盖人工内容。
+
+## Identity
+<身份画像：Agent 是谁、扮演什么角色、为谁服务>
+
+## Preferences
+<稳定偏好：用户偏好、习惯、风格要求>
+
+## Decisions
+<关键逻辑：长期决策、架构选择、重要结论与依据>
+
+## Lessons
+<易错点：踩过的坑、用户纠正、失败经验，避免重复犯错>
+
+## Events
+<重要事件：里程碑、重大变更、时间点>
+
+## References
+<关键数据：配置、路径、链接、外部引用>
+
+## Conventions
+<工作约定：Agent 遵循的流程、规范、工具使用约定>
+
+## Recent Updates
+<最近一次更新记录：时间 + 变更摘要>
+"""
+
+
+# ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
 

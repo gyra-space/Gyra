@@ -18,10 +18,79 @@ from gyra.storage.memory.base import MemoryStoreBase
 
 logger = logging.getLogger(__name__)
 
+# AGENTS.md 高价值分类 → section 标题映射（与 gyra-core longterm_manager 一致）
+_AGENTS_MD_CATEGORY_SECTION = {
+    "identity": "Identity",
+    "preference": "Preferences",
+    "decision": "Decisions",
+    "lesson": "Lessons",
+    "event": "Events",
+    "data": "References",
+    "convention": "Conventions",
+    "user": "Identity",
+}
+
+# 用户显式写入 AGENTS.md 的标记（永不淘汰）
+_AGENTS_MD_USER_TAG = "[来源: user]"
+
+_AGENTS_MD_HEADER_RE = re.compile(r"^(# .*\n)(?:\n*)", re.MULTILINE)
+_AGENTS_MD_SECTION_RE = re.compile(r"(^##\s+[^\n]+\n)", re.MULTILINE)
+
 
 def _sanitize_tool_suffix(name: str) -> str:
     """Convert a space/memory id into a safe tool-name suffix."""
     return re.sub(r"[^a-zA-Z0-9_]+", "_", name).strip("_") or "space"
+
+
+def _insert_agents_md_user_item(existing: str, content: str, category: str) -> str:
+    """Insert a user-tagged high-value item into AGENTS.md.
+
+    - Preserves the header (lines before the first `## `) and all existing
+      content.
+    - Routes the item into the section matching its category (creates the
+      section if missing).
+    - Tags the line with `[来源: user]` so the consolidation pass never
+      evicts it.
+    - Dedupes: if the same normalized line already exists, no-op.
+    """
+    existing = existing or ""
+    item = f"- {content.strip()} {_AGENTS_MD_USER_TAG}".strip()
+
+    header_lines: List[str] = []
+    sections: Dict[str, List[str]] = {}
+    current_title: Optional[str] = None
+    for line in existing.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            current_title = stripped[3:].strip()
+            sections.setdefault(current_title, [])
+        elif current_title is None:
+            header_lines.append(line)  # header：第一个 ## 之前
+        else:
+            sections[current_title].append(line)
+
+    target_section = _AGENTS_MD_CATEGORY_SECTION.get(category, "Conventions")
+    sections.setdefault(target_section, [])
+
+    # 去重：规范化（去掉标记与空白差异）
+    normalized = re.sub(r"\s+", " ", item.replace(_AGENTS_MD_USER_TAG, "")).strip()
+    for line in sections[target_section]:
+        if re.sub(r"\s+", " ", line.replace(_AGENTS_MD_USER_TAG, "")).strip() == normalized:
+            return existing  # 已存在，不重复写入
+    sections[target_section].append(item)
+
+    ordered = ["Identity", "Preferences", "Decisions", "Lessons", "Events",
+               "References", "Conventions", "Recent Updates"]
+    out_lines = [ln for ln in header_lines if ln.strip()] or ["# Agent 整体记忆（AGENTS.md）"]
+    for name in ordered:
+        body_lines = [l for l in sections.get(name, []) if l.strip()]
+        if not body_lines:
+            continue
+        out_lines.append("")
+        out_lines.append(f"## {name}")
+        out_lines.append("")
+        out_lines.extend(body_lines)
+    return "\n".join(out_lines).strip() + "\n"
 
 
 class MemoryToolPack(ToolPack):
@@ -142,6 +211,34 @@ class MemoryToolPack(ToolPack):
 
         self.add_command(
             command_label=(
+                "Explicitly record a high-value item into the agent's overall "
+                "memory document (AGENTS.md). Use this ONLY when the user "
+                "explicitly asks to remember something (e.g. '记住', '以后注意', "
+                "'不要忘记'), or when a hard-won lesson / key decision / "
+                "critical event / important data emerged in the conversation. "
+                "Items are categorized as: lesson (易错点/踩坑), decision "
+                "(关键逻辑/架构决策), event (重要事件), data (关键数据/配置/引用)."
+                f"{space_hint}"
+            ),
+            command_name=f"{command_prefix}memory_remember",
+            args={
+                "content": {
+                    "type": "string",
+                    "description": "The high-value fact to remember (concise statement).",
+                    "required": True,
+                },
+                "category": {
+                    "type": "string",
+                    "description": "lesson | decision | event | data",
+                    "required": False,
+                },
+            },
+            function=partial(self._do_remember, store=store),
+            parse_execute_args_func=json_parse_execute_args_func,
+        )
+
+        self.add_command(
+            command_label=(
                 "Query the knowledge graph for entity relationships. "
                 "Use this to find facts about people, projects, or concepts."
                 f"{space_hint}"
@@ -241,6 +338,63 @@ class MemoryToolPack(ToolPack):
                 "id": entry.id,
                 "wing": entry.wing,
                 "room": entry.room,
+            },
+            ensure_ascii=False,
+        )
+
+    async def _do_remember(
+        self,
+        content: str,
+        category: str = "decision",
+        store: Optional[MemoryStoreBase] = None,
+        **kwargs,
+    ) -> str:
+        """Explicitly record a high-value item into AGENTS.md (source=user).
+
+        Only works with a knowledge-vault store that exposes the vault
+        AGENTS.md API. Falls back to a normal memory_save otherwise.
+        """
+        store = store or self._memory_store
+        content = (content or "").strip()
+        if not content:
+            return json.dumps({"status": "error", "reason": "empty content"})
+
+        category = (category or "decision").strip().lower()
+        vault = getattr(store, "vault", None)
+        if vault is None or not hasattr(vault, "read_agents_md"):
+            entry = store.write_memory(
+                content=content,
+                wing=self._wing,
+                room=category,
+            )
+            return json.dumps(
+                {
+                    "status": "saved",
+                    "fallback": True,
+                    "id": entry.id,
+                    "wing": entry.wing,
+                    "room": category,
+                },
+                ensure_ascii=False,
+            )
+
+        try:
+            existing = await vault.read_agents_md()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[memory_remember] read AGENTS.md failed: {e}")
+            existing = ""
+        merged = _insert_agents_md_user_item(existing, content, category)
+        try:
+            await vault.write_agents_md(merged)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[memory_remember] write AGENTS.md failed: {e}")
+            return json.dumps({"status": "error", "reason": str(e)})
+        return json.dumps(
+            {
+                "status": "remembered",
+                "source": "user",
+                "category": category,
+                "section": _AGENTS_MD_CATEGORY_SECTION.get(category, "Conventions"),
             },
             ensure_ascii=False,
         )

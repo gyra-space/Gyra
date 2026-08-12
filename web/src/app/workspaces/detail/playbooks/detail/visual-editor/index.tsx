@@ -88,6 +88,7 @@ export default function VisualEditor({
         <SkillsSection
           value={declaration.skills}
           onChange={(skills) => onDeclarationChange({ skills })}
+          workspaceId={workspaceId}
         />
       ),
     },

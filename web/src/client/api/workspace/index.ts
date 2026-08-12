@@ -61,6 +61,26 @@ export interface InboxItem {
   gmt_modified: string;
 }
 
+export interface WorkspaceOverview {
+  workspace?: any;
+  deliveries: any[];
+  artifacts: any[];
+  inbox: any[];
+  resources: any[];
+  playbooks: any[];
+  triggers: any[];
+  semantics: any[];
+  growth?: any;
+  ecp_confirmed_count: number;
+  ecp_pending_count: number;
+}
+
+/** 空间首屏聚合端点:一次请求返回工作台全部数据,减少首屏请求数并消灭数字跳变 */
+export const getWorkspaceOverview = (workspace_id: number) =>
+  GET<null, WorkspaceOverview>(
+    `/api/v1/serve_workspace_service/workspaces/${workspace_id}/overview`,
+  );
+
 export const listInbox = (
   workspace_id: number,
   params?: { status?: string; source_type?: string; limit?: number },

@@ -68,8 +68,9 @@ async def materialize_direct_conversation_deliverables(
     conv_id: Optional[str],
     agent_conv_id: Optional[str],
     created_by_agent: Optional[str] = None,
+    task_id: Optional[int] = None,
 ) -> int:
-    """把大厅直接对话中明确交付(deliverable)的文件物化为空间交付产物。
+    """把会话中明确交付(deliverable)的文件物化为空间交付产物。
 
     Args:
         system_app: 运行中的 SystemApp。
@@ -77,12 +78,16 @@ async def materialize_direct_conversation_deliverables(
         conv_id: 会话 id(前端/用户会话)。
         agent_conv_id: agent 内部对话 id。
         created_by_agent: 产出方 app_code(用于溯源)。
+        task_id: 关联任务 id。None 表示大厅直接对话 -> 会话级交付(task_id=0 哨兵);
+            传入真实 task_id 表示会话内剧本任务(in_session)的交付,产物绑定该任务。
 
     Returns:
         本次新建的 Artifact 数量。
     """
     if not workspace_id:
         return 0
+    if task_id is None:
+        task_id = LOBBY_ARTIFACT_TASK_ID
     try:
         files = await _collect_deliverable_files(agent_conv_id, conv_id)
     except Exception as e:
@@ -109,7 +114,7 @@ async def materialize_direct_conversation_deliverables(
         file_name = f.get("file_name") or "unnamed"
         try:
             artifact = service.create(ArtifactRequest(
-                task_id=LOBBY_ARTIFACT_TASK_ID,
+                task_id=task_id,
                 workspace_id=workspace_id,
                 type="file",
                 title=file_name,
@@ -133,7 +138,7 @@ async def materialize_direct_conversation_deliverables(
                 "artifact_id": artifact.id,
                 "title": file_name,
                 "type": "file",
-                "task_id": LOBBY_ARTIFACT_TASK_ID,
+                "task_id": task_id,
                 "workspace_id": workspace_id,
             })
             logger.info(

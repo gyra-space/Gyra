@@ -30,7 +30,7 @@ def test_delete_removes_task(service):
 
 def test_delete_cleans_relation_rows(service):
     parent = _create(service, "parent")
-    child = service.spawn(parent.id, TaskRequest(workspace_id=1, title="child"))
+    child = service.create_subtask(parent.id, TaskRequest(workspace_id=1, title="child"))
 
     service.delete(parent.id)
     service.delete(child.id)

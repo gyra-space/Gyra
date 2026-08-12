@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { App, Avatar, Badge, Button, Input, Space, Switch, Table, Tag } from 'antd';
-import { DeleteOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons';
+import { App, Avatar, Badge, Button, Form, Input, Space, Switch, Table, Tag, Modal } from 'antd';
+import { DeleteOutlined, SearchOutlined, UserOutlined, KeyOutlined } from '@ant-design/icons';
 import { usersService, User } from '@/services/users';
 import { authService } from '@/services/auth';
 import { permissionsService, type MyPermissions } from '@/services/permissions';
@@ -23,6 +23,10 @@ export default function UsersPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [myRbac, setMyRbac] = useState<MyPermissions | null>(null);
   const checkedRef = useRef(false);
+  const [resetPwdOpen, setResetPwdOpen] = useState(false);
+  const [resetPwdSaving, setResetPwdSaving] = useState(false);
+  const [resetPwdUser, setResetPwdUser] = useState<User | null>(null);
+  const [resetPwdForm] = Form.useForm();
 
   // admin 判断：兼容 legacy role=admin 和 RBAC 角色/权限
   const isCurrentUserAdmin = (() => {
@@ -114,6 +118,34 @@ export default function UsersPage() {
     });
   };
 
+  const handleResetPassword = async () => {
+    if (!resetPwdUser) return;
+    let values: { password: string };
+    try {
+      values = await resetPwdForm.validateFields();
+    } catch {
+      return; // validation failed
+    }
+    setResetPwdSaving(true);
+    try {
+      await usersService.updateUser(resetPwdUser.id, { password: values.password });
+      message.success('密码已重置');
+      setResetPwdOpen(false);
+      resetPwdForm.resetFields();
+      setResetPwdUser(null);
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '重置密码失败');
+    } finally {
+      setResetPwdSaving(false);
+    }
+  };
+
+  const openResetPassword = (user: User) => {
+    setResetPwdUser(user);
+    resetPwdForm.resetFields();
+    setResetPwdOpen(true);
+  };
+
   const columns = [
     {
       title: '头像',
@@ -196,6 +228,13 @@ export default function UsersPage() {
           >
             {record.role === 'admin' ? '取消管理员' : '设为管理员'}
           </Button>
+          <Button
+            size="small"
+            icon={<KeyOutlined />}
+            onClick={() => openResetPassword(record)}
+          >
+            重置密码
+          </Button>
           {/* Show delete button only for admin users, hide for self */}
           {isCurrentUserAdmin && currentUser?.id !== record.id && (
             <Button
@@ -248,9 +287,58 @@ export default function UsersPage() {
           onChange: (p) => setPage(p),
           showTotal: (t) => `共 ${t} 条`,
         }}
-        scroll={{ x: 900 }}
+        scroll={{ x: 1000 }}
         className="bg-white dark:bg-[#1a1a1a] rounded-xl shadow-sm"
       />
+
+      {/* Reset Password Modal */}
+      <Modal
+        title={
+          resetPwdUser
+            ? `重置密码 - ${resetPwdUser.name || resetPwdUser.email || resetPwdUser.id}`
+            : '重置密码'
+        }
+        open={resetPwdOpen}
+        onOk={handleResetPassword}
+        onCancel={() => {
+          setResetPwdOpen(false);
+          setResetPwdUser(null);
+          resetPwdForm.resetFields();
+        }}
+        confirmLoading={resetPwdSaving}
+        destroyOnClose
+      >
+        <Form form={resetPwdForm} layout="vertical">
+          <Form.Item
+            name="password"
+            label="新密码"
+            rules={[
+              { required: true, message: '请输入新密码' },
+              { min: 6, message: '密码长度不能少于 6 位' },
+            ]}
+          >
+            <Input.Password placeholder="请输入新密码" />
+          </Form.Item>
+          <Form.Item
+            name="confirm_password"
+            label="确认新密码"
+            dependencies={['password']}
+            rules={[
+              { required: true, message: '请再次输入新密码' },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('password') === value) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error('两次输入的密码不一致'));
+                },
+              }),
+            ]}
+          >
+            <Input.Password placeholder="请再次输入新密码" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

@@ -198,8 +198,16 @@ class UserDao(BaseDao):
         user_id: int,
         role: Optional[str] = None,
         is_active: Optional[int] = None,
+        password: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Update user role or is_active status."""
+        """Update user role, is_active status or password.
+
+        Args:
+            user_id: User ID to update
+            role: New legacy role ("normal" or "admin")
+            is_active: New active status (1=active, 0=disabled)
+            password: New plaintext password (will be bcrypt-hashed before storing)
+        """
         with self.session() as session:
             user = session.query(UserEntity).filter(UserEntity.id == user_id).first()
             if not user:
@@ -208,6 +216,8 @@ class UserDao(BaseDao):
                 user.role = role
             if is_active is not None:
                 user.is_active = is_active
+            if password is not None:
+                user.password_hash = _hash_password(password)
             session.commit()
             session.refresh(user)
             return _entity_to_dict(user)
@@ -363,10 +373,13 @@ class UserService:
         user_id: int,
         role: Optional[str] = None,
         is_active: Optional[int] = None,
+        password: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Update user role or active status."""
+        """Update user role, active status or password."""
         try:
-            return self._dao.update_user(user_id, role=role, is_active=is_active)
+            return self._dao.update_user(
+                user_id, role=role, is_active=is_active, password=password
+            )
         except Exception as e:
             logger.exception(f"Failed to update user {user_id}: {e}")
             return None

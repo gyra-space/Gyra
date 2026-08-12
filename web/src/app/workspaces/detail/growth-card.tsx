@@ -1,8 +1,8 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useRequest } from 'ahooks';
-import { ApartmentOutlined, RightOutlined } from '@ant-design/icons';
+import { ApartmentOutlined, DownOutlined, RightOutlined } from '@ant-design/icons';
 import { GET, apiInterceptors } from '@/client/api';
 import { getEcpInbox, listEcpObjects } from '@/client/api/ecp';
 
@@ -11,6 +11,10 @@ export interface GrowthCardProps {
   workspaceCode?: string;
   /** 进入飞轮工作台(成长数据的全量看板) */
   onEnterFlywheel?: () => void;
+  /** 以下数据由 Lobby 聚合端点一次性下发,省略时回退到内部拉取(兼容独立使用) */
+  growth?: any;
+  ecpConfirmedCount?: number;
+  ecpPendingCount?: number;
 }
 
 interface GrowthData {
@@ -121,9 +125,26 @@ function TrendSpark({ trend }: { trend: Array<{ date: string; count: number }> }
   );
 }
 
-export function GrowthCard({ workspaceId, workspaceCode, onEnterFlywheel }: GrowthCardProps) {
-  const { data } = useRequest(
+export function GrowthCard({ workspaceId, workspaceCode, onEnterFlywheel, growth: growthProp, ecpConfirmedCount: ecpConfirmedProp, ecpPendingCount: ecpPendingProp }: GrowthCardProps) {
+  // 成长卡可折叠:默认收敛为一行(只留标题 + 飞轮入口),展开才显示指标,避免装饰性内容抢占首屏
+  const storageKey = `ws-growth-collapsed-${workspaceId}`;
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return window.localStorage.getItem(storageKey) !== '0';
+  });
+  const toggleCollapse = () => {
+    setCollapsed((c) => {
+      const next = !c;
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(storageKey, next ? '1' : '0');
+      }
+      return next;
+    });
+  };
+
+  const { data: fetchedGrowth } = useRequest(
     async () => {
+      if (growthProp) return null;
       const res = await GET<null, GrowthData>(
         `/api/v1/serve_workspace_service/workspaces/${workspaceId}/growth`,
       );
@@ -132,43 +153,45 @@ export function GrowthCard({ workspaceId, workspaceCode, onEnterFlywheel }: Grow
       }
       return EMPTY;
     },
-    { refreshDeps: [workspaceId] },
+    { refreshDeps: [workspaceId, growthProp] },
   );
-  const growth = data ?? EMPTY;
+  const growth = growthProp ?? fetchedGrowth ?? EMPTY;
 
   // ECP 成长:派生空间 ecp_<code> 的语义口径
   const ecpWsId = workspaceCode ? `ecp_${workspaceCode}` : null;
-  const { data: ecpConfirmedCount } = useRequest(
+  const { data: ecpConfirmedFetched } = useRequest(
     async () => {
+      if (ecpConfirmedProp != null || !ecpWsId) return 0;
       const [err, res] = await apiInterceptors(
         listEcpObjects({ status: 'confirmed', page_size: 1, workspace_id: ecpWsId! }),
       );
       return err ? 0 : res?.total_count ?? 0;
     },
-    { ready: !!ecpWsId, refreshDeps: [ecpWsId] },
+    { ready: !!ecpWsId, refreshDeps: [ecpWsId, ecpConfirmedProp] },
   );
   // 待确认提案数(收件箱),与 confirmed 一起算北极星
-  const { data: ecpPendingCount } = useRequest(
+  const { data: ecpPendingFetched } = useRequest(
     async () => {
+      if (ecpPendingProp != null || !ecpWsId) return 0;
       const [err, res] = await apiInterceptors(
         getEcpInbox({ page_size: 1, workspace_id: ecpWsId! }),
       );
       return err ? 0 : res?.total_count ?? 0;
     },
-    { ready: !!ecpWsId, refreshDeps: [ecpWsId] },
+    { ready: !!ecpWsId, refreshDeps: [ecpWsId, ecpPendingProp] },
   );
 
-  const confirmed = ecpConfirmedCount ?? 0;
-  const pending = ecpPendingCount ?? 0;
+  const confirmed = ecpConfirmedProp ?? ecpConfirmedFetched ?? 0;
+  const pending = ecpPendingProp ?? ecpPendingFetched ?? 0;
   // 北极星:资产固化率 = 已确认 / (已确认 + 待确认),衡量 ⚠️->✅ 的转化程度
   const total = confirmed + pending;
   const solidificationRate = total > 0 ? Math.round((confirmed / total) * 100) : 0;
 
-  const totalTasks = (growth.tasks_trend || []).reduce((sum, t) => sum + t.count, 0);
+  const totalTasks = (growth.tasks_trend || []).reduce((sum: number, t: { count: number }) => sum + t.count, 0);
 
   const metrics = [
-    { label: '沉淀 Asset', value: growth.assets_count },
-    { label: 'Playbook 演化提议', value: growth.evolution_proposals_count },
+    { label: '已沉淀成果', value: growth.assets_count },
+    { label: '剧本演化建议', value: growth.evolution_proposals_count },
     { label: '知识图谱节点', value: growth.knowledge_graph_nodes },
     ...(ecpWsId ? [{ label: '语义口径', value: confirmed }] : []),
   ];
@@ -176,7 +199,25 @@ export function GrowthCard({ workspaceId, workspaceCode, onEnterFlywheel }: Grow
   return (
     <section className="ws-growth">
       <header className="ws-growth__head">
-        <span className="ws-growth__title">本月空间成长</span>
+        <span
+          className="ws-growth__toggle"
+          role="button"
+          tabIndex={0}
+          aria-label={collapsed ? '展开成长概览' : '收起成长概览'}
+          onClick={toggleCollapse}
+          onKeyDown={(e) => { if (e.key === 'Enter') toggleCollapse(); }}
+        >
+          {collapsed ? <RightOutlined /> : <DownOutlined />}
+        </span>
+        <span
+          className="ws-growth__title"
+          role="button"
+          tabIndex={0}
+          onClick={toggleCollapse}
+          onKeyDown={(e) => { if (e.key === 'Enter') toggleCollapse(); }}
+        >
+          本月空间成长
+        </span>
         <div
           className="ws-growth__entry"
           role="button"
@@ -195,36 +236,38 @@ export function GrowthCard({ workspaceId, workspaceCode, onEnterFlywheel }: Grow
         </div>
       </header>
 
-      <div className="ws-growth__body">
-        {ecpWsId && (
-          <div className="ws-growth__ns">
-            <NorthStarRing percent={solidificationRate} />
-            <div className="ws-growth__ns-meta">
-              <span className="ws-growth__ns-label">北极星 · 资产固化率</span>
-              <span className="ws-growth__ns-foot">
-                {total > 0 ? `⚠️→✅ ${confirmed}/${total} 已固化` : '暂无语义提案'}
-              </span>
+      {!collapsed && (
+        <div className="ws-growth__body">
+          {ecpWsId && (
+            <div className="ws-growth__ns">
+              <NorthStarRing percent={solidificationRate} />
+              <div className="ws-growth__ns-meta">
+                <span className="ws-growth__ns-label">北极星 · 资产固化率</span>
+                <span className="ws-growth__ns-foot">
+                  {total > 0 ? `⚠️→✅ ${confirmed}/${total} 已固化` : '暂无语义提案'}
+                </span>
+              </div>
             </div>
+          )}
+
+          <div className="ws-growth__metrics">
+            {metrics.map((m) => (
+              <div key={m.label} className="ws-growth__metric">
+                <span className="ws-growth__metric-value">{m.value}</span>
+                <span className="ws-growth__metric-label">{m.label}</span>
+              </div>
+            ))}
           </div>
-        )}
 
-        <div className="ws-growth__metrics">
-          {metrics.map((m) => (
-            <div key={m.label} className="ws-growth__metric">
-              <span className="ws-growth__metric-value">{m.value}</span>
-              <span className="ws-growth__metric-label">{m.label}</span>
-            </div>
-          ))}
+          <div className="ws-growth__trend">
+            <span className="ws-growth__trend-label">任务趋势</span>
+            <TrendSpark trend={growth.tasks_trend || []} />
+            <span className="ws-growth__trend-value">
+              <b>{totalTasks}</b> 次 · 近 30 天
+            </span>
+          </div>
         </div>
-
-        <div className="ws-growth__trend">
-          <span className="ws-growth__trend-label">任务趋势</span>
-          <TrendSpark trend={growth.tasks_trend || []} />
-          <span className="ws-growth__trend-value">
-            <b>{totalTasks}</b> 次 · 近 30 天
-          </span>
-        </div>
-      </div>
+      )}
     </section>
   );
 }

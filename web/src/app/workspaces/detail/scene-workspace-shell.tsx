@@ -2,8 +2,8 @@
 
 import './scene-workspace.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button } from 'antd';
-import { CloseOutlined } from '@ant-design/icons';
+import { App, Button, Modal } from 'antd';
+import { CloseOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation } from '@/client/api';
 import { getUserId } from '@/utils';
@@ -27,6 +27,8 @@ interface SceneWorkspaceShellProps {
   workspaceConvUid: string;
   appCode: string;
   onRefreshLists?: () => void;
+  /** 任务/介入列表刷新信号(lobby 最近产出/交付/待办据此同步刷新) */
+  listsRefreshKey?: number;
   onConvChanged?: (convUid: string, taskId?: number | null) => void;
   convLoadError?: string | null;
   retryLoadConv?: () => void;
@@ -42,6 +44,7 @@ export function SceneWorkspaceShell({
   workspaceConvUid,
   appCode,
   onRefreshLists,
+  listsRefreshKey,
   onConvChanged,
   convLoadError,
   retryLoadConv,
@@ -236,6 +239,70 @@ export function SceneWorkspaceShell({
     setMobilePane('space');
   };
 
+  // 剧本快捷启动:选择剧本后以 @引用 带入输入框并聚焦,复用输入框的剧本执行链路
+  const [quickPbOpen, setQuickPbOpen] = useState(false);
+  const handleQuickRun = (pb: { playbook_id: number; playbook_name: string }) => {
+    agentInputRef.current?.insertText(`@剧本#${pb.playbook_id}「${pb.playbook_name}」 `);
+    setQuickPbOpen(false);
+    agentInputRef.current?.focus();
+    setMobilePane('agent');
+  };
+
+  // 推荐问题/随便问问:可带文本填入输入框并聚焦(带文本时作为问题预填)
+  const handleAsk = (text?: string) => {
+    if (text) agentInputRef.current?.insertText(`${text} `);
+    agentInputRef.current?.focus();
+    setMobilePane('agent');
+  };
+
+  // 导览卡动作:全部壳内化 —— 不再整页跳转离开三列壳
+  const handleGuideAction = (action: 'ask' | 'run_playbook' | 'triggers' | 'data_assets') => {
+    switch (action) {
+      case 'ask':
+        agentInputRef.current?.focus();
+        setMobilePane('agent');
+        break;
+      case 'run_playbook':
+        setQuickPbOpen(true);
+        setMobilePane('space');
+        break;
+      case 'triggers':
+        setPreviewItem(null);
+        setDetailContext('triggers');
+        expandSpace();
+        setMobilePane('space');
+        break;
+      case 'data_assets':
+        setPreviewItem(null);
+        setDetailContext('data-assets');
+        expandSpace();
+        setMobilePane('space');
+        break;
+    }
+  };
+
+  // 工作台待办点击:与 rail 收件箱一致 —— task 进任务对话,intervention/提案进中屏处理
+  const handleSelectInbox = (item: any) => {
+    if (item.source_type === 'task') {
+      handleEnterConversation(Number(item.source_id));
+      setMobilePane('agent');
+      return;
+    }
+    if (item.source_type === 'intervention') {
+      handlePreview(
+        { id: Number(item.source_id), question: { message: item.title }, status: 'requested' },
+        'intervention',
+      );
+    } else if (item.source_type === 'ecp_proposal') {
+      handlePreview(item, 'ecp_proposal');
+    } else {
+      setPreviewItem({ payload: { title: item.title, source_type: item.source_type } });
+      setDetailContext('entity-card');
+    }
+    expandSpace();
+    setMobilePane('space');
+  };
+
   // 从「会话」视图进入对应对话:剧本任务会话(有 task_id)进任务对话,
   // 大厅会话(无 task_id)切回 workspace 级会话并回到 dashboard。
   const handleOpenConversation = async (convUid: string, taskId: number | null) => {
@@ -407,6 +474,11 @@ export function SceneWorkspaceShell({
           onBack={handleBackToDashboard}
           onProposalResolved={bumpInbox}
           onEnterFlywheel={handleEnterFlywheel}
+          onGuide={handleGuideAction}
+          onSelectInbox={handleSelectInbox}
+          onAsk={handleAsk}
+          onRunPlaybook={handleQuickRun}
+          listsRefreshKey={listsRefreshKey}
           onSelectTask={(taskId) => {
             const task = tasks.find((t) => t.id === taskId);
             if (task) handlePreview(task, 'task');
@@ -455,7 +527,12 @@ export function SceneWorkspaceShell({
           }}
           onSubagentClick={handleSubagentClick}
           onWorkspaceEvent={handleWorkspaceEvent}
-          onConversationStart={() => setSpaceCollapsed(true)}
+          onConversationStart={() => {
+            setSpaceCollapsed(true);
+            // 会话开始即刷新任务列表:回合前路由预建的会话内任务(页面输入命中剧本)
+            // 在 chat 流里创建,不产生 task_created SSE 事件,靠这里第一时间入列表。
+            onRefreshLists?.();
+          }}
           inputRef={agentInputRef}
           switchingTask={switchingTask}
           convLoadError={convLoadError}
@@ -464,6 +541,45 @@ export function SceneWorkspaceShell({
           tasks={tasks}
         />
       </div>
+
+      {/* 剧本快捷启动:选择后 @引用 带入输入框(壳内执行,不跳转剧本页) */}
+      <Modal
+        open={quickPbOpen}
+        onCancel={() => setQuickPbOpen(false)}
+        footer={null}
+        title="跑一个剧本"
+        width={440}
+      >
+        <p style={{ fontSize: 13, color: 'var(--ws-ink-2)', margin: '12px 0 16px', lineHeight: 1.6 }}>
+          选择一个剧本,将自动带入右侧输入框并聚焦。补充执行意图后回车即可运行,全程不出空间。
+        </p>
+        {(!playbooks || playbooks.length === 0) && (
+          <div className="ws-rail-empty">
+            <div className="ws-rail-empty-t">暂无剧本</div>
+            <div className="ws-rail-empty-h">可在「剧本」页创建剧本后再回来运行。</div>
+          </div>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
+          {(playbooks || []).map((pb: { playbook_id: number; playbook_name: string }) => (
+            <div
+              key={pb.playbook_id}
+              role="button"
+              tabIndex={0}
+              className="ws-deliverable-card"
+              style={{ width: '100%', cursor: 'pointer' }}
+              onClick={() => handleQuickRun(pb)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleQuickRun(pb); }}
+            >
+              <span className="ws-deliverable-card__icon"><ScheduleOutlined /></span>
+              <span className="ws-deliverable-card__info">
+                <span className="ws-deliverable-card__name">{pb.playbook_name}</span>
+                <span className="ws-deliverable-card__meta">点击引用到输入框并运行</span>
+              </span>
+              <RightOutlined className="ws-deliverable-card__chevron" />
+            </div>
+          ))}
+        </div>
+      </Modal>
     </div>
   );
 }

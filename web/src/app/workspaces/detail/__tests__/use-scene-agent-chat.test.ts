@@ -36,6 +36,8 @@ describe('buildSceneAgentSendData', () => {
     ]);
     // 无 model_name
     expect(data.model_name).toBeUndefined();
+    // 显式命中剧本 -> ext_info 透传 playbook_id(后端回合前路由预建会话内任务)
+    expect(data.ext_info).toMatchObject({ workspace_id: 9, playbook_id: 7 });
   });
 
   test('text-only: user_input 为纯字符串, 无 chat_in_params', () => {

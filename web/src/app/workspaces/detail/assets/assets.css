@@ -1,23 +1,25 @@
-/* 资产页卡片货架样式 — BEM .ws-asset-* */
+/* 空间资源货架样式 — BEM .ws-asset-*
+ * 资产页(语义/支撑/交付)与能力分区共用同一套卡片体系,
+ * 支撑"空间 = 注册/治理池"的统一心智:数据(名词)+ 能力(动词)一个货架管完。 */
 
 .ws-asset-section {
-  margin-bottom: 22px;
+  margin-bottom: 24px;
 }
 
 .ws-asset-section__head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .ws-asset-section__icon {
   color: var(--ws-brand, #4f46e5);
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .ws-asset-section__title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--ws-ink);
 }
@@ -25,12 +27,24 @@
 .ws-asset-section__count {
   font-size: 12px;
   color: var(--ws-ink-2);
+  background: var(--ws-surface);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 999px;
+  padding: 1px 9px;
 }
 
+.ws-asset-section__extra {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- 卡片货架 ---- */
 .ws-asset-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  gap: 12px;
 }
 
 .ws-asset-card {
@@ -38,81 +52,48 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 15px 16px;
+  padding: 14px 16px;
   border: 1px solid var(--ws-border-subtle);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--ws-surface);
-  overflow: hidden;
-  transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
-}
-
-.ws-asset-card::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 3px;
-  background: linear-gradient(90deg, var(--ws-brand, #4f46e5), rgba(79, 70, 229, 0));
-  opacity: 0.9;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
 }
 
 .ws-asset-card:hover {
+  border-color: var(--ws-border);
   box-shadow: var(--ws-shadow-sm);
-  border-color: rgba(79, 70, 229, 0.28);
-  transform: translateY(-2px);
 }
 
 .ws-asset-card--off {
-  opacity: 0.6;
+  opacity: 0.55;
 }
 
-.ws-asset-card--off::before {
-  background: linear-gradient(90deg, #9ca3af, rgba(156, 163, 175, 0));
-}
-
-.ws-asset-card__head {
+.ws-asset-card__top {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
 }
 
-.ws-asset-card__tile {
+.ws-asset-card__icon {
   flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border-radius: 11px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   display: grid;
   place-items: center;
-  font-size: 18px;
-  color: #fff;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.28);
-}
-
-.ws-asset-card__tile--muted {
-  background: linear-gradient(135deg, #9aa3b2, #c3cad6);
-}
-
-.ws-asset-card__titles {
-  flex: 1;
-  min-width: 0;
+  font-size: 16px;
 }
 
 .ws-asset-card__name {
+  flex: 1;
+  min-width: 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--ws-ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.ws-asset-card__type {
-  margin-top: 2px;
-  font-size: 12px;
-  color: var(--ws-ink-2);
 }
 
 .ws-asset-card__tags {
@@ -121,37 +102,12 @@
   gap: 4px;
 }
 
-.ws-asset-card__meta {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--ws-border-subtle);
-}
-
-.ws-asset-card__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+.ws-asset-card__source {
   font-size: 12px;
-}
-
-.ws-asset-card__row-key {
-  flex-shrink: 0;
   color: var(--ws-ink-2);
-}
-
-.ws-asset-card__row-val {
-  min-width: 0;
-  color: var(--ws-ink);
-  text-align: right;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.ws-asset-card__row-val--mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -161,7 +117,8 @@
   justify-content: space-between;
   gap: 8px;
   margin-top: auto;
-  padding-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--ws-border-subtle);
 }
 
 .ws-asset-card__time {
@@ -173,6 +130,134 @@
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* ---- 支撑资源工具栏 ---- */
+.ws-asset-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.ws-asset-toolbar__stat {
+  font-size: 12px;
+  color: var(--ws-ink-2);
+}
+
+.ws-asset-toolbar__stat b {
+  color: var(--ws-brand, #4f46e5);
+  font-weight: 600;
+}
+
+.ws-asset-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---- 添加能力:类型选择 ---- */
+.ws-capability-type {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.ws-capability-type__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 12px;
+  background: var(--ws-surface);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.ws-capability-type__item:hover {
+  border-color: var(--ws-border);
+}
+
+.ws-capability-type__item--on {
+  border-color: var(--ws-brand, #4f46e5);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.12);
+}
+
+.ws-capability-type__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ws-ink);
+}
+
+.ws-capability-type__desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ws-ink-2);
+}
+
+/* === 支撑资源聚合 tab:数据 + 能力分区 === */
+.ws-support-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.ws-support-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ws-support-section__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--ws-radius, 12px);
+  background: var(--ws-hover, rgba(79, 70, 229, 0.04));
+  border-left: 3px solid var(--ws-brand, #4f46e5);
+}
+
+.ws-support-section__icon {
+  flex-shrink: 0;
+  color: var(--ws-brand, #4f46e5);
+  font-size: 16px;
+  margin-top: 2px;
+}
+
+.ws-support-section__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ws-ink);
+}
+
+.ws-support-section__desc {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ws-ink-2);
+  line-height: 1.5;
+}
+
+/* === 资产页 tab「核心」标记 === */
+.ws-tab-tag-core {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 8px;
+  color: #fff;
+  background: var(--ws-brand, #4f46e5);
+  vertical-align: middle;
 }
 
 /* === 交付沉淀时间线 .ws-feed-* === */
@@ -282,60 +367,4 @@
 
 .ws-feed-more:hover {
   text-decoration: underline;
-}
-
-/* === 资产页 tab「核心」标记 === */
-.ws-tab-tag-core {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 0 6px;
-  font-size: 10px;
-  line-height: 16px;
-  border-radius: 8px;
-  color: #fff;
-  background: var(--ws-brand, #4f46e5);
-  vertical-align: middle;
-}
-
-/* === 支撑资源聚合 tab:数据 + 能力分区 === */
-.ws-support-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.ws-support-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.ws-support-section__head {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 14px;
-  border-radius: var(--ws-radius, 12px);
-  background: var(--ws-hover, rgba(79, 70, 229, 0.04));
-  border-left: 3px solid var(--ws-brand, #4f46e5);
-}
-
-.ws-support-section__icon {
-  flex-shrink: 0;
-  color: var(--ws-brand, #4f46e5);
-  font-size: 16px;
-  margin-top: 2px;
-}
-
-.ws-support-section__title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ws-ink);
-}
-
-.ws-support-section__desc {
-  margin-top: 2px;
-  font-size: 12px;
-  color: var(--ws-ink-2);
-  line-height: 1.5;
 }

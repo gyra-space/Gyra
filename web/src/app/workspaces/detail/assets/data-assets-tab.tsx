@@ -426,13 +426,20 @@ export function DataAssetsTab({
   const renderCard = (r: any) => {
     const isKnowledge = r.type === 'knowledge_space';
     const isEnv = r.type === 'environment';
-    const icon = isEnv
-      ? <CloudServerOutlined className="ws-asset-card__icon" style={{ color: '#64748b' }} />
+    const color = isEnv
+      ? '#64748b'
       : isKnowledge
-        ? <BookOutlined className="ws-asset-card__icon" style={{ color: '#9333ea' }} />
+        ? '#9333ea'
         : r.owned
-          ? <FileExcelOutlined className="ws-asset-card__icon" style={{ color: '#16a34a' }} />
-          : <DatabaseOutlined className="ws-asset-card__icon" style={{ color: 'var(--ws-brand, #4f46e5)' }} />;
+          ? '#16a34a'
+          : '#4f46e5';
+    const icon = isEnv
+      ? <CloudServerOutlined />
+      : isKnowledge
+        ? <BookOutlined />
+        : r.owned
+          ? <FileExcelOutlined />
+          : <DatabaseOutlined />;
     const source = isEnv
       ? r.physical_ref || r.name
       : isKnowledge
@@ -443,7 +450,9 @@ export function DataAssetsTab({
     return (
       <div key={r.id} className={`ws-asset-card${r.is_active ? '' : ' ws-asset-card--off'}`}>
         <div className="ws-asset-card__top">
-          {icon}
+          <span className="ws-asset-card__icon" style={{ color, background: `${color}1a` }}>
+            {icon}
+          </span>
           <span className="ws-asset-card__name" title={r.name}>{r.name}</span>
           <Switch size="small" checked={!!r.is_active} onChange={(c) => handleToggle(r, c)} />
         </div>
@@ -470,11 +479,16 @@ export function DataAssetsTab({
 
   return (
     <div>
-      <div className="flex justify-end gap-2 mb-4">
-        <Button icon={<DatabaseOutlined />} onClick={() => setConnectOpen(true)}>连接数据库</Button>
-        <Button icon={<CloudUploadOutlined />} onClick={() => setUploadOpen(true)}>上传数据集</Button>
-        <Button icon={<FileTextOutlined />} onClick={() => setFileOpen(true)}>上传文件</Button>
-        <Button icon={<BookOutlined />} onClick={() => setKnowledgeOpen(true)}>挂载知识库</Button>
+      <div className="ws-asset-toolbar">
+        <span className="ws-asset-toolbar__stat">
+          已接入 <b>{totalCount}</b> 项数据资产
+        </span>
+        <div className="ws-asset-toolbar__actions">
+          <Button icon={<DatabaseOutlined />} onClick={() => setConnectOpen(true)}>连接数据库</Button>
+          <Button icon={<CloudUploadOutlined />} onClick={() => setUploadOpen(true)}>上传数据集</Button>
+          <Button icon={<FileTextOutlined />} onClick={() => setFileOpen(true)}>上传文件</Button>
+          <Button icon={<BookOutlined />} onClick={() => setKnowledgeOpen(true)}>挂载知识库</Button>
+        </div>
       </div>
 
       {loading ? <div className="flex justify-center py-8"><Spin /></div> : totalCount === 0 ? (
@@ -510,7 +524,9 @@ export function DataAssetsTab({
             {docFiles.map((f) => (
               <div key={f.path} className="ws-asset-card">
                 <div className="ws-asset-card__top">
-                  <FileTextOutlined className="ws-asset-card__icon" style={{ color: '#9333ea' }} />
+                  <span className="ws-asset-card__icon" style={{ color: '#9333ea', background: '#9333ea1a' }}>
+                    <FileTextOutlined />
+                  </span>
                   <span className="ws-asset-card__name" title={f.path}>{f.name}</span>
                 </div>
                 <div className="ws-asset-card__tags">
@@ -542,7 +558,9 @@ export function DataAssetsTab({
               return (
                 <div key={a.ref_id} className="ws-asset-card">
                   <div className="ws-asset-card__top">
-                    <DatabaseOutlined className="ws-asset-card__icon" style={{ color: 'var(--ws-brand, #4f46e5)' }} />
+                    <span className="ws-asset-card__icon" style={{ color: '#4f46e5', background: '#4f46e51a' }}>
+                      <DatabaseOutlined />
+                    </span>
                     <span className="ws-asset-card__name" title={name}>{name}</span>
                   </div>
                   <div className="ws-asset-card__tags">

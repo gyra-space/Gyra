@@ -19,6 +19,8 @@ import { parseSceneAgentWorkspaceString } from './parse-scene-agent-workspace-st
 import { ExhibitHost } from './lobby-exhibit';
 import { statusLabel, triggerLabel } from './scene-task-rail';
 import { EcpProposalDetail } from './ecp-proposal-detail';
+import { DataAssetsTab } from './assets/data-assets-tab';
+import TriggersTable from './tasks/triggers-table';
 import type { WorkspaceView } from './agent-workspace-types';
 import type { WorkspaceDeliverableFile } from './agent-workspace-types';
 import type { LobbyExhibit, LobbyExhibitKind } from './agent-workspace-types';
@@ -40,6 +42,16 @@ export interface SceneSpaceProps {
   onProposalResolved?: () => void;
   /** 进入飞轮工作台 */
   onEnterFlywheel?: () => void;
+  /** 导览卡动作(壳内切换,不整页跳转) */
+  onGuide?: (action: 'ask' | 'run_playbook' | 'triggers' | 'data_assets') => void;
+  /** 工作台待办点击(与 rail 收件箱一致) */
+  onSelectInbox?: (item: any) => void;
+  /** 推荐问题:填入输入框并聚焦 */
+  onAsk?: (text?: string) => void;
+  /** 剧本快捷执行:@引用 带入输入框并聚焦 */
+  onRunPlaybook?: (pb: { playbook_id: number; playbook_name: string }) => void;
+  /** 任务/介入刷新信号(最近产出/交付/待办同步刷新) */
+  listsRefreshKey?: number;
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -539,6 +551,11 @@ export function SceneSpace({
   onSelectDelivery,
   onProposalResolved,
   onEnterFlywheel,
+  onGuide,
+  onSelectInbox,
+  onAsk,
+  onRunPlaybook,
+  listsRefreshKey,
 }: SceneSpaceProps) {
   const taskId = context === 'task-detail' && previewItem?.id ? previewItem.id : undefined;
   // 点击任务卡片走 handlePreview(不进任务对话),activeTask 不会被填充;
@@ -585,10 +602,15 @@ export function SceneSpace({
         <Lobby
           workspaceId={workspaceId}
           workspaceCode={workspaceCode}
+          refreshKey={listsRefreshKey}
           onSelectTask={onSelectTask || (() => {})}
           onSelectArtifact={onSelectArtifact}
           onSelectDelivery={onSelectDelivery}
           onEnterFlywheel={onEnterFlywheel}
+          onGuide={onGuide}
+          onSelectInbox={onSelectInbox}
+          onAsk={onAsk}
+          onRunPlaybook={onRunPlaybook}
         />
       </div>
     );
@@ -604,6 +626,8 @@ export function SceneSpace({
     'exhibit': '内容预览',
     'flywheel': '飞轮工作台',
     'subagent': '子任务对话',
+    'triggers': '订阅提醒',
+    'data-assets': '数据资产',
   };
 
   return (
@@ -616,6 +640,16 @@ export function SceneSpace({
       </div>
       {context === 'flywheel' && (
         <FlywheelWorkspace workspaceId={workspaceId} workspaceCode={workspaceCode} />
+      )}
+      {context === 'triggers' && (
+        <div className="ws-scene-space__body">
+          <TriggersTable workspaceId={workspaceId} workspaceCode={workspaceCode} />
+        </div>
+      )}
+      {context === 'data-assets' && (
+        <div className="ws-scene-space__body">
+          <DataAssetsTab workspaceId={workspaceId} workspaceCode={workspaceCode} />
+        </div>
       )}
       {context === 'task-detail' && (
         <div className="ws-scene-space__body">

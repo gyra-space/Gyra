@@ -1845,6 +1845,35 @@ class AgentChat(BaseComponent, ABC):
                 logger.warning(
                     f"[workspace] finalize inline tasks failed: {e}"
                 )
+            # 会话内剧本任务收尾(execution_mode=in_session):与后台任务共享公共收尾
+            # finalize_task —— 物化产出(Artifact)、创建交付记录(Delivery)、介入检查、
+            # 状态流转,结果统一进空间交付与飞轮事件。后台任务由 run_task 内部调用
+            # 同一函数;此处仅处理会话内任务,避免重复收尾。
+            try:
+                _in_session_task_id = ext_info.get("task_id")
+                if _ws_id_for_bus and _in_session_task_id:
+                    from gyra_serve.task.service.service import (
+                        TASK_SERVICE_COMPONENT_NAME, TaskService,
+                    )
+                    _task_service = self.system_app.get_component(
+                        TASK_SERVICE_COMPONENT_NAME, TaskService,
+                    )
+                    _in_task = _task_service.get_by_id(int(_in_session_task_id))
+                    if _in_task and (
+                        _in_task.context or {}
+                    ).get("execution_mode") == "in_session":
+                        from gyra_serve.playbook.finalize import finalize_task
+                        await finalize_task(
+                            self.system_app,
+                            int(_in_session_task_id),
+                            agent_conv_id=agent_conv_id,
+                            conv_id=conv_id,
+                            created_by_agent=gpt_app.app_code,
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"[workspace] finalize in-session task failed: {e}"
+                )
             if _ws_id_for_bus:
                 from gyra_serve.workspace.event_bus import (
                     unregister_workspace_queue,

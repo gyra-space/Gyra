@@ -1,15 +1,10 @@
 'use client';
 
-import { Tag } from 'antd';
 import { useRequest } from 'ahooks';
 import { useState } from 'react';
-import { CloudServerOutlined, SendOutlined, DeploymentUnitOutlined } from '@ant-design/icons';
-import {
-  apiInterceptors,
-  listArtifacts,
-  listDeliveries,
-} from '@/client/api';
-import { listEcpObjects } from '@/client/api/ecp';
+import { CloudServerOutlined, SendOutlined, DeploymentUnitOutlined, InboxOutlined, RightOutlined } from '@ant-design/icons';
+import { apiInterceptors } from '@/client/api';
+import { getWorkspaceOverview } from '@/client/api/workspace';
 import { ObjectDetailDrawer } from '@/app/ecp/components/common';
 import { GrowthCard } from './growth-card';
 import { SpaceGuideCard } from './space-guide-card';
@@ -18,13 +13,30 @@ import './lobby.css';
 export interface LobbyProps {
   workspaceId: number;
   workspaceCode: string;
+  /** 任务/介入刷新信号:列表变化时最近产出/交付/待办同步刷新 */
+  refreshKey?: number;
   // 预留钩子:内容区域(大厅)开任务入口,待办卡片移除后待后续接 UI。
   onSelectTask?: (taskId: number) => void;
   onSelectArtifact?: (artifact: any) => void;
   onSelectDelivery?: (delivery: any) => void;
   /** 进入飞轮工作台 */
   onEnterFlywheel?: () => void;
+  /** 导览卡动作(壳内切换,不整页跳转) */
+  onGuide?: (action: 'ask' | 'run_playbook' | 'triggers' | 'data_assets') => void;
+  /** 待办点击(与 rail 收件箱一致) */
+  onSelectInbox?: (item: any) => void;
+  /** 推荐问题:填入输入框并聚焦 */
+  onAsk?: (text?: string) => void;
+  /** 剧本快捷执行:@引用 带入输入框并聚焦 */
+  onRunPlaybook?: (pb: { playbook_id: number; playbook_name: string }) => void;
 }
+
+const INBOX_SOURCE_LABEL: Record<string, string> = {
+  task: '任务',
+  intervention: '介入',
+  ecp_proposal: '提案',
+  manual: '手动',
+};
 
 function SectionHead({
   icon,
@@ -66,36 +78,32 @@ function fmtSize(bytes: number): string {
 export function Lobby({
   workspaceId,
   workspaceCode,
+  refreshKey,
   onSelectArtifact,
   onSelectDelivery,
   onEnterFlywheel,
+  onGuide,
+  onSelectInbox,
+  onAsk,
+  onRunPlaybook,
 }: LobbyProps) {
-  const { data: deliveriesRes } = useRequest(
-    async () => apiInterceptors(listDeliveries({ workspace_id: workspaceId })),
-    { refreshDeps: [workspaceId] },
-  );
-  const deliveries = deliveriesRes?.[1];
-
-  const { data: artifactsRes } = useRequest(
-    async () => apiInterceptors(listArtifacts({ workspace_id: workspaceId })),
-    { refreshDeps: [workspaceId] },
-  );
-  const artifacts = artifactsRes?.[1];
-
-  // ECP 语义资产:派生 ECP workspace(ecp_<workspace_code>),拉取已确认语义对象
-  const ecpWsId = workspaceCode ? `ecp_${workspaceCode}` : null;
-  const { data: semanticRes } = useRequest(
+  // 空间首屏聚合:一次请求返回 交付/产出/待办/资源/剧本/触发/语义/成长,消灭多请求与数字跳变
+  const { data: overview, loading: overviewLoading } = useRequest(
     async () => {
-      if (!ecpWsId) return null;
-      const [err, res] = await apiInterceptors(
-        listEcpObjects({ workspace_id: ecpWsId, status: 'confirmed', page_size: 50 }),
-      );
+      const [err, res] = await apiInterceptors(getWorkspaceOverview(workspaceId));
       if (err) return null;
-      return res;
+      return res || null;
     },
-    { ready: !!ecpWsId, refreshDeps: [ecpWsId] },
+    { refreshDeps: [workspaceId, refreshKey] },
   );
-  const semantics = semanticRes?.items ?? [];
+
+  const deliveries = overview?.deliveries ?? [];
+  const artifacts = overview?.artifacts ?? [];
+  const resources = overview?.resources ?? [];
+  const playbooks = overview?.playbooks ?? [];
+  const triggers = overview?.triggers ?? [];
+  const pendingInbox = (overview?.inbox ?? []).filter((i: any) => i.inbox_status !== 'done');
+  const semantics = overview?.semantics ?? [];
 
   // 语义资产详情抽屉:点击语义卡片打开(复用 ECP 控制台的对象详情视图)
   const [selectedSemantic, setSelectedSemantic] = useState<any>(null);
@@ -107,98 +115,128 @@ export function Lobby({
   return (
     <div className="ws-lobby">
       <div className="ws-lobby__scroll">
-        {/* 空间导览(新人第一小时:有什么/会什么/怎么干) */}
-        <SpaceGuideCard workspaceId={workspaceId} workspaceCode={workspaceCode} />
-
-        {/* 空间成长概览(含飞轮工作台入口) */}
-        <GrowthCard
+        {/* 空间问候条 + 开始工作区(推荐问题/可跑剧本,让用户不用想"问什么") */}
+        <SpaceGuideCard
           workspaceId={workspaceId}
           workspaceCode={workspaceCode}
-          onEnterFlywheel={onEnterFlywheel}
+          pendingCount={pendingInbox.length}
+          semanticNames={semantics.slice(0, 3).map((s: any) => s.name || s.id)}
+          workspace={overview?.workspace}
+          resources={resources}
+          playbooks={playbooks}
+          triggers={triggers}
+          loading={overviewLoading}
+          onGuide={onGuide}
+          onAsk={onAsk}
+          onRunPlaybook={onRunPlaybook}
         />
 
-        <div className="ws-lobby__grid">
-          {/* 最近产出 */}
-          <section className="ws-lobby__section">
-            <SectionHead icon={<CloudServerOutlined />} title="最近产出" count={recentArtifacts.length} />
-            <div className="ws-lobby__section-body">
-              {recentArtifacts.length === 0 && (
-                <EmptyState title="暂无产出物" hint="任务产出的报告、数据集会沉淀在这里" />
-              )}
+        {/* 今日待办:每天进空间的第一站,与 rail 收件箱同数据同视觉 */}
+        <section className="ws-lobby__inbox">
+          <div className="ws-lobby__section-head">
+            <span className="ws-lobby__section-icon"><InboxOutlined /></span>
+            <span className="ws-lobby__section-title">今日待办</span>
+            {pendingInbox.length > 0 && (
+              <span className="ws-lobby__section-count">{pendingInbox.length}</span>
+            )}
+            <span className="ws-lobby__section-sub">
+              {pendingInbox.length > 0 ? '需要你介入的事项' : '待办已清零'}
+            </span>
+          </div>
+          {pendingInbox.length === 0 ? (
+            <div className="ws-lobby__inbox-empty">
+              <div className="ws-lobby__empty-title">暂无待办</div>
+              <div className="ws-lobby__empty-hint">没有需要你介入的事项。可以跑一个剧本,或上传数据让 Agent 干活。</div>
+            </div>
+          ) : (
+            <div className="ws-lobby__inbox-list">
+              {pendingInbox.slice(0, 5).map((item: any) => (
+                <div
+                  key={item.id}
+                  className="ws-lobby__inbox-item"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onSelectInbox?.(item)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') onSelectInbox?.(item); }}
+                >
+                  <span className="ws-lobby__inbox-dot" />
+                  <span className="ws-lobby__inbox-chip">{INBOX_SOURCE_LABEL[item.source_type] || item.source_type}</span>
+                  <span className="ws-lobby__inbox-title">{item.title}</span>
+                  <span className="ws-lobby__inbox-hint">点击处理</span>
+                  <RightOutlined className="ws-lobby__inbox-arrow" />
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* 空间动态:产出 / 交付 / 语义 横向一条,点击开预览 */}
+        <section className="ws-lobby__feed">
+          <SectionHead icon={<CloudServerOutlined />} title="空间动态" sub="产出 · 交付 · 语义" />
+          {recentArtifacts.length === 0 && recentDeliveries.length === 0 && recentSemantics.length === 0 ? (
+            <div className="ws-lobby__feed-empty">
+              <EmptyState
+                title="暂无动态"
+                hint="任务产出的报告、交付记录和已确认的语义会出现在这里"
+              />
+            </div>
+          ) : (
+            <div className="ws-lobby__feed-track">
               {recentArtifacts.map((a: any) => (
                 <div
-                  key={a.id}
-                  className="ws-lobby__hosted-card"
+                  key={`a${a.id}`}
+                  className="ws-lobby__feed-card"
                   role="button"
                   tabIndex={0}
                   onClick={() => onSelectArtifact?.(a)}
                   onKeyDown={(e) => { if (e.key === 'Enter') onSelectArtifact?.(a); }}
                 >
-                  <span className="ws-lobby__hosted-title">{a.title || `artifact_${a.id}`}</span>
-                  <Tag color="blue">{a.type}</Tag>
-                  {a.provenance?.file_size ? (
-                    <span className="ws-lobby__hosted-size">{fmtSize(a.provenance.file_size)}</span>
-                  ) : null}
+                  <span className="ws-lobby__feed-icon ws-lobby__feed-icon--art"><CloudServerOutlined /></span>
+                  <span className="ws-lobby__feed-name">{a.title || `artifact_${a.id}`}</span>
+                  <span className="ws-lobby__feed-meta">{a.type}{a.provenance?.file_size ? ` · ${fmtSize(a.provenance.file_size)}` : ''}</span>
                 </div>
               ))}
-            </div>
-          </section>
-
-          {/* 最近交付 */}
-          <section className="ws-lobby__section">
-            <SectionHead icon={<SendOutlined />} title="最近交付" count={recentDeliveries.length} />
-            <div className="ws-lobby__section-body">
-              {recentDeliveries.length === 0 && (
-                <EmptyState title="暂无交付记录" hint="交付物发送后会记录在这里" />
-              )}
               {recentDeliveries.map((d: any) => (
                 <div
-                  key={d.id}
-                  className="ws-lobby__delivery-item ws-lobby__delivery-item--clickable"
+                  key={`d${d.id}`}
+                  className="ws-lobby__feed-card"
                   role="button"
                   tabIndex={0}
                   onClick={() => onSelectDelivery?.(d)}
                   onKeyDown={(e) => { if (e.key === 'Enter') onSelectDelivery?.(d); }}
                 >
-                  <Tag>{d.category}</Tag>
-                  <span className="ws-lobby__delivery-channel">{d.title || `delivery_${d.id}`}</span>
-                  <span className="ws-lobby__delivery-status">{d.status}</span>
+                  <span className="ws-lobby__feed-icon ws-lobby__feed-icon--del"><SendOutlined /></span>
+                  <span className="ws-lobby__feed-name">{d.title || `delivery_${d.id}`}</span>
+                  <span className="ws-lobby__feed-meta">{d.category || ''}{d.status ? ` · ${d.status}` : ''}</span>
                 </div>
               ))}
-            </div>
-          </section>
-
-          {/* 语义资产 */}
-          <section className="ws-lobby__section">
-            <SectionHead
-              icon={<DeploymentUnitOutlined />}
-              title="语义资产"
-              count={recentSemantics.length}
-              sub={semantics.length > recentSemantics.length ? `共 ${semantics.length}` : undefined}
-            />
-            <div className="ws-lobby__section-body">
-              {recentSemantics.length === 0 && (
-                <EmptyState
-                  title="暂无已确认语义资产"
-                  hint="在「资产层」生成提案并在「收件箱」确认后,这里会展示语义对象"
-                />
-              )}
               {recentSemantics.map((s: any) => (
                 <div
-                  key={s.id}
-                  className="ws-lobby__hosted-card"
+                  key={`s${s.id}`}
+                  className="ws-lobby__feed-card"
                   role="button"
                   tabIndex={0}
                   onClick={() => setSelectedSemantic(s)}
                   onKeyDown={(e) => { if (e.key === 'Enter') setSelectedSemantic(s); }}
                 >
-                  <span className="ws-lobby__hosted-title">{s.name || s.id}</span>
-                  <Tag color="blue">{s.obj_type}</Tag>
+                  <span className="ws-lobby__feed-icon ws-lobby__feed-icon--sem"><DeploymentUnitOutlined /></span>
+                  <span className="ws-lobby__feed-name">{s.name || s.id}</span>
+                  <span className="ws-lobby__feed-meta">{s.obj_type || '语义'}</span>
                 </div>
               ))}
             </div>
-          </section>
-        </div>
+          )}
+        </section>
+
+        {/* 成长概览(收敛为一行,保留飞轮入口) */}
+        <GrowthCard
+          workspaceId={workspaceId}
+          workspaceCode={workspaceCode}
+          growth={overview?.growth}
+          ecpConfirmedCount={overview?.ecp_confirmed_count}
+          ecpPendingCount={overview?.ecp_pending_count}
+          onEnterFlywheel={onEnterFlywheel}
+        />
       </div>
       <ObjectDetailDrawer
         obj={selectedSemantic}

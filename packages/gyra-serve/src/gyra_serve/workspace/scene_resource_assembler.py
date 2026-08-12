@@ -132,13 +132,17 @@ class SceneResourceAssembler:
         # 物化剧本 declaration 的 skills/resources 成 agent 可调用的工具
         # (agent_skill/datasource/mcp/knowledge)。否则剧本 skill 只停留在 system prompt
         # 的名字(剧本技能:...),agent 看到却没真实工具可调。复用 workspace 物化分派。
+        # 传 workspace_id:引用优先对齐空间资源池(空间=注册/治理池,剧本=选配子集),
+        # 使剧本引用与空间绑定物化结果一致,为权限投影铺路;未绑定引用全局兜底兼容存量。
         try:
             from gyra_serve.workspace.materializer import (
                 materialize_playbook_declaration,
             )
             declaration = getattr(pb, "declaration", {}) or {}
             resources.extend(
-                materialize_playbook_declaration(system_app, declaration)
+                materialize_playbook_declaration(
+                    system_app, declaration, workspace_id=workspace_id,
+                )
             )
         except Exception as e:
             logger.warning(

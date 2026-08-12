@@ -879,6 +879,27 @@ class Service(BaseComponent):
         except Exception as e:
             logger.warning("ensure memory schema failed for %s: %s", space.slug, e)
 
+        # Seed AGENTS.md（Agent 整体记忆文档）模板——仅当文件仍是占位/空内容
+        # 时写入，绝不覆盖用户已手写的内容。
+        try:
+            from gyra.knowledge.schema import default_agents_md
+
+            existing = (await vault.read_agents_md() or "").strip()
+            if not existing or self._is_agents_md_placeholder(existing):
+                await vault.write_agents_md(
+                    default_agents_md(space.name or space.slug)
+                )
+        except Exception as e:
+            logger.warning("ensure agents_md failed for %s: %s", space.slug, e)
+
+    @staticmethod
+    def _is_agents_md_placeholder(content: str) -> bool:
+        """判断 AGENTS.md 是否仍是占位内容（标题 + `<...>` 模板说明）。"""
+        import re as _re
+        body = _re.sub(r"^\s*(#{1,6}\s.*|---+)\s*$", "", content or "", flags=_re.MULTILINE)
+        body = _re.sub(r"<[^>]*>", "", body)
+        return not body.strip()
+
     async def close_all(self) -> None:
         for v in list(self._vaults.values()):
             try:

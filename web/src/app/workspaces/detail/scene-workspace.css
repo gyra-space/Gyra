@@ -677,7 +677,9 @@
   transition: opacity 0.16s ease, color 0.16s ease, background 0.16s ease;
 }
 
-.ws-deliverable-card:hover .ws-deliverable-card__download {
+.ws-deliverable-card:hover .ws-deliverable-card__download,
+.ws-deliverable-card:focus-within .ws-deliverable-card__download,
+.ws-deliverable-card__download:focus-visible {
   opacity: 1;
 }
 
@@ -1330,7 +1332,10 @@
   transition: opacity .15s;
 }
 
-.ws-renderer__file-item:hover .ws-renderer__file-actions { opacity: 1; }
+.ws-renderer__file-item:hover .ws-renderer__file-actions,
+.ws-renderer__file-item:focus-within .ws-renderer__file-actions {
+  opacity: 1;
+}
 
 .ws-renderer__file-action {
   display: inline-flex;
@@ -1462,7 +1467,8 @@
   margin-left: auto; flex-shrink: 0;
 }
 .ws-rail-card:hover .ws-rail-card-actions,
-.ws-rail-card:focus-within .ws-rail-card-actions { display: inline-flex; }
+.ws-rail-card:focus-within .ws-rail-card-actions,
+.ws-rail-card:focus-visible .ws-rail-card-actions { display: inline-flex; }
 .ws-rail-card-act {
   width: 20px; height: 18px; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
@@ -1886,7 +1892,7 @@
 .ws-rail-interventions {
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px dashed #e5e7eb;
+  border-top: 1px dashed var(--ws-border-subtle);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1897,15 +1903,15 @@
   justify-content: space-between;
   gap: 8px;
   padding: 4px 8px;
-  background: #fffbeb;
-  border: 1px solid #fde68a;
+  background: var(--ws-attention-light);
+  border: 1px solid rgba(var(--ws-attention-rgb), 0.3);
   border-radius: 6px;
   font-size: 12px;
 }
 .ws-rail-int-question {
   flex: 1;
   min-width: 0;
-  color: #6b7280;
+  color: var(--ws-ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1916,11 +1922,17 @@
   flex-shrink: 0;
 }
 .ws-rail-int-status {
-  color: #9ca3af;
+  color: var(--ws-ink-3);
   flex-shrink: 0;
 }
+.ws-rail-int-hint {
+  font-size: 10.5px;
+  color: var(--ws-ink-3);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 .ws-rail-card--orphan {
-  border-left: 3px solid #f59e0b;
+  border-left: 3px solid var(--ws-attention);
 }
 
 /* === 大厅容器折叠:Agent 空间占满主区,专注执行进展 === */
@@ -2078,4 +2090,21 @@
 @keyframes ws-stop-btn-breathe {
   0%, 100% { transform: scale(1); opacity: 1; }
   50% { transform: scale(0.9); opacity: 0.85; }
+}
+
+/* === 无障碍:用户偏好减少动效时,关闭持续循环动画,保留一次性过渡 === */
+@media (prefers-reduced-motion: reduce) {
+  .ws-rail-status--running .ws-rail-dot,
+  .ws-agent-workspace__status--running,
+  .ws-status-chip--running,
+  .ws-plan-step--running .ws-plan-step__node,
+  .ws-step--running::after,
+  .ws-stop-btn--running,
+  .ws-stop-btn--running .ws-stop-btn__square,
+  .ws-scene-shell__space-toggle--new::after {
+    animation: none;
+  }
+  .ws-step--running::after {
+    display: none;
+  }
 }

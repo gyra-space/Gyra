@@ -53,7 +53,11 @@ def _load_agent_llm_config() -> Optional[Dict[str, Any]]:
         if db_data:
             return _normalize_agent_llm(db_data)
     except Exception as e:
-        logger.warning(f"Failed to load agent_llm from database: {e}")
+        import traceback
+        logger.warning(
+            f"Failed to load agent_llm from database: {e}\n"
+            f"{traceback.format_exc()}"
+        )
 
     # Prefer the JSON config manager (matches what the UI edits).
     try:
@@ -65,7 +69,11 @@ def _load_agent_llm_config() -> Optional[Dict[str, Any]]:
             if agent_llm is not None:
                 return _normalize_agent_llm(agent_llm)
     except Exception as e:
-        logger.warning(f"Failed to load agent_llm from ConfigManager: {e}")
+        import traceback
+        logger.warning(
+            f"Failed to load agent_llm from ConfigManager: {e}\n"
+            f"{traceback.format_exc()}"
+        )
 
     # Fallback to the in-process SystemApp config.
     try:
@@ -75,7 +83,11 @@ def _load_agent_llm_config() -> Optional[Dict[str, Any]]:
             if agent_llm is not None:
                 return _normalize_agent_llm(agent_llm)
     except Exception as e:
-        logger.warning(f"Failed to load agent.llm from SystemApp: {e}")
+        import traceback
+        logger.warning(
+            f"Failed to load agent.llm from SystemApp: {e}\n"
+            f"{traceback.format_exc()}"
+        )
 
     return None
 

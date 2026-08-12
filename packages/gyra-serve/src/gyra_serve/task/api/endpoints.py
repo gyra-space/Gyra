@@ -199,7 +199,7 @@ async def spawn_task(
     service: Service = Depends(get_service),
 ) -> Result[TaskResponse]:
     try:
-        return Result.succ(service.spawn(parent_task_id, request, relation_type))
+        return Result.succ(service.create_subtask(parent_task_id, request, relation_type))
     except Exception as e:
         logger.exception("task spawn exception!")
         return Result.failed(str(e))

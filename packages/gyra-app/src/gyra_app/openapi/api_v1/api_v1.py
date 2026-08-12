@@ -622,6 +622,22 @@ async def chat_completions(
         dialogue.ext_info.update({"temperature": dialogue.temperature})
         dialogue.ext_info.update({"max_new_tokens": dialogue.max_new_tokens})
 
+        # 回合前路由:页面输入命中剧本 -> 预建会话内任务(注入 task_id)。
+        # 之后装配器据 task_id 走 workbench(PlaybookResource + 物化能力注入当前对话),
+        # 主 Agent 在当前对话同步执行,任务列表可见、交付进空间。其余发起(API/定时/
+        # 订阅/显式异步)不经此路由,由 start_task/fire_trigger/cron 各自建任务后台执行。
+        try:
+            from gyra_serve.workspace.scene_router import route_scene_execution
+
+            route_scene_execution(
+                dialogue.ext_info,
+                dialogue.user_input,
+                dialogue.conv_uid,
+                CFG.SYSTEM_APP,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[scene_router] pre-round routing failed: {e}")
+
         # 预处理:场景空间资源装配(agent 通用骨架不感知,此处为场景业务)
         scene_res = _assemble_scene_resources(dialogue.ext_info, dialogue.conv_uid)
         if scene_res:

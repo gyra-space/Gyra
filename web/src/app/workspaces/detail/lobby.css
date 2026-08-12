@@ -266,6 +266,26 @@
   line-height: 1.4;
   color: var(--ws-ink);
   flex-shrink: 0;
+  cursor: pointer;
+}
+
+.ws-growth__toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  color: var(--ws-ink-3);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.ws-growth__toggle:hover {
+  color: var(--ws-accent);
+  background: var(--ws-bg);
 }
 
 /* 飞轮工作台入口:头部右侧胶囊 */
@@ -505,6 +525,186 @@
   color: var(--ws-ink-2);
 }
 
+/* === 工作台待办摘要条 .ws-lobby__inbox(每天进空间的第一站) === */
+.ws-lobby__inbox {
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: var(--ws-radius, 12px);
+  background: var(--ws-surface);
+  min-width: 0;
+  overflow: hidden;
+  /* 首位,不可被下方内容压缩 */
+  flex-shrink: 0;
+  animation: rise-in 0.5s var(--ease-expo, cubic-bezier(0.16, 1, 0.3, 1)) both;
+}
+
+.ws-lobby__inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px 12px;
+}
+
+.ws-lobby__inbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--ws-radius-sm, 8px);
+  background: var(--ws-bg);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--ws-transition), border-color var(--ws-transition);
+}
+
+.ws-lobby__inbox-item:hover {
+  background: var(--ws-accent-light);
+  border-color: rgba(var(--ws-accent-rgb), 0.25);
+}
+
+.ws-lobby__inbox-chip {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ws-accent);
+  background: var(--ws-accent-light);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.ws-lobby__inbox-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-lobby__inbox-arrow {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--ws-ink-3);
+  transition: transform 0.16s ease, color 0.16s ease;
+}
+
+.ws-lobby__inbox-item:hover .ws-lobby__inbox-arrow {
+  transform: translateX(2px);
+  color: var(--ws-accent);
+}
+
+/* 与 rail 收件箱同源的状态点:attention 色 + 柔光 */
+.ws-lobby__inbox-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ws-attention);
+  box-shadow: 0 0 0 3px rgba(var(--ws-attention-rgb), 0.14);
+}
+
+.ws-lobby__inbox-hint {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--ws-ink-3);
+  white-space: nowrap;
+}
+
+.ws-lobby__inbox-empty {
+  padding: 12px 14px 16px;
+}
+
+/* === 空间动态:产出/交付/语义 横向一条 === */
+.ws-lobby__feed {
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: var(--ws-radius, 12px);
+  background: var(--ws-surface);
+  min-width: 0;
+  overflow: hidden;
+  animation: rise-in 0.5s var(--ease-expo, cubic-bezier(0.16, 1, 0.3, 1)) both;
+  /* 不可被下方内容压缩 */
+  flex-shrink: 0;
+}
+
+.ws-lobby__feed-track {
+  display: flex;
+  gap: 8px;
+  padding: 6px 14px 12px;
+  overflow-x: auto;
+}
+
+.ws-lobby__feed-track::-webkit-scrollbar { height: 5px; }
+.ws-lobby__feed-track::-webkit-scrollbar-thumb { background: var(--ws-border); border-radius: 4px; }
+
+.ws-lobby__feed-card {
+  flex-shrink: 0;
+  width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 10px;
+  border-radius: var(--ws-radius-sm, 8px);
+  background: var(--ws-bg);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--ws-transition), border-color var(--ws-transition);
+}
+
+.ws-lobby__feed-card:hover {
+  background: var(--ws-accent-light);
+  border-color: rgba(var(--ws-accent-rgb), 0.25);
+}
+
+.ws-lobby__feed-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.ws-lobby__feed-icon--art {
+  color: var(--ws-accent);
+  background: var(--ws-accent-light);
+  border: 1px solid rgba(var(--ws-accent-rgb), 0.18);
+}
+
+.ws-lobby__feed-icon--del {
+  color: var(--ws-success);
+  background: rgba(var(--ws-success-rgb), 0.1);
+  border: 1px solid rgba(var(--ws-success-rgb), 0.22);
+}
+
+.ws-lobby__feed-icon--sem {
+  color: var(--ws-attention);
+  background: var(--ws-attention-light);
+  border: 1px solid rgba(var(--ws-attention-rgb), 0.22);
+}
+
+.ws-lobby__feed-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-lobby__feed-meta {
+  font-size: 10.5px;
+  color: var(--ws-ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-lobby__feed-empty {
+  padding: 6px 14px 12px;
+}
+
 /* === 空间导览卡 .ws-guide === */
 .ws-guide {
   border: 1px solid var(--ws-border-subtle);
@@ -516,7 +716,6 @@
   flex-shrink: 0;
   animation: rise-in 0.5s var(--ease-expo, cubic-bezier(0.16, 1, 0.3, 1)) both;
 }
-
 .ws-guide__head {
   display: flex;
   align-items: center;
@@ -597,16 +796,161 @@
   font-size: 12px;
   padding: 6px 12px;
   border-radius: 999px;
-  background: var(--ws-hover, rgba(79, 70, 229, 0.06));
-  color: var(--ws-brand, #4f46e5);
+  background: var(--ws-accent-light);
+  color: var(--ws-accent);
   cursor: pointer;
   text-decoration: none;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
+  border: 1px solid transparent;
 }
 
 .ws-guide__action:hover {
-  background: rgba(79, 70, 229, 0.12);
-  color: var(--ws-brand, #4f46e5);
+  background: var(--ws-accent-light);
+  border-color: rgba(var(--ws-accent-rgb), 0.35);
+  color: var(--ws-accent);
+}
+
+.ws-guide__brief {
+  font-size: 12px;
+  color: var(--ws-ink-2);
+  line-height: 1.6;
+  padding: 0 14px 8px;
+}
+
+/* 首屏聚合加载骨架:占位块,避免数字从 0 跳变 */
+.ws-guide__loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 14px 12px;
+}
+.ws-guide__loading div {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--ws-ink-1-rgb, 10, 10, 20), 0.06) 25%,
+    rgba(var(--ws-ink-1-rgb, 10, 10, 20), 0.12) 37%,
+    rgba(var(--ws-ink-1-rgb, 10, 10, 20), 0.06) 63%
+  );
+  background-size: 400% 100%;
+  animation: ws-skeleton 1.4s ease infinite;
+  border-radius: 6px;
+}
+.ws-guide__loading-brief {
+  height: 14px;
+  width: 60%;
+}
+.ws-guide__loading-stats,
+.ws-guide__loading-actions {
+  display: flex;
+  gap: 8px;
+}
+.ws-guide__loading-stats span {
+  height: 20px;
+  width: 22%;
+}
+.ws-guide__loading-actions span {
+  height: 26px;
+  width: 88px;
+  border-radius: 999px;
+}
+@keyframes ws-skeleton {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* 开始工作区:推荐问题 + 可跑剧本 */
+.ws-guide__work {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 14px 12px;
+  border-top: 1px dashed var(--ws-border-subtle);
+  margin-top: 2px;
+}
+
+.ws-guide__qs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.ws-guide__q {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ws-accent);
+  background: var(--ws-accent-light);
+  border: 1px dashed rgba(var(--ws-accent-rgb), 0.4);
+  border-radius: 999px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ws-guide__q:hover {
+  border-color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.1);
+}
+
+.ws-guide__pbs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ws-guide__pb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--ws-radius-sm, 8px);
+  background: var(--ws-bg);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--ws-transition), border-color var(--ws-transition);
+}
+
+.ws-guide__pb:hover {
+  background: var(--ws-accent-light);
+  border-color: rgba(var(--ws-accent-rgb), 0.25);
+}
+
+.ws-guide__pb-icon {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--ws-accent);
+}
+
+.ws-guide__pb-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-guide__pb-hint {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--ws-ink-3);
+}
+
+.ws-guide__pb-arrow {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--ws-ink-3);
+  transition: transform 0.16s ease, color 0.16s ease;
+}
+
+.ws-guide__pb:hover .ws-guide__pb-arrow {
+  transform: translateX(2px);
+  color: var(--ws-accent);
 }
 
 /* === 飞轮 orb 旋转(成长卡入口胶囊使用) === */
@@ -616,4 +960,12 @@
 
 @keyframes ws-fw-orb-spin-rev {
   to { transform: rotate(-360deg); }
+}
+
+/* === 无障碍:用户偏好减少动效时,关闭飞轮入口的持续旋转装饰 === */
+@media (prefers-reduced-motion: reduce) {
+  .ws-growth__entry-orb,
+  .ws-growth__entry-orb > .anticon {
+    animation: none;
+  }
 }

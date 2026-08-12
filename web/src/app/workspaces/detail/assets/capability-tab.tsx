@@ -11,7 +11,7 @@ import {
   getAppList,
 } from '@/client/api';
 import {
-  Alert, App, Button, Empty, Modal, Select, Space, Spin, Switch,
+  Alert, App, Button, Empty, Modal, Select, Space, Spin, Switch, Tag,
 } from 'antd';
 import {
   ToolOutlined,
@@ -29,10 +29,10 @@ import Link from 'next/link';
 import { SpaceModelsTab } from '../settings/space-models-tab';
 import './assets.css';
 
-const TYPE_META: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
-  skill: { label: '技能', color: 'geekblue', icon: <ToolOutlined /> },
-  mcp: { label: 'MCP', color: 'purple', icon: <ApiOutlined /> },
-  app: { label: '智能体', color: 'blue', icon: <RobotOutlined /> },
+const TYPE_META: Record<string, { label: string; tagColor: string; color: string; icon: React.ReactNode }> = {
+  skill: { label: '技能', tagColor: 'geekblue', color: '#6366f1', icon: <ToolOutlined /> },
+  mcp: { label: 'MCP', tagColor: 'purple', color: '#8b5cf6', icon: <ApiOutlined /> },
+  app: { label: '智能体', tagColor: 'blue', color: '#3b82f6', icon: <RobotOutlined /> },
 };
 
 /** 排序:启用在前,最近更新在前。 */
@@ -210,23 +210,24 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
     const active = !!r.is_active;
     return (
       <div key={r.id} className={`ws-asset-card${active ? '' : ' ws-asset-card--off'}`}>
-        <div className="ws-asset-card__head">
-          <div className={`ws-asset-card__tile${active ? '' : ' ws-asset-card__tile--muted'}`}>{meta.icon}</div>
-          <div className="ws-asset-card__titles">
-            <div className="ws-asset-card__name" title={r.name}>{r.name}</div>
-            <div className="ws-asset-card__type">{meta.label}</div>
-          </div>
+        <div className="ws-asset-card__top">
+          <span
+            className="ws-asset-card__icon"
+            style={{ color: meta.color, background: `${meta.color}1a` }}
+          >
+            {meta.icon}
+          </span>
+          <span className="ws-asset-card__name" title={r.name}>{r.name}</span>
           {canManage && (
             <Switch size="small" checked={active} onChange={(c) => handleToggle(r, c)} />
           )}
         </div>
-        <div className="ws-asset-card__meta">
-          <div className="ws-asset-card__row">
-            <span className="ws-asset-card__row-key">标识</span>
-            <span className="ws-asset-card__row-val ws-asset-card__row-val--mono" title={r.physical_ref || ''}>
-              {r.physical_ref || '—'}
-            </span>
-          </div>
+        <div className="ws-asset-card__tags">
+          <Tag color={meta.tagColor}>{meta.label}</Tag>
+          {active ? null : <Tag>已停用</Tag>}
+        </div>
+        <div className="ws-asset-card__source" title={r.physical_ref || r.name}>
+          {r.physical_ref || r.name}
         </div>
         <div className="ws-asset-card__foot">
           <span className="ws-asset-card__time">
@@ -245,8 +246,13 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
   return (
     <div>
       {canManage ? (
-        <div className="flex justify-end mb-4">
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddOpen(true)}>添加能力</Button>
+        <div className="ws-asset-toolbar">
+          <span className="ws-asset-toolbar__stat">
+            已挂载 <b>{totalCount}</b> 项能力
+          </span>
+          <div className="ws-asset-toolbar__actions">
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddOpen(true)}>添加能力</Button>
+          </div>
         </div>
       ) : (
         <div className="flex justify-end mb-4 text-xs text-gray-400">
@@ -294,16 +300,25 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
       >
         <div className="mb-3">
           <div className="text-sm text-gray-500 mb-2">能力类型</div>
-          <Select
-            style={{ width: '100%' }}
-            value={addType}
-            onChange={(v) => setAddType(v as any)}
-            options={[
-              { value: 'skill', label: '技能(skill)— 指导 Agent 做事的方法' },
-              { value: 'mcp', label: 'MCP — 扩展 Agent 工具能力的服务' },
-              { value: 'app', label: '子智能体 — 主 Agent 可调用的协作 Agent' },
-            ]}
-          />
+          <div className="ws-capability-type">
+            {[
+              { v: 'skill', label: '技能', desc: '指导 Agent 做事的方法', icon: <ToolOutlined /> },
+              { v: 'mcp', label: 'MCP', desc: '扩展 Agent 工具能力的服务', icon: <ApiOutlined /> },
+              { v: 'app', label: '子智能体', desc: '主 Agent 可调用的协作 Agent', icon: <RobotOutlined /> },
+            ].map((opt) => (
+              <div
+                key={opt.v}
+                className={`ws-capability-type__item${addType === opt.v ? ' ws-capability-type__item--on' : ''}`}
+                onClick={() => setAddType(opt.v as any)}
+              >
+                <span className="ws-capability-type__title" style={{ color: TYPE_META[opt.v].color }}>
+                  {opt.icon}
+                  {opt.label}
+                </span>
+                <span className="ws-capability-type__desc">{opt.desc}</span>
+              </div>
+            ))}
+          </div>
         </div>
         {addType === 'skill' && (
           <Alert
