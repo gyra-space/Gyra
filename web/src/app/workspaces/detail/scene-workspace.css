@@ -307,6 +307,9 @@
   padding: 10px;
   overflow-y: auto;
   min-height: 0;
+  /* 让预览容器(ExhibitHost 等)能以 flex:1 撑满剩余高度 */
+  display: flex;
+  flex-direction: column;
 }
 
 /* 子任务对话内联容器:去掉内边距,交由 ChatSession(minimal) 自行撑满与滚动
@@ -314,6 +317,7 @@
 .ws-scene-space__body--subagent {
   padding: 0;
   overflow: hidden;
+  display: block;
 }
 
 /* === 场景空间预览面板(步骤/文件/实体) === */
@@ -321,6 +325,9 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* 预览面板撑满 body,内部内容(iframe/图片)可占满剩余高度 */
+  flex: 1;
+  min-height: 0;
 }
 
 .ws-preview__head {
@@ -2043,7 +2050,8 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 .ws-exhibit__head {
   display: flex;

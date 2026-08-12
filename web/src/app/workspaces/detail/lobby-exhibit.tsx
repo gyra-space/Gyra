@@ -21,6 +21,8 @@ import {
 } from '@ant-design/icons';
 import MarkdownIt from 'markdown-it';
 import { GPTVis } from '@antv/gpt-vis';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
 import { transformFileUrl } from '@/utils';
 import type { LobbyExhibit } from './agent-workspace-types';
@@ -617,9 +619,14 @@ function HeadTool({ tip, icon, onClick, disabled }: { tip: string; icon: React.R
 }
 
 /** 可从源文本生成文档(打印/导出 PDF)的内容类型 */
-const DOC_KINDS: ReadonlySet<LobbyExhibit['kind']> = new Set(['markdown', 'text', 'code', 'chart', 'data']);
-/** 支持所见即所得打印(渲染 DOM 直接打印)的内容类型 */
-const PRINT_KINDS: ReadonlySet<LobbyExhibit['kind']> = new Set(['markdown', 'text', 'code', 'chart', 'data', 'table', 'image']);
+const DOC_KINDS: ReadonlySet<LobbyExhibit['kind']> = new Set(['markdown', 'text', 'code', 'chart', 'data', 'html']);
+/** 支持打印的内容类型(html 走临时 iframe 打印,其余走所见即所得) */
+const PRINT_KINDS: ReadonlySet<LobbyExhibit['kind']> = new Set(['markdown', 'text', 'code', 'chart', 'data', 'table', 'image', 'html']);
+
+/** 导出文件名:去掉可识别扩展名,避免 report.html.pdf 这类叠加 */
+function stripExt(name: string): string {
+  return name.replace(/\.(md|markdown|txt|log|json|csv|py|js|ts|sql|html?|htm)$/i, '') || 'report';
+}
 
 export function ExhibitHost({ exhibit }: { exhibit: LobbyExhibit }) {
   const url = resolveExhibitUrl(exhibit);
@@ -632,33 +639,131 @@ export function ExhibitHost({ exhibit }: { exhibit: LobbyExhibit }) {
   const canDoc = DOC_KINDS.has(exhibit.kind) && !!(url || exhibit.source.inline);
   const canPrint = PRINT_KINDS.has(exhibit.kind);
 
-  /** 拉取源文本(inline 优先)并生成打印文档 */
-  const withDoc = async (suffix: string) => {
+  /** 拉取源内容(inline 优先) */
+  const fetchRaw = async (): Promise<string> => {
+    let raw = exhibit.source.inline ?? '';
+    if (!raw && url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      raw = await res.text();
+    }
+    if (!raw) throw new Error('empty');
+    return raw;
+  };
+
+  /** 将任意 HTML 渲染到离屏 iframe(打印 / 导出 PDF 共用) */
+  const renderOffscreen = async (html: string): Promise<HTMLIFrameElement> => {
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'position:fixed;left:-9999px;top:0;width:1200px;height:auto;border:none;';
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument;
+    if (doc) {
+      doc.open();
+      doc.write(html);
+      doc.close();
+    }
+    // 等待资源 / 脚本渲染完成(与 VisManusRightPanel 导出策略一致)
+    await new Promise((r) => setTimeout(r, 1500));
+    return frame;
+  };
+
+  /** 打印:html 用原始文档临时 iframe,其余走所见即所得(渲染 DOM 直接打印) */
+  const handlePrint = async () => {
+    if (exhibit.kind === 'html') {
+      setDocBusy(true);
+      try {
+        const raw = await fetchRaw();
+        const frame = await renderOffscreen(raw);
+        const doc = frame.contentDocument;
+        if (doc) {
+          const style = doc.createElement('style');
+          style.textContent = `
+            @media print {
+              html, body { height: auto !important; overflow: visible !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              h1, h2, h3, h4, h5, h6 { page-break-after: avoid; }
+              table, figure, img, pre { page-break-inside: avoid; }
+            }`;
+          doc.head.appendChild(style);
+        }
+        await new Promise((r) => setTimeout(r, 200));
+        frame.contentWindow?.print();
+        setTimeout(() => {
+          try { document.body.removeChild(frame); } catch { /* 已移除 */ }
+        }, 1000);
+      } catch {
+        message.error('内容获取失败,无法打印');
+      } finally {
+        setDocBusy(false);
+      }
+      return;
+    }
+    if (bodyRef.current) printElement(bodyRef.current);
+  };
+
+  /** 导出 PDF:html 走 jsPDF 真实导出,其余走打印对话框另存为 PDF */
+  const handleExportPdf = async () => {
     setDocBusy(true);
     try {
-      let raw = exhibit.source.inline ?? '';
-      if (!raw && url) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        raw = await res.text();
+      const raw = await fetchRaw();
+      const title = stripExt(exhibit.title);
+      if (exhibit.kind === 'html') {
+        const frame = await renderOffscreen(raw);
+        const body = frame.contentDocument?.body;
+        if (!body) throw new Error('empty doc');
+        const canvas = await html2canvas(body, { useCORS: true, scale: 2, backgroundColor: '#ffffff', width: 1200 });
+        const imgData = canvas.toDataURL('image/png');
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        const imgWidth = pdf.internal.pageSize.getWidth() - 20;
+        const pageHeight = pdf.internal.pageSize.getHeight() - 20;
+        const imgHeight = (canvas.height * imgWidth) / canvas.width;
+        const totalPages = Math.ceil(imgHeight / pageHeight);
+        for (let i = 0; i < totalPages; i += 1) {
+          if (i > 0) pdf.addPage();
+          pdf.addImage(imgData, 'PNG', 10, -pageHeight * i + 10, imgWidth, imgHeight);
+        }
+        pdf.save(`${title}.pdf`);
+        message.success('PDF 导出成功');
+        try { document.body.removeChild(frame); } catch { /* 已移除 */ }
+        return;
       }
-      if (!raw) throw new Error('empty');
-      const title = exhibit.title.replace(/\.(md|markdown|txt|log|json|csv|py|js|ts|sql|html?)$/i, '') + suffix;
       printHtmlDocument(renderExhibitDoc(exhibit.kind, raw, title));
     } catch {
-      message.error('内容获取失败,无法生成文档');
+      message.error('内容获取失败,无法导出 PDF');
     } finally {
       setDocBusy(false);
     }
   };
 
   const handleShare = async () => {
-    const link = url || window.location.href;
-    try {
-      await navigator.clipboard.writeText(link);
+    if (!url) {
+      message.warning('内联内容暂不支持分享链接');
+      return;
+    }
+    const copy = async (): Promise<boolean> => {
+      try {
+        await navigator.clipboard.writeText(url);
+        return true;
+      } catch {
+        // 降级:非安全上下文等场景 clipboard API 不可用时,用 execCommand 兜底
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = url;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          return ok;
+        } catch {
+          return false;
+        }
+      }
+    };
+    if (await copy()) {
       message.success('链接已复制到剪贴板');
-    } catch {
-      message.warning('复制失败,请手动复制地址栏链接');
+    } else {
+      message.warning('复制失败,请在新窗口打开后手动复制地址栏链接');
     }
   };
 
@@ -669,19 +774,20 @@ export function ExhibitHost({ exhibit }: { exhibit: LobbyExhibit }) {
         <Tag color="blue">{KIND_LABEL[exhibit.kind] || exhibit.kind}</Tag>
         {size && <Tag>{size}</Tag>}
         <span className="ws-exhibit__head-actions">
-          <HeadTool tip="分享(复制链接)" icon={<ShareAltOutlined />} onClick={handleShare} />
+          <HeadTool tip="分享(复制链接)" icon={<ShareAltOutlined />} onClick={handleShare} disabled={!url} />
           {canPrint && (
             <HeadTool
               tip="打印"
-              icon={<PrinterOutlined />}
-              onClick={() => bodyRef.current && printElement(bodyRef.current)}
+              icon={docBusy ? <LoadingOutlined spin /> : <PrinterOutlined />}
+              onClick={handlePrint}
+              disabled={docBusy}
             />
           )}
           {canDoc && (
             <HeadTool
               tip="导出 PDF"
               icon={docBusy ? <LoadingOutlined spin /> : <FilePdfOutlined />}
-              onClick={() => withDoc('.pdf')}
+              onClick={handleExportPdf}
               disabled={docBusy}
             />
           )}
