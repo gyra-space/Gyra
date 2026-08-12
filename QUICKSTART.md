@@ -15,7 +15,7 @@ gyra quickstart -p 8888
 gyra quickstart -c configs/my/dev.toml
 ```
 
-启动后访问: http://localhost:7777
+启动后访问: http://localhost:8888
 
 ### 方式二：使用 `gyra start webserver` 命令
 
@@ -45,13 +45,13 @@ python -m gyra_app.gyra_server -c configs/gyra-minimal.toml
 ### 零配置模式
 
 零配置模式下，服务会使用默认配置启动：
-- **服务端口**: 7777
+- **服务端口**: 8888
 - **数据库**: SQLite (pilot/meta_data/gyra.db)
 - **向量存储**: Chroma (pilot/data)
 - **语言**: 中文
 
 启动后通过 Web UI 配置：
-1. 访问 http://localhost:7777
+1. 访问 http://localhost:8888
 2. 进入"系统配置"页面
 3. 添加模型配置（LLM、Embedding、Reranker）
 4. 配置其他功能
@@ -127,7 +127,7 @@ gyra quickstart -p 8888
 ### 3. 如何配置模型
 
 启动服务后：
-1. 访问 http://localhost:7777
+1. 访问 http://localhost:8888
 2. 进入"模型管理"页面
 3. 添加你的模型配置（支持 OpenAI、阿里云、智谱等）
 4. 配置会自动保存到数据库

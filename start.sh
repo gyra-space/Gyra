@@ -101,7 +101,7 @@ if [ -d ".venv" ]; then
 fi
 
 echo ""
-echo "  Service: http://localhost:7777"
+echo "  Service: http://localhost:8888"
 echo "  Config:  ${GYRA_HOME}"
 echo "  Logs:    ${LOG_FILE}"
 
@@ -110,7 +110,7 @@ if [ "$DAEMON_MODE" = true ]; then
     echo "  Mode:    Daemon (background)"
     echo ""
     echo "  After starting, you can:"
-    echo "    1. Open http://localhost:7777 in your browser"
+    echo "    1. Open http://localhost:8888 in your browser"
     echo "    2. Configure models through the web UI"
     echo "    3. View logs: tail -f ${LOG_FILE}"
     echo "    4. Stop server: ./stop.sh"
@@ -147,8 +147,8 @@ if [ "$DAEMON_MODE" = true ]; then
         sleep 3
         
         # Check if port is listening
-        if lsof -ti:7777 > /dev/null 2>&1; then
-            echo "✓ Service is ready at http://localhost:7777"
+        if lsof -ti:8888 > /dev/null 2>&1; then
+            echo "✓ Service is ready at http://localhost:8888"
         else
             echo "⚠ Service may still be initializing, check logs:"
             echo "    tail -f ${LOG_FILE}"
@@ -164,7 +164,7 @@ else
     echo "  Mode:    Foreground"
     echo ""
     echo "  After starting, you can:"
-    echo "    1. Open http://localhost:7777 in your browser"
+    echo "    1. Open http://localhost:8888 in your browser"
     echo "    2. Configure models through the web UI"
     echo "    3. All configurations will be saved automatically"
     echo ""

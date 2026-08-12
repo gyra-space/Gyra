@@ -143,7 +143,7 @@ uv run gyra quickstart
 uv run gyra quickstart -p 8888
 ```
 
-起動後、http://localhost:7777 にアクセスし、Web UI でモデルと設定を構成します。
+起動後、http://localhost:8888 にアクセスし、Web UI でモデルと設定を構成します。
 
 詳細は [クイックスタートガイド](QUICKSTART.md) を参照してください。
 
@@ -161,7 +161,7 @@ uv run python packages/gyra-app/src/gyra_app/gyra_server.py --config configs/gyr
 
 #### ウェブサイトへのアクセス
 
-ブラウザを開いて [`http://localhost:7777`](http://localhost:7777) にアクセス
+ブラウザを開いて [`http://localhost:8888`](http://localhost:8888) にアクセス
 
 ### 使用方法
 

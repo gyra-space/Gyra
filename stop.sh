@@ -189,12 +189,12 @@ if [ -n "$mp_pids" ]; then
     done
 fi
 
-# Check for port 7777 usage
+# Check for port 8888 usage
 echo ""
-echo "  Checking port 7777..."
-port_pid=$(lsof -ti:7777 2>/dev/null || true)
+echo "  Checking port 8888..."
+port_pid=$(lsof -ti:8888 2>/dev/null || true)
 if [ -n "$port_pid" ]; then
-    echo "    Found process using port 7777:"
+    echo "    Found process using port 8888:"
     for pid in $port_pid; do
         cmd=$(ps -p $pid -o command= 2>/dev/null || echo "Unknown")
         echo "      PID: $pid - $cmd"
