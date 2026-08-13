@@ -294,3 +294,80 @@ describe('lobby_exhibits(大厅通用内容协议)', () => {
     expect(view.execution[0].exhibit?.kind).toBe('slides');
   });
 });
+
+describe('deliverable_files / task_files(追问轮不丢前轮交付物)', () => {
+  const baseChunk = { render_name: 'scene_agent_workspace', planning: null, execution: [], summary: null };
+
+  const file = (file_id: string, file_name: string, render_type = 'pdf') => ({
+    file_id, file_name, file_size: 1024, mime_type: 'application/pdf', render_type,
+  });
+
+  test('新轮 chunk 只含本轮文件时,前轮交付文件按 file_id 合并保留', () => {
+    const prev: WorkspaceView = {
+      planning: null,
+      execution: [],
+      summary: null,
+      deliverable_files: [file('f1', 'report.pdf'), file('f2', 'chart.png', 'image')],
+    };
+    // 追问轮(新 agent conv)后端只推送本轮文件 f3
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      deliverable_files: [file('f3', 'deck.pptx', 'slides')],
+    }, prev);
+    expect(view.deliverable_files!.map(f => f.file_id)).toEqual(['f3', 'f1', 'f2']);
+  });
+
+  test('新轮 chunk 交付文件为空数组时不覆盖前轮交付物', () => {
+    const prev: WorkspaceView = {
+      planning: null,
+      execution: [],
+      summary: null,
+      deliverable_files: [file('f1', 'report.pdf')],
+    };
+    const view = parseWorkspaceView({ ...baseChunk, deliverable_files: [] }, prev);
+    expect(view.deliverable_files!.map(f => f.file_id)).toEqual(['f1']);
+  });
+
+  test('同 file_id 重新交付时以新值更新(去重)', () => {
+    const prev: WorkspaceView = {
+      planning: null,
+      execution: [],
+      summary: null,
+      deliverable_files: [file('f1', 'report.pdf')],
+    };
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      deliverable_files: [file('f1', 'report-v2.pdf')],
+    }, prev);
+    expect(view.deliverable_files).toHaveLength(1);
+    expect(view.deliverable_files![0].file_name).toBe('report-v2.pdf');
+  });
+
+  test('task_files 同样按 file_id 合并保留(跨轮)', () => {
+    const prev: WorkspaceView = {
+      planning: null,
+      execution: [],
+      summary: null,
+      task_files: [file('t1', 'a.txt', 'text')],
+    };
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      task_files: [file('t2', 'b.log', 'text')],
+    }, prev);
+    expect(view.task_files!.map(f => f.file_id)).toEqual(['t2', 't1']);
+  });
+
+  test('chunk 未携带 deliverable_files 时保留 prev', () => {
+    const prev: WorkspaceView = {
+      planning: null,
+      execution: [],
+      summary: null,
+      deliverable_files: [file('f1', 'report.pdf')],
+    };
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      execution: [{ id: 's1', type: 'tool_call', title: 'A', status: 'done' }],
+    }, prev);
+    expect(view.deliverable_files!.map(f => f.file_id)).toEqual(['f1']);
+  });
+});

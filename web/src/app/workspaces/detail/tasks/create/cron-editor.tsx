@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { apiInterceptors, validateCron } from '@/client/api';
 import {
   Card, Input, InputNumber, Radio, Segmented, Spin, Tag, Typography, TimePicker, App,
@@ -157,11 +157,16 @@ export default function CronEditor({ value = '', onChange, tz = 'Asia/Shanghai' 
   const [nextRuns, setNextRuns] = useState<string[]>([]);
   const [validating, setValidating] = useState(false);
 
+  // 记录最后一次上报给父级的表达式，用于区分「外部 value 变更」与
+  // 「自身 onChange 后 value 回环」。没有这个去重，value -> state -> expr
+  // -> onChange -> value 会形成反馈回路，导致表达式持续跳变/页面卡死。
+  const lastEmitted = useRef<string>('');
+
   const expr = useMemo(() => {
     if (editorMode === 'advanced') return rawExpr.trim();
 
-    const m = pad(minute);
-    const h = pad(hour);
+    const m = String(minute);
+    const h = String(hour);
     switch (mode) {
       case 'daily':
         return `${m} ${h} * * *`;
@@ -180,31 +185,39 @@ export default function CronEditor({ value = '', onChange, tz = 'Asia/Shanghai' 
         return `*/${n} * * * *`;
       }
       default:
-        return value || '0 9 * * *';
+        return '0 9 * * *';
     }
-  }, [editorMode, rawExpr, mode, hour, minute, weekdays, monthDays, intervalMinutes, value]);
+    // 注意：不要把 value 放进依赖。value 只用于初始化/外部同步，
+    // 放进依赖会让「onChange 回环」触发 expr 重算，造成抖动。
+  }, [editorMode, rawExpr, mode, hour, minute, weekdays, monthDays, intervalMinutes]);
 
-  // 外部 value 变化时同步到 UI
+  // 外部 value 变化时同步到 UI（排除自身 onChange 的回环）
   useEffect(() => {
     if (!value) return;
+    if (value === lastEmitted.current) return; // 自己上报的回环，忽略
     const parsed = parseExpression(value);
     if (!parsed) {
       setEditorMode('advanced');
       setRawExpr(value);
       return;
     }
-    setEditorMode('visual');
     setMode(parsed.mode);
     setHour(parsed.hour);
     setMinute(parsed.minute);
     setWeekdays(parsed.weekdays);
     setMonthDays(parsed.monthDays);
     setIntervalMinutes(parsed.intervalMinutes);
+    setRawExpr(value);
+    // 不再强制 setEditorMode('visual')：外部同步不应打断用户在
+    // 表达式模式下的输入，模式只由用户手动切换。
   }, [value]);
 
-  // expr 变化：上报 + debounce 校验下次执行时间
+  // expr 变化：上报（去重）+ debounce 校验下次执行时间
   useEffect(() => {
-    onChange?.(expr);
+    if (expr !== lastEmitted.current) {
+      lastEmitted.current = expr;
+      onChange?.(expr);
+    }
     const t = setTimeout(async () => {
       setValidating(true);
       const [err, data] = await apiInterceptors(validateCron(expr, tz));

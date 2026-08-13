@@ -177,6 +177,19 @@ function tsToMs(ts: string | null | undefined): number | null {
 
 const EMPTY_VIEW: WorkspaceView = { planning: null, execution: [], summary: null, deliverable_files: [], task_files: [], panel_view: 'execution', lobby_exhibits: [], subagents: [] };
 
+/** 按 file_id 合并交付/任务文件:同 id 取新值,旧条目保留(会话级累积,防御后端只推当前轮)。 */
+function mergeFilesById<T extends { file_id: string }>(prev: T[], next: T[]): T[] {
+  const seen = new Set(next.map((f) => f.file_id));
+  const merged = [...next];
+  for (const f of prev) {
+    if (!seen.has(f.file_id)) {
+      merged.push(f);
+      seen.add(f.file_id);
+    }
+  }
+  return merged;
+}
+
 export function parseWorkspaceView(chunk: unknown, prev: WorkspaceView | null): WorkspaceView {
   if (!chunk || typeof chunk !== 'object') return prev ?? EMPTY_VIEW;
   const c = chunk as Record<string, unknown>;
@@ -212,12 +225,14 @@ export function parseWorkspaceView(chunk: unknown, prev: WorkspaceView | null): 
     : (prev?.planning ?? null);
   const summary = typeof c.summary === 'string' ? c.summary : (prev?.summary ?? null);
 
-  // 交付文件 / 任务文件:后端每次全量推送,直接替换(不做合并)
+  // 交付文件 / 任务文件:后端按当前轮次(agent conv)全量推送,新轮追问(新建
+  // agent conv)只会带本轮文件。前端按 file_id 会话级合并:同 id 取新值、
+  // 前轮文件保留,保证追问后前面对话的交付文件不丢。
   const deliverable_files = Array.isArray(c.deliverable_files)
-    ? c.deliverable_files.map(normalizeDeliverableFile).filter((f): f is WorkspaceDeliverableFile => f !== null)
+    ? mergeFilesById(prev?.deliverable_files ?? [], c.deliverable_files.map(normalizeDeliverableFile).filter((f): f is WorkspaceDeliverableFile => f !== null))
     : (prev?.deliverable_files ?? []);
   const task_files = Array.isArray(c.task_files)
-    ? c.task_files.map(normalizeTaskFile).filter((f): f is WorkspaceTaskFile => f !== null)
+    ? mergeFilesById(prev?.task_files ?? [], c.task_files.map(normalizeTaskFile).filter((f): f is WorkspaceTaskFile => f !== null))
     : (prev?.task_files ?? []);
 
   // panel_view: 后端指示自动切换; 前端可在用户手动切换后忽略后续自动切换

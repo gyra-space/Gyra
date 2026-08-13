@@ -104,16 +104,22 @@ class MemoryAgentBase(ConversableAgent):
         never raise into the hook executor.
         """
         event, conv_id = self._parse_event(received_message)
-        if not conv_id:
+
+        # Cron 路径:message 形如 "curate:{space_slug}",isolated session 无
+        # conv_id 也无 bundle,直接交给 _run_memory_task 走 curate_space。
+        user_msg = event.get("user_prompt") or event.get("final_answer") or ""
+        is_cron_curate = isinstance(user_msg, str) and user_msg.startswith("curate:")
+        if not conv_id and not is_cron_curate:
             logger.debug("[MemoryAgent=%s] no conv_id in event; skipping", self.name)
             return self._empty_reply()
 
         bundle = self._get_bundle(conv_id)
         if bundle is None or getattr(bundle, "manager", None) is None:
-            logger.debug(
-                "[MemoryAgent=%s] no bundle for conv %s; skipping", self.name, conv_id
-            )
-            return self._empty_reply()
+            if not is_cron_curate:
+                logger.debug(
+                    "[MemoryAgent=%s] no bundle for conv %s; skipping", self.name, conv_id
+                )
+                return self._empty_reply()
 
         try:
             result = await self._run_memory_task(event, bundle, conv_id)

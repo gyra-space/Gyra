@@ -273,12 +273,12 @@ export default function SettingsPage() {
               showSearch
               filterOption={false}
               loading={searching}
-              placeholder="Search by username / name / email"
+              placeholder="Search by username / user code / email"
               onSearch={handleSearchUser}
               notFoundContent={searching ? <Spin size="small" /> : null}
               options={userOptions.map((u) => ({
                 value: u.id,
-                label: `${u.name}${u.fullname ? ` (${u.fullname})` : ''}${u.email ? ` · ${u.email}` : ''}`,
+                label: `#${u.id} ${u.name}${u.fullname ? ` (${u.fullname})` : ''}${u.email ? ` · ${u.email}` : ''}`,
               }))}
             />
           </Form.Item>

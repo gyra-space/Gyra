@@ -5,6 +5,11 @@ questions). The proposal Agent explores a datasource's table specs + samples
 dimension columns, then writes proposals via ``propose_semantic`` -- the single
 write entry, validated by the DAO.
 
+For the auto miss-learning cron (``auto_learn.py``) the Agent additionally needs
+``get_miss_report`` (clustered uncovered queries) and ``search_semantics``
+(confirmed catalog lookup to avoid duplicate proposals) -- both re-implemented
+by delegating to ``ecp_tools.py`` so there is a single source of truth.
+
 Built as attachable ``FunctionTool``s (mirrors ``build_ecp_agent_tools``) so an
 ``EcpProposalCapability`` can contribute them to a BAIZE agent's TOOLS slot.
 ``workspace_id`` is closure-bound (same workspace as the injected catalog);
@@ -40,7 +45,8 @@ def _get_connector(datasource_id: int):
 
 # --------------------------------------------------------------- tool builder
 def build_proposal_tools() -> List[FunctionTool]:
-    """Build ECP-specific proposal tools (sample_distinct_values + propose_semantic).
+    """Build ECP-specific proposal tools (sample_distinct_values / search_semantics /
+    get_miss_report / propose_semantic).
 
     NOTE: get_table_spec is provided by DBCapability (db tools), not redefined here.
     DBCapability's get_table_spec now accepts both datasource_id (integer) and db_name (string).
@@ -122,6 +128,24 @@ def build_proposal_tools() -> List[FunctionTool]:
             ensure_ascii=False,
         )
 
+    async def _search_semantics(
+        query: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> str:
+        from ..tools.ecp_tools import search_semantics as _impl
+
+        return await _impl(query=query, workspace_id=workspace_id)
+
+    async def _miss_report(
+        min_count: int = 2,
+        limit: int = 20,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> str:
+        from ..tools.ecp_tools import get_miss_report as _impl
+
+        return await _impl(
+            min_count=min_count, limit=limit, workspace_id=workspace_id
+        )
+
     return [
         FunctionTool(
             "sample_distinct_values",
@@ -131,6 +155,41 @@ def build_proposal_tools() -> List[FunctionTool]:
                 "datasource_id": {"type": "integer", "description": "数据源 id"},
                 "table_name": {"type": "string", "description": "表名"},
                 "column": {"type": "string", "description": "列名"},
+            },
+        ),
+        FunctionTool(
+            "search_semantics",
+            _search_semantics,
+            description="搜索已确认的语义对象(指标/实体/维度/关系)。自动 miss 学习时,对照已确认目录,避免重复提案已有概念。",
+            args={
+                "query": {"type": "string", "description": "关键词(名称/别名/id)"},
+                "workspace_id": {
+                    "type": "string",
+                    "description": "ECP 工作空间 id(默认 default)",
+                    "required": False,
+                },
+            },
+        ),
+        FunctionTool(
+            "get_miss_report",
+            _miss_report,
+            description="获取按频次聚类的未覆盖查询(execute_raw_sql 兜底记录)。自动 miss 学习入口:对高频且目录确实缺失的概念用 propose_semantic 提案。",
+            args={
+                "min_count": {
+                    "type": "integer",
+                    "description": "只返回出现次数>=此值的聚类,默认 2",
+                    "required": False,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "最多返回聚类数,默认 20",
+                    "required": False,
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "ECP 工作空间 id(默认 default)",
+                    "required": False,
+                },
             },
         ),
         FunctionTool(

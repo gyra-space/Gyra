@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Union
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, JSON
+from sqlalchemy import BigInteger, Column, DateTime, Integer, String, Text, JSON
 
 from gyra.storage.metadata import BaseDao, Model
 
@@ -77,16 +77,20 @@ class CronJobEntity(Model):
     )
 
     # Runtime state
-    next_run_at_ms = Column(Integer, nullable=True, comment="Next run time in ms")
-    running_at_ms = Column(
-        Integer, nullable=True, comment="Current run start time in ms"
+    next_run_at_ms = Column(
+        BigInteger, nullable=True, comment="Next run time in ms"
     )
-    last_run_at_ms = Column(Integer, nullable=True, comment="Last run time in ms")
+    running_at_ms = Column(
+        BigInteger, nullable=True, comment="Current run start time in ms"
+    )
+    last_run_at_ms = Column(BigInteger, nullable=True, comment="Last run time in ms")
     last_status = Column(
         String(32), nullable=True, comment="Last run status (ok/error/skipped)"
     )
     last_error = Column(Text, nullable=True, comment="Last error message")
-    last_duration_ms = Column(Integer, nullable=True, comment="Last run duration in ms")
+    last_duration_ms = Column(
+        BigInteger, nullable=True, comment="Last run duration in ms"
+    )
     consecutive_errors = Column(Integer, default=0, comment="Consecutive error count")
 
     # Creator (background execution identity)
@@ -135,11 +139,11 @@ class CronJobLogEntity(Model):
     job_id = Column(String(64), index=True, nullable=False, comment="Cron job id")
 
     # Execution outcome
-    run_at_ms = Column(Integer, nullable=False, comment="Run start time in ms")
+    run_at_ms = Column(BigInteger, nullable=False, comment="Run start time in ms")
     status = Column(
         String(32), nullable=False, comment="Execution status (ok/error/skipped)"
     )
-    duration_ms = Column(Integer, nullable=True, comment="Execution duration in ms")
+    duration_ms = Column(BigInteger, nullable=True, comment="Execution duration in ms")
     error = Column(Text, nullable=True, comment="Error message if failed")
     trigger = Column(
         String(32), default="scheduled", comment="Trigger source (scheduled/manual)"
@@ -170,10 +174,28 @@ class ServeDao(BaseDao[CronJobEntity, ServeRequest, ServerResponse]):
         ("created_by_user_id", "String(128)"),
     ]
 
+    # Epoch-ms timestamp/duration columns that hold values far beyond INT
+    # range (e.g. running_at_ms = int(time.time() * 1000) ~= 1.7e12 in 2026),
+    # causing MySQL error 1264 "Out of range value". Widened to BIGINT
+    # idempotently for upgrades from older schemas.
+    _V3_MS_COLUMNS = {
+        CronJobEntity.__tablename__: (
+            "next_run_at_ms",
+            "running_at_ms",
+            "last_run_at_ms",
+            "last_duration_ms",
+        ),
+        CronJobLogEntity.__tablename__: (
+            "run_at_ms",
+            "duration_ms",
+        ),
+    }
+
     def __init__(self, serve_config: ServeConfig):
         super().__init__()
         self._serve_config = serve_config
         self._migrate_v2()
+        self._migrate_v3()
 
     def _migrate_v2(self) -> None:
         """Add v2 columns to gyra_serve_cron_job if missing (idempotent)."""
@@ -200,6 +222,44 @@ class ServeDao(BaseDao[CronJobEntity, ServeRequest, ServerResponse]):
                 session.commit()
         except Exception as e:
             logger.debug("cron v2 migration skipped: %s", e)
+
+    def _migrate_v3(self) -> None:
+        """Widen epoch-ms columns from INT to BIGINT if needed (idempotent)."""
+        try:
+            from sqlalchemy import inspect as sa_inspect
+            from sqlalchemy import text
+
+            with self.session(commit=False) as session:
+                dialect = session.bind.dialect.name
+                insp = sa_inspect(session.bind)
+                for table, columns in self._V3_MS_COLUMNS.items():
+                    if table not in insp.get_table_names():
+                        continue
+                    for col_info in insp.get_columns(table):
+                        col = col_info["name"]
+                        if col not in columns:
+                            continue
+                        if "bigint" in str(col_info["type"]).lower():
+                            continue
+                        nullable = col_info.get("nullable", True)
+                        null_clause = "" if nullable else "NOT NULL"
+                        if dialect == "postgresql":
+                            session.execute(
+                                text(
+                                    f'ALTER TABLE "{table}" ALTER COLUMN "{col}" '
+                                    f"TYPE BIGINT"
+                                )
+                            )
+                        else:
+                            session.execute(
+                                text(
+                                    f"ALTER TABLE `{table}` MODIFY COLUMN `{col}` "
+                                    f"BIGINT {null_clause}"
+                                )
+                            )
+                session.commit()
+        except Exception as e:
+            logger.debug("cron v3 migration skipped: %s", e)
 
     def from_request(
         self, request: Union[ServeRequest, Dict[str, Any]]

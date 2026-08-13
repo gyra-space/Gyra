@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 _JOB_PREFIX = "ecp-auto-learn"
 
 _AUTO_LEARN_MESSAGE = """[自动 miss 学习] 工作空间 {ws}:
-1. 调用 get_miss_report(min_count=2) 查看按频次聚类的未覆盖查询
-2. 对照已确认目录(search_semantics)与收件箱已有提案,只为"高频且目录确实没有的概念"用 propose_semantic 提案
+1. 调用 get_miss_report(min_count=2, workspace_id={ws}) 查看按频次聚类的未覆盖查询
+2. 用 search_semantics(query, workspace_id={ws}) 对照已确认目录,结合收件箱已有提案,
+   只为"高频且目录确实没有的概念"用 propose_semantic(..., workspace_id={ws}) 提案
 3. 已有概念不要重复提案;没有值得提案的内容就直接结束
 4. 提案只进收件箱,不影响任何查询(人工 confirm 后生效)"""
 

@@ -68,6 +68,11 @@ class MemoryCurateAgent(MemoryAgentBase):
 
             # 从 self 解析 system_app 和可选 llm_client
             system_app = getattr(self, "system_app", None)
+            if system_app is None:
+                # cron 派发的全局单例 agent 未挂 system_app,回退到进程级单例
+                from gyra.component import SystemApp
+
+                system_app = SystemApp.get_instance()
             llm_client = None
             try:
                 llm_client = getattr(

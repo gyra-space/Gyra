@@ -155,9 +155,15 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
         next_wake = None
         if self._scheduler and self._running:
             try:
-                next_run_time = self._scheduler.get_next_run_time()
-                if next_run_time:
-                    next_wake = int(next_run_time.timestamp() * 1000)
+                # APScheduler 3.11 已移除 scheduler.get_next_run_time(),
+                # 需要从所有 job 的 next_run_time 里取最小值。
+                next_times = [
+                    job.next_run_time
+                    for job in self._scheduler.get_jobs()
+                    if job.next_run_time is not None
+                ]
+                if next_times:
+                    next_wake = int(min(next_times).timestamp() * 1000)
             except Exception:
                 pass
 
@@ -655,6 +661,21 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
 
         payload = job.payload
         logger.info(f"Executing Agent turn for job {job.id}: agent={payload.agent_id}, session_mode={payload.session_mode}")
+
+        # 内置记忆 Agent(MemoryCurateAgent 等)注册在 AgentManager 而非
+        # app 表中,app_chat_v3 无法解析(报「应用不存在」)。cron message
+        # 形如 "curate:{space_slug}",由 agent_dispatcher 派发给全局单例
+        # 记忆 Agent,走 curate_space 全量整理路径。
+        message = payload.message or ""
+        if message.startswith("curate:"):
+            from gyra.agent.core.memory.agent_dispatcher import _dispatch_to_agent
+
+            await _dispatch_to_agent(
+                payload.agent_id or "MemoryCurateAgent",
+                {"user_prompt": message, "conv_id": ""},
+            )
+            logger.info(f"Memory curator dispatched for job {job.id}")
+            return True
 
         try:
             # Import here to avoid circular dependencies

@@ -383,7 +383,7 @@ async def validate_cron(request: CronValidateRequest) -> Result:
     Returns:
         {valid, expr, next_runs[]} 或 {valid:false, error}。
     """
-    from datetime import datetime
+    from datetime import datetime, timedelta
     from apscheduler.triggers.cron import CronTrigger
 
     expr = (request.expr or "").strip()
@@ -406,7 +406,10 @@ async def validate_cron(request: CronValidateRequest) -> Result:
             if not nxt:
                 break
             next_runs.append(nxt.isoformat())
-            now = nxt
+            # APScheduler 的 get_next_fire_time 在 now 恰好命中触发时刻时
+            # 会重复返回同一时刻,必须把 now 推进到该时刻之后才能拿到
+            # 后续几次执行时间,否则 5 次结果完全相同。
+            now = nxt + timedelta(seconds=1)
         return Result.succ({"valid": True, "expr": expr, "next_runs": next_runs})
     except ValueError as e:
         return Result.succ({"valid": False, "error": str(e)})

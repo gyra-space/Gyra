@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import bcrypt
-from sqlalchemy import Column, DateTime, Integer, String, or_
+from sqlalchemy import Column, DateTime, Integer, String, cast, or_
 
 from gyra.storage.metadata import BaseDao, Model
 
@@ -177,13 +177,16 @@ class UserDao(BaseDao):
             query = session.query(UserEntity)
             if keyword:
                 like = f"%{keyword}%"
-                query = query.filter(
-                    or_(
-                        UserEntity.name.ilike(like),
-                        UserEntity.fullname.ilike(like),
-                        UserEntity.email.ilike(like),
-                    )
-                )
+                conditions = [
+                    UserEntity.name.ilike(like),
+                    UserEntity.fullname.ilike(like),
+                    UserEntity.email.ilike(like),
+                    UserEntity.oauth_id.ilike(like),
+                ]
+                # 支持按用户代码(数字ID)搜索
+                if keyword.strip().isdigit():
+                    conditions.append(cast(UserEntity.id, String).like(like))
+                query = query.filter(or_(*conditions))
             total = query.count()
             users = (
                 query.order_by(UserEntity.gmt_create.desc())

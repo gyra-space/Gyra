@@ -12,7 +12,7 @@ import type { AgentWorkspaceInputHandle, WorkspaceDeliverableFile } from './agen
 import { useSceneAgentChat } from './use-scene-agent-chat';
 import { useUserInput } from '@/hooks/use-user-input';
 import { useRequest } from 'ahooks';
-import { getAppInfo } from '@/client/api/request';
+import { apiInterceptors, getAppInfo } from '@/client/api';
 
 export interface AgentWorkspaceProps {
   convUid?: string;
@@ -92,10 +92,11 @@ export function AgentWorkspace({
   // 运行中提交作为"补充输入"投递到后端队列(不开新 SSE 流,不中止当前生成)
   const { submitUserInput } = useUserInput(convUid);
   // Agent 头像数据:appCode 对应 app 的 icon/name(与通用聊天页同源)
-  const { data: appInfo } = useRequest(
-    () => (appCode ? getAppInfo({ app_code: appCode }) : Promise.resolve(null)),
+  const { data: appInfoTuple } = useRequest(
+    async () => (appCode ? apiInterceptors(getAppInfo({ app_code: appCode })) : ([null, null] as any)),
     { refreshDeps: [appCode] },
   );
+  const appInfo = appInfoTuple?.[1];
 
   // ask_user 交互确认后续跑:复用同一 conv_uid 发一条新消息,后端
   // `_initialize_agent_conversation` 检测到 WAITING 会话后恢复 Agent loop。
