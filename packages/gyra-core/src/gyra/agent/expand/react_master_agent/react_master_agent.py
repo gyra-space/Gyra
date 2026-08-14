@@ -32,7 +32,6 @@ from gyra.core.interface.message import ModelMessageRoleType
 from gyra.agent.util.llm.llm_client import AgentLLMOut
 from gyra.sandbox.base import SandboxBase
 from gyra.util.template_utils import render
-from gyra_serve.agent.resource.tool.mcp import MCPToolPack
 
 from gyra.agent.expand.tool_agent.function_call_parser import (
     FunctionCallOutputParser,
@@ -82,9 +81,7 @@ from gyra.agent.core.memory.gpts.system_event import (
     SystemEventManager,
     SystemEventType,
 )
-from ...resource import BaseTool, RetrieverResource, FunctionTool, ToolPack, ToolParameter
-from ...resource.agent_skills import AgentSkillResource
-from ...resource.app import AppResource
+from ...resource import FunctionTool, ToolParameter
 from ..actions.agent_action import AgentStart
 from ..actions.knowledge_action import KnowledgeSearch
 from ..actions.sql_action import SqlAction
@@ -495,16 +492,10 @@ class ReActMasterAgent(ConversableAgent, Team):
         'delegate'。委派适配器在调用时才解析 self.agents，注入不依赖 hire 时机。
         """
         try:
-            # 检查 resource_map 是否有 AppResource
-            # RFC-006 Phase B5:优先 capability_pack(新协议),fallback 旧 resource_map。
+            # 检查 capability_pack 是否有 AppCapability
             has_app_resource = False
             if getattr(self, "_has_capability", None) and self._has_capability("app"):
                 has_app_resource = True
-            else:
-                for k, v in (self.resource_map or {}).items():
-                    if v and isinstance(v[0], AppResource):
-                        has_app_resource = True
-                        break
 
             if not has_app_resource and not getattr(self, "agents", None):
                 return
@@ -627,36 +618,21 @@ class ReActMasterAgent(ConversableAgent, Team):
                 def _resolve_app_code(self, subagent_name: str) -> str:
                     """在 master 的 app 资源中按 app_code/app_name 解析目标子 Agent。
 
-                    与 agent_action._resolve_app_code 同一语义：capability_pack
-                    （AppCapability）优先，resource_map（AppResource）兜底。
+                    与 agent_action._resolve_app_code 同一语义：从 capability_pack
+                    的 AppCapability 解析（v1 resource_map 兜底已删）。
                     """
                     master = self._master
                     pack = getattr(master, "capability_pack", None)
-                    if pack is not None and hasattr(pack, "sub_resources"):
-                        for cap in pack.sub_resources:
-                            cid = getattr(cap, "capability_id", "") or ""
-                            if not cid.startswith("app"):
-                                continue
-                            code = getattr(cap, "_app_code", "") or ""
-                            name = getattr(cap, "_app_name", "") or ""
-                            if subagent_name in (code, name):
-                                return code
-                    for resources in (getattr(master, "resource_map", None) or {}).values():
-                        for res in resources or []:
-                            if not isinstance(res, AppResource):
-                                continue
-                            code = getattr(res, "app_code", "") or ""
-                            name = (
-                                getattr(res, "app_name", "")
-                                or getattr(res, "name", "")
-                                or ""
-                            )
-                            if subagent_name in (code, name):
-                                return code
+                    caps = pack.get_all("app") if pack is not None else []
+                    for cap in caps:
+                        code = getattr(cap, "app_code", "") or ""
+                        name = getattr(cap, "app_name", "") or ""
+                        if subagent_name in (code, name):
+                            return code
                     return ""
 
                 async def _delegate_via_app(self, subagent_name: str, task: str):
-                    """经 GptAppResource 以独立子会话委派到目标 app（后台执行）。
+                    """经 AppCapability 以独立子会话委派到目标 app（后台执行）。
 
                     与 SubAgent async 分支同一执行形态，但注册/恢复由
                     spawn_agent_task 的 atask 体系负责，不重复登记 SubagentCoordinator。
@@ -664,25 +640,21 @@ class ReActMasterAgent(ConversableAgent, Team):
                     app_code = self._resolve_app_code(subagent_name)
                     if not app_code:
                         available = []
-                        for resources in (
-                            getattr(self._master, "resource_map", None) or {}
-                        ).values():
-                            for res in resources or []:
-                                if not isinstance(res, AppResource):
-                                    continue
-                                n = (
-                                    getattr(res, "app_name", None)
-                                    or getattr(res, "name", None)
-                                    or getattr(res, "app_code", None)
-                                )
-                                if n:
-                                    available.append(n)
+                        pack = getattr(self._master, "capability_pack", None)
+                        caps = pack.get_all("app") if pack is not None else []
+                        for cap in caps:
+                            n = (
+                                getattr(cap, "app_name", None)
+                                or getattr(cap, "app_code", None)
+                            )
+                            if n:
+                                available.append(n)
                         hint = f"可用: {', '.join(available)}" if available else "无可用 app 资源"
                         return self._fail_result(
                             f"子 Agent '{subagent_name}' 不存在（{hint}）"
                         )
                     try:
-                        from gyra_serve.agent.resource.app import GptAppResource
+                        from gyra_serve.agent.capabilities.app import AppCapability
                     except ImportError:
                         return self._fail_result(
                             f"子 Agent '{subagent_name}' 是 app 资源，但 gyra_serve 不可用"
@@ -696,13 +668,12 @@ class ReActMasterAgent(ConversableAgent, Team):
                             if master_ctx
                             else 0
                         )
-                        app_resource = GptAppResource(name=app_code, app_code=app_code)
-                        answer = await app_resource._start_app(
+                        app_cap = AppCapability(app_name=app_code, app_code=app_code)
+                        answer = await app_cap.start_app(
                             user_input=task,
                             sender=self._master,
                             conv_uid=str(uuid.uuid4()),
                             parent_depth=parent_depth or 0,
-                            extra_info=None,
                         )
                         return self._result_from_answer(answer)
                     except Exception as e:
@@ -742,18 +713,16 @@ class ReActMasterAgent(ConversableAgent, Team):
                     agent_names.append(name)
             if not agent_names:
                 # build 时子 Agent 尚未 hire（agent_chat 在 build 后 hire），
-                # 从 AppResource 兜底取可委派子 Agent 名称，供工具描述展示
-                for k, v in (self.resource_map or {}).items():
-                    for item in v or []:
-                        if not isinstance(item, AppResource):
-                            continue
-                        name = (
-                            getattr(item, "app_name", None)
-                            or getattr(item, "name", None)
-                            or getattr(item, "app_code", None)
-                        )
-                        if name:
-                            agent_names.append(name)
+                # 从 capability_pack 的 AppCapability 兜底取可委派子 Agent 名称，供工具描述展示
+                pack = getattr(self, "capability_pack", None)
+                caps = pack.get_all("app") if pack is not None else []
+                for cap in caps:
+                    name = (
+                        getattr(cap, "app_name", None)
+                        or getattr(cap, "app_code", None)
+                    )
+                    if name:
+                        agent_names.append(name)
 
             # 创建 FunctionTool 包装
             atm = self._async_task_manager
@@ -1105,14 +1074,7 @@ class ReActMasterAgent(ConversableAgent, Team):
             return None
         return "[用户补充输入]\n" + "\n".join(lines)
 
-    async def load_resource(self, question: str, is_retry_chat: bool = False):
-        """Load agent bind resource."""
-        self.function_calling_context = await self.function_calling_params()
-        return None, None
-
     async def function_calling_params(self):
-        from gyra.agent.resource import ToolPack
-
         def _tool_to_function(tool) -> Dict:
             # 新框架 ToolBase: 使用 to_openai_tool() 方法
             if hasattr(tool, "to_openai_tool"):
@@ -1163,19 +1125,13 @@ class ReActMasterAgent(ConversableAgent, Team):
                     f"(capability_id=sandbox): {sb_names}"
                 )
         else:
-            # 回退路径(无快照):旧逻辑——builtin + ToolPack.from_resource
+            # 回退路径(无快照):builtin 工具
             logger.info(
                 f"function_calling_params(fallback): available_system_tools count="
                 f"{len(self.available_system_tools)}"
             )
             for k, v in self.available_system_tools.items():
                 functions.append(_tool_to_function(v))
-            tool_packs = ToolPack.from_resource(self.resource)
-            if tool_packs:
-                tool_pack = tool_packs[0]
-                for tool in tool_pack.sub_resources:
-                    tool_item: BaseTool = tool
-                    functions.append(_tool_to_function(tool_item))
 
         system_tool_count = len(self.available_system_tools)
         resource_tool_count = len(functions) - system_tool_count
@@ -1321,9 +1277,6 @@ class ReActMasterAgent(ConversableAgent, Team):
         """获取 ResourceFacade（懒加载,RFC-005 S10 接入)。
 
         产完整 system 快照(身份/记忆/资源/控制四层 Contribution)+ tools。
-        注册所有 capability 的双轨 wrapper(Step E):旧 Resource 子类 → 对应
-        capability ResourceProtocol,使 facade 遍历 ResourcePack 时走原生 declare,
-        脱离 LegacyResourceAdapter 桥接。
         RFC-006 Stage 2:注入共享 SandboxExecutor 到 executor_provider,打通
         capability requires=["sandbox"] 的执行投影接线。
         """
@@ -1331,8 +1284,6 @@ class ReActMasterAgent(ConversableAgent, Team):
             from gyra.agent.capabilities import ResourceFacade
 
             facade = ResourceFacade()
-            self._register_capability_wrappers(facade)
-            self._register_capability_factories(facade)
             # Stage 2:注入共享沙箱 executor(非 Capability;平台底座,多 capability 经
             # requires=["sandbox"] 引用)。无 sandbox_manager 时跳过(纯协议/测试场景)。
             if getattr(self, "sandbox_manager", None) is not None:
@@ -1347,75 +1298,6 @@ class ReActMasterAgent(ConversableAgent, Team):
 
             self._tool_dispatcher = ToolDispatcher(registry=facade.registry)
         return self._resource_facade
-
-    def _register_capability_wrappers(self, facade: Any) -> None:
-        """动态发现并注册所有 capability 的双轨 wrapper(协议化,不强引类型)。
-
-        扫描 core 和 serve 两层 capabilities 包目录,每个子包若有 register_wrappers(facade)
-        则调用。agent 不强引用任何具体 capability 类型,只依赖协议接口。
-        注册失败的单个 capability 不阻塞其它(serve 在 core 测试环境可能不可导入)。
-        """
-        import importlib
-        import pkgutil
-
-        for package_name in [
-            "gyra.agent.capabilities",
-            "gyra_serve.agent.capabilities",
-        ]:
-            try:
-                pkg = importlib.import_module(package_name)
-            except Exception as e:  # noqa: BLE001
-                continue  # serve 包不可导入时跳过(core 测试环境)
-            pkg_path = getattr(pkg, "__path__", None)
-            if not pkg_path:
-                continue
-            for _finder, name, ispkg in pkgutil.iter_modules(pkg_path):
-                if not ispkg:
-                    continue
-                full = f"{package_name}.{name}"
-                try:
-                    mod = importlib.import_module(full)
-                    reg = getattr(mod, "register_wrappers", None)
-                    if callable(reg):
-                        reg(facade)
-                        logger.debug(f"registered capability wrappers: {name}")
-                except Exception as e:  # noqa: BLE001
-                    logger.debug(f"skip capability {name}: {e}")
-
-    def _register_capability_factories(self, facade: Any) -> None:
-        """RFC-006 Stage 2+:动态发现并注册各 capability 的 register_capability。
-
-        镜像 _register_capability_wrappers 的包扫描,但调 `register_capability(facade)`
-        (注册 _capability_factories,type_key→Capability 工厂)而非 register_wrappers。
-        过渡期两者并存:factory 路径(自管理 Capability)优先,无则回退 wrapper。
-        各 capability 子包可选导出 register_capability;无则只跳过,不影响 wrapper 路径。
-        """
-        import importlib
-        import pkgutil
-
-        for package_name in [
-            "gyra.agent.capabilities",
-            "gyra_serve.agent.capabilities",
-        ]:
-            try:
-                pkg = importlib.import_module(package_name)
-            except Exception:  # noqa: BLE001
-                continue
-            pkg_path = getattr(pkg, "__path__", None)
-            if not pkg_path:
-                continue
-            for _finder, name, ispkg in pkgutil.iter_modules(pkg_path):
-                if not ispkg:
-                    continue
-                full = f"{package_name}.{name}"
-                try:
-                    mod = importlib.import_module(full)
-                    reg = getattr(mod, "register_capability", None)
-                    if callable(reg):
-                        reg(facade)
-                        logger.debug(f"registered capability factories: {name}")
-                except Exception as e:  # noqa: BLE001
-                    logger.debug(f"skip capability factory {name}: {e}")
 
     def resolve_tool_entry(self, tool_name: str) -> Any:
         """S19: 按 tool_name 从 _last_snapshot 统一查工具句柄(执行面与声明面同源)。
@@ -1865,6 +1747,8 @@ class ReActMasterAgent(ConversableAgent, Team):
             logger.warning(f"Layer 4: Failed to get history: {e}")
 
         # 获取基础消息列表（从基类获取消息组装逻辑，但我们会重新构建 prompt）
+        # 首轮工具上下文刷新(原 load_resource 钩子职责,随 v1 resource 删除上移至此)
+        self.function_calling_context = await self.function_calling_params()
         (
             messages,
             context,
@@ -2883,8 +2767,6 @@ class ReActMasterAgent(ConversableAgent, Team):
                 if hasattr(real_action, "prepare_init_msg"):
                     init_report = await real_action.prepare_init_msg(
                         ai_message=message.content if message.content else "",
-                        resource=self.resource,
-                        resource_map=self.resource_map,
                         render_protocol=await self.memory.gpts_memory.async_vis_converter(
                             self.not_null_agent_context.conv_id
                         ),
@@ -2902,8 +2784,6 @@ class ReActMasterAgent(ConversableAgent, Team):
 
                 task = real_action.run(
                     ai_message=message.content if message.content else "",
-                    resource=self.resource,
-                    resource_map=self.resource_map,
                     render_protocol=await self.memory.gpts_memory.async_vis_converter(
                         self.not_null_agent_context.conv_id
                     ),
