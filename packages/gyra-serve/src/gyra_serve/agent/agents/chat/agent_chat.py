@@ -2013,8 +2013,8 @@ class AgentChat(BaseComponent, ABC):
 
         所有 team_mode（SINGLE_AGENT/NATIVE_APP/AUTO_PLAN 等）统一走此入口，
         把 workspace_scene/ecp/datasource 等能力类资源从 AgentResource 列表构建为
-        CapabilityPack，供主代理绑定承载。无 factory 的边角类资源留在旧 depend_resource
-        路径。构建失败仅告警，不阻断主流程。
+        CapabilityPack，供主代理绑定承载。无 factory 的边角类资源跳过。
+        构建失败仅告警，不阻断主流程。
         """
         cap_pack = None
         try:

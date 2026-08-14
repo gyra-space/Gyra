@@ -841,13 +841,14 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
     async def _inject_resources(self, ctx, workspace_id: int) -> None:
         """Assemble workspace resources into ToolContext (for resource-dependent tools).
 
-        Loads workspace active resources, instantiates them via ResourceManager,
-        and injects into ToolContext by resource type (db_resource/knowledge_retriever/
+        Loads workspace active resources, builds Capabilities via CapabilityFactoryRegistry,
+        and injects into ToolContext by capability (db_resource/knowledge_retriever/
         app_resource). Degrades to empty ctx on any failure -- never blocks scheduling.
         """
         try:
-            from gyra.agent.resource.base import ResourceType
-            from gyra.agent.resource.manage import get_resource_manager
+            from gyra.agent.capabilities.registry_factory import (
+                get_default_factory_registry,
+            )
 
             from gyra_serve.workspace.materializer import materialize_resources
 
@@ -856,26 +857,22 @@ class Service(BaseService[CronJobEntity, ServeRequest, ServerResponse], CronSche
             ).dynamic_resources
             if not agent_resources:
                 return
-            rm = get_resource_manager(self._system_app)
-            resource = await rm.a_build_resource(agent_resources, ignore_missing=True)
-            if resource is None:
+            pack = get_default_factory_registry().build_pack(
+                agent_resources, self._system_app
+            )
+            if pack is None or not pack.sub_resources:
                 return
-            # Flatten ResourcePack into individual resource instances
-            if hasattr(resource, "_resources") and isinstance(resource._resources, dict):
-                deps = list(resource._resources.values())
-            else:
-                deps = [resource]
-            _TYPE_TO_CTX_KEY = {
-                ResourceType.DB: "db_resource",
-                ResourceType.Knowledge: "knowledge_retriever",
-                ResourceType.App: "app_resource",
+            await pack.preload_resource()
+            _CAP_TO_CTX_KEY = {
+                "db": "db_resource",
+                "knowledge": "knowledge_retriever",
+                "app": "app_resource",
             }
-            for dep in deps:
+            for prefix, key in _CAP_TO_CTX_KEY.items():
                 try:
-                    rtype = type(dep).type()
-                    key = _TYPE_TO_CTX_KEY.get(rtype)
-                    if key:
-                        ctx.set_resource(key, dep)
+                    cap = pack.get(prefix)
+                    if cap is not None:
+                        ctx.set_resource(key, cap)
                 except Exception:
                     continue
         except Exception as e:
