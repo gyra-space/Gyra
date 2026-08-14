@@ -103,13 +103,10 @@ def _check_write_permission(sql_type: str) -> Tuple[bool, str]:
 
 
 def _resolve_db_from_agent(db_name: str, kwargs: Dict, context=None) -> tuple:
-    """从 agent 的 resource_map 或 V2 ToolContext 中解析数据库连接和 datasource_id。
+    """从 V2 ToolContext 或 agent.capability_pack 中解析数据库连接和 datasource_id。
 
-    agent 初始化时 DatasourceResource 已通过 db_id fallback 成功创建了 connector，
-    这里复用该 connector，避免仅靠 db_name 查找 connect_config 失败的问题。
-
-    V2 优先: 从 context.get_resource("db_resource") 获取 DBResource；
-    BAIZE 回退: 从 kwargs["agent"].resource_map 获取。
+    V2 优先: 从 context.get_resource("db_resource") 获取；
+    回退: agent.capability_pack 的 DBCapability(按 db_name 匹配)。
 
     Returns:
         (connector, datasource_id): connector 可能为 None
@@ -129,48 +126,21 @@ def _resolve_db_from_agent(db_name: str, kwargs: Dict, context=None) -> tuple:
                 )
                 return connector, ds_id
 
-    # BAIZE 回退: 从 agent.resource_map 获取
     agent = kwargs.get("agent")
     if not agent:
         return None, None
 
-    # RFC-006 Phase B3:优先从 agent.capability_pack 找 DBCapability(新协议,自管连接)。
+    # agent.capability_pack 找 DBCapability(新协议,自管连接)。
     # DBCapability.prepare 已建连接存 self._connector,get_connector() 暴露。按 db_name 匹配。
     cap_pack = getattr(agent, "capability_pack", None)
     if cap_pack is not None:
-        for c in getattr(cap_pack, "sub_resources", []) or []:
-            if getattr(c, "capability_id", "").startswith("db:"):
-                if getattr(c, "db_name", None) == db_name:
-                    connector = c.get_connector()
-                    if connector:
-                        ds_id = getattr(c, "datasource_id", None)
-                        logger.info(
-                            f"[db_tools] Resolved connector from CapabilityPack "
-                            f"for db_name={db_name}, ds_id={ds_id}"
-                        )
-                        return connector, ds_id
-
-    resource_map = getattr(agent, "resource_map", None)
-    if not resource_map:
-        return None, None
-
-    from gyra.agent.resource.database import DBResource
-
-    for resources in resource_map.values():
-        if not resources:
-            continue
-        for r in resources:
-            if not isinstance(r, DBResource):
-                continue
-            r_db_name = getattr(r, "_db_name", None)
-            if r_db_name == db_name:
-                connector = getattr(r, "_connector", None) or getattr(
-                    r, "connector", None
-                )
-                ds_id = getattr(r, "_datasource_id", None)
+        for c in cap_pack.get_all("db"):
+            if getattr(c, "db_name", None) == db_name:
+                connector = c.get_connector()
                 if connector:
+                    ds_id = getattr(c, "datasource_id", None)
                     logger.info(
-                        f"[db_tools] Resolved connector from agent resource_map "
+                        f"[db_tools] Resolved connector from CapabilityPack "
                         f"for db_name={db_name}, ds_id={ds_id}"
                     )
                     return connector, ds_id
@@ -181,8 +151,8 @@ def _resolve_db_from_agent(db_name: str, kwargs: Dict, context=None) -> tuple:
 def _auto_resolve_datasource(agent: Any, context: Any = None) -> Tuple[Any, Optional[str]]:
     """调用方未传 datasource_id/db_name 时,从 agent 绑定的唯一 DB 资源兜底解析。
 
-    顺序:V2 ToolContext db_resource -> agent.capability_pack 的 DBCapability
-    -> agent.resource_map 的 DBResource。返回 (datasource_id, db_name),均可能为 None。
+    顺序:V2 ToolContext db_resource -> agent.capability_pack 的 DBCapability。
+    返回 (datasource_id, db_name),均可能为 None。
 
     动态选择(chat 输入)的 DB 资源即使没把 <datasource_id> 注入 prompt,工具也能
     从 agent 绑定的资源自动取到,不必依赖 LLM 回传 ID。
@@ -201,28 +171,14 @@ def _auto_resolve_datasource(agent: Any, context: Any = None) -> Tuple[Any, Opti
     if not agent:
         return None, None
 
-    # capability_pack: 任一 db: capability
+    # capability_pack: 任一 db capability
     cap_pack = getattr(agent, "capability_pack", None)
     if cap_pack is not None:
-        for c in getattr(cap_pack, "sub_resources", []) or []:
-            if getattr(c, "capability_id", "").startswith("db:"):
-                ds_id = getattr(c, "datasource_id", None)
-                db_n = getattr(c, "db_name", None)
-                if ds_id or db_n:
-                    return ds_id, db_n
-
-    # resource_map: 任一 DBResource
-    resource_map = getattr(agent, "resource_map", None)
-    if resource_map:
-        from gyra.agent.resource.database import DBResource
-
-        for resources in resource_map.values():
-            for r in resources or []:
-                if isinstance(r, DBResource):
-                    ds_id = getattr(r, "_datasource_id", None)
-                    db_n = getattr(r, "_db_name", None) or getattr(r, "db_name", None)
-                    if ds_id or db_n:
-                        return ds_id, db_n
+        for c in cap_pack.get_all("db"):
+            ds_id = getattr(c, "datasource_id", None)
+            db_n = getattr(c, "db_name", None)
+            if ds_id or db_n:
+                return ds_id, db_n
     return None, None
 
 
@@ -330,28 +286,27 @@ async def get_table_spec(
             # Try to find DBCapability by datasource_id or db_name
             cap_pack = getattr(agent, "capability_pack", None)
             if cap_pack is not None:
-                for c in getattr(cap_pack, "sub_resources", []) or []:
-                    if getattr(c, "capability_id", "").startswith("db:"):
-                        # Match by datasource_id (preferred); str 比较容忍 int/str 不一致
-                        if ds_id and str(getattr(c, "datasource_id", "")) == str(ds_id):
-                            agent_connector = c.get_connector()
-                            if agent_connector:
-                                if not resolved_db_name:
-                                    resolved_db_name = getattr(c, "db_name", None)
-                                logger.info(
-                                    f"[get_table_spec] Found connector by datasource_id={ds_id}"
-                                )
-                                break
-                        # Fallback: match by db_name
-                        elif resolved_db_name and getattr(c, "db_name", None) == resolved_db_name:
-                            agent_connector = c.get_connector()
-                            if agent_connector:
-                                if not ds_id:
-                                    ds_id = getattr(c, "datasource_id", None)
-                                logger.info(
-                                    f"[get_table_spec] Found connector by db_name={resolved_db_name}"
-                                )
-                                break
+                for c in cap_pack.get_all("db"):
+                    # Match by datasource_id (preferred); str 比较容忍 int/str 不一致
+                    if ds_id and str(getattr(c, "datasource_id", "")) == str(ds_id):
+                        agent_connector = c.get_connector()
+                        if agent_connector:
+                            if not resolved_db_name:
+                                resolved_db_name = getattr(c, "db_name", None)
+                            logger.info(
+                                f"[get_table_spec] Found connector by datasource_id={ds_id}"
+                            )
+                            break
+                    # Fallback: match by db_name
+                    elif resolved_db_name and getattr(c, "db_name", None) == resolved_db_name:
+                        agent_connector = c.get_connector()
+                        if agent_connector:
+                            if not ds_id:
+                                ds_id = getattr(c, "datasource_id", None)
+                            logger.info(
+                                f"[get_table_spec] Found connector by db_name={resolved_db_name}"
+                            )
+                            break
 
         # 只有 datasource_id 时补解析 db_name(供 connector/spec 兜底路径使用)
         if ds_id and not resolved_db_name:

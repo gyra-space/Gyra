@@ -183,14 +183,16 @@ async def test_facade_flips_legacy_db_to_capability():
 async def test_resolve_db_from_agent_prefers_capability_pack():
     """agent 有 capability_pack 含 DBCapability(db_name 匹配)→ 从其取 connector。"""
     from types import SimpleNamespace
+    from gyra.core.interface.resource.capability import CapabilityPack
+    from gyra.core.interface.resource.executor import ExecutorStatus
     from gyra_serve.agent.capabilities.db.capability import DBCapability
 
     cap = DBCapability(db_name="paydb", db_id=42)
-    cap._status = __import__("gyra.core.interface.resource.executor", fromlist=["ExecutorStatus"]).ExecutorStatus.READY
+    cap._status = ExecutorStatus.READY
     fake_conn = MagicMock()
     cap._connector = fake_conn
-    pack = SimpleNamespace(sub_resources=[cap])
-    agent = SimpleNamespace(capability_pack=pack, resource_map={})
+    pack = CapabilityPack([cap])
+    agent = SimpleNamespace(capability_pack=pack)
 
     from gyra_serve.agent.capabilities.db.tools._db_tools_impl import _resolve_db_from_agent
     conn, ds_id = _resolve_db_from_agent("paydb", {"agent": agent})
@@ -198,14 +200,13 @@ async def test_resolve_db_from_agent_prefers_capability_pack():
     assert ds_id == 42
 
 
-async def test_resolve_db_from_agent_falls_back_to_resource_map():
-    """capability_pack 无 db_name 匹配 → 回退旧 resource_map find DBResource。"""
+async def test_resolve_db_from_agent_no_match_returns_none():
+    """capability_pack 无 db_name 匹配 → (None, None)(v1 resource_map 兜底已删)。"""
     from types import SimpleNamespace
-    from gyra.agent.resource.database import DBResource  # noqa: F401  (isinstance 用)
+    from gyra.core.interface.resource.capability import CapabilityPack
 
-    # capability_pack 空或无 db 匹配
-    pack = SimpleNamespace(sub_resources=[])
-    agent = SimpleNamespace(capability_pack=pack, resource_map={})
+    pack = CapabilityPack([])
+    agent = SimpleNamespace(capability_pack=pack)
     from gyra_serve.agent.capabilities.db.tools._db_tools_impl import _resolve_db_from_agent
     conn, ds_id = _resolve_db_from_agent("paydb", {"agent": agent})
     assert conn is None
