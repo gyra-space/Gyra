@@ -95,30 +95,16 @@ class AgentAction(Action[AgentActionInput]):
     def _resolve_app_code(self, sender, agent_name: str) -> Optional[str]:
         """在 sender 的 app 资源中按名称或 code 解析目标子 Agent 的 app_code。
 
-        优先新协议 capability_pack（AppCapability），fallback 旧 resource_map
-        （GptAppResource/AppResource）。单 Agent（BAIZE）无 `.agents` 团队成员，
-        子 Agent 以此派发。找不到返回 None。
+        只走新协议 capability_pack（AppCapability;v1 resource_map 兜底已删）。
+        单 Agent（BAIZE）无 `.agents` 团队成员，子 Agent 以此派发。找不到返回 None。
         """
-        # 新协议：capability_pack.sub_resources 中的 AppCapability
         pack = getattr(sender, "capability_pack", None)
-        if pack is not None and hasattr(pack, "sub_resources"):
-            for cap in pack.sub_resources:
-                cid = getattr(cap, "capability_id", "") or ""
-                if not cid.startswith("app"):
-                    continue
-                code = getattr(cap, "_app_code", "") or ""
-                name = getattr(cap, "_app_name", "") or ""
-                if agent_name in (code, name):
-                    return code
-        # 旧协议：resource_map 中的 AppResource
-        for resources in (getattr(sender, "resource_map", None) or {}).values():
-            for res in resources or []:
-                if not isinstance(res, AppResource):
-                    continue
-                code = getattr(res, "app_code", "") or ""
-                name = getattr(res, "app_name", "") or getattr(res, "name", "") or ""
-                if agent_name in (code, name):
-                    return code
+        caps = pack.get_all("app") if pack is not None else []
+        for cap in caps:
+            code = getattr(cap, "app_code", "") or ""
+            name = getattr(cap, "app_name", "") or ""
+            if agent_name in (code, name):
+                return code
         return None
 
     async def _dispatch_to_app(
@@ -136,19 +122,19 @@ class AgentAction(Action[AgentActionInput]):
     ) -> ActionOutput:
         """单 Agent 场景下经 GptAppResource 同步派发到子 Agent app。
 
-        与 async 分支的 GptAppResource._start_app 路径一致：创建目标 app 的 agent
+        与 async 分支的 AppCapability.start_app 路径一致：创建目标 app 的 agent
         实例并 generate_reply（含 subagent_depth 传播），返回归一化 ActionOutput。
         """
         try:
-            from gyra_serve.agent.resource.app import GptAppResource
+            from gyra_serve.agent.capabilities.app import AppCapability
 
             parent_depth = 0
             if agent_context is not None:
                 parent_extra = agent_context.extra or {}
                 parent_depth = parent_extra.get("subagent_depth", 0) or 0
 
-            app_resource = GptAppResource(name=app_code, app_code=app_code)
-            answer = await app_resource._start_app(
+            app_cap = AppCapability(app_name=app_code, app_code=app_code)
+            answer = await app_cap.start_app(
                 user_input=message.content,
                 sender=sender,
                 parent_depth=parent_depth,
@@ -611,9 +597,9 @@ class SubAgent(AgentAction, FunctionTool):
                     **kwargs,
                 )
 
-            # 构造 GptAppResource，用 action_input.agent_name 当 app_code
+            # 构造 AppCapability，用 action_input.agent_name 当 app_code
             try:
-                from gyra_serve.agent.resource.app import GptAppResource
+                from gyra_serve.agent.capabilities.app import AppCapability
             except ImportError as ie:
                 logger.warning(
                     f"[SubAgent.async] gyra_serve not importable ({ie}); degrading to sync"
@@ -625,15 +611,15 @@ class SubAgent(AgentAction, FunctionTool):
                     need_vis_render=need_vis_render,
                     **kwargs,
                 )
-            # 解析真实 app_code（与 sync 分支一致）：优先按名称从 capability_pack /
-            # resource_map 解析目标子 Agent 应用的真实 app_code，避免把 app_name 当
+            # 解析真实 app_code（与 sync 分支一致）：优先按名称从 capability_pack
+            # 解析目标子 Agent 应用的真实 app_code，避免把 app_name 当
             # app_code 查询失败（"应用不存在[xxx]"）。解析不到时回退 agent_name。
             target_app_code = (
                 self._resolve_app_code(sender, action_input.agent_name)
                 or action_input.agent_name
             )
-            app_resource = GptAppResource(
-                name=action_input.agent_name,
+            app_resource = AppCapability(
+                app_name=action_input.agent_name,
                 app_code=target_app_code,
             )
 
@@ -792,7 +778,7 @@ class SubAgent(AgentAction, FunctionTool):
         """
         try:
             # 深度传播：parent_depth → child AgentContext.extra["subagent_depth"] = parent_depth+1
-            answer = await app_resource._start_app(
+            answer = await app_resource.start_app(
                 user_input=user_input,
                 sender=sender,
                 conv_uid=sub_conv_id,

@@ -1335,11 +1335,7 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                 if app_config.team_context:
                     app_resp.agent = app_config.team_context.teamleader
 
-            ## 处理ReasoningAgent
-            reasoning_engine_resource: Optional[AgentResource] = None
-            r_engine_system_prompt_t: Optional[str] = None
-            r_engine_user_prompt_t: Optional[str] = None
-
+            ## 处理ReasoningAgent(ReasoningEngine 资源已退役,只保留 is_v2_agent 判定)
             _step_start = time.time()
             ag_mg = get_agent_manager()
             ag = ag_mg.get(app_resp.agent)
@@ -1350,48 +1346,10 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
             agent_version = getattr(app_config, "agent_version", "v1") or "v1"
             is_v2_agent = agent_version == "v2"
 
-            if ag and ag.is_reasoning_agent:
-                app_resp.is_reasoning_engine_agent = True
-
-                if app_config.resources:
-                    for resource in app_config.resources:
-                        if resource.type == ResourceType.ReasoningEngine.value:
-                            reasoning_engine_resource = resource
-                            break
-                if reasoning_engine_resource:
-                    reasoning_engine_value = {}
-                    if isinstance(reasoning_engine_resource.value, str):
-                        reasoning_engine_value = json.loads(
-                            reasoning_engine_resource.value
-                        )
-                    elif isinstance(reasoning_engine_resource.value, dict):
-                        reasoning_engine_value = reasoning_engine_resource.value
-                    reasoning_engine_name = (
-                        reasoning_engine_value.get("name")
-                        if reasoning_engine_value
-                        else None
-                    )
-                    if reasoning_engine_name:
-                        from gyra.agent.core.reasoning.reasoning_engine import (
-                            ReasoningEngine,
-                        )
-
-                        reasoning_engine = ReasoningEngine.get_reasoning_engine(
-                            reasoning_engine_name
-                        )
-                        r_engine_user_prompt_t = reasoning_engine.user_prompt_template
-                        r_engine_system_prompt_t = (
-                            reasoning_engine.system_prompt_template
-                        )
-
             ## 处理prompt
-            ### 如果配置里没有可用的prompt模版，进行初始化(ReasongAgent还需要继续根据配置的推理引擎进行初始化)
+            ### 如果配置里没有可用的prompt模版，进行初始化
             if not app_config.system_prompt_template and building_mode:
-                if app_resp.is_reasoning_engine_agent:
-                    logger.info("构建模式初始化推理引擎system_prompt模版！")
-                    if r_engine_system_prompt_t:
-                        app_resp.system_prompt_template = r_engine_system_prompt_t
-                elif is_v2_agent:
+                if is_v2_agent:
                     logger.info("构建模式初始化Core_v2 Agent system_prompt模版！")
                     app_resp.system_prompt_template = _get_default_system_prompt()
                 else:
@@ -1409,11 +1367,7 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                 app_resp.system_prompt_template = app_config.system_prompt_template
 
             if not app_config.user_prompt_template and building_mode:
-                if app_resp.is_reasoning_engine_agent:
-                    logger.info("构建模式初始化推理引擎user_prompt模版！")
-                    if r_engine_user_prompt_t:
-                        app_resp.user_prompt_template = r_engine_user_prompt_t
-                elif is_v2_agent:
+                if is_v2_agent:
                     logger.info("构建模式初始化Core_v2 Agent user_prompt模版！")
                     app_resp.user_prompt_template = _get_default_user_prompt()
                 else:
@@ -1576,12 +1530,6 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
         # if not building_mode:
         gpts_app.all_resources = deepcopy(all_resources)
 
-        ## 兼容旧版ReasoningAgent的资源配置
-        engine_resources = (
-            self._pop_resource(all_resources, [ResourceType.ReasoningEngine.value])
-            if all_resources
-            else None
-        )
         try:
             _step_start = time.time()
             ag_mg = get_agent_manager()
@@ -1590,68 +1538,43 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                 f"[APP_DETAIL][PERF] old_app_switch_new_app 获取agent manager耗时: {(time.time() - _step_start) * 1000:.2f}ms"
             )
 
-            if engine_resources:
-                gpts_app.is_reasoning_engine_agent = True
-                ## 推理引擎资源取出去还要放回来
-                all_resources.extend(engine_resources)
-                reasoning_engine: AgentResource = engine_resources[0]
-                reasoning_engine_value = json.loads(reasoning_engine.value)
+            if gpts_app.team_context:
+                agent_version = getattr(gpts_app, "agent_version", "v1") or "v1"
+                is_v2_agent = agent_version == "v2"
 
-                re_system_prompt_tempalte = reasoning_engine_value.get(
-                    "system_prompt_template"
-                )
-                if re_system_prompt_tempalte is not None:
-                    gpts_app.system_prompt_template = re_system_prompt_tempalte
+                if gpts_app.team_context.prompt_template:
+                    gpts_app.system_prompt_template = (
+                        gpts_app.team_context.prompt_template
+                    )
+                elif is_v2_agent:
+                    logger.info(
+                        "旧版应用同步：初始化Core_v2 Agent system_prompt模版！"
+                    )
+                    gpts_app.system_prompt_template = _get_default_system_prompt()
+                elif ag:
+                    prompt_template, template_format = ag.prompt_template(
+                        "system", gpts_app.language
+                    )
+                    gpts_app.system_prompt_template = prompt_template
                 else:
-                    gpts_app.system_prompt_template = ""
-                re_user_prompt_template = reasoning_engine_value.get("prompt_template")
-                if re_user_prompt_template is not None:
-                    gpts_app.user_prompt_template = re_user_prompt_template
+                    gpts_app.system_prompt_template = _get_default_system_prompt()
+
+                if gpts_app.team_context.user_prompt_template:
+                    gpts_app.user_prompt_template = (
+                        gpts_app.team_context.user_prompt_template
+                    )
+                elif is_v2_agent:
+                    logger.info(
+                        "旧版应用同步：初始化Core_v2 Agent user_prompt模版！"
+                    )
+                    gpts_app.user_prompt_template = _get_default_user_prompt()
+                elif ag:
+                    prompt_template, template_format = ag.prompt_template(
+                        "user", gpts_app.language
+                    )
+                    gpts_app.user_prompt_template = prompt_template
                 else:
-                    gpts_app.user_prompt_template = ""
-                # reasoning_arg_suppliers = reasoning_engine_value.get("reasoning_arg_suppliers")
-            else:
-                if gpts_app.team_context:
-                    agent_version = getattr(gpts_app, "agent_version", "v1") or "v1"
-                    is_v2_agent = agent_version == "v2"
-
-                    if gpts_app.team_context.prompt_template:
-                        gpts_app.system_prompt_template = (
-                            gpts_app.team_context.prompt_template
-                        )
-                    elif is_v2_agent:
-                        logger.info(
-                            "旧版应用同步：初始化Core_v2 Agent system_prompt模版！"
-                        )
-                        gpts_app.system_prompt_template = _get_default_system_prompt()
-                    elif ag:
-                        prompt_template, template_format = ag.prompt_template(
-                            "system", gpts_app.language
-                        )
-                        gpts_app.system_prompt_template = prompt_template
-                    else:
-                        gpts_app.system_prompt_template = _get_default_system_prompt()
-
-                    if gpts_app.team_context.user_prompt_template:
-                        gpts_app.user_prompt_template = (
-                            gpts_app.team_context.user_prompt_template
-                        )
-                    elif is_v2_agent:
-                        logger.info(
-                            "旧版应用同步：初始化Core_v2 Agent user_prompt模版！"
-                        )
-                        gpts_app.user_prompt_template = _get_default_user_prompt()
-                    elif ag:
-                        prompt_template, template_format = ag.prompt_template(
-                            "user", gpts_app.language
-                        )
-                        gpts_app.user_prompt_template = prompt_template
-                    else:
-                        gpts_app.user_prompt_template = _get_default_user_prompt()
-
-                    # if building_mode:
-                    #     gpts_app.team_context.prompt_template = None
-                    #     gpts_app.team_context.user_prompt_template = None
+                    gpts_app.user_prompt_template = _get_default_user_prompt()
 
             gpts_app.resource_tool = self._pop_resource(
                 all_resources,

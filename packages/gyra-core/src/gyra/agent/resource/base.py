@@ -55,11 +55,9 @@ class ResourceType(str, Enum):
     ImageFile = "image_file"
     CommonFile = "common_file"
     AWELFlow = "awel_flow"
-    Workflow = "workflow"
     App = "app"
     # Resource type for resource pack
     Pack = "pack"
-    ReasoningEngine = "reasoning_engine"
     Memory = "memory"
     Agent = "agent"
     Report = "report"

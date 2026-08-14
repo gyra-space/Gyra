@@ -273,7 +273,7 @@ class TestSubAgentRunAsyncBranch:
 
     @pytest.mark.asyncio
     async def test_async_registers_with_coordinator_and_spawns_task(self):
-        """coordinator 已注册 + GptAppResource 可 import 时，async 走真异步路径。"""
+        """coordinator 已注册 + gyra_serve 可 import 时，async 走真异步路径。"""
         from unittest.mock import AsyncMock
         from gyra.agent.core.reasoning.reasoning_action import AgentActionInput
         from gyra.agent.expand.actions.agent_action import SubAgent
@@ -298,9 +298,9 @@ class TestSubAgentRunAsyncBranch:
         )
         mock_coordinator.on_subagent_done = AsyncMock()
 
-        # mock GptAppResource：_start_app 返回带 content 的 answer
+        # mock AppCapability：start_app 返回带 content 的 answer
         mock_app_resource = MagicMock()
-        mock_app_resource._start_app = AsyncMock(
+        mock_app_resource.start_app = AsyncMock(
             return_value=MagicMock(content="sub-agent result")
         )
 
@@ -317,7 +317,7 @@ class TestSubAgentRunAsyncBranch:
             "gyra_serve.agent.subagent_coordinator.get_subagent_coordinator",
             return_value=mock_coordinator,
         ), patch(
-            "gyra_serve.agent.resource.app.GptAppResource",
+            "gyra_serve.agent.capabilities.app.AppCapability",
             return_value=mock_app_resource,
         ), patch(
             "gyra_serve.agent.agents.app_agent_manage.get_app_manager"
@@ -351,7 +351,7 @@ class TestSubAgentRunAsyncBranch:
 
             # 在 patch 上下文内 await 后台 task，确保 lazy import 拿到 mock
             await created_tasks[0]
-            mock_app_resource._start_app.assert_awaited_once()
+            mock_app_resource.start_app.assert_awaited_once()
             mock_coordinator.on_subagent_done.assert_awaited_once()
             done_kwargs = mock_coordinator.on_subagent_done.call_args.kwargs
             assert done_kwargs["main_conv_id"] == "conv_main_2"
@@ -359,8 +359,8 @@ class TestSubAgentRunAsyncBranch:
 
     @pytest.mark.asyncio
     async def test_async_propagates_parent_depth_to_start_app(self):
-        """parent_depth=N (主 agent 的 extra) → _start_app 收到 parent_depth=N。
-        _start_app 内部负责写 child AgentContext.extra["subagent_depth"] = N+1。
+        """parent_depth=N (主 agent 的 extra) → start_app 收到 parent_depth=N。
+        start_app 内部负责写 child AgentContext.extra["subagent_depth"] = N+1。
         """
         from unittest.mock import AsyncMock
         from gyra.agent.core.reasoning.reasoning_action import AgentActionInput
@@ -387,7 +387,7 @@ class TestSubAgentRunAsyncBranch:
         mock_coordinator.on_subagent_done = AsyncMock()
 
         mock_app_resource = MagicMock()
-        mock_app_resource._start_app = AsyncMock(
+        mock_app_resource.start_app = AsyncMock(
             return_value=MagicMock(content="ok")
         )
 
@@ -403,7 +403,7 @@ class TestSubAgentRunAsyncBranch:
             "gyra_serve.agent.subagent_coordinator.get_subagent_coordinator",
             return_value=mock_coordinator,
         ), patch(
-            "gyra_serve.agent.resource.app.GptAppResource",
+            "gyra_serve.agent.capabilities.app.AppCapability",
             return_value=mock_app_resource,
         ), patch(
             "gyra_serve.agent.agents.app_agent_manage.get_app_manager"
@@ -425,8 +425,8 @@ class TestSubAgentRunAsyncBranch:
             assert len(created_tasks) == 1
             await created_tasks[0]
 
-            # _start_app 收到 parent_depth=2（主 agent depth）
-            call_kwargs = mock_app_resource._start_app.call_args.kwargs
+            # start_app 收到 parent_depth=2（主 agent depth）
+            call_kwargs = mock_app_resource.start_app.call_args.kwargs
             assert call_kwargs["parent_depth"] == 2
             # 子 conv_id 也传入
             assert "conv_uid" in call_kwargs
@@ -458,7 +458,7 @@ class TestSubAgentRunAsyncBranch:
         mock_coordinator.on_subagent_failed = AsyncMock()
 
         mock_app_resource = MagicMock()
-        mock_app_resource._start_app = AsyncMock(side_effect=RuntimeError("sub crashed"))
+        mock_app_resource.start_app = AsyncMock(side_effect=RuntimeError("sub crashed"))
 
         created_tasks = []
         original_create_task = asyncio.create_task
@@ -472,7 +472,7 @@ class TestSubAgentRunAsyncBranch:
             "gyra_serve.agent.subagent_coordinator.get_subagent_coordinator",
             return_value=mock_coordinator,
         ), patch(
-            "gyra_serve.agent.resource.app.GptAppResource",
+            "gyra_serve.agent.capabilities.app.AppCapability",
             return_value=mock_app_resource,
         ), patch(
             "gyra_serve.agent.agents.app_agent_manage.get_app_manager"

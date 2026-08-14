@@ -2,7 +2,6 @@ import logging
 import os
 from typing import Optional
 from gyra.agent.resource.agent_skills import AgentSkillResource
-from gyra.agent.resource.workflow import WorkflowResource
 from gyra.component import SystemApp
 from gyra.configs.model_config import MODEL_DISK_CACHE_DIR, resolve_root_path
 from gyra.util.executor_utils import DefaultExecutorFactory
@@ -133,7 +132,6 @@ def _initialize_resource_manager(system_app: SystemApp):
     # Old KnowledgeSpaceRetrieverResource was removed along with gyra_serve.rag.
     KnowledgeSpaceRetrieverResource = None  # type: ignore[assignment]
 
-    from gyra.agent.resource.reasoning_engine import ReasoningEngineResource
     from gyra.agent.resource.memory import MemoryResource
     from gyra.agent.expand.resources.fetch_tool import fetch
 
@@ -167,12 +165,10 @@ def _initialize_resource_manager(system_app: SystemApp):
     rm.register_resource(LocalToolPack, resource_type=ResourceType.Tool)
     rm.register_resource(AgentSkillResource)
     rm.register_resource(GyraSkillResource)
-    rm.register_resource(ReasoningEngineResource)
     # TODO: rewire to new knowledge module (Task #9)
     if KnowledgePackSearchResource is not None:
         rm.register_resource(KnowledgePackSearchResource)
     rm.register_resource(MemoryResource)
-    rm.register_resource(WorkflowResource)
 
     # Register opengyra tool
     # Register Excel File to DB tools

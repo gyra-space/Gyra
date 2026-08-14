@@ -22,7 +22,6 @@ class TaskContextKey:
     SUB_AGENTS: str = "sub_agents"  # 子Agent 格式: [{app_code,name,description}]
     MCPS: str = "mcps"  # MCP工具 格式: [{mcp_name, tools:[{tool_name, tool_description, prompt}]}]
     TOOLS: str = "tools"  # 除mcp外的工具 格式: [{tool_name, tool_description, prompt}]
-    WORKFLOWS: str = "workflows"  # 工作流 格式: [{WorkflowResourceParameter, prompt}]
     KNOWLEDGE: str = "knowledge"  # 知识 格式: {id,description,parameters}
 
     _HISTORY_MESSAGES: list[dict] = "_history_messages"  # 消息历史(调用模型后会将CURRENT_STEP_MESSAGES append进来) 格式: [{AgentMessage.to_dict()}]
