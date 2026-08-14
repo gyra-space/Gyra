@@ -13,7 +13,6 @@ class ToolResolver:
         system_tools: Optional[Dict[str, Any]] = None,
         unified_registry: Any = None,  # tool_registry
         resource_pack: Any = None,     # agent.resource（MCP 工具树）
-        resource_map: Optional[Dict[str, List[Any]]] = None,
         sandbox_manager: Optional[Any] = None,
         enable_async_subagent: bool = False,
     ):
@@ -21,7 +20,6 @@ class ToolResolver:
         self._system_tools = system_tools or {}
         self._unified_registry = unified_registry
         self._resource_pack = resource_pack
-        self._resource_map = resource_map or {}
         self._sandbox_manager = sandbox_manager
         self._enable_async_subagent = enable_async_subagent
         self._tools: Dict[str, Any] = {}

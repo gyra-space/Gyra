@@ -1,9 +1,8 @@
-"""PR 2 单元测试：SubAgent 工具 + SubAgentHandle + extract_resource_map + 深度守卫。
+"""PR 2 单元测试：SubAgent 工具 + SubAgentHandle + 深度守卫。
 
 覆盖目标：
 - SubAgentHandle 序列化/反序列化、is_terminal
 - SubagentDepthExceededError 异常 + MAX_SUBAGENT_DEPTH 上限
-- extract_resource_map 解包 Resource pack
 - SubAgent 工具：alias 保留、parse_action 兼容 agent_start 名、mode 参数
 - AgentAction.run 深度守卫：parent_depth >= MAX 抛错；否则 depth+1 写入 recipient
 """
@@ -21,7 +20,6 @@ from gyra.agent.core.subagent_handle import (
     SubAgentStatus,
     SubagentDepthExceededError,
 )
-from gyra.agent.core.resource_utils import extract_resource_map
 from gyra.agent.expand.actions.agent_action import AgentStart, SubAgent
 
 
@@ -82,76 +80,6 @@ class TestSubagentDepthExceededError:
         err = SubagentDepthExceededError(depth=10)
         assert err.max_depth == MAX_SUBAGENT_DEPTH
         assert MAX_SUBAGENT_DEPTH == 5
-
-
-# ---------------- extract_resource_map ----------------
-
-class _MockResource:
-    """Mock a Resource leaf node: is_pack=False, type() returns enum-like with .value."""
-
-    def __init__(self, type_value: str):
-        self._type_value = type_value
-
-    @property
-    def is_pack(self) -> bool:
-        return False
-
-    def type(self):
-        class _T:
-            value = self._type_value
-        return _T()
-
-
-class _MockPack:
-    """Mock a Resource pack: is_pack=True, sub_resources=[...]."""
-
-    def __init__(self, sub_resources):
-        self._sub = sub_resources
-
-    @property
-    def is_pack(self) -> bool:
-        return True
-
-    @property
-    def sub_resources(self):
-        return self._sub
-
-
-class TestExtractResourceMap:
-    def test_none_returns_empty(self):
-        assert extract_resource_map(None) == {}
-
-    def test_single_leaf(self):
-        r = _MockResource("DBResource")
-        result = extract_resource_map(r)
-        assert "DBResource" in result
-        assert len(result["DBResource"]) == 1
-
-    def test_pack_unpacks_by_type(self):
-        pack = _MockPack([
-            _MockResource("DBResource"),
-            _MockResource("RetrieverResource"),
-            _MockResource("DBResource"),
-        ])
-        result = extract_resource_map(pack)
-        assert len(result["DBResource"]) == 2
-        assert len(result["RetrieverResource"]) == 1
-
-    def test_nested_pack(self):
-        inner = _MockPack([_MockResource("DBResource")])
-        outer = _MockPack([inner, _MockResource("AppResource")])
-        result = extract_resource_map(outer)
-        assert "DBResource" in result
-        assert "AppResource" in result
-
-    def test_cycle_safe(self):
-        """递归引用不能爆栈（visited 集合短路）。"""
-        pack_a = _MockPack([_MockResource("DBResource")])
-        pack_b = _MockPack([pack_a])
-        pack_a._sub.append(pack_b)  # create cycle: a -> b -> a
-        # 不应无限递归
-        result = extract_resource_map(pack_a)
-        assert "DBResource" in result
 
 
 # ---------------- SubAgent 工具元信息 ----------------

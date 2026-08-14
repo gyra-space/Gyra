@@ -68,7 +68,7 @@ from gyra.agent.core.v2.default_thinking import make_default_thinking_fn
 from gyra.agent.core.v2.llm_stream_adapter import make_gyra_llm_stream, make_gyra_llm_stream_fn
 from gyra.agent.core.v2.run_loop import run_loop, trigger_conversation_complete
 from gyra.agent.core.v2.agent_runtime import V2AgentRuntime
-from gyra.agent.core.v2.compat_adapters import DoomLoopAdapter, TruncatorAdapter, extract_resource_map
+from gyra.agent.core.v2.compat_adapters import DoomLoopAdapter, TruncatorAdapter
 
 __all__ = [
     "StepState",
@@ -138,5 +138,4 @@ __all__ = [
     "V2AgentRuntime",
     "DoomLoopAdapter",
     "TruncatorAdapter",
-    "extract_resource_map",
 ]

@@ -129,14 +129,8 @@ class ConversableAgent(Role, Agent):
 
     agent_context: Optional[AgentContext] = Field(None, description="Agent context")
     actions: List[Type[Action]] = Field(default_factory=list)
-    resource: Optional[Resource] = Field(None, description="Resource")
     # RFC-006 Phase A:自管理 Capability 容器(由 agent_chat 构造期产,bind 设置)。
-    # Transitional:与 resource(旧 ResourcePack)并存;Phase D 旧类退役后 resource 消亡。
     capability_pack: Optional[Any] = Field(None, description="CapabilityPack")
-    resource_map: Dict[str, List[Resource]] = Field(
-        default_factory=lambda: defaultdict(list),
-        description="Resource name to resource list mapping",
-    )
     llm_config: Optional[LLMConfig] = None
     bind_prompt: Optional[PromptTemplate] = None
     run_mode: Optional[AgentRunMode] = Field(default=None, description="Run mode")
@@ -295,26 +289,14 @@ class ConversableAgent(Role, Agent):
     async def preload_resource(self) -> None:
         """Preload resources before agent initialization."""
         logger.info(
-            f"[base_agent.preload_resource] agent={self.agent_context.agent_app_code if self.agent_context else 'unknown'}, "
-            f"resource_type={type(self.resource).__name__ if self.resource else 'None'}, "
-            f"resource_is_pack={self.resource.is_pack if self.resource and hasattr(self.resource, 'is_pack') else 'N/A'}"
+            f"[base_agent.preload_resource] agent={self.agent_context.agent_app_code if self.agent_context else 'unknown'}"
         )
-        if self.resource:
-            root_tracer.set_current_agent_id(self.agent_context.agent_app_code)
-            await self.resource.preload_resource()
         # RFC-006 Phase A:eager load CapabilityPack(prepare 各 Capability,如 MCP 连 server)。
-        # 与旧 self.resource.preload_resource 并行(过渡期双绑);Phase C/D 后 resource 消亡。
         if self.capability_pack is not None:
             try:
                 await self.capability_pack.preload_resource()
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[base_agent.preload_resource] capability_pack prepare failed: {e}")
-        # tidy resource
-        self.resource_map = await self._tidy_resource(self.resource)
-        logger.info(
-            f"[base_agent.preload_resource] after _tidy_resource: "
-            f"resource_map_keys={list(self.resource_map.keys()) if self.resource_map else []}"
-        )
 
     async def build(self) -> "ConversableAgent":
         """Build the agent."""
@@ -343,14 +325,6 @@ class ConversableAgent(Role, Agent):
 
         return self
 
-    async def _tidy_resource(self, resource: Resource) -> dict[str, List[Resource]]:
-        """将资源包按分类整理为各类子资源（薄包装，逻辑在 resource_utils.extract_resource_map）。
-
-        前提：is_pack 字段可信；非 pack 资源无 sub_resources。
-        """
-        from .resource_utils import extract_resource_map
-        return extract_resource_map(resource)
-
     def update_profile(self, profile: ProfileConfig):
         from copy import deepcopy
 
@@ -371,11 +345,8 @@ class ConversableAgent(Role, Agent):
             self.agent_context = target
         elif isinstance(target, CapabilityPack):
             # RFC-006 Phase A:自管理 Capability 容器(非 Resource)。facade 读它渲染,
-            # base_agent.preload_resource 触发其 prepare(eager load)。与 self.resource
-            # (旧 ResourcePack)并存过渡,Phase D 旧类退役后 self.resource 消亡。
+            # base_agent.preload_resource 触发其 prepare(eager load)。
             self.capability_pack = target
-        elif isinstance(target, Resource):
-            self.resource = target
         elif isinstance(target, AgentMemory):
             self.memory = target
         elif isinstance(target, Scheduler):
@@ -565,7 +536,7 @@ class ConversableAgent(Role, Agent):
     }
 
     def _check_have_resource(self, resource_type: Type[Resource]) -> bool:
-        # RFC-006 Phase B1:优先查 capability_pack(新协议),fallback 旧 resource_map。
+        # Phase D:只查 capability_pack(v1 resource_map isinstance 兜底已删)。
         _prefix_map = {
             "AppResource": "app",
             "GptAppResource": "app",
@@ -577,20 +548,15 @@ class ConversableAgent(Role, Agent):
         }
         type_name = getattr(resource_type, "__name__", "")
         prefix = _prefix_map.get(type_name)
-        if prefix and self._has_capability(prefix):
-            return True
-        # fallback:旧 resource_map isinstance(过渡期保留,Phase D 删)
-        for resources in self.resource_map.values():
-            if not resources:  # 防御性检查，避免空列表
-                continue
-            first = resources[0]
-            if isinstance(first, resource_type):
-                # 特殊处理：仅当单元素且 is_empty 为 True 时，视为"没有"
-                if len(resources) == 1 and getattr(first, "is_empty", False):
-                    return False
-                else:
-                    return True
-        return False
+        if not prefix or not self._has_capability(prefix):
+            return False
+        # 对齐 v1 is_empty 语义:空 knowledge(无 knowledge_ids)视为"没有"
+        if prefix == "knowledge":
+            pack = getattr(self, "capability_pack", None)
+            caps = pack.get_all("knowledge") if pack is not None else []
+            if all(not getattr(c, "_knowledge_ids", None) for c in caps):
+                return False
+        return True
 
     def check_tool_permission(
         self, tool_name: str, command: Optional[str] = None
@@ -2051,7 +2017,7 @@ class ConversableAgent(Role, Agent):
                 },
             ) as span:
                 ai_message = message.content if message.content else ""
-                real_action: Action = action(resource=self.resource)
+                real_action: Action = action()
                 await real_action.init_action(
                     render_protocol=self.memory.gpts_memory.vis_converter(
                         self.not_null_agent_context.conv_id
@@ -2090,7 +2056,6 @@ class ConversableAgent(Role, Agent):
                     pass
                 last_out = await real_action.run(
                     ai_message=message.content if message.content else "",
-                    resource=self.resource,
                     rely_action_out=last_out,
                     render_protocol=await self.memory.gpts_memory.async_vis_converter(
                         self.not_null_agent_context.conv_id
@@ -2383,15 +2348,6 @@ class ConversableAgent(Role, Agent):
             )
 
         self._print_received_message(message, sender)
-
-    async def load_resource(self, question: str, is_retry_chat: bool = False):
-        """Load agent bind resource."""
-        if self.resource:
-            resource_prompt, resource_reference = await self.resource.get_prompt(
-                lang=self.language, question=question
-            )
-            return resource_prompt, resource_reference
-        return None, None
 
     async def get_agent_llm_context_length(self) -> int:
         default_length = 64 * 1024
@@ -2993,13 +2949,7 @@ class ConversableAgent(Role, Agent):
         if self.agent_context and self.agent_context.extra:
             context.update(self.agent_context.extra)
 
-        try:
-            resource_prompt_str, resource_references = await self.load_resource(
-                observation, is_retry_chat=is_retry_chat
-            )
-        except Exception as e:
-            logger.exception(f"Load resource error！{str(e)}")
-            raise ValueError(f"Load resource error！{str(e)}")
+        resource_prompt_str, resource_references = None, None
 
         resource_vars = await self.generate_bind_variables(
             received_message,
