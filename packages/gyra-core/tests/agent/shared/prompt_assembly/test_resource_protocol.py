@@ -7,7 +7,6 @@ capability wrapper 走原生 declare,无 legacy 桥接。本文件仅保留 Reso
 原 AC-2 字节等价测试(LegacyResourceAdapter ≡ ResourceInjector.inject_all)已无意义。
 """
 
-import asyncio
 from typing import Any, List
 
 import pytest
@@ -44,7 +43,7 @@ def test_resource_protocol_can_be_subclassed():
     assert contribs[0].capability_id == "my:resource"
 
 
-def test_resource_protocol_default_requires_and_consume():
+async def test_resource_protocol_default_requires_and_consume():
     """requires 默认空,consume 默认不实现(返回空)。"""
     class R(ResourceProtocol):
         capability_id = "r"
@@ -56,7 +55,7 @@ def test_resource_protocol_default_requires_and_consume():
     r = R()
     assert R.requires({}) == []
 
-    assert asyncio.get_event_loop().run_until_complete(r.consume("result")) == []
+    assert await r.consume("result") == []
 
 
 def test_resource_protocol_is_abstract():

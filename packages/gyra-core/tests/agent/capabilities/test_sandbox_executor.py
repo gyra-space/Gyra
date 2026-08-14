@@ -61,42 +61,34 @@ def test_executor_id_is_sandbox():
     assert SandboxExecutor(_FakeSandboxManager()).executor_id == SANDBOX_EXECUTOR_ID
 
 
-def test_prepare_ready_when_client_available():
+async def test_prepare_ready_when_client_available():
     ex = SandboxExecutor(_FakeSandboxManager(has_client=True))
     assert ex.status == ExecutorStatus.UNINITIALIZED
-    import asyncio
-
-    asyncio.get_event_loop().run_until_complete(ex.prepare())
+    await ex.prepare()
     assert ex.status == ExecutorStatus.READY
 
 
-def test_prepare_raises_when_no_client():
+async def test_prepare_raises_when_no_client():
     ex = SandboxExecutor(_FakeSandboxManager(has_client=False))
-    import asyncio
 
     with pytest.raises(RuntimeError, match="not available"):
-        asyncio.get_event_loop().run_until_complete(ex.prepare())
+        await ex.prepare()
     assert ex.status == ExecutorStatus.UNINITIALIZED
 
 
-def test_release_sets_released():
+async def test_release_sets_released():
     ex = SandboxExecutor(_FakeSandboxManager(has_client=True))
-    import asyncio
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(ex.prepare())
-    loop.run_until_complete(ex.release(ReleaseReason.SESSION_END))
+    await ex.prepare()
+    await ex.release(ReleaseReason.SESSION_END)
     assert ex.status == ExecutorStatus.RELEASED
 
 
-def test_execute_not_implemented():
+async def test_execute_not_implemented():
     ex = SandboxExecutor(_FakeSandboxManager(has_client=True))
-    import asyncio
 
     with pytest.raises(NotImplementedError):
-        asyncio.get_event_loop().run_until_complete(
-            ex.execute(type("C", (), {"executor_id": "sandbox", "tool_name": "x", "args": {}}))
-        )
+        await ex.execute(type("C", (), {"executor_id": "sandbox", "tool_name": "x", "args": {}}))
 
 
 async def test_facade_acquire_sandbox_when_required():

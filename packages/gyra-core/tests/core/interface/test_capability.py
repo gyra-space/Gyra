@@ -3,7 +3,7 @@
 验证:
 - Capability ABC 可被子类实现并实例化。
 - facade._to_resource_protocol 遇 Capability 注入执行面(executor_provider)+ 返 declare 适配器。
-- 注册 register_capability_factory 后,assemble 能用 Capability 走全链(declare→acquire prepare→snapshot)。
+- assemble 能用 Capability 走全链(declare→acquire prepare→snapshot)。
 - Capability.execute 经适配器被 registry.acquire 触发 prepare,经 provider.get 被 ToolDispatcher 取到。
 """
 
@@ -60,7 +60,7 @@ def test_capability_subclass_instantiable_with_full_iface():
     assert r.requires(None) == ["r:test"]  # 默认 [self.executor_id]
 
 
-def test_capability_consume_default_empty_and_fetch_not_implemented():
+async def test_capability_consume_default_empty_and_fetch_not_implemented():
     class _R(Capability):
         capability_id = "r"
 
@@ -76,14 +76,10 @@ def test_capability_consume_default_empty_and_fetch_not_implemented():
         async def release(self, reason):
             pass
 
-    import asyncio
-
     r = _R()
-    assert asyncio.get_event_loop().run_until_complete(r.consume("x")) == []
+    assert await r.consume("x") == []
     with pytest.raises(NotImplementedError):
-        asyncio.get_event_loop().run_until_complete(
-            r.fetch(DataRequirement(executor_id="r", capability_id="r", kind="k", params={}))
-        )
+        await r.fetch(DataRequirement(executor_id="r", capability_id="r", kind="k", params={}))
 
 
 # --------------------------------------------------------------------------- #
@@ -155,10 +151,8 @@ def test_to_resource_protocol_adapts_capability_and_injects_executor():
     assert executor.executor_id == "fake:cap"
 
 
-def test_declare_adapter_renders_and_requires():
+async def test_declare_adapter_renders_and_requires():
     """declare 适配器代理 declare/requires/consume 到 Capability。"""
-    import asyncio
-
     facade = ResourceFacade()
     cap = _FakeCap()
     wrapped = facade._to_resource_protocol(cap)
@@ -167,36 +161,33 @@ def test_declare_adapter_renders_and_requires():
     assert len(contribs) == 1
     assert contribs[0].content == "fake-system-text"
     assert wrapped.requires(None) == ["fake:cap"]
-    consumed = asyncio.get_event_loop().run_until_complete(wrapped.consume("r"))
+    consumed = await wrapped.consume("r")
     assert consumed[0].content == "consumed:r"
 
 
-def test_executor_adapter_prepare_execute_release():
+async def test_executor_adapter_prepare_execute_release():
     """executor 适配器代理 prepare/execute/release/fetch,并维护 status。"""
-    import asyncio
-
     facade = ResourceFacade()
     cap = _FakeCap()
     facade._to_resource_protocol(cap)  # 注入 executor 适配器
     executor = facade.executor_provider["fake:cap"]
 
-    loop = asyncio.get_event_loop()
     assert executor.status == ExecutorStatus.UNINITIALIZED
-    loop.run_until_complete(executor.prepare())
+    await executor.prepare()
     assert cap.prepare_calls == 1
     assert executor.status == ExecutorStatus.READY
 
-    result = loop.run_until_complete(
-        executor.execute(ExecutorCall(executor_id="fake:cap", capability_id="fake:cap", tool_name="t", args={"a": 1}))
+    result = await executor.execute(
+        ExecutorCall(executor_id="fake:cap", capability_id="fake:cap", tool_name="t", args={"a": 1})
     )
     assert result == {"echo": {"a": 1}, "tool": "t"}
 
-    fetched = loop.run_until_complete(
-        executor.fetch(DataRequirement(executor_id="fake:cap", capability_id="fake:cap", kind="k", params={}))
+    fetched = await executor.fetch(
+        DataRequirement(executor_id="fake:cap", capability_id="fake:cap", kind="k", params={})
     )
     assert fetched == "fetched-text"
 
-    loop.run_until_complete(executor.release(ReleaseReason.SESSION_END))
+    await executor.release(ReleaseReason.SESSION_END)
     assert cap.release_calls == [ReleaseReason.SESSION_END]
     assert executor.status == ExecutorStatus.RELEASED
 
@@ -235,25 +226,3 @@ async def test_assemble_runs_capability_full_chain():
     assert snap.executors_ready is True
     # 执行面可通过 provider 取到(供 ToolDispatcher Route B)
     assert "fake:cap" in facade.executor_provider
-
-
-async def test_register_capability_factory_builds_from_config():
-    """register_capability_factory 注册后,assemble 能识别 AgentResource 配置产 Capability。
-
-    注:factory 路径在 Stage 4+ 各 capability 的 register_capability 中接入;此处仅验
-    注册表存在 + factory 可调用。assemble 从 config 直接构造 Capability 的完整接入在
-    ResourceManager 改造(各 capability Stage)落地后补端到端。
-    """
-    facade = ResourceFacade()
-    built = {}
-
-    def _factory(value: dict, system_app) -> Capability:
-        c = _FakeCap()
-        built["value"] = value
-        return c
-
-    facade.register_capability_factory("fake", _factory)
-    assert "fake" in facade._capability_factories
-    cap = facade._capability_factories["fake"]({"k": "v"}, None)
-    assert isinstance(cap, _FakeCap)
-    assert built["value"] == {"k": "v"}

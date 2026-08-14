@@ -83,22 +83,6 @@ class _DBCapResource(ResourceProtocol):
 # --------------------------------------------------------------------------- #
 # fetch 接口
 # --------------------------------------------------------------------------- #
-async def test_executor_fetch_default_not_implemented():
-    """不覆盖 fetch 的 executor 调 fetch 抛 NotImplementedError(非抽象强制)。"""
-
-    class _BareExecutor(Executor):
-        @property
-        def executor_id(self): return "bare"
-        async def prepare(self): pass
-        async def execute(self, call): pass
-        async def release(self, reason): pass
-
-    ex = _BareExecutor()
-    req = DataRequirement(executor_id="bare", capability_id="c", kind="k")
-    with pytest.raises(NotImplementedError):
-        await ex.fetch(req)
-
-
 async def test_fake_db_executor_fetch_returns_stats():
     ex = _FakeDBExecutor()
     req = DataRequirement(executor_id="db:conn1", capability_id="db", kind="db_stats")

@@ -4,8 +4,7 @@
 
     List[AgentResource](配置态)
       → ResourceManager.a_build_resource  --- 资源实例化(复用现有入口)
-      → 遍历资源:旧 Resource 子类经 _legacy_wrappers 包成 ResourceProtocol,
-        均走原生 declare(无 LegacyResourceAdapter 桥接,已移除)
+      → 遍历资源:ResourceProtocol 直通 / Capability 经适配器,均走原生 declare
       → 收集 requires + topological_prepare executor
       → 叠加会话/轮次运行态(SESSION/TURN)
       → freeze → AgentInputsSnapshot(不可变,可缓存/序列化/跨进程)
@@ -19,7 +18,7 @@ import inspect
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from gyra.core.interface.resource.bundle import (
     CacheScope,
@@ -90,7 +89,7 @@ class ResourceFacade:
         facade = ResourceFacade(registry=InMemoryExecutorRegistry())
         snapshot = await facade.assemble(
             agent_id="a1", conv_id="c1", agent_resources=cfg,
-            resource_root=agent.resource, agent=agent,
+            resource_root=agent.capability_pack, agent=agent,
         )
         # v1/v2 消费 snapshot:frozen.system / .tools / .user_parts
     """
@@ -113,67 +112,9 @@ class ResourceFacade:
         # executor 工厂(executor_id → Executor),由接入层提供。沙箱/DB 连接器等
         # 在此注册。无则跳过 executor 链路(纯协议层、无执行投影时)。
         self.executor_provider: ExecutorProvider = executor_provider or {}
-        # 双轨迁移:旧 Resource 子类 → capability 包装映射(Step B+ 机制)。
-        # key=旧 Resource 类(or isinstance-able),value=wrapper 工厂(旧实例 → ResourceProtocol)。
-        # capability 目录 register() 时注册,使 facade 遍历 ResourcePack 子资源时
-        # 自动把旧 Resource 包成对应 capability 的 ResourceProtocol 走原生 declare。
-        self._legacy_wrappers: Dict[Any, Any] = {}
-        # RFC-006:自管理 Capability 工厂注册表。type_key(AgentResource.type)→
-        # factory(value:dict, system_app) -> Capability。各 capability 目录
-        # `register_capability(facade)` 时注册,使 facade 能直接从 AgentResource
-        # 配置构造 Capability(不经旧 Resource 子类 + wrapper)。
-        self._capability_factories: Dict[str, Callable[[dict, Any], Capability]] = {}
-        # RFC-006 Stage 4.5:过渡期"旧 Resource 实例 → 自管理 Capability"工厂。
-        # key=类 or 谓词(识别旧实例),value=factory(legacy_instance)→Capability。
-        # _to_resource_protocol 优先于 _legacy_wrappers 匹配:旧实例仍由 ResourceManager
-        # 构造(不动),但 facade 遍历时翻成真正的 Capability 对象(经适配器接入
-        # declare/prepare/execute),修复旧 wrapper 的 declare 空桩问题。Stage 9 旧类
-        # 退役后改用 _capability_factories 从 config 直接产,本表随之删除。
-        self._legacy_capability_providers: Dict[Any, Callable[[Any], Capability]] = {}
-
-    def register_capability_factory(
-        self, type_key: str, factory: Callable[[dict, Any], Capability]
-    ) -> None:
-        """注册 type_key → Capability 工厂(RFC-006 自管理能力构造入口)。
-
-        factory(value: dict, system_app) -> Capability。facade 遇此 type_key 的
-        AgentResource 时直接调 factory 产 Capability,跳过旧 Resource 子类构造。
-        与 `_legacy_wrappers` 并存(过渡期);新路径优先,无 factory 才回退 wrapper。
-        """
-        self._capability_factories[type_key] = factory
-
-    def register_legacy_capability_provider(
-        self, key: Any, factory: Callable[[Any], Capability]
-    ) -> None:
-        """注册旧 Resource 实例 → 自管理 Capability 工厂(过渡期,Stage 4.5)。
-
-        key 同 register_legacy_wrapper:类(isinstance)或谓词 callable(sub)->bool。
-        factory(legacy_instance) -> Capability。_to_resource_protocol 优先于此
-        匹配(先于 _legacy_wrappers),使旧实例被翻成 Capability 而非旧 ResourceProtocol
-        包装(declare 空桩)。Stage 9 旧类退役时删除,改走 _capability_factories(config)。
-        """
-        self._legacy_capability_providers[key] = factory
-
-    def register_legacy_wrapper(self, key: Any, wrapper_factory: Any) -> None:
-        """注册旧 Resource 子类 → capability 包装工厂(双轨迁移,纯 core)。
-
-        key 可为:
-        - 类(用 isinstance 判定):需 import 该类;serve 层用。
-        - 谓词 callable(sub)->bool(纯属性判断):core 层用,不 import 上层类,
-          避免分层倒置(core→serve 反向依赖)。
-        wrapper_factory(legacy_instance) -> ResourceProtocol 实例。
-
-        facade 遍历 ResourcePack 子资源时,命中 key 的旧实例调 factory 包成
-        新 capability 走原生 declare,脱离 legacy 桥接。
-        首个命中的 key 胜出(注册顺序即优先级)。
-        """
-        list(self._legacy_wrappers.keys())  # noqa: 触发惰性(确保存在)
-        self._legacy_wrappers[key] = wrapper_factory
-
     def _to_resource_protocol(self, sub: Any) -> Optional[ResourceProtocol]:
-        """把 ResourcePack 子资源转成 ResourceProtocol:本身是则直接返;
-        Capability 则适配成 declare 面(并副作用注入 executor 面);
-        否则查 _legacy_wrappers 找包装(类或谓词);都无返 None。"""
+        """把 pack 子资源转成 ResourceProtocol:本身是则直接返;
+        Capability 则适配成 declare 面(并副作用注入 executor 面);否则返 None。"""
         if isinstance(sub, ResourceProtocol):
             return sub
         if isinstance(sub, Capability):
@@ -183,48 +124,6 @@ class ResourceFacade:
             if sub.executor_id not in self.executor_provider:
                 self.executor_provider[sub.executor_id] = _CapabilityExecutorAdapter(sub)
             return _CapabilityDeclareAdapter(sub)
-        # Stage 4.5:优先把旧 Resource 实例翻成自管理 Capability(经适配器接入 declare/
-        # prepare/execute),修复旧 wrapper declare 空桩。匹配先于 _legacy_wrappers。
-        for key, factory in self._legacy_capability_providers.items():
-            if callable(key) and not isinstance(key, type):
-                try:
-                    if key(sub):
-                        cap = factory(sub)
-                        if isinstance(cap, Capability):
-                            if cap.executor_id not in self.executor_provider:
-                                self.executor_provider[cap.executor_id] = (
-                                    _CapabilityExecutorAdapter(cap)
-                                )
-                            return _CapabilityDeclareAdapter(cap)
-                except Exception:  # noqa: BLE001
-                    continue
-            else:
-                try:
-                    if isinstance(sub, key):
-                        cap = factory(sub)
-                        if isinstance(cap, Capability):
-                            if cap.executor_id not in self.executor_provider:
-                                self.executor_provider[cap.executor_id] = (
-                                    _CapabilityExecutorAdapter(cap)
-                                )
-                            return _CapabilityDeclareAdapter(cap)
-                except TypeError:
-                    continue
-        for key, factory in self._legacy_wrappers.items():
-            if callable(key) and not isinstance(key, type):
-                # 谓词:key(sub) -> bool,纯属性判断,不 import 上层类
-                try:
-                    if key(sub):
-                        return factory(sub)
-                except Exception:  # noqa: BLE001
-                    continue
-            else:
-                # 类:isinstance 判定(serve 层注册的具体 Resource 类)
-                try:
-                    if isinstance(sub, key):
-                        return factory(sub)
-                except TypeError:
-                    continue
         return None
 
     # ----------------------------- 主入口 ----------------------------------- #
@@ -351,21 +250,12 @@ class ResourceFacade:
         返回 (bundle, required_executor_ids, executors_ready)。
         """
         bundle = InputBundle()
-        # RFC-006 Phase C:root 优先 agent.capability_pack(自管理 Capability 对象);
-        # fallback 旧 agent.resource(双轨过渡,Phase D 旧类退役后 resource 消亡)。
+        # Phase D:root 只取 agent.capability_pack(自管理 Capability 对象);
         # resource_root 显式传入时最优先(测试/特殊场景)。
         if resource_root is not None:
             root = resource_root
         elif agent is not None:
-            cap_pack = getattr(agent, "capability_pack", None)
-            # 优先 capability_pack,但仅当它确有子资源;否则回退 agent.resource。
-            # 动态选择(chat 输入)的资源先入 agent.resource,若 cap_pack 为空包
-            # (非 None 但 sub_resources 为空)时仍用 cap_pack 会跳过动态资源,
-            # 导致资源上下文(如 <database>)不注入。
-            if cap_pack is not None and getattr(cap_pack, "sub_resources", None):
-                root = cap_pack
-            else:
-                root = getattr(agent, "resource", None)
+            root = getattr(agent, "capability_pack", None)
         else:
             root = None
 
