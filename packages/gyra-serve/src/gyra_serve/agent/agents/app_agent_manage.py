@@ -16,11 +16,9 @@ from gyra.agent import (
 )
 from gyra.agent.core.base_team import ManagerAgent
 from gyra.agent.core.plan.react.team_react_plan import AutoTeamContext
-from gyra.agent.resource import get_resource_manager
 from gyra.agent.util.llm.llm import LLMStrategyType
 from gyra.component import BaseComponent, ComponentType, SystemApp
 from gyra.core import LLMClient, PromptTemplate
-from gyra_serve.core import blocking_func_to_async
 from gyra_serve.prompt.api.endpoints import get_service
 
 from ..db import GptsMessagesDao
@@ -243,16 +241,18 @@ async def create_agent_from_gpt_detail(
             prompt_code=record.prompt_template
         )
 
-    depend_resource = await blocking_func_to_async(
-        CFG.SYSTEM_APP, get_resource_manager().build_resource, record.resources
-    )
+    # Phase D:唯一资源构建路径 —— CapabilityFactoryRegistry.build_pack 产 CapabilityPack。
+    from gyra.agent.capabilities.registry_factory import get_default_factory_registry
+
+    cap_pack = get_default_factory_registry().build_pack(record.resources, CFG.SYSTEM_APP)
+    await cap_pack.preload_resource()
 
     agent = (
         await agent_cls()
         .bind(agent_context)
         .bind(agent_memory)
         .bind(llm_config)
-        .bind(depend_resource)
+        .bind(cap_pack)
         .bind(prompt_template)
         .build()
     )
