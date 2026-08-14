@@ -126,6 +126,17 @@ class MCPCapability(Capability):
     def capability_id(self) -> str:
         return f"mcp:{self._mcp_name}" if self._mcp_name else "mcp"
 
+    @classmethod
+    def from_tools(cls, tools: List[Any], name: str) -> "MCPCapability":
+        """从已就绪的工具对象直接构造(无 server,prepare 免拉)。
+
+        Phase D:程序化工具注入场景(如 memory 工具包)用 —— 工具已由调用方
+        构建/preload,本能力仅承担 declare 投影。
+        """
+        cap = cls(mcp_name=name)
+        cap._tools = list(tools)
+        return cap
+
     @property
     def executor_id(self) -> str:
         return self.capability_id

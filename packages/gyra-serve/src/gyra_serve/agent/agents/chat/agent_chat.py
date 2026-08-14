@@ -39,7 +39,6 @@ from gyra.agent.core.schema import Status
 from gyra.agent.resource import get_resource_manager, ResourceManager
 from gyra.agent.resource.agent_skills import AgentSkillResource
 from gyra.agent.resource.base import FILE_RESOURCES, AgentResource
-from gyra.agent.resource.pack import ResourcePack
 from gyra.agent.util.ext_config import ExtConfigHolder
 from gyra_serve.agent.resource.tool.memory_tool import MemoryToolPack
 from gyra.component import ComponentType, SystemApp
@@ -2150,19 +2149,6 @@ class AgentChat(BaseComponent, ABC):
                     f"[AgentChat] real_all_resources before build: "
                     f"{[(r.type, r.name) for r in real_all_resources]}"
                 )
-                logger.info(
-                    f"[AgentChat] ResourceManager registered type_keys: "
-                    f"{list(rm._type_to_resources.keys())}"
-                )
-                depend_resource = await rm.a_build_resource(
-                    real_all_resources, ignore_missing=True
-                )
-                logger.info(
-                    f"[AgentChat] depend_resource after build: "
-                    f"{type(depend_resource).__name__ if depend_resource else 'None'}, "
-                    f"is_pack={depend_resource.is_pack if depend_resource else 'N/A'}, "
-                    f"sub_resources_count={len(depend_resource.sub_resources) if depend_resource and depend_resource.is_pack else 'N/A'}"
-                )
 
                 agent_context = deepcopy(context)
                 agent_context.agent_app_code = app.app_code
@@ -2176,7 +2162,6 @@ class AgentChat(BaseComponent, ABC):
                     .bind(llm_config)
                     .bind(sandbox_manager)
                     .bind(cap_pack)
-                    .bind(depend_resource)
                     # .bind(prompt_template)
                     .bind(app.context_config)
                     .bind(ExtConfigHolder(ext_config=app.ext_config))
@@ -2186,18 +2171,6 @@ class AgentChat(BaseComponent, ABC):
 
                 # 统一治理：不再 hire 预构建子 Agent 到主 Team（子 Agent 按需经
                 # AppResource/_dispatch_to_app 构建），避免把主代理/子代理提前实例化。
-
-                # 诊断日志：检查 resource_map
-                if hasattr(recipient, 'resource_map'):
-                    logger.info(
-                        f"[AgentChat] recipient.resource_map keys: "
-                        f"{list(recipient.resource_map.keys()) if recipient.resource_map else 'empty'}"
-                    )
-                    for rk, rv in (recipient.resource_map or {}).items():
-                        logger.info(
-                            f"[AgentChat] resource_map['{rk}']: "
-                            f"{[type(r).__name__ for r in rv] if isinstance(rv, list) else type(rv).__name__}"
-                        )
 
                 ## 处理Agent实例的基本信息
                 temp_profile = recipient.profile.copy()
@@ -2587,29 +2560,26 @@ class AgentChat(BaseComponent, ABC):
                                         )
                                         await memory_tool_pack.preload_resource()
 
-                                        if recipient.resource is None:
-                                            recipient.resource = ResourcePack(
-                                                [memory_tool_pack],
-                                                name="Resource Pack",
-                                            )
-                                        elif isinstance(recipient.resource, ResourcePack):
-                                            recipient.resource.append(
-                                                memory_tool_pack, overwrite=True
+                                        # Phase D:记忆工具包包装为 MCPCapability
+                                        # (工具已 preload,纯 declare 投影),
+                                        # 挂进 capability_pack 供 facade 渲染。
+                                        from gyra.core.interface.resource.capability import (
+                                            CapabilityPack,
+                                        )
+                                        from gyra_serve.agent.capabilities.mcp import (
+                                            MCPCapability,
+                                        )
+
+                                        memory_cap = MCPCapability.from_tools(
+                                            list(memory_tool_pack.sub_resources),
+                                            name="memory_tools",
+                                        )
+                                        if recipient.capability_pack is None:
+                                            recipient.capability_pack = CapabilityPack(
+                                                [memory_cap]
                                             )
                                         else:
-                                            # Wrap existing single resource into a pack.
-                                            existing = recipient.resource
-                                            recipient.resource = ResourcePack(
-                                                [existing, memory_tool_pack],
-                                                name="Resource Pack",
-                                            )
-                                        # Re-tidy resource_map so tool lookups see the
-                                        # newly injected MemoryToolPack sub-resources.
-                                        recipient.resource_map = (
-                                            await recipient._tidy_resource(
-                                                recipient.resource
-                                            )
-                                        )
+                                            recipient.capability_pack.add(memory_cap)
                                         logger.info(
                                             f"[AgentChat] Memory tools injected for "
                                             f"{app.app_code}: "
@@ -2642,15 +2612,6 @@ class AgentChat(BaseComponent, ABC):
                     teamleader
                 )
                 manager = manager_cls()
-
-                if real_all_resources:
-                    # depend_resource = await blocking_func_to_async(
-                    #     CFG.SYSTEM_APP, rm.build_resource, app.all_resources
-                    # )
-                    depend_resource = await rm.a_build_resource(
-                        real_all_resources, ignore_missing=True
-                    )
-                    manager.bind(depend_resource)
 
                 # 统一治理：与 SINGLE_AGENT/NATIVE_APP 一致，主代理也承载全部能力包
                 # （workspace_scene/ecp 等资产）。AUTO_PLAN 主代理此前只 bind 旧资源
