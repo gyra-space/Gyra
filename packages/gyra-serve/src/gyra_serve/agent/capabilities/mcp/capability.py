@@ -97,31 +97,6 @@ class MCPCapability(Capability):
             source=value.get("source", "faas"),
         )
 
-    @classmethod
-    def from_legacy(cls, legacy_instance: Any) -> "MCPCapability":
-        """从旧 MCPToolPack/MCPSSEToolPack 实例构造(过渡期)。
-
-        读旧实例 runtime 配置(mcp_servers/headers/mcp_name/tool_id/allow_tools/timeout/
-        source);若旧实例已 preload(._loaded=True)则复用其 _tools,否则 prepare 时拉。
-        """
-        cap = cls(
-            mcp_name=getattr(legacy_instance, "_mcp_name", "") or getattr(legacy_instance, "name", ""),
-            mcp_servers=getattr(legacy_instance, "_mcp_servers", None),
-            headers=getattr(legacy_instance, "_headers", {}) or {},
-            allow_tools=getattr(legacy_instance, "_allow_tools", None),
-            tool_id=getattr(legacy_instance, "_tool_id", None),
-            timeout=getattr(legacy_instance, "_timeout", 60) or 60,
-            source=getattr(legacy_instance, "_source", "faas") or "faas",
-            overwrite_same_tool=getattr(legacy_instance, "_overwrite_same_tool", True),
-        )
-        # 复用旧实例已 preload 的工具(sub_resources 非空即旧 ToolPack 已加载);prepare 见
-        # self._tools 非空会免拉。无则 prepare 时重新连 server 拉(自管理)。
-        subs = getattr(legacy_instance, "sub_resources", None) or []
-        if subs:
-            cap._tools = list(subs)
-            cap._status = ExecutorStatus.READY
-        return cap
-
     @property
     def capability_id(self) -> str:
         return f"mcp:{self._mcp_name}" if self._mcp_name else "mcp"
@@ -183,7 +158,7 @@ class MCPCapability(Capability):
           FunctionTool(name=tool.name, func=bound_call, description, args=args)
         存 self._tools。无 mcp_servers 或拉取失败降级(空工具列表,不崩)。
         """
-        if self._tools:  # from_legacy 已复用旧 preload 工具
+        if self._tools:  # from_tools 已注入就绪工具
             self._status = ExecutorStatus.READY
             return
         if not self._mcp_servers:

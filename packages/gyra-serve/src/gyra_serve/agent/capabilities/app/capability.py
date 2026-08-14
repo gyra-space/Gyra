@@ -11,11 +11,7 @@ App 是首个落地的自管理 Capability,用于验证 config→Capability→de
   start_app/async_execute,供 AgentAction 与 cron ToolContext 注入使用(替代 v1
   AppResource 实例)。
 
-AppCapability 同时修复了旧 AppCapabilityResource.declare 桩返回 []、真实渲染在
-declare_app 未被 facade 调用的问题:新 declare 直接渲染。
-
-双轨:register_wrappers(旧 Resource 实例→AppCapabilityResource 桩)与
-register_capability(config→AppCapability factory)并存,Stage 9 删前者。
+AppCapability 直接渲染 app 描述进 SYSTEM(旧 wrapper 桩路径已删)。
 """
 
 from __future__ import annotations
@@ -86,27 +82,6 @@ class AppCapability(Capability):
             app_code=value.get("app_code") or "",
             description=value.get("app_desc") or value.get("description") or "",
         )
-
-    @classmethod
-    def from_legacy(cls, legacy_instance: Any) -> "AppCapability":
-        """从旧 GptAppResource/AppResource 实例构造(过渡期,Stage 4.5)。
-
-        读旧实例属性(app_name/app_code/app_desc)产 AppCapability,使 facade 遍历时
-        翻成自管理 Capability(修复旧 wrapper declare 空桩)。无 I/O。
-        Stage 9 旧类退役后改用 from_config。
-        """
-        name = (
-            getattr(legacy_instance, "app_name", None)
-            or getattr(legacy_instance, "name", None)
-            or ""
-        )
-        code = getattr(legacy_instance, "app_code", "") or ""
-        desc = (
-            getattr(legacy_instance, "app_desc", "")
-            or getattr(legacy_instance, "description", "")
-            or ""
-        )
-        return cls(app_name=name, app_code=code, description=desc)
 
     @property
     def executor_id(self) -> str:

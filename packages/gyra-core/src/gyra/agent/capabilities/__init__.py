@@ -7,7 +7,7 @@ Agent 不强引用任何具体 capability 类型,只依赖协议接口,扫描注
 - core 层(capabilities/{sandbox,memory,mock}):纯 core,不连 serve 服务。
 - serve 层(gyra_serve.agent.capabilities.{db,knowledge,app,skill,mcp,playbook}):
   连 serve 服务(spec_service/PlaybookService/SkillService 等)。
-- facade 动态发现两层 capabilities 包目录,调用各 register_wrappers 注册。
+- CapabilityFactoryRegistry 动态发现两层 capabilities 包目录,调各 register_capability_to 注册。
 """
 
 from gyra.core.interface.resource.capability import Capability  # noqa: F401

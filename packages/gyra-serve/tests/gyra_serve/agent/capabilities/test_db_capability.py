@@ -1,6 +1,5 @@
-"""RFC-005 Step C: db capability 输入投影测试(纯 core 部分)。
+"""RFC-006 Stage 6: db capability 自管理测试(prepare/fetch/declare/release + 取连接)。
 
-DBCapabilityResource declare 库基本信息 + DataRequirement 占位(纯 core,无 serve)。
 DBExecutor(连 serve spec_service)已迁 serve 层,相关测试在 serve 测试目录。
 facade 回填用 mock executor(不依赖真实 DBExecutor)。
 """
@@ -8,55 +7,11 @@ facade 回填用 mock executor(不依赖真实 DBExecutor)。
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from gyra.core.interface.resource.bundle import CacheScope, Contribution, Lifetime, Slot
 from gyra.core.interface.resource.data_requirement import (
     DataRequirement,
     InjectionMode,
     injection_mode_for_table_count,
 )
-from gyra_serve.agent.capabilities.db.resource import DBCapabilityResource
-from gyra.agent.capabilities.facade import ResourceFacade
-
-
-def _make_legacy_db(db_name="paydb", db_type="mysql", datasource_id=42):
-    legacy = SimpleNamespace(
-        _db_name=db_name, db_name=db_name, _db_type=db_type,
-        _dialect="mysql", _datasource_id=datasource_id,
-        _connector=MagicMock(),
-    )
-    legacy._resolve_datasource_id = lambda: datasource_id
-    legacy._connector.get_table_names.return_value = ["t1", "t2"]
-    return legacy
-
-
-def test_db_declares_basic_info_and_data_requirement():
-    legacy = _make_legacy_db()
-    res = DBCapabilityResource(legacy_instance=legacy)
-    contribs = res.declare_db()
-    assert len(contribs) == 2
-    basic, table_placeholder = contribs
-    assert basic.slot == Slot.SYSTEM
-    assert "paydb" in basic.content
-    assert "mysql" in basic.content
-    assert isinstance(table_placeholder.content, DataRequirement)
-    assert table_placeholder.content.kind == "db_prompt"
-    assert table_placeholder.content.executor_id == "db:42"
-
-
-def test_db_requires_executor():
-    legacy = _make_legacy_db()
-    res = DBCapabilityResource(legacy_instance=legacy)
-    assert res.requires() == ["db:42"]
-
-
-def test_db_declare_empty_without_legacy():
-    res = DBCapabilityResource()
-    assert res.declare_db() == []
-
-
-def test_db_capability_id_is_db():
-    res = DBCapabilityResource()
-    assert res.capability_id == "db"
 
 
 def test_large_db_not_injects_table_list():
@@ -64,18 +19,6 @@ def test_large_db_not_injects_table_list():
     mode = injection_mode_for_table_count(800)
     assert mode == InjectionMode.LARGE
     assert mode != InjectionMode.SMALL
-
-
-def test_facade_wraps_legacy_db():
-    facade = ResourceFacade()
-    from gyra_serve.agent.capabilities.db import register_wrappers
-    register_wrappers(facade)
-    facade.register_legacy_wrapper(object, lambda x: DBCapabilityResource(legacy_instance=x))
-    legacy = _make_legacy_db()
-    wrapped = facade._to_resource_protocol(legacy)
-    assert isinstance(wrapped, DBCapabilityResource)
-    contribs = wrapped.declare_db()
-    assert any("paydb" in c.content for c in contribs if isinstance(c.content, str))
 
 
 # =========================================================================== #
@@ -89,18 +32,6 @@ def test_db_capability_from_config():
     assert cap.db_name == "paydb"
     assert cap.capability_id == "db:42"
     assert cap.executor_id == "db:42"
-
-
-def test_db_capability_from_legacy_reuses_connector():
-    """from_legacy 复用旧实例已建的 connector(不重复建连接),状态 READY。"""
-    from gyra.core.interface.resource.executor import ExecutorStatus
-    from gyra_serve.agent.capabilities.db.capability import DBCapability
-
-    legacy = _make_legacy_db()
-    cap = DBCapability.from_legacy(legacy)
-    assert cap.get_connector() is legacy._connector  # 复用,未重建
-    assert cap._status == ExecutorStatus.READY
-    assert cap.capability_id == "db:42"
 
 
 def test_db_capability_declare_basic_and_placeholder():
@@ -158,31 +89,17 @@ def test_db_capability_get_connector_for_route_a_tools():
     """折中:Route A DB 工具从 DBCapability.get_connector() 取连接(取代扫 resource_map)。"""
     from gyra_serve.agent.capabilities.db.capability import DBCapability
 
-    legacy = _make_legacy_db()
-    cap = DBCapability.from_legacy(legacy)
-    assert cap.get_connector() is legacy._connector
+    cap = DBCapability(db_name="paydb", db_id=42)
+    conn = MagicMock()
+    cap._connector = conn
+    assert cap.get_connector() is conn
 
-
-async def test_facade_flips_legacy_db_to_capability():
-    """旧 DatasourceResource 实例 → facade 翻成 DBCapability(经 provider),declare 出库信息。"""
-    from gyra.agent.capabilities.facade import _CapabilityDeclareAdapter
-    from gyra_serve.agent.capabilities.db import register_capability
-
-    facade = ResourceFacade()
-    register_capability(facade)
-    legacy = _make_legacy_db()
-    wrapped = facade._to_resource_protocol(legacy)
-    assert isinstance(wrapped, _CapabilityDeclareAdapter)
-    contribs = wrapped.declare()
-    assert any("paydb" in c.content for c in contribs if isinstance(c.content, str))
-    assert "db:42" in facade.executor_provider
 
 # =========================================================================== #
 # RFC-006 Phase B3: _resolve_db_from_agent 优先从 CapabilityPack 取连接
 # =========================================================================== #
 async def test_resolve_db_from_agent_prefers_capability_pack():
     """agent 有 capability_pack 含 DBCapability(db_name 匹配)→ 从其取 connector。"""
-    from types import SimpleNamespace
     from gyra.core.interface.resource.capability import CapabilityPack
     from gyra.core.interface.resource.executor import ExecutorStatus
     from gyra_serve.agent.capabilities.db.capability import DBCapability
@@ -202,7 +119,6 @@ async def test_resolve_db_from_agent_prefers_capability_pack():
 
 async def test_resolve_db_from_agent_no_match_returns_none():
     """capability_pack 无 db_name 匹配 → (None, None)(v1 resource_map 兜底已删)。"""
-    from types import SimpleNamespace
     from gyra.core.interface.resource.capability import CapabilityPack
 
     pack = CapabilityPack([])

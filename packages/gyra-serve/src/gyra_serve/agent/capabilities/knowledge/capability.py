@@ -4,8 +4,8 @@
 
 prepare 自管 hydrate:按 _knowledge_ids 调 KnowledgeService.get_knowledge_space 水合
 空间元数据(name/desc)存 _spaces,供 declare 渲染。facade 时序已改 prepare 先于 declare
-(RFC-006 Stage 8),declare 能读到 prepare 产出的 _spaces。若 from_legacy 已带完整 spaces
-(旧实例构造期已 hydrate)或 config 已带 name/desc,则 prepare 免 I/O。
+(RFC-006 Stage 8),declare 能读到 prepare 产出的 _spaces。若 config 已带完整 spaces
+(name/desc),则 prepare 免 I/O。
 
 Phase D:收编检索执行。retrieve/get_summary/get_directory/read_document 从
 KnowledgePackSearchResource 移植,KnowledgeRetrieveAction 与 cron ToolContext 注入改走
@@ -135,30 +135,6 @@ class KnowledgeCapability(Capability):
             system_app=system_app,
         )
 
-    @classmethod
-    def from_legacy(cls, legacy_instance: Any) -> "KnowledgeCapability":
-        """从旧 RetrieverResource/KnowledgePackSearchResource 实例构造(过渡期)。
-
-        优先读 description(已渲染好的库列表串);回退读 knowledge_spaces 元数据。
-        旧实例构造期已泄水合(get_knowledge_spaces_info),无新增 I/O。
-        """
-        desc = getattr(legacy_instance, "description", "") or ""
-        if not isinstance(desc, str):
-            desc = ""
-        spaces = None
-        kspaces = getattr(legacy_instance, "knowledge_spaces", None)
-        if kspaces:
-            spaces = []
-            for ks in kspaces:
-                spaces.append(
-                    {
-                        "name": getattr(ks, "name", "") or "",
-                        "knowledge_id": getattr(ks, "knowledge_id", None),
-                        "desc": getattr(ks, "desc", "") or "",
-                    }
-                )
-        return cls(spaces=spaces, description=desc)
-
     @property
     def executor_id(self) -> str:
         return "knowledge"
@@ -210,7 +186,7 @@ class KnowledgeCapability(Capability):
     async def prepare(self) -> None:
         """hydrate 知识库空间元数据(name/desc),供 declare 渲染库列表。
 
-        若 _spaces 已带 name/desc(from_legacy 复用旧实例,或 config 已完整)则免 I/O。
+        若 _spaces 已带 name/desc(config 已完整)则免 I/O。
         否则按 _knowledge_ids 调 KnowledgeService.get_knowledge_space 水合(异步)。
         facade 时序已改 prepare 先于 declare(RFC-006 Stage 8),故 declare 能读到本方法产出。
         无 knowledge_ids 或 service 不可用时,保留现有 _spaces/_description(可能为空)。

@@ -12,8 +12,7 @@
 - memory_search/write 工具改 Route B:当前 MemoryToolPack builtin,需另动 MemoryToolPack。
 - execute 委托 store:旧 MemoryResource 不持有 store(在 bundle.manager),无可委托。
 
-本轮:MemoryCapability(declare 空、prepare no-op、from_legacy)统一自管理对象模型,
-修复旧 MemoryCapabilityResource 的 declare 桩形态(虽本就空),为后续接线留接口。
+本轮:MemoryCapability(declare 空、prepare no-op)统一自管理对象模型,为后续接线留接口。
 """
 
 from __future__ import annotations
@@ -50,19 +49,6 @@ class MemoryCapability(Capability):
         self._memory_params = memory_params
         self._status = ExecutorStatus.UNINITIALIZED
         self._store = None  # 真检索 store 在 _memory_bundle.manager,非本对象持有
-
-    @classmethod
-    def from_legacy(cls, legacy_instance: Any) -> "MemoryCapability":
-        """从旧 MemoryResource 实例构造(过渡期)。无 I/O。"""
-        params = getattr(legacy_instance, "memory_params", None)
-        if callable(params):
-            try:
-                params = params()
-            except Exception:  # noqa: BLE001
-                params = None
-        elif params is None:
-            params = getattr(legacy_instance, "_memory_params", None)
-        return cls(memory_params=params)
 
     @classmethod
     def from_config(cls, value: dict, system_app: Any = None) -> "MemoryCapability":

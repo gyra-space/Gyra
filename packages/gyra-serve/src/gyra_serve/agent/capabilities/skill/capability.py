@@ -3,14 +3,13 @@
 技能纯声明:declare 渲染 <agent-skills> 列表进 SYSTEM。
 
 prepare 自管 skill_code/path 解析(facade 时序已改 prepare 先于 declare,RFC-006 Stage 8):
-若 skills 已带 path(from_legacy/config 完整)则免 I/O;否则按 skill_name 查 Skill service
+若 skills 已带 path(config 完整)则免 I/O;否则按 skill_name 查 Skill service
 补 skill_code + 解析 sandbox path(get_skill_directory + FS 检查)。无 _SYSTEM_APP/
 service 不可用时降级不崩(declare 用现有 path/空)。
 
 execute 不收编:read_skill/list_skills 工具暂走 Route A builtin(沙箱/local fs 读,
 SandboxToolBase)。本轮 SkillCapability 自管 prepare/declare,execute 保持 Route A。
 
-双轨:register_wrappers 与 register_capability 并存,Stage 9 删前者。
 """
 
 from __future__ import annotations
@@ -31,9 +30,34 @@ from gyra.core.interface.resource.executor import (
     ReleaseReason,
 )
 
-from .resource import _render_skills
-
 logger = logging.getLogger(__name__)
+
+# 模板对齐 agent_skills.py:19-36(技能列表 XML)
+_SKILL_PROMPT_TEMPLATE = """<agent-skills>
+这里是你可使用的agent-skill的元数据信息，skill的完整文件存在沙箱环境计算机的技能仓库目录中。下面是skill的基础信息包含skill名称'name'，能力介绍'description', 相对路径:'path', 仓库分支:'branch'.
+{% for item in skills %}\
+<{{loop.index }}>\
+<name>{{item.name }}</name>
+<description>{{item.description}}</description>
+{% if item.path %}\
+<path>{{item.path}}</path>
+{% endif %}\
+{% if item.owner %}\
+<owner>{{item.owner}}</owner>
+{% endif %}\
+{% if item.branch %}\
+<branch>{{item.branch}}</branch>
+{% endif %}\
+</{{loop.index }}>
+{% endfor %}\
+</agent-skills>"""
+
+
+def _render_skills(skills: List[dict]) -> str:
+    """渲染技能列表为 <agent-skills> 文本(对齐旧模板)。"""
+    from gyra.util.template_utils import render
+
+    return render(_SKILL_PROMPT_TEMPLATE, {"skills": skills})
 
 
 class SkillCapability(Capability):
@@ -76,16 +100,6 @@ class SkillCapability(Capability):
                 }
             ]
         return cls(skills=skills)
-
-    @classmethod
-    def from_legacy(cls, legacy_instance: Any) -> "SkillCapability":
-        """从旧 AgentSkillResource/GyraSkillResource 实例构造(过渡期)。
-
-        declare 委托旧实例 skill_meta(构造期已解析),无新增 I/O。
-        """
-        cap = cls(skills=None)
-        cap._legacy = legacy_instance
-        return cap
 
     @property
     def executor_id(self) -> str:

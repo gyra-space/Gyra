@@ -1,4 +1,4 @@
-"""RFC-005 Step C: mcp capability(工具聚合)迁移测试。
+"""RFC-005 Step C / RFC-006 Stage 7: mcp capability(工具聚合)迁移测试。
 
 MCP/ToolPack 子类:declare 产工具列表 TOOLS(每个工具一个 ToolEntry)。
 """
@@ -7,97 +7,35 @@ from types import SimpleNamespace
 
 from gyra.core.interface.resource.bundle import Slot
 from gyra.core.interface.resource.tool_entry import BUILTIN_EXECUTOR_ID
-from gyra_serve.agent.capabilities.mcp import MCPCapabilityResource
 
 
 def _make_tool(name="mcp_tool_1", description="an MCP tool"):
     return SimpleNamespace(name=name, description=description)
 
 
-def _make_legacy_pack(tools):
-    return SimpleNamespace(sub_resources=tools)
-
-
-def test_mcp_declares_tools_from_legacy_pack():
-    tools = [_make_tool("t1"), _make_tool("t2")]
-    legacy = _make_legacy_pack(tools)
-    res = MCPCapabilityResource(legacy_instance=legacy)
-    contribs = res.declare_tools()
-    assert len(contribs) == 2
-    for c in contribs:
-        assert c.slot == Slot.TOOLS
-        assert c.capability_id == "mcp"
-        entry = c.content
-        assert entry.capability_id == "mcp"
-        assert entry.executor_id == BUILTIN_EXECUTOR_ID
-
-
-def test_mcp_declares_from_explicit_tools():
-    tools = [_make_tool("s1")]
-    res = MCPCapabilityResource(tools=tools)
-    contribs = res.declare_tools()
-    assert len(contribs) == 1
-    assert contribs[0].content.tool_name == "s1"
-
-
-def test_mcp_empty_when_no_tools():
-    res = MCPCapabilityResource()
-    assert res.declare_tools() == []
-
-
-def test_mcp_empty_pack():
-    """无 sub_resources 的 pack → 空 declare。"""
-    legacy = SimpleNamespace(sub_resources=None)
-    res = MCPCapabilityResource(legacy_instance=legacy)
-    assert res.declare_tools() == []
-
-
-def test_facade_wraps_legacy_toolpack():
-    from gyra.agent.capabilities.facade import ResourceFacade
-    facade = ResourceFacade()
-    from gyra_serve.agent.capabilities.mcp import register_wrappers
-    register_wrappers(facade)
-    facade.register_legacy_wrapper(object, lambda x: MCPCapabilityResource(legacy_instance=x))
-    legacy = _make_legacy_pack([_make_tool("t1")])
-    wrapped = facade._to_resource_protocol(legacy)
-    assert isinstance(wrapped, MCPCapabilityResource)
-    contribs = wrapped.declare_tools()
-    assert len(contribs) == 1
-    assert contribs[0].content.tool_name == "t1"
-
 # =========================================================================== #
 # RFC-006 Stage 7: MCPCapability 自管理(对象模型统一)
 # =========================================================================== #
-def test_mcp_capability_from_legacy_declares_tools():
+def test_mcp_capability_from_tools_declares_tools():
+    """from_tools 注入已就绪工具 → declare 产 ToolEntry(Route A builtin)。"""
     from gyra_serve.agent.capabilities.mcp import MCPCapability
-    legacy = _make_legacy_pack([_make_tool("s1"), _make_tool("s2")])
-    cap = MCPCapability.from_legacy(legacy)
+
+    tools = [_make_tool("s1"), _make_tool("s2")]
+    cap = MCPCapability.from_tools(tools, name="demo")
     contribs = cap.declare()
     assert len(contribs) == 2
     names = {c.content.tool_name for c in contribs}
     assert names == {"s1", "s2"}
+    for c in contribs:
+        assert c.slot == Slot.TOOLS
+        assert c.capability_id == "mcp:demo"
+        assert c.content.executor_id == BUILTIN_EXECUTOR_ID
 
 
-async def test_mcp_capability_register_and_facade_flip():
-    """真实 ToolPack(含 FunctionTool)→ facade 翻成 MCPCapability(_is_toolpack_legacy isinstance 命中)。"""
-    from gyra.agent.capabilities.facade import ResourceFacade, _CapabilityDeclareAdapter
-    from gyra_serve.agent.capabilities.mcp import register_capability
-    from gyra.agent.resource import FunctionTool, ToolPack
+def test_mcp_capability_empty_when_no_tools():
+    from gyra_serve.agent.capabilities.mcp import MCPCapability
 
-    def _fn(**k):
-        return "ok"
-
-    _fn.__doc__ = "d"
-    tool = FunctionTool(name="mcp_x", func=_fn, description="d")
-    pack = ToolPack([tool])
-
-    facade = ResourceFacade()
-    register_capability(facade)
-    assert "tool" in facade._capability_factories
-    wrapped = facade._to_resource_protocol(pack)
-    assert isinstance(wrapped, _CapabilityDeclareAdapter)
-    assert wrapped.capability_id.startswith("mcp")
-    assert len(wrapped.declare()) == 1
+    assert MCPCapability(mcp_name="x").declare() == []
 
 
 # =========================================================================== #
@@ -154,27 +92,6 @@ async def test_mcp_capability_prepare_degrades_on_failure(monkeypatch):
     await cap.prepare()
     assert cap._status.value == "ready"
     assert cap.declare() == []
-
-
-async def test_mcp_capability_from_legacy_reuses_loaded_tools():
-    """from_legacy 复用旧实例已 preload 的工具(过渡期,_loaded=True)。"""
-    from gyra_serve.agent.capabilities.mcp import MCPCapability
-    fake_tool = SimpleNamespace(name="t", description="d")
-    legacy = SimpleNamespace(
-        name="demo", _mcp_servers="http://x/sse", _headers={}, _allow_tools=None,
-        _tool_id="t1", _timeout=60, _source="faas", _overwrite_same_tool=True,
-        _loaded=True, sub_resources=[fake_tool],
-    )
-    cap = MCPCapability.from_legacy(legacy)
-    assert cap.capability_id == "mcp:demo"
-    assert cap._tools == [fake_tool]
-    # prepare 命中已 loaded → 不重新拉
-    import gyra_serve.agent.resource.tool.mcp_utils as utils
-    async def _should_not_call(*a, **kw):
-        raise AssertionError("should not call get_mcp_tool_list when tools loaded")
-    utils.get_mcp_tool_list = _should_not_call  # 若误调会抛
-    await cap.prepare()
-    assert cap._status.value == "ready"
 
 
 # =========================================================================== #

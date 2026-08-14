@@ -1,7 +1,6 @@
 """ResourceProtocol 协议本体(RFC-005 §3.3)。
 
-定义资源扩展协议 + Consumer 编排骨架。不包含 LegacyResourceAdapter
-(它是存量桥接,依赖 agent 侧 resource_injector,留在 agent/capabilities/)。
+定义资源扩展协议 + Consumer 编排骨架。
 """
 
 from __future__ import annotations

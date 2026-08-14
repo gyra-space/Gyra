@@ -92,36 +92,6 @@ class DBCapability(Capability):
             dialect=dialect,
         )
 
-    @classmethod
-    def from_legacy(cls, legacy_instance: Any) -> "DBCapability":
-        """从旧 DatasourceResource/RDBMSConnectorResource 实例构造(过渡期,Stage 4.5/6)。
-
-        读旧实例属性(db_name/_db_type/_dialect/_datasource_id);连接器若旧实例已建
-        则直接复用(避免重复建连接),否则 prepare 时建。无新增 I/O。
-        """
-        db_name = (
-            getattr(legacy_instance, "_db_name", None)
-            or getattr(legacy_instance, "db_name", None)
-            or ""
-        )
-        db_id = getattr(legacy_instance, "_datasource_id", None) or getattr(
-            legacy_instance, "_db_id", None
-        )
-        cap = cls(
-            db_name=db_name,
-            db_id=db_id,
-            db_type=getattr(legacy_instance, "_db_type", "") or "",
-            dialect=getattr(legacy_instance, "_dialect", "") or "",
-        )
-        # 复用旧实例已建的 connector(过渡期:旧 DatasourceResource.__init__ 已建好)
-        conn = getattr(legacy_instance, "_connector", None) or getattr(
-            legacy_instance, "connector", None
-        )
-        if conn is not None:
-            cap._connector = conn
-            cap._status = ExecutorStatus.READY  # 已就绪,prepare 将幂等
-        return cap
-
     @property
     def capability_id(self) -> str:
         return f"db:{self._datasource_id}" if self._datasource_id is not None else "db"
@@ -134,9 +104,8 @@ class DBCapability(Capability):
     def get_connector(self) -> Any:
         """供 Route A DB 工具取 live connector(取代 _resolve_db_from_agent 扫 resource_map)。
 
-        DBCapability 经 facade legacy provider 翻转后,工具按 db_name 从 agent 持有的
-        DBCapability 实例取 connector。需 agent 把 DBCapability 实例登记到可查处
-        (接入见 react_master/facade;本方法提供取连接口)。
+        工具按 db_name 从 agent 持有的 DBCapability 实例取 connector。需 agent 把
+        DBCapability 实例登记到可查处(接入见 react_master/facade;本方法提供取连接口)。
         """
         return self._connector
 
@@ -208,7 +177,7 @@ class DBCapability(Capability):
         """建 live connector(挪自 DatasourceResource.__init__:134)。幂等。
 
         同步建连接经 asyncio.to_thread 异步化;懒 resolve datasource_id(缺则查
-        ConnectConfigDao)。from_legacy 复用了旧实例 connector 时直接就绪。
+        ConnectConfigDao)。connector 已存在时直接就绪。
         """
         if self._connector is not None:
             self._status = ExecutorStatus.READY

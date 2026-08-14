@@ -5,13 +5,10 @@
 type 调 factory 产 Capability 装进 CapabilityPack;无 factory 的 type 跳过(留旧
 Resource 路径,如 Workflow/ReasoningEngine/OpenRca 等边角类)。
 
-填充:各 capability 目录的 `register_capability(facade)` 原本注册到 facade 的
-`_capability_factories`;Phase A 把这套扫描提到本 registry。`discover()` 扫
-core+serve capabilities 包调各 `register_capability_to(registry)`(或复用 register_capability
-但目标改为本 registry)。
+填充:`discover()` 扫 core+serve capabilities 包,调各 `register_capability_to(registry)`
+(facade 侧的 `_capability_factories` / legacy provider 桥接已随 Phase D 删除)。
 
-react_master 的 `_register_capability_factories` 仍注册到 facade(供 facade 渲染期
-legacy provider 用),但 **构造期**(`agent_chat.build_agent_by_gpts`)用本 registry 产
+**构造期**(`agent_chat.build_agent_by_gpts`)用本 registry 产
 CapabilityPack 绑 agent——这是"agent 持有稳定 Capability 对象"的入口,而非每轮临时翻转。
 """
 
