@@ -1,9 +1,11 @@
 'use client';
 
 import { apiInterceptors, getOrCreateHomeWorkspace, getWorkspaceInfo, listMembers, addMember, removeMember, updateMemberRole, updateWorkspace, setHomeWorkspace, releaseWorkspace } from '@/client/api';
+import { addEcpConfirmer, listEcpConfirmers, removeEcpConfirmer, type EcpConfirmer } from '@/client/api/ecp';
 import { usersService, type User } from '@/services/users';
 import { getUserId } from '@/utils';
-import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Select, Spin, Table, Tag, Alert } from 'antd';
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Popconfirm, Select, Spin, Table, Tag, Alert } from 'antd';
 import { useRequest } from 'ahooks';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
@@ -16,6 +18,8 @@ export default function SettingsPage() {
   const router = useRouter();
   const workspaceCode = searchParams?.get('id') || '';
   const { t } = useTranslation();
+  // ECP 语义层 workspace 由场景空间 code 派生(ecp_<workspace_code>,见 ecp_derive.py)
+  const ecpWsId = workspaceCode ? `ecp_${workspaceCode}` : '';
   const [form] = Form.useForm();
   const [memberForm] = Form.useForm();
   const [editOpen, setEditOpen] = useState(false);
@@ -23,6 +27,11 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [userOptions, setUserOptions] = useState<User[]>([]);
   const [searching, setSearching] = useState(false);
+  // 提案确认人(ECP confirmer)配置
+  const [newConfirmerId, setNewConfirmerId] = useState<string>();
+  const [confirmerOptions, setConfirmerOptions] = useState<User[]>([]);
+  const [searchingConfirmer, setSearchingConfirmer] = useState(false);
+  const [addingConfirmer, setAddingConfirmer] = useState(false);
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [releaseConfirm, setReleaseConfirm] = useState('');
   const [releasing, setReleasing] = useState(false);
@@ -137,6 +146,48 @@ export default function SettingsPage() {
     refreshMembers();
   };
 
+  // ---------- 提案确认人(ECP confirmer)配置 ----------
+  const { data: confirmers, refresh: refreshConfirmers } = useRequest(
+    async () => {
+      if (!ecpWsId) return [];
+      const [err, res] = await apiInterceptors(listEcpConfirmers(ecpWsId));
+      return err ? [] : (res ?? []);
+    },
+    { refreshDeps: [ecpWsId] },
+  );
+
+  const handleSearchConfirmer = async (keyword: string) => {
+    setSearchingConfirmer(true);
+    try {
+      const res = await usersService.listUsers(1, 20, keyword);
+      setConfirmerOptions(res?.list || []);
+    } catch {
+      setConfirmerOptions([]);
+    } finally {
+      setSearchingConfirmer(false);
+    }
+  };
+
+  const handleAddConfirmer = async () => {
+    if (!newConfirmerId) return;
+    setAddingConfirmer(true);
+    const [err] = await apiInterceptors(
+      addEcpConfirmer({ user_id: newConfirmerId, workspace_id: ecpWsId }),
+    );
+    setAddingConfirmer(false);
+    if (err) { message.error(err.message); return; }
+    message.success('已添加提案确认人');
+    setNewConfirmerId(undefined);
+    refreshConfirmers();
+  };
+
+  const handleRemoveConfirmer = async (confirmerId: number) => {
+    const [err] = await apiInterceptors(removeEcpConfirmer(confirmerId));
+    if (err) { message.error(err.message); return; }
+    message.success('已移除提案确认人');
+    refreshConfirmers();
+  };
+
   const handleRelease = async () => {
     if (!ws?.workspace_code) return;
     setReleasing(true);
@@ -218,6 +269,79 @@ export default function SettingsPage() {
             },
           ]}
         />
+      </Card>
+
+      <Card title="提案确认" className="mb-4">
+        <p className="mb-3 text-xs text-gray-500">
+          空间成员默认可确认提案（成员增删时自动同步确认权限），owner 始终可确认。可在下方按用户名搜索配置或移除确认人。
+        </p>
+        {canManage && (
+          <div className="mb-3 flex gap-2">
+            <Select
+              showSearch
+              filterOption={false}
+              loading={searchingConfirmer}
+              style={{ flex: 1 }}
+              placeholder="按用户名 / 邮箱搜索用户"
+              value={newConfirmerId}
+              onChange={setNewConfirmerId}
+              onSearch={handleSearchConfirmer}
+              notFoundContent={searchingConfirmer ? <Spin size="small" /> : null}
+              options={confirmerOptions.map((u) => ({
+                value: String(u.id),
+                label: `#${u.id} ${u.name}${u.fullname ? ` (${u.fullname})` : ''}${u.email ? ` · ${u.email}` : ''}`,
+              }))}
+            />
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              loading={addingConfirmer}
+              disabled={!newConfirmerId}
+              onClick={handleAddConfirmer}
+            >
+              添加
+            </Button>
+          </div>
+        )}
+        {(confirmers ?? []).length === 0 ? (
+          <Empty description="暂无确认人（空间成员将自动获得确认权限）" />
+        ) : (
+          <Table
+            rowKey="id"
+            size="small"
+            pagination={false}
+            dataSource={confirmers || []}
+            locale={{ emptyText: '暂无确认人' }}
+            columns={[
+              {
+                title: '用户',
+                dataIndex: 'user_name',
+                render: (name: string | null, r: EcpConfirmer) => name || `#${r.user_id}`,
+              },
+              { title: 'User ID', dataIndex: 'user_id', width: 120 },
+              {
+                title: '范围',
+                dataIndex: 'scope',
+                width: 130,
+                render: (s?: string | null) => s || '全部范围',
+              },
+              ...(canManage
+                ? [
+                    {
+                      title: '',
+                      key: 'actions',
+                      width: 60,
+                      render: (_: unknown, r: EcpConfirmer) => (
+                        <Popconfirm title="移除该确认人？" onConfirm={() => handleRemoveConfirmer(r.id)}>
+                          <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                        </Popconfirm>
+                      ),
+                    },
+                  ]
+                : []),
+            ]}
+          />
+        )}
       </Card>
 
       <Card title="空间模型" className="mb-4">

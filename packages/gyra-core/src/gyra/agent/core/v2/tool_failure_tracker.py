@@ -65,6 +65,8 @@ class ToolFailureTracker:
         parts = [f"工具 [{tool_name}]"]
         if include_count:
             parts[0] += f" 连续失败 {self.get_failure_count(tool_name)} 次"
+        if self.is_blocked(tool_name):
+            parts.append(f"已被阻止 (blocked, 阈值 {self._max_failures})")
 
         # 添加参数信息
         if last_failure.params:

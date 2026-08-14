@@ -3,7 +3,7 @@ import { getAppStrategy, getAppStrategyValues, promptTypeTarget, getChatLayout, 
 import { AppContext } from '@/contexts';
 import { safeJsonParse } from '@/utils/json';
 import { useRequest } from 'ahooks';
-import { Checkbox, Form, Input, InputNumber, Radio, Select, Tag, Switch, Tooltip } from 'antd';
+import { Checkbox, Form, Input, InputNumber, Select, Tag, Switch, Tooltip } from 'antd';
 import { isString, uniqBy } from 'lodash';
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -281,8 +281,6 @@ export default function TabOverview() {
           },
         });
       }
-    } else if (fieldName === 'agent_version') {
-      fetchUpdateApp({ ...appInfo, agent_version: fieldValue as string });
     } else if (fieldName === 'llm_strategy') {
       fetchUpdateApp({ ...appInfo, llm_config: { llm_strategy: fieldValue as string, llm_strategy_value: appInfo.llm_config?.llm_strategy_value || [] } });
     } else if (fieldName === 'llm_strategy_value') {
@@ -400,20 +398,8 @@ export default function TabOverview() {
                     className="w-full [&_.ant-select-selector]:!rounded-xl [&_.ant-select-selector]:border-gray-200 [&_.ant-select-selector]:focus-within:border-violet-400 [&_.ant-select-selector]:focus-within:ring-2 [&_.ant-select-selector]:focus-within:ring-violet-100"
                   />
                 </Form.Item>
-                {/* Runtime 版本选择器（多媒体 Agent 不跑 LLM 运行时，隐藏） */}
-                {!multimediaMode && (
-                  <Form.Item
-                    label={<span className="text-gray-600 font-medium text-[13px]">Runtime 版本</span>}
-                    name="agent_version"
-                    className="mb-0 col-span-2"
-                    tooltip="v1: 经典 BAIZE 运行时；v2: Core_v2 新运行时"
-                  >
-                    <Radio.Group optionType="button" buttonStyle="solid">
-                      <Radio.Button value="v1">v1 (经典)</Radio.Button>
-                      <Radio.Button value="v2">v2 (Core_v2)</Radio.Button>
-                    </Radio.Group>
-                  </Form.Item>
-                )}
+                {/* Runtime 版本切换已下线：v2 是独立 Agent 模板（Agent 类型下拉直接选 V2），
+                    不再通过 agent_version 在 v1/v2 之间切换编辑能力 */}
                 {is_reasoning_engine_agent && (
                   <Form.Item name="reasoning_engine" label={<span className="text-gray-600 font-medium text-[13px]">{t('baseinfo_reasoning_engine')}</span>} rules={[{ required: true, message: t('baseinfo_select_reasoning_engine') }]} className="mb-0 col-span-2">
                     <Select options={reasoningEngineOptions} placeholder={t('baseinfo_select_reasoning_engine')} className="w-full [&_.ant-select-selector]:!rounded-xl [&_.ant-select-selector]:border-gray-200 [&_.ant-select-selector]:focus-within:border-violet-400 [&_.ant-select-selector]:focus-within:ring-2 [&_.ant-select-selector]:focus-within:ring-violet-100" />

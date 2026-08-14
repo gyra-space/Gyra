@@ -64,7 +64,9 @@ def build_proposal_tools() -> List[FunctionTool]:
             connector = _get_connector(datasource_id)
         except Exception as e:  # noqa: BLE001
             return json.dumps({"error": f"connector unavailable: {e}"}, ensure_ascii=False)
-        sql = f"SELECT DISTINCT {column} FROM {table_name} LIMIT {_MAX_DISTINCT}"
+        sql = connector.limit_sql(
+            f"SELECT DISTINCT {column} FROM {table_name}", _MAX_DISTINCT
+        )
         try:
             rows = await asyncio.to_thread(connector.run, sql)
         except Exception as e:  # noqa: BLE001

@@ -280,7 +280,7 @@ const AddOrEditPrompt: React.FC = () => {
             try {
               message = JSON.parse(message).vis;
             } catch {
-              message.replaceAll('\\n', '\n');
+              message.replace(/\\n/g, '\n');
             }
             if (message === '[DONE]') {
               setLlmLoading(false);

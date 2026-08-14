@@ -6,6 +6,7 @@ turn 结束触发 HookManager.turn_complete，conversation 结束触发 conversa
 import dataclasses
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
+from gyra.agent.core.v2.event_stream import EventStream
 from gyra.agent.core.v2.runtime import run_step
 from gyra.agent.core.v2.state_store import StateStore
 from gyra.agent.core.v2.step_event import StepEvent
@@ -45,8 +46,14 @@ async def run_loop(
     hook_manager: Optional[Any] = None,
     max_steps: int = 20,
     user_id: Optional[str] = None,
+    request_meta: Optional[dict] = None,
+    event_stream: Optional[EventStream] = None,
 ) -> AsyncGenerator[StepEvent, None]:
-    """多轮循环。"""
+    """多轮循环。
+
+    event_stream：共享 EventStream（P0 插件订阅挂载点），透传给每个 run_step；
+    缺省时各 step 自建（无订阅者，行为与旧版一致）。
+    """
     turn_ctx = _TurnContext(
         round=0,
         user_prompt=input_.get("prompt", ""),
@@ -74,6 +81,8 @@ async def run_loop(
             parent_step_id=parent_step_id,
             permission_gate=permission_gate,
             subagent_runtime=subagent_runtime,
+            request_meta=request_meta,
+            event_stream=event_stream,
         ):
             yield step_event
 

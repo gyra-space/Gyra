@@ -337,7 +337,11 @@
 .ws-growth__entry-orb::before {
   content: '';
   position: absolute;
-  inset: 2.5px;
+  /* inset 旧内核回退:四向展开,等价 inset: 2.5px */
+  top: 2.5px;
+  right: 2.5px;
+  bottom: 2.5px;
+  left: 2.5px;
   border-radius: 50%;
   background: var(--ws-surface);
 }
@@ -407,7 +411,11 @@
 
 .ws-growth__ring-value {
   position: absolute;
-  inset: 0;
+  /* inset 旧内核回退:四向展开,等价 inset: 0 */
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: flex;
   align-items: center;
   justify-content: center;

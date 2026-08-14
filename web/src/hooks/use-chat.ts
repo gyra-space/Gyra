@@ -173,7 +173,7 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
                 scheduleVisFlush();
                 return;
               }
-            } catch { message = message.replaceAll('\\n', '\n'); }
+            } catch { message = message.replace(/\\n/g, '\n'); }
             if (typeof message === 'string') {
               if (message === '[DONE]') { flushVis(); onDone?.(); }
               else if (message?.startsWith('[ERROR]')) { flushVis(); onError?.(message?.replace('[ERROR]', '')); }

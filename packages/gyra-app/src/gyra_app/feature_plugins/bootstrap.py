@@ -87,3 +87,8 @@ def register_enabled_feature_plugin_routers(app: FastAPI) -> None:
     # 每次启动兜底执行,覆盖「仅开启 OAuth 登录、未启用权限插件」的场景。
     from gyra_app.feature_plugins.permissions.seed import migrate_workspace_owners
     migrate_workspace_owners()
+
+    # Fix ECP 提案确认白名单:清除 mock 用户留下的陈旧确认人记录并确保
+    # owner 在名单内,避免「名单非空却无真实用户命中、所有人失去确认权限」。
+    from gyra_app.feature_plugins.permissions.seed import migrate_ecp_confirmers
+    migrate_ecp_confirmers()

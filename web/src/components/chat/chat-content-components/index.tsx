@@ -59,7 +59,7 @@ const pluginViewStatusMapper: Record<DBGPTView['status'], { bgClass: string; ico
 
 function formatMarkdownVal(val: string) {
   return val
-    .replaceAll('\\n', '\n')
+    .replace(/\\n/g, '\n')
     .replace(/<table(\w*=[^>]+)>/gi, '<table $1>')
     .replace(/<tr(\w*=[^>]+)>/gi, '<tr $1>');
 }
@@ -89,7 +89,7 @@ function ChatContent({ children, content, isChartChat, onLinkClick }: PropsWithC
     let cacheIndex = 0;
     const result = value.replace(/<dbgpt-view[^>]*>[^<]*<\/dbgpt-view>/gi, matchVal => {
       try {
-        const pluginVal = matchVal.replaceAll('\n', '\\n').replace(/<[^>]*>|<\/[^>]*>/gm, '');
+        const pluginVal = matchVal.replace(/\n/g, '\\n').replace(/<[^>]*>|<\/[^>]*>/gm, '');
         const pluginContext = JSON.parse(pluginVal) as DBGPTView;
         const replacement = `<custom-view>${cacheIndex}</custom-view>`;
 

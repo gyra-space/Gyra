@@ -1,20 +1,28 @@
-"""PermissionGate — 5-level check chain before every tool call.
+"""PermissionGate — 工具调用前的水fall决策中间件链 + 单调守卫。
 
-Spec §9.3. Levels (in order):
+Spec §9.3. 决策中间件（waterfall）按 order 升序执行，每一级返回
+``DecisionResult`` 或 None（无意见、委托下游）；不调 ``next_()`` 即短路——
+监听器"不调 next() 即拥有决策"。中间件可读写共享的 ``PermissionContext``。
+
+内置决策顺序（原 5 级链，行为兼容）：
   1. PermissionMode short-circuit (bypass/auto/plan)
   2. session cache (allow_session)
   3. permission_ruleset (static rules: ALLOW/DENY/ASK)
-  4. Tool.check_permissions hook (P2: implemented; opt-in via `tool` kwarg)
-  5. ask → emit AWAITING_TOOL_PERMISSION event + persist checkpoint +
+  4. Tool.check_permissions hook (opt-in via `tool` kwarg)
+  5. 单调守卫链（ToolGuard：只允许拒绝，不允许放行——fail-closed）
+  6. ask → emit AWAITING_TOOL_PERMISSION event + persist checkpoint +
      delegate to InteractionAdapter.request_tool_permission
 
-check() is an async generator: it yields AWAITING_TOOL_PERMISSION events
-when asking; the caller reads gate.last_result for the final decision.
+check() 是 async generator：ask 时 yield AWAITING_TOOL_PERMISSION 事件；
+调用方读完生成器后读 gate.last_result 获得最终决策。
 """
 from __future__ import annotations
 import time
 import uuid
-from typing import Any, AsyncGenerator, Callable, Optional, TYPE_CHECKING
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, AsyncGenerator, Awaitable, Callable, List, Optional, TYPE_CHECKING
 from gyra._private.pydantic import BaseModel, ConfigDict
 from gyra.agent.core.v2.permission_mode import PermissionMode
 from gyra.agent.core.v2.session_cache import SessionPermissionCache, hash_tool_input
@@ -63,7 +71,201 @@ class PermissionCheckResult(BaseModel):
     reason: str = ""
 
 
+class DecisionKind(str, Enum):
+    ALLOW = "allow"
+    DENY = "deny"
+    ASK = "ask"
+
+
+@dataclass
+class DecisionResult:
+    """waterfall 决策中间件的 typed decision。
+
+    kind=ASK 时由 PermissionGate 负责 emit + checkpoint + adapter 委托；
+    ALLOW/DENY 短路后续中间件。
+    """
+    kind: DecisionKind
+    reason: str = ""
+
+
+@dataclass
+class PermissionContext:
+    """中间件共享上下文：读写、贯穿整条决策链。
+
+    参数不可改写：工具调用参数（tool_name/tool_input/input_hash）在链中固定，
+    历史、审计、UI、执行必须一致。
+    """
+    tool_name: str
+    tool_input: dict
+    input_hash: str
+    agent_id: Optional[str] = None
+    conv_id: Optional[str] = None
+    step_id: Optional[str] = None
+    extra: dict = field(default_factory=dict)
+
+
+NextFn = Callable[[], Awaitable[Optional[DecisionResult]]]
+
+
+class PermissionMiddleware(ABC):
+    """决策中间件基类。
+
+    子类实现 ``run(ctx, next_)``：
+      - 返回 DecisionResult → 短路（ALLOW/DENY）或转入 ASK；
+      - 调用 ``await next_()`` 委托下游；不调 next() 即拥有决策。
+    ``order`` 越小越先执行（内置中间件 order 见 PermissionGate._default_middlewares）。
+    """
+
+    order: int = 100
+
+    @abstractmethod
+    async def run(self, ctx: PermissionContext, next_: NextFn) -> Optional[DecisionResult]: ...
+
+
+class ToolGuard(ABC):
+    """单调守卫：只允许返回 denial（None = 放行，str = 拒绝原因）。
+
+    没有 allow 结果——监听器顺序不可能把一次拒绝翻回允许，权限系统天然
+    fail-closed。守卫注册顺序无影响：任一守卫拒绝即拒绝。
+    """
+
+    @abstractmethod
+    async def check(self, ctx: PermissionContext) -> Optional[str]:
+        """返回 denial reason（非 None 即拒绝），或 None 放行。"""
+
+
+class _GuardMiddleware(PermissionMiddleware):
+    """把 ToolGuard 列表包装成决策中间件。
+
+    order=35：在 tool hook 与 ruleset 应用之前执行——单调守卫是 fail-closed
+    的最后防线，任何 allow 决策（无论来自 ruleset 还是 tool）都无法绕过守卫。
+    """
+
+    order: int = 35
+
+    def __init__(self, guards: List[ToolGuard]):
+        self._guards = guards
+
+    async def run(self, ctx: PermissionContext, next_: NextFn) -> Optional[DecisionResult]:
+        for guard in self._guards:
+            reason = await guard.check(ctx)
+            if reason:
+                return DecisionResult(kind=DecisionKind.DENY, reason=f"guard: {reason}")
+        return await next_()
+
+
+class _ModeMiddleware(PermissionMiddleware):
+    """Level 1: PermissionMode short-circuit (bypass/auto/plan)。"""
+
+    order: int = 10
+
+    def __init__(self, mode: PermissionMode):
+        self._mode = mode
+
+    async def run(self, ctx: PermissionContext, next_: NextFn) -> Optional[DecisionResult]:
+        if self._mode is PermissionMode.BYPASS:
+            return DecisionResult(kind=DecisionKind.ALLOW, reason="bypass mode")
+        if self._mode is PermissionMode.AUTO:
+            return DecisionResult(kind=DecisionKind.ALLOW, reason="auto mode")
+        if self._mode is PermissionMode.PLAN and _is_side_effecting(ctx.tool_name):
+            return DecisionResult(
+                kind=DecisionKind.DENY,
+                reason="plan mode denies side-effecting tool",
+            )
+        return await next_()
+
+
+class _SessionCacheMiddleware(PermissionMiddleware):
+    """Level 2: session cache (allow_session)。"""
+
+    order: int = 20
+
+    def __init__(self, cache: SessionPermissionCache):
+        self._cache = cache
+
+    async def run(self, ctx: PermissionContext, next_: NextFn) -> Optional[DecisionResult]:
+        if self._cache.is_allowed(ctx.tool_name, ctx.input_hash):
+            return DecisionResult(kind=DecisionKind.ALLOW, reason="session cache")
+        return await next_()
+
+
+class _RulesetMiddleware(PermissionMiddleware):
+    """Level 3: permission_ruleset (static rules)。
+
+    只计算 ruleset 决策并写入 ctx.extra，不短路——ruleset 决策在
+    tool hook / guard 之后应用（与旧 check() 顺序一致：tool 可覆盖 ruleset）。
+    """
+
+    order: int = 30
+
+    def __init__(self, ruleset: Optional[PermissionRuleset]):
+        self._ruleset = ruleset
+
+    async def run(self, ctx: PermissionContext, next_: NextFn) -> Optional[DecisionResult]:
+        action = PermissionAction.ALLOW
+        if self._ruleset is not None:
+            action = self._ruleset.check(ctx.tool_name, context={})
+        ctx.extra["ruleset_action"] = action
+        return await next_()
+
+
+class _RulesetApplyMiddleware(PermissionMiddleware):
+    """Level 3b: 应用 ruleset 决策（在 tool hook / guard 表态之后）。
+
+    ALLOW → ALLOW；DENY → DENY；ASK → 转入 ask 阶段。
+    """
+
+    order: int = 50
+
+    async def run(self, ctx: PermissionContext, next_: NextFn) -> Optional[DecisionResult]:
+        action = ctx.extra.get("ruleset_action", PermissionAction.ALLOW)
+        if action is PermissionAction.ALLOW:
+            return DecisionResult(kind=DecisionKind.ALLOW, reason="ruleset allow")
+        if action is PermissionAction.DENY:
+            return DecisionResult(kind=DecisionKind.DENY, reason="ruleset deny")
+        # ASK → 转入 ask 阶段（Level 5；守卫已在前序执行过，不会被绕过）
+        return DecisionResult(kind=DecisionKind.ASK, reason="ruleset ask")
+
+
+class _ToolHookMiddleware(PermissionMiddleware):
+    """Level 4: Tool.check_permissions hook (opt-in via `tool` kwarg)。"""
+
+    order: int = 40
+
+    def __init__(self, tool: Optional[Any], gate: "PermissionGate"):
+        self._tool = tool
+        self._gate = gate
+
+    async def run(self, ctx: PermissionContext, next_: NextFn) -> Optional[DecisionResult]:
+        if self._tool is None:
+            return await next_()
+        try:
+            tool_result = await self._tool.check_permissions(ctx.tool_input, context={
+                "agent_id": ctx.agent_id,
+                "conv_id": ctx.conv_id,
+                "step_id": ctx.step_id,
+            })
+        except NotImplementedError:
+            return await next_()
+        if tool_result is not None:
+            decision = getattr(tool_result, "decision", None)
+            reason = getattr(tool_result, "reason", "")
+            if decision == "allow":
+                return DecisionResult(kind=DecisionKind.ALLOW, reason=f"tool check_permissions: {reason}")
+            if decision == "deny":
+                return DecisionResult(kind=DecisionKind.DENY, reason=f"tool check_permissions: {reason}")
+            # decision == "ask" → 委托 ask 阶段（本中间件无意见，继续）
+        return await next_()
+
+
 class PermissionGate:
+    """工具调用前的水fall决策中间件链。check() 是 async generator。
+
+    通过 ``register_middleware`` / ``register_guard`` 可插拔第三方策略：
+      - 决策中间件：可改决策、短路、委托下游；
+      - 单调守卫：只能拒绝（fail-closed），顺序无关。
+    """
+
     def __init__(
         self,
         state_store: "StateStore",
@@ -87,16 +289,54 @@ class PermissionGate:
         self._conv_id = conv_id
         self._agent_id = agent_id
         self._tool = tool
+        self._guards: List[ToolGuard] = []
+        self._middlewares: List[PermissionMiddleware] = []
         self.last_result: PermissionResult = PermissionResult(
             decision=PermissionDecision.DENY, reason="not checked"
         )
+
+    # ------------------------------------------------------------------
+    # 扩展点
+    # ------------------------------------------------------------------
+
+    def register_guard(self, guard: ToolGuard) -> None:
+        """注册单调守卫：只允许拒绝，不允许放行。fail-closed。"""
+        if not isinstance(guard, ToolGuard):
+            raise TypeError(f"guard must be ToolGuard, got {type(guard).__name__}")
+        self._guards.append(guard)
+
+    def register_middleware(self, middleware: PermissionMiddleware) -> None:
+        """注册自定义决策中间件（waterfall 语义）。"""
+        if not isinstance(middleware, PermissionMiddleware):
+            raise TypeError(
+                f"middleware must be PermissionMiddleware, got {type(middleware).__name__}"
+            )
+        self._middlewares.append(middleware)
+
+    def _default_middlewares(self) -> List[PermissionMiddleware]:
+        return [
+            _ModeMiddleware(self._mode),
+            _SessionCacheMiddleware(self._cache),
+            _RulesetMiddleware(self._ruleset),
+            _GuardMiddleware(self._guards),
+            _ToolHookMiddleware(self._tool, self),
+            _RulesetApplyMiddleware(),
+        ]
+
+    def _ordered_middlewares(self) -> List[PermissionMiddleware]:
+        all_mws = self._default_middlewares() + self._middlewares
+        return sorted(all_mws, key=lambda m: m.order)
+
+    # ------------------------------------------------------------------
+    # check() — async generator，兼容原有调用契约
+    # ------------------------------------------------------------------
 
     async def check(
         self,
         tool_call: dict,
         emit: Optional[Callable] = None,
     ) -> AsyncGenerator[StepEvent, None]:
-        """Run the 5-level check.
+        """运行 waterfall 决策链。
 
         Yields AWAITING_TOOL_PERMISSION events when asking.
         Sets self.last_result. Caller reads last_result after generator exhausts.
@@ -113,61 +353,42 @@ class PermissionGate:
         tool_name = tool_call.get("tool", "")
         tool_input = tool_call.get("input", {}) or {}
         input_hash = hash_tool_input(tool_input)
+        ctx = PermissionContext(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            input_hash=input_hash,
+            agent_id=self._agent_id,
+            conv_id=self._conv_id,
+            step_id=self._step_id,
+        )
 
-        # Level 1: PermissionMode short-circuit
-        if self._mode is PermissionMode.BYPASS:
-            self.last_result = PermissionResult(decision=PermissionDecision.ALLOW, reason="bypass mode")
-            return
-        if self._mode is PermissionMode.AUTO:
-            self.last_result = PermissionResult(decision=PermissionDecision.ALLOW, reason="auto mode")
-            return
-        if self._mode is PermissionMode.PLAN and _is_side_effecting(tool_name):
-            self.last_result = PermissionResult(decision=PermissionDecision.DENY, reason="plan mode denies side-effecting tool")
-            return
+        middlewares = self._ordered_middlewares()
 
-        # Level 2: session cache
-        if self._cache.is_allowed(tool_name, input_hash):
-            self.last_result = PermissionResult(decision=PermissionDecision.ALLOW, reason="session cache")
-            return
+        async def run_chain(index: int) -> Optional[DecisionResult]:
+            if index >= len(middlewares):
+                return None
+            mw = middlewares[index]
+            return await mw.run(ctx, lambda: run_chain(index + 1))
 
-        # Level 3: permission_ruleset
-        # No ruleset → ALLOW (safe fallback for P1; caller can pass a ruleset
-        # with default_action=ASK to force asking)
-        action = PermissionAction.ALLOW
-        if self._ruleset is not None:
-            action = self._ruleset.check(tool_name, context={})
+        decision = await run_chain(0)
 
-        # Level 4: Tool.check_permissions (evaluated between ruleset and ask)
-        if self._tool is not None:
-            tool_result = await self._tool.check_permissions(tool_input, context={
-                "agent_id": self._agent_id,
-                "conv_id": self._conv_id,
-                "step_id": self._step_id,
-            })
-            if tool_result is not None:
-                if tool_result.decision == "allow":
-                    self.last_result = PermissionResult(
-                        decision=PermissionDecision.ALLOW,
-                        reason=f"tool check_permissions: {tool_result.reason}",
-                    )
-                    return
-                if tool_result.decision == "deny":
-                    self.last_result = PermissionResult(
-                        decision=PermissionDecision.DENY,
-                        reason=f"tool check_permissions: {tool_result.reason}",
-                    )
-                    return
-                # decision == "ask" → fall through to Level 5
+        # 无任何中间件表态 → 默认放行（安全默认：无规则则 ALLOW）
+        if decision is None:
+            decision = DecisionResult(kind=DecisionKind.ALLOW, reason="default allow")
 
-        # Apply ruleset decision when no tool opinion or tool returned None
-        if action is PermissionAction.ALLOW:
-            self.last_result = PermissionResult(decision=PermissionDecision.ALLOW, reason="ruleset allow")
-            return
-        if action is PermissionAction.DENY:
-            self.last_result = PermissionResult(decision=PermissionDecision.DENY, reason="ruleset deny")
+        if decision.kind is DecisionKind.ALLOW:
+            self.last_result = PermissionResult(
+                decision=PermissionDecision.ALLOW, reason=decision.reason
+            )
             return
 
-        # Level 5: ask → emit event + persist + delegate
+        if decision.kind is DecisionKind.DENY:
+            self.last_result = PermissionResult(
+                decision=PermissionDecision.DENY, reason=decision.reason
+            )
+            return
+
+        # ASK → emit + checkpoint + delegate（原 Level 5）
         if self._adapter is None:
             raise NoInteractionAdapterError(
                 f"PermissionGate reached ASK for tool '{tool_name}' but no "

@@ -59,7 +59,11 @@ export const PromptEditorWrapper = styled.div`
 
 export const MarkdownPreviewWrapper = styled.div`
   position: absolute;
-  inset: 0;
+  /* inset 旧内核回退:styled-components 不经 PostCSS,需显式四向展开 */
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 20;
   overflow-y: auto;
   background: #fff;

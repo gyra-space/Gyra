@@ -10,6 +10,15 @@
     "lint": "next lint",
     "test": "jest"
   },
+  "browserslist": [
+    "chrome >= 64",
+    "edge >= 79",
+    "firefox >= 68",
+    "safari >= 12",
+    "ios_saf >= 12",
+    "android >= 64",
+    "not dead"
+  ],
   "dependencies": {
     "@ant-design/icons": "^6.0.0",
     "@ant-design/x": "^1.5.0",

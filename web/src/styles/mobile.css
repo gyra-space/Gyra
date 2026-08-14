@@ -72,6 +72,7 @@ body {
 
 .ms-app {
   position: relative;
+  height: 100vh; /* 无 dvh 旧内核回退,下行覆盖 */
   height: 100dvh;
   background:
     radial-gradient(1200px 600px at 50% -10%, rgba(109, 92, 255, 0.18), transparent 60%),
@@ -86,6 +87,7 @@ body {
   position: relative;
   width: 100%;
   max-width: 480px;
+  height: 100vh; /* 无 dvh 旧内核回退,下行覆盖 */
   height: 100dvh;
   background:
     radial-gradient(640px 420px at 50% -6%, rgba(109, 92, 255, 0.14), transparent 60%),

@@ -107,6 +107,7 @@ class ConfirmerVO(BaseModel):
     workspace_id: str
     user_id: str
     scope: Optional[str] = None
+    user_name: Optional[str] = None
 
 
 class ConfirmerCreateRequest(BaseModel):

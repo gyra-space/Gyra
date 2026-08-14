@@ -61,7 +61,7 @@ async def test_run_step_sync_subagent_emits_awaiting_sub_agent(store):
     # After AWAITING_SUB_AGENT, should go to OBSERVING then DONE
     assert states[-1] is StepState.DONE
     # The OBSERVING event should carry the sub-agent's result
-    observing = [e for e in events if e.state is StepState.OBSERVING]
+    observing = [e for e in events if e.state is StepState.OBSERVING and e.event_type == "tool_result"]
     assert len(observing) >= 1
     # The tool_result for spawn_subagent includes the handle
     assert observing[-1].output.get("status") == "done" or "task_id" in observing[-1].output
@@ -82,7 +82,7 @@ async def test_run_step_without_subagent_runtime_falls_back_to_acting_fn(store):
         subagent_runtime=None,
     ):
         events.append(e)
-    observing = [e for e in events if e.state is StepState.OBSERVING]
+    observing = [e for e in events if e.state is StepState.OBSERVING and e.event_type == "tool_result"]
     assert len(observing) == 1
     assert observing[0].output["content"] == "legacy path"
     assert observing[0].output["is_exe_success"] is True

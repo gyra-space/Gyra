@@ -62,6 +62,18 @@
   padding: 20px 24px 48px;
 }
 
+/* 粘性页头毛玻璃底色:color-mix 需 Chrome 111+/Safari 16.2+,
+   旧内核回退为接近的不透明色(下行 color-mix 覆盖) */
+.ws-surface-veil {
+  background-color: rgba(255, 255, 255, 0.88);
+  background-color: color-mix(in srgb, var(--ws-surface) 88%, transparent);
+}
+
+.dark .ws-surface-veil {
+  background-color: rgba(22, 26, 38, 0.88);
+  background-color: color-mix(in srgb, var(--ws-surface) 88%, transparent);
+}
+
 @media (min-width: 1280px) { .ws-page-content { max-width: 1600px; } }
 @media (min-width: 1536px) { .ws-page-content { max-width: 2000px; } }
 

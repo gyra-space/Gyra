@@ -181,7 +181,7 @@ export function MobileAgentView({ convUid, workspaceId, appCode, taskId, onNewSe
       <Drawer
         title={selectedStep?.title || '步骤详情'}
         placement="bottom"
-        height="min(72dvh, 560px)"
+        height="min(72vh, 560px)"
         open={!!selectedStep}
         onClose={() => setSelectedStep(null)}
         destroyOnClose

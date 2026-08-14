@@ -78,12 +78,21 @@ def _make_emit(stream, step_id, conv_id, agent_id, parent_step_id, seq_start):
     return emit
 
 
-async def _run_thinking_phase(emit, thinking_fn, input_, result_box):
+async def _run_thinking_phase(emit, thinking_fn, input_, result_box, request_meta=None):
     """INIT + THINKING 阶段。yield 事件，把 tool_calls/await_user 写入 result_box。
 
     C3 fix: 兼容 dict yield（transitional tests）和 ThinkingChunk dataclass yield（default_thinking_fn）。
     """
+    if request_meta:
+        # request/header 快照：记录本次模型请求的可审计元信息
+        # （model/system_prompt 摘要/会话标识），作为日志事实供重放与审计。
+        yield await emit(
+            StepState.INIT, "request_header",
+            input_data=request_meta,
+        )
     yield await emit(StepState.INIT, "step_init", input_data=input_)
+    # P0 阶段发射点：THINKING 阶段开始（插件可在此注入/观测 LLM 调用前置逻辑）
+    yield await emit(StepState.THINKING, "thinking_started")
     result_box["tool_calls"] = []
     result_box["await_user"] = False
     async for chunk in thinking_fn(input_):
@@ -153,6 +162,9 @@ async def _run_acting_phase(
     if conv_id is None:
         raise ValueError("conv_id is required for _run_acting_phase")
 
+    suspended = False  # ask_user 挂起时不发 observing_done
+    executed_count = 0  # 实际执行（非 denied / 非 subagent 拦截）的工具数
+
     for tc in tool_calls:
         # Sub-agent interception (spec §8)
         if tc.get("tool") == "spawn_subagent" and subagent_runtime is not None:
@@ -212,6 +224,7 @@ async def _run_acting_phase(
                 conversation_id=conv_id or "unknown",
             )
             result = await acting_fn(v2_call, ctx)
+            executed_count += 1
             # Convert V2ToolResult back to dict for event system
             result_dict = {
                 "is_exe_success": result.success,
@@ -222,6 +235,17 @@ async def _run_acting_phase(
                 result_dict["error"] = result.error
             if result.error_code:
                 result_dict["error_code"] = result.error_code
+            # P0 阶段发射点：工具函数执行完毕（与 OBSERVING 态的 tool_result 区分，
+            # 供插件观测原始执行事实——成功/失败/错误码，不含截断后的 content）
+            yield await emit(
+                StepState.ACTING, "tool_executed",
+                input_data={"tool": tc["tool"]},
+                output_data={
+                    "success": result.success,
+                    **({"error": result.error} if result.error else {}),
+                    **({"error_code": result.error_code} if result.error_code else {}),
+                },
+            )
             # P2 follow-up: legacy ActionOutput.ask_user compat (§9.4)
             if isinstance(result_dict, dict) and "ask_user" in result_dict:
                 from gyra.agent.core.v2.ask_user_adapter import AskUserAdapter
@@ -237,8 +261,19 @@ async def _run_acting_phase(
                         StepState.AWAITING_USER, "interaction_request",
                         input_data=ask_event.input,
                     )
+                    suspended = True
                     return  # step suspended
             yield await emit(StepState.OBSERVING, "tool_result", output_data=result_dict)
+
+    # P0 阶段发射点：OBSERVING 阶段收尾（全部工具结果已记录；挂起时不发）
+    if not suspended:
+        yield await emit(
+            StepState.OBSERVING, "observing_done",
+            output_data={
+                "tool_count": len(tool_calls),
+                "executed_count": executed_count,
+            },
+        )
 
 
 # Import here to avoid circular import at module load
@@ -255,16 +290,22 @@ async def run_step(
     parent_step_id: Optional[str] = None,
     permission_gate: Optional[PermissionGate] = None,
     subagent_runtime: Optional["SubAgentRuntime"] = None,
+    request_meta: Optional[dict] = None,
+    event_stream: Optional[EventStream] = None,
 ) -> AsyncGenerator[StepEvent, None]:
-    """跑一个 step，yield 所有 StepEvent。每个事件持久化后再 yield。"""
-    stream = EventStream(state_store)
+    """跑一个 step，yield 所有 StepEvent。每个事件持久化后再 yield。
+
+    event_stream：外部注入的共享 EventStream（P0 插件订阅挂载点）；
+    缺省时按 state_store 新建（无订阅者，行为与旧版一致）。
+    """
+    stream = event_stream if event_stream is not None else EventStream(state_store)
     step_id = f"step-{uuid.uuid4().hex[:8]}"
     if permission_gate is not None:
         permission_gate._step_id = step_id  # bind gate to this step
     emit = _make_emit(stream, step_id, conv_id, agent_id, parent_step_id, seq_start=0)
 
     result_box = {}
-    async for e in _run_thinking_phase(emit, thinking_fn, input_, result_box):
+    async for e in _run_thinking_phase(emit, thinking_fn, input_, result_box, request_meta=request_meta):
         yield e
 
     if result_box["await_user"]:
@@ -296,6 +337,8 @@ async def resume_step(
     step_id: Optional[str] = None,
     permission_gate: Optional[PermissionGate] = None,
     subagent_runtime: Optional["SubAgentRuntime"] = None,
+    request_meta: Optional[dict] = None,
+    event_stream: Optional[EventStream] = None,
 ) -> AsyncGenerator[StepEvent, None]:
     """从崩溃点续接。
 
@@ -308,6 +351,8 @@ async def resume_step(
             agent_id, conv_id, input_, state_store,
             thinking_fn, acting_fn, permission_gate=permission_gate,
             subagent_runtime=subagent_runtime,
+            request_meta=request_meta,
+            event_stream=event_stream,
         ):
             yield e
         return
@@ -316,7 +361,7 @@ async def resume_step(
     state_result = await state_store.get_step_state(step_id)
     last_state = state_result[0] if state_result else None
 
-    stream = EventStream(state_store)
+    stream = event_stream if event_stream is not None else EventStream(state_store)
     if permission_gate is not None:
         permission_gate._step_id = step_id
     existing = await state_store.get_events(conv_id)
@@ -336,7 +381,7 @@ async def resume_step(
     # redo_step path: re-run thinking + acting (P0 Important #1: acting_fn now included)
     _step_state_tracker.pop(step_id, None)  # reset tracker so INIT is valid
     result_box = {}
-    async for e in _run_thinking_phase(emit, thinking_fn, input_, result_box):
+    async for e in _run_thinking_phase(emit, thinking_fn, input_, result_box, request_meta=request_meta):
         yield e
 
     if result_box["await_user"]:

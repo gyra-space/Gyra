@@ -528,16 +528,14 @@ def _preview_connector(datasource_id: int):
     return Config().local_db_manager.get_connector(db_name)
 
 
-def _preview_limit(sql: str, limit: int) -> str:
-    try:
-        return sqlglot.parse_one(sql).limit(limit).sql()
-    except Exception:  # noqa: BLE001
-        return f"SELECT * FROM ({sql}) AS _t LIMIT {limit}"
-
-
 def _preview_run(sql: str, datasource_id: int, obj: Any,
-                 warnings: Optional[List[str]] = None) -> Dict[str, Any]:
-    """只读执行并统一返回 preview 结果(trust=preview)。"""
+                 warnings: Optional[List[str]] = None,
+                 limit: Optional[int] = None) -> Dict[str, Any]:
+    """只读执行并统一返回 preview 结果(trust=preview)。
+
+    limit 通过 connector.limit_sql 按目标数据库方言生成(Oracle 12c+ 用
+    FETCH FIRST、11g 用 ROWNUM 子查询),避免硬编码 LIMIT 语法不兼容。
+    """
     result: Dict[str, Any] = {
         "trust": "preview", "ok": True, "warnings": warnings or [],
         "error": None, "sql": sql,
@@ -554,6 +552,12 @@ def _preview_run(sql: str, datasource_id: int, obj: Any,
     except Exception as e:  # noqa: BLE001
         result.update(trust="none", ok=False, error=f"数据源不可用: {e}")
         return result
+    if limit and limit > 0:
+        try:
+            sql = connector.limit_sql(sql, limit)
+        except Exception as e:  # noqa: BLE001
+            result.update(trust="none", ok=False, error=f"LIMIT 生成失败: {e}")
+            return result
     try:
         raw = connector.run(sql)
     except Exception as e:  # noqa: BLE001
@@ -600,12 +604,10 @@ def _preview_dim_condition(dim: Any, f: Dict[str, Any]) -> tuple:
 def _assemble_preview_sql(mp: Dict[str, Any], ep: Dict[str, Any],
                           binding: Dict[str, Any], group_cols: List[str],
                           dim_conditions: List[str],
-                          time_range: Optional[Dict[str, Any]],
-                          limit: int) -> str:
-    """复用 DbBindingExecutor 的确定性组装,再套 LIMIT。"""
+                          time_range: Optional[Dict[str, Any]]) -> str:
+    """复用 DbBindingExecutor 的确定性组装;行数限制由 _preview_run 按方言生成。"""
     executor = DbBindingExecutor()
-    sql = executor._assemble_sql(mp, ep, binding, group_cols, dim_conditions, time_range)
-    return _preview_limit(sql, limit)
+    return executor._assemble_sql(mp, ep, binding, group_cols, dim_conditions, time_range)
 
 
 def _preview_metric(daos, obj, mp: Dict[str, Any], ws: str,
@@ -654,8 +656,8 @@ def _preview_metric(daos, obj, mp: Dict[str, Any], ws: str,
         elif warn:
             warnings.append(warn)
 
-    sql = _assemble_preview_sql(mp, ep, binding, group_cols, dim_conditions, time_range, limit)
-    return _preview_run(sql, ds_id, obj, warnings)
+    sql = _assemble_preview_sql(mp, ep, binding, group_cols, dim_conditions, time_range)
+    return _preview_run(sql, ds_id, obj, warnings, limit)
 
 
 def _preview_entity(daos, obj, payload: Dict[str, Any], ws: str, limit: int) -> Dict[str, Any]:
@@ -668,7 +670,7 @@ def _preview_entity(daos, obj, payload: Dict[str, Any], ws: str, limit: int) -> 
     conds = payload.get("default_filters") or []
     if conds:
         sql += " WHERE " + " AND ".join(conds)
-    return _preview_run(_preview_limit(sql, limit), ds_id, obj)
+    return _preview_run(sql, ds_id, obj, limit=limit)
 
 
 def _preview_dimension(daos, obj, payload: Dict[str, Any], ws: str, limit: int) -> Dict[str, Any]:
@@ -687,7 +689,7 @@ def _preview_dimension(daos, obj, payload: Dict[str, Any], ws: str, limit: int) 
     conds = (entity.payload or {}).get("default_filters") or []
     if conds:
         sql += " WHERE " + " AND ".join(conds)
-    result = _preview_run(_preview_limit(sql, limit), ds_id, obj)
+    result = _preview_run(sql, ds_id, obj, limit=limit)
     if not result.get("ok"):
         return result
     actual = {str(r[col]) for r in result["rows"] if r.get(col) is not None}
@@ -734,7 +736,7 @@ def _preview_relation(daos, obj, payload: Dict[str, Any], ws: str, limit: int) -
         f"SELECT a.{lc} AS fk_from, b.{rc} AS fk_to "
         f"FROM {lt} a JOIN {rt} b ON a.{lc} = b.{rc}"
     )
-    return _preview_run(_preview_limit(sql, limit), sb.get("datasource_id"), obj)
+    return _preview_run(sql, sb.get("datasource_id"), obj, limit=limit)
 
 
 def preview_payload(daos, obj: Any, workspace_id: str,

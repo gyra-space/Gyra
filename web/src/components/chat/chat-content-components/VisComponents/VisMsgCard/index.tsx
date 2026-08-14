@@ -33,7 +33,7 @@ const VisMsgCard = ({ data }: IProps) => {
               components={markdownComponents}
               {...markdownPlugins}
             >
-              {data?.markdown?.replaceAll('~', '&#126;')}
+              {data?.markdown?.replace(/~/g, '&#126;')}
             </GPTVis>
           )}
           style={{

@@ -104,7 +104,7 @@ const pluginViewStatusMapper: Record<
 
 const formatMarkdownVal = (val: string) => {
   return val
-    .replaceAll("\\n", "\n")
+    .replace(/\\n/g, "\n")
     .replace(/<table(\w*=[^>]+)>/gi, "<table $1>")
     .replace(/<tr(\w*=[^>]+)>/gi, "<tr $1>");
 };
@@ -234,7 +234,7 @@ const ChatContent: React.FC<{
       (matchVal) => {
         try {
           const pluginVal = matchVal
-            .replaceAll("\n", "\\n")
+            .replace(/\n/g, "\\n")
             .replace(/<[^>]*>|<\/[^>]*>/gm, "");
           const pluginContext = JSON.parse(pluginVal) as DBGPTView;
           const replacement = `<custom-view>${cacheIndex}</custom-view>`;

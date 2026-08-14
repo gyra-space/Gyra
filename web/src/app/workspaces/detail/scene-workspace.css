@@ -1,8 +1,11 @@
 .ws-scene-shell {
   --ws-rail-w: 260px;
-  /* agent 宽度随视口动态:clamp(最小, 视口比例, 最大),保证大屏时 agent 更宽 */
+  /* agent 宽度随视口动态:clamp(最小, 视口比例, 最大),保证大屏时 agent 更宽;
+     首行为旧内核(无 clamp)回退值,现代浏览器被下一行覆盖 */
+  --ws-agent-w: 420px;
   --ws-agent-w: clamp(360px, 24vw, 480px);
   /* space(大厅内容区)最小宽度,避免被 agent/rail 挤压 */
+  --ws-space-min: 560px;
   --ws-space-min: clamp(480px, 42vw, 820px);
   display: grid;
   grid-template-columns: var(--ws-rail-w) minmax(var(--ws-space-min), 1fr) var(--ws-agent-w);
@@ -42,7 +45,9 @@
 @media (min-width: 1600px) {
   .ws-scene-shell {
     --ws-rail-w: 300px;
+    --ws-agent-w: 500px;
     --ws-agent-w: clamp(440px, 26vw, 620px);
+    --ws-space-min: 640px;
     --ws-space-min: clamp(520px, 44vw, 960px);
   }
 }
@@ -54,7 +59,9 @@
   .ws-scene-shell {
     zoom: 0.92;
     /* 小屏 agent 对话优先:中间区此时大量留白,压低 space 最小宽度、加大 agent 占比 */
+    --ws-agent-w: 440px;
     --ws-agent-w: clamp(400px, 30vw, 520px);
+    --ws-space-min: 500px;
     --ws-space-min: clamp(440px, 36vw, 720px);
   }
   /* 内嵌 ChatSession(子 agent 对话)的 manus 根节点自带小屏 zoom:0.9,
@@ -1006,7 +1013,11 @@
 .ws-plan-step--running .ws-plan-step__node::after {
   content: '';
   position: absolute;
-  inset: 2.2px;
+  /* inset 旧内核回退:四向展开,等价 inset: 2.2px */
+  top: 2.2px;
+  right: 2.2px;
+  bottom: 2.2px;
+  left: 2.2px;
   border-radius: 50%;
   background: var(--ws-accent);
 }
@@ -1582,6 +1593,7 @@
 /* 中屏(900–1279px): rail 收为悬浮抽屉,主区两列;agent 随视口加宽(对话优先) */
 @media (max-width: 1279px) and (min-width: 900px) {
   .ws-scene-shell {
+    grid-template-columns: minmax(0, 1fr) 380px; /* 无 clamp 旧内核回退 */
     grid-template-columns: minmax(0, 1fr) clamp(340px, 36vw, 440px);
   }
   .ws-scene-shell__rail {
@@ -1590,6 +1602,7 @@
     left: 0;
     top: 0;
     bottom: 0;
+    width: 300px; /* 无 min() 旧内核回退 */
     width: min(300px, 85%);
     box-shadow: var(--ws-shadow-md);
     transition: transform 0.25s ease;
@@ -1770,7 +1783,11 @@
 .ws-step--running::after {
   content: '';
   position: absolute;
-  inset: 0;
+  /* inset 旧内核回退:四向展开,等价 inset: 0 */
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   background: linear-gradient(100deg, transparent 30%, rgba(var(--ws-accent-rgb), 0.07) 50%, transparent 70%);
   background-size: 200% 100%;
   animation: ws-step-sweep 2.2s linear infinite;

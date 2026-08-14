@@ -196,8 +196,7 @@ export default function EditCronPage() {
 
       {/* Sticky header */}
       <div
-        className="sticky top-0 z-30 backdrop-blur border-b border-[var(--ws-border)]"
-        style={{ backgroundColor: 'color-mix(in srgb, var(--ws-surface) 88%, transparent)' }}
+        className="ws-surface-veil sticky top-0 z-30 backdrop-blur border-b border-[var(--ws-border)]"
       >
         <div className="ws-page-content">
           <header className="ws-page-header !mb-0 py-3">

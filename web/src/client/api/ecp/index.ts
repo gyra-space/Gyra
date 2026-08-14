@@ -48,6 +48,7 @@ export interface EcpConfirmer {
   workspace_id: string;
   user_id: string;
   scope?: string | null;
+  user_name?: string | null;
 }
 
 export interface EcpOpLogEntry {

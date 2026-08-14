@@ -13,7 +13,7 @@ from gyra.agent.core.v2.step_state import (
 )
 from gyra.agent.core.v2.step_event import StepEvent
 from gyra.agent.core.v2.state_store import StateStore, DbStateStore
-from gyra.agent.core.v2.event_stream import EventStream
+from gyra.agent.core.v2.event_stream import EventStream, StepEventCallback
 from gyra.agent.core.v2.recovery import RecoveryCoordinatorV2
 from gyra.agent.core.v2.runtime import run_step, resume_step
 from gyra.agent.core.v2.permission_mode import PermissionMode
@@ -24,6 +24,11 @@ from gyra.agent.core.v2.permission_gate import (
     PermissionDecision,
     PermissionCheckResult,
     NoInteractionAdapterError,
+    ToolGuard,
+    PermissionMiddleware,
+    PermissionContext,
+    DecisionResult,
+    DecisionKind,
 )
 from gyra.agent.core.v2.subagent_handle import (
     SubAgentHandle,
@@ -62,6 +67,7 @@ from gyra.agent.core.v2.default_acting import make_default_acting_fn
 from gyra.agent.core.v2.default_thinking import make_default_thinking_fn
 from gyra.agent.core.v2.llm_stream_adapter import make_gyra_llm_stream, make_gyra_llm_stream_fn
 from gyra.agent.core.v2.run_loop import run_loop, trigger_conversation_complete
+from gyra.agent.core.v2.agent_runtime import V2AgentRuntime
 from gyra.agent.core.v2.compat_adapters import DoomLoopAdapter, TruncatorAdapter, extract_resource_map
 
 __all__ = [
@@ -73,6 +79,7 @@ __all__ = [
     "StateStore",
     "DbStateStore",
     "EventStream",
+    "StepEventCallback",
     "RecoveryCoordinatorV2",
     "run_step",
     "resume_step",
@@ -92,6 +99,11 @@ __all__ = [
     "SpawnSubagentTool",
     "AskUserAdapter",
     "PermissionCheckResult",
+    "ToolGuard",
+    "PermissionMiddleware",
+    "PermissionContext",
+    "DecisionResult",
+    "DecisionKind",
     "StreamEvent",
     "EVENT_TYPES",
     "step_event_to_stream_event",
@@ -123,6 +135,7 @@ __all__ = [
     "make_gyra_llm_stream_fn",
     "run_loop",
     "trigger_conversation_complete",
+    "V2AgentRuntime",
     "DoomLoopAdapter",
     "TruncatorAdapter",
     "extract_resource_map",

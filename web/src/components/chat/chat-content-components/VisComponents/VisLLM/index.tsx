@@ -60,7 +60,7 @@ const VisLLM = ({ data }: IProps) => {
             }}
             {...markdownPlugins}
           >
-            {markdown?.replaceAll('~', '&#126;')}
+            {markdown?.replace(/~/g, '&#126;')}
           </GPTVisLite>
         )}
       </div>

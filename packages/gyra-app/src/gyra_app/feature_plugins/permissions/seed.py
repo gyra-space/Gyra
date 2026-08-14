@@ -374,6 +374,86 @@ def _ensure_default_permission_definitions(dao: PermissionDao) -> None:
 # Track whether migration has run in this process
 _migration_done = False
 _workspace_migration_done = False
+_ecp_confirmer_migration_done = False
+
+
+def migrate_ecp_confirmers() -> None:
+    """One-time migration: sync ECP 提案确认人名单与空间成员一致。
+
+    历史问题:建空间时仅 owner 写入确认白名单,其他成员在待办里能看到提案
+    却无法确认;旧 mock 用户(owner_user_id=0)还会留下 user_id="0" 的陈旧
+    确认人记录,导致名单非空却无任何真实用户命中 —— 所有用户都失去提案
+    确认权限。本迁移(幂等,每次启动兜底执行):
+    - 把每个场景空间的全体成员补入其派生 ECP 空间的确认人名单(成员默认可确认);
+    - 清除陈旧 "0" 确认人记录(open bootstrap 场景保持为空)。
+    """
+    global _ecp_confirmer_migration_done
+    if _ecp_confirmer_migration_done:
+        return
+    _ecp_confirmer_migration_done = True
+
+    try:
+        from gyra.storage.metadata.db_manager import db
+        from gyra_serve.ecp.models.models import EcpConfirmerEntity
+        from gyra_serve.workspace.ecp_derive import derived_ecp_workspace_id
+        from gyra_serve.workspace.models.models import (
+            WorkspaceEntity,
+            WorkspaceMemberEntity,
+        )
+
+        with db.session(commit=False) as s:
+            workspaces = s.query(WorkspaceEntity).all()
+            member_rows = s.query(WorkspaceMemberEntity).all()
+            members_by_ws: dict = {}
+            for m in member_rows:
+                members_by_ws.setdefault(m.workspace_id, []).append(m.user_id)
+            changed = 0
+            for w in workspaces:
+                if not w.workspace_code:
+                    continue
+                ecp_ws = derived_ecp_workspace_id(w.workspace_code)
+                # 1. 清除陈旧 mock 确认人记录
+                removed = (
+                    s.query(EcpConfirmerEntity)
+                    .filter(
+                        EcpConfirmerEntity.workspace_id == ecp_ws,
+                        EcpConfirmerEntity.user_id == "0",
+                    )
+                    .delete(synchronize_session=False)
+                )
+                changed += removed
+                # 2. 全体成员补入名单(幂等;owner 也是成员,天然在名单内)
+                member_ids = members_by_ws.get(w.id, [])
+                if w.owner_user_id is not None and w.owner_user_id not in member_ids:
+                    member_ids = list(member_ids) + [w.owner_user_id]
+                if not member_ids:
+                    continue
+                existing = {
+                    r.user_id
+                    for r in s.query(EcpConfirmerEntity)
+                    .filter(EcpConfirmerEntity.workspace_id == ecp_ws)
+                    .all()
+                }
+                for uid in member_ids:
+                    uid_str = str(uid)
+                    if uid_str != "0" and uid_str not in existing:
+                        s.add(
+                            EcpConfirmerEntity(
+                                workspace_id=ecp_ws, user_id=uid_str, scope=None
+                            )
+                        )
+                        changed += 1
+            if changed:
+                s.commit()
+                logger.info(
+                    "migrate_ecp_confirmers: fixed %d confirmer entries",
+                    changed,
+                )
+            else:
+                logger.debug("migrate_ecp_confirmers: nothing to fix")
+
+    except Exception as e:
+        logger.warning(f"migrate_ecp_confirmers: migration failed: {e}")
 
 
 def migrate_workspace_owners() -> None:

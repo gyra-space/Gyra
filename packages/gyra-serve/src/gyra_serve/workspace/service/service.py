@@ -312,6 +312,33 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
             logger.warning(f"mark home member failed ws={workspace_id} user={user_id}: {e}")
 
     # ---------------- Member management ----------------
+    def _sync_ecp_confirmer(
+        self, workspace_id: int, user_id: int, add: bool
+    ) -> None:
+        """成员增删时同步 ECP 提案确认人名单。
+
+        场景空间成员默认拥有提案确认权限(与 inbox 待办同步给全员一致);
+        成员移除时同步回收确认权限。失败仅告警,不影响成员操作主流程。
+        """
+        try:
+            from gyra_serve.ecp.models.models import ConfirmerDao
+            from gyra_serve.workspace.ecp_derive import derived_ecp_workspace_id
+
+            ws = self._dao.get_one({"id": workspace_id})
+            if not ws or not getattr(ws, "workspace_code", None):
+                return
+            ecp_ws = derived_ecp_workspace_id(ws.workspace_code)
+            dao = ConfirmerDao()
+            if add:
+                dao.add(ecp_ws, str(user_id))
+            else:
+                dao.remove_by_user(ecp_ws, str(user_id))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"sync ecp confirmer failed (ws={workspace_id}, user={user_id}, "
+                f"add={add}): {e}"
+            )
+
     def list_members(self, workspace_id: int) -> List[WorkspaceMemberResponse]:
         """List members with user names.
 
@@ -336,8 +363,11 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
                 ),
                 None,
             )
+            self._sync_ecp_confirmer(request.workspace_id, request.user_id, add=True)
             return self._member_dao.to_response(refreshed) if refreshed else None
-        return self._member_dao.create(request)
+        created = self._member_dao.create(request)
+        self._sync_ecp_confirmer(request.workspace_id, request.user_id, add=True)
+        return created
 
     def remove_member(self, workspace_id: int, user_id: int) -> bool:
         entities = self._member_dao.list_by_workspace(workspace_id)
@@ -347,6 +377,7 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
         if target.role == "owner":
             raise ValueError("cannot remove owner; transfer ownership first")
         self._member_dao.delete({"workspace_id": workspace_id, "user_id": user_id})
+        self._sync_ecp_confirmer(workspace_id, user_id, add=False)
         return True
 
     def update_member_role(

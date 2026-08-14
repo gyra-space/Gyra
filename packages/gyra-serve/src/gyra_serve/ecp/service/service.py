@@ -12,7 +12,7 @@ Write rules (docs/ECP.md 3.4), enforced here at a single point:
 """
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from gyra.component import SystemApp
 from gyra_serve.core import BaseService
@@ -571,7 +571,42 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
 
     # ---------------------------------------------------------------- confirmers
     def list_confirmers(self, workspace_id: Optional[str] = None) -> List[ConfirmerVO]:
-        return self._confirmer_dao.list(self._ws(workspace_id))
+        vos = self._confirmer_dao.list(self._ws(workspace_id))
+        return self._enrich_confirmer_names(vos)
+
+    def _enrich_confirmer_names(
+        self, vos: List[ConfirmerVO]
+    ) -> List[ConfirmerVO]:
+        """补充确认人用户名(设置页展示用);用户已删除/非数字 id 时为 None。"""
+        if not vos:
+            return vos
+        user_ids: set = set()
+        for v in vos:
+            try:
+                user_ids.add(int(v.user_id))
+            except (TypeError, ValueError):
+                continue
+        names: Dict[int, str] = {}
+        if user_ids:
+            from gyra_app.auth.user_service import UserEntity
+
+            with self._confirmer_dao.session(commit=False) as session:
+                rows = (
+                    session.query(UserEntity)
+                    .filter(UserEntity.id.in_(list(user_ids)))
+                    .all()
+                )
+                names = {u.id: u.name for u in rows}
+        return [
+            ConfirmerVO(
+                id=v.id,
+                workspace_id=v.workspace_id,
+                user_id=v.user_id,
+                scope=v.scope,
+                user_name=names.get(int(v.user_id)),
+            )
+            for v in vos
+        ]
 
     def add_confirmer(
         self, user_id: str, workspace_id: Optional[str] = None,

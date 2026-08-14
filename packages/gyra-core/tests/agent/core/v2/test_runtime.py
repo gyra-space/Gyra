@@ -117,3 +117,83 @@ async def test_resume_step_redoes_incomplete(store):
         events.append(e)
     # 重做后应该到 DONE
     assert events[-1].state == StepState.DONE
+
+
+# =============================================================================
+# P0 阶段发射点：thinking_started / tool_executed / observing_done
+# =============================================================================
+
+
+async def test_thinking_started_emitted_before_tokens(store):
+    """thinking_started：step_init 之后、首个 llm_token 之前。"""
+    events = []
+    async for e in run_step("agent-1", "conv-1", {"prompt": "hi"}, store, thinking_fn):
+        events.append(e)
+
+    types = [e.event_type for e in events]
+    assert "thinking_started" in types
+    started_idx = types.index("thinking_started")
+    assert types.index("step_init") < started_idx
+    assert started_idx < types.index("llm_token")
+    # thinking_started 自身处于 THINKING 态（INIT -> THINKING 合法转换）
+    assert events[started_idx].state is StepState.THINKING
+
+
+async def test_tool_executed_and_observing_done_positions(store):
+    """tool_executed 在 tool_call 后、tool_result 前；observing_done 在 step_done 前。"""
+    async def thinking_with_tool(input_):
+        yield {"token": "", "tool_calls": [{"tool": "read_file"}]}
+
+    events = []
+    async for e in run_step(
+        "agent-1", "conv-1", {"prompt": "hi"}, store, thinking_with_tool, acting_fn
+    ):
+        events.append(e)
+
+    types = [e.event_type for e in events]
+    assert types.index("tool_call") < types.index("tool_executed")
+    assert types.index("tool_executed") < types.index("tool_result")
+    assert types.index("tool_result") < types.index("observing_done")
+    assert types.index("observing_done") < types.index("step_done")
+
+    executed = [e for e in events if e.event_type == "tool_executed"][0]
+    assert executed.state is StepState.ACTING
+    assert executed.input["tool"] == "read_file"
+    assert executed.output["success"] is True
+
+    obs_done = [e for e in events if e.event_type == "observing_done"][0]
+    assert obs_done.state is StepState.OBSERVING
+    assert obs_done.output == {"tool_count": 1, "executed_count": 1}
+
+
+async def test_observing_done_not_emitted_without_tool_calls(store):
+    """纯 thinking step（无工具调用）不产生 observing_done。"""
+    events = []
+    async for e in run_step("agent-1", "conv-1", {"prompt": "hi"}, store, thinking_fn):
+        events.append(e)
+
+    assert "observing_done" not in [e.event_type for e in events]
+    assert "tool_executed" not in [e.event_type for e in events]
+
+
+async def test_run_step_uses_injected_event_stream(store):
+    """注入的共享 EventStream 收到 run_step 全部事件（插件订阅挂载点）。"""
+    from gyra.agent.core.v2.event_stream import EventStream
+    stream = EventStream(store)
+    seen = []
+    stream.subscribe(seen.append)
+
+    async def thinking_with_tool(input_):
+        yield {"token": "hi"}
+        yield {"token": "", "tool_calls": [{"tool": "read_file"}]}
+
+    yielded = []
+    async for e in run_step(
+        "agent-1", "conv-1", {"prompt": "hi"}, store, thinking_with_tool, acting_fn,
+        event_stream=stream,
+    ):
+        yielded.append(e)
+
+    # 订阅者看到的事件与 yield 的一致（同序、同对象）
+    assert [e.event_id for e in seen] == [e.event_id for e in yielded]
+    assert "thinking_started" in [e.event_type for e in seen]

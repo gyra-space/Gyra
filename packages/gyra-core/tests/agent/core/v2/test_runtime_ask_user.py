@@ -70,7 +70,7 @@ async def test_acting_fn_returning_normal_result_still_emits_observing(store):
     async for e in run_step("agent-1", "conv-1", {"prompt": "hi"}, store, thinking, acting):
         events.append(e)
 
-    observing = [e for e in events if e.state is StepState.OBSERVING]
+    observing = [e for e in events if e.state is StepState.OBSERVING and e.event_type == "tool_result"]
     assert len(observing) == 1
     assert observing[0].output["content"] == "ok"
     assert observing[0].output["is_exe_success"] is True

@@ -247,6 +247,39 @@
   line-height: 1.5;
 }
 
+/* 支撑资源分区可折叠(antd Collapse):分区卡片化,空分区默认收起 */
+.ws-support-collapse .ant-collapse-item {
+  overflow: hidden;
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: var(--ws-radius, 12px);
+}
+
+.ws-support-collapse .ant-collapse-item:not(:last-child) {
+  margin-bottom: 16px;
+}
+
+.ws-support-collapse .ant-collapse-header {
+  align-items: center;
+  padding: 0 !important;
+}
+
+.ws-support-collapse .ant-collapse-header .ws-support-section__head {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  border-radius: 0;
+  border-left-width: 3px;
+}
+
+.ws-support-collapse .ant-collapse-content-box {
+  padding: 14px 16px 4px !important;
+}
+
+.ws-support-collapse .ant-collapse-arrow {
+  margin-left: 12px;
+  margin-right: 0;
+}
+
 /* === 资产页 tab「核心」标记 === */
 .ws-tab-tag-core {
   display: inline-block;

@@ -313,9 +313,9 @@ class DbSemanticsProposer(SemanticsProposer):
                     continue
                 if row_count and row_count > 10_000_000:
                     continue
-                sql = (
-                    f"SELECT DISTINCT {c['name']} FROM {table_name} "
-                    f"LIMIT {_MAX_DISTINCT_VALUES + 1}"
+                sql = connector.limit_sql(
+                    f"SELECT DISTINCT {c['name']} FROM {table_name}",
+                    _MAX_DISTINCT_VALUES + 1,
                 )
                 try:
                     rows = await asyncio.to_thread(_run, sql)

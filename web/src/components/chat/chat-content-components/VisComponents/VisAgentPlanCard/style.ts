@@ -250,6 +250,7 @@ export const VisAgentPlanCardWrap = styled.div`
 
   .header-plan {
     background: rgba(255, 255, 255, 0.75);
+    -webkit-backdrop-filter: blur(8px);
     backdrop-filter: blur(8px);
     border: 1px solid #eff1f6;
     border-radius: 10px;
@@ -366,6 +367,7 @@ export const VisAgentPlanCardWrap = styled.div`
 
   .header-agent {
     background: rgba(255, 255, 255, 0.75);
+    -webkit-backdrop-filter: blur(8px);
     backdrop-filter: blur(8px);
     border: 1px solid #eff1f6;
     border-radius: 10px;

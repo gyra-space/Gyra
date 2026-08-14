@@ -731,6 +731,19 @@ class ConfirmerDao(BaseDao[EcpConfirmerEntity, Any, Any]):
             )
         return count > 0
 
+    def remove_by_user(self, workspace_id: str, user_id: str) -> int:
+        """按 user 移除确认人(成员移除时同步回收确认权限)。"""
+        with self.session() as session:
+            count = (
+                session.query(EcpConfirmerEntity)
+                .filter(
+                    EcpConfirmerEntity.workspace_id == workspace_id,
+                    EcpConfirmerEntity.user_id == user_id,
+                )
+                .delete(synchronize_session=False)
+            )
+        return count
+
     def is_confirmer(self, workspace_id: str, user_id: str) -> bool:
         """Bootstrap rule: an empty allow-list means anyone may confirm."""
         with self.session(commit=False) as session:

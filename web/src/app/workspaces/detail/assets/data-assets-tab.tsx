@@ -201,28 +201,71 @@ export function DataAssetsTab({
     [dbs, boundDbIds],
   );
 
-  // ECP 已入驻但尚未绑定到本空间的 db 资产:入驻只建 ECP 侧引用,
-  // 场景空间资源绑定由空间侧完成(ECP 模块单向依赖,不反向写空间资源)。
-  const ecpUnbound = useMemo(
-    () => (ecpAssets || []).filter(
-      (a: any) => a.kind === 'db' && !boundDbIds.has(String(a.ref_id)),
+  // ---------------- 挂载知识库 ----------------
+  const boundSpaces = useMemo(
+    () => new Set(
+      (resources || [])
+        .filter((r: any) => r.type === 'knowledge_space')
+        .map((r: any) => String(r.physical_ref)),
     ),
-    [ecpAssets, boundDbIds],
+    [resources],
+  );
+  const candidateSpaces = useMemo(
+    () => (spaces || []).filter((s: any) => !boundSpaces.has(String(s.slug))),
+    [spaces, boundSpaces],
   );
 
+  // ECP 已入驻但尚未绑定到本空间的资产:入驻只建 ECP 侧引用,
+  // 场景空间资源绑定由空间侧完成(ECP 模块单向依赖,不反向写空间资源)。
+  // db→data_source,space→knowledge_space,document 随所属知识空间接入。
+  const ecpUnbound = useMemo(
+    () => (ecpAssets || []).filter((a: any) => {
+      if (a.kind === 'db') return !boundDbIds.has(String(a.ref_id));
+      if (a.kind === 'space') return !boundSpaces.has(String(a.ref_id));
+      if (a.kind === 'document') {
+        const spaceSlug = String(a.ref_id).split(':')[0];
+        return !boundSpaces.has(spaceSlug);
+      }
+      return false;
+    }),
+    [ecpAssets, boundDbIds, boundSpaces],
+  );
+
+  // 已在货架上绑定的资产若来自 ECP,打"ECP 入驻"标记,让关联关系可见
+  const ecpRefs = useMemo(() => {
+    const refs = new Set<string>();
+    (ecpAssets || []).forEach((a: any) => {
+      if (a.kind === 'db') refs.add(`data_source:${a.ref_id}`);
+      if (a.kind === 'space') refs.add(`knowledge_space:${a.ref_id}`);
+    });
+    return refs;
+  }, [ecpAssets]);
+
   const handleBindEcpAsset = async (asset: any) => {
-    const db = dbById.get(String(asset.ref_id));
     setSaving(true);
-    const [err] = await apiInterceptors(addResource({
-      workspace_id: workspaceId,
-      type: 'data_source',
-      name: db?.db_name || `db_${asset.ref_id}`,
-      physical_ref: String(asset.ref_id),
-      category: 'scenario_bound',
-      access_mode: 'read',
-      is_active: true,
-      config: {},
-    }));
+    const [err] = await apiInterceptors(
+      asset.kind === 'space'
+        ? addResource({
+            workspace_id: workspaceId,
+            type: 'knowledge_space',
+            name: asset.ref_meta?.name || String(asset.ref_id),
+            physical_ref: String(asset.ref_id),
+            category: 'scenario_bound',
+            access_mode: 'read',
+            is_active: true,
+            config: {},
+          })
+        : addResource({
+            workspace_id: workspaceId,
+            type: 'data_source',
+            name: dbById.get(String(asset.ref_id))?.db_name || `db_${asset.ref_id}`,
+            physical_ref: String(asset.ref_id),
+            category: 'scenario_bound',
+            access_mode: 'read',
+            is_active: true,
+            config: {},
+          }),
+    );
     setSaving(false);
     if (err) { message.error(err.message); return; }
     message.success('已接入空间');
@@ -265,20 +308,6 @@ export function DataAssetsTab({
     setUploadName('');
     refreshAll();
   };
-
-  // ---------------- 挂载知识库 ----------------
-  const boundSpaces = useMemo(
-    () => new Set(
-      (resources || [])
-        .filter((r: any) => r.type === 'knowledge_space')
-        .map((r: any) => String(r.physical_ref)),
-    ),
-    [resources],
-  );
-  const candidateSpaces = useMemo(
-    () => (spaces || []).filter((s: any) => !boundSpaces.has(String(s.slug))),
-    [spaces, boundSpaces],
-  );
 
   // ---------------- 上传文件(文档/图片/音频 → 空间自持知识空间) ----------------
   // 与 ECP 软空间 slug 约定(ecp-<ws>)同族:docs-<workspace_code>。
@@ -463,6 +492,7 @@ export function DataAssetsTab({
               ? <Tag color="purple">知识库</Tag>
               : <Tag color={DB_TYPE_COLOR[r.db?.db_type] || 'blue'}>{r.db?.db_type || '数据库'}</Tag>}
           {!isEnv && !isKnowledge && (r.owned ? <Tag color="gold">自持</Tag> : <Tag>引用</Tag>)}
+          {ecpRefs.has(`${r.type}:${r.physical_ref}`) && <Tag color="purple">ECP 入驻</Tag>}
         </div>
         <div className="ws-asset-card__source" title={source}>{source}</div>
         <div className="ws-asset-card__foot">
@@ -552,26 +582,49 @@ export function DataAssetsTab({
           </div>
           <div className="ws-asset-grid">
             {ecpUnbound.map((a: any) => {
-              const db = dbById.get(String(a.ref_id));
-              const name = db?.db_name || `db_${a.ref_id}`;
-              const source = db ? `${db.db_name}${db.db_host ? ` · ${db.db_host}` : ''}` : `#${a.ref_id}`;
+              const isSpace = a.kind === 'space';
+              const isDoc = a.kind === 'document';
+              const db = a.kind === 'db' ? dbById.get(String(a.ref_id)) : null;
+              const spaceSlug = isDoc ? String(a.ref_id).split(':')[0] : null;
+              const name = isSpace || isDoc
+                ? a.ref_meta?.name || String(a.ref_id)
+                : db?.db_name || `db_${a.ref_id}`;
+              const source = isSpace || isDoc
+                ? String(a.ref_id)
+                : db
+                  ? `${db.db_name}${db.db_host ? ` · ${db.db_host}` : ''}`
+                  : `#${a.ref_id}`;
+              const color = isSpace ? '#9333ea' : '#4f46e5';
+              const icon = isSpace
+                ? <BookOutlined />
+                : isDoc
+                  ? <FileTextOutlined />
+                  : <DatabaseOutlined />;
               return (
-                <div key={a.ref_id} className="ws-asset-card">
+                <div key={`${a.kind}:${a.ref_id}`} className="ws-asset-card">
                   <div className="ws-asset-card__top">
-                    <span className="ws-asset-card__icon" style={{ color: '#4f46e5', background: '#4f46e51a' }}>
-                      <DatabaseOutlined />
+                    <span className="ws-asset-card__icon" style={{ color, background: `${color}1a` }}>
+                      {icon}
                     </span>
                     <span className="ws-asset-card__name" title={name}>{name}</span>
                   </div>
                   <div className="ws-asset-card__tags">
-                    <Tag color={DB_TYPE_COLOR[db?.db_type] || 'blue'}>{db?.db_type || '数据库'}</Tag>
+                    {isSpace
+                      ? <Tag color="purple">知识库</Tag>
+                      : isDoc
+                        ? <Tag color="purple">文档</Tag>
+                        : <Tag color={DB_TYPE_COLOR[db?.db_type] || 'blue'}>{db?.db_type || '数据库'}</Tag>}
                     <Tag color="purple">ECP 入驻</Tag>
                   </div>
                   <div className="ws-asset-card__source" title={source}>{source}</div>
                   <div className="ws-asset-card__foot">
-                    <span className="ws-asset-card__time" />
+                    <span className="ws-asset-card__time">
+                      {isDoc && spaceSlug ? (boundSpaces.has(spaceSlug) ? '所属知识空间已接入' : `需接入知识空间 ${spaceSlug}`) : ''}
+                    </span>
                     <span className="ws-asset-card__ops">
-                      <Button size="small" type="link" loading={saving} onClick={() => handleBindEcpAsset(a)}>接入空间</Button>
+                      {isDoc ? null : (
+                        <Button size="small" type="link" loading={saving} onClick={() => handleBindEcpAsset(a)}>接入空间</Button>
+                      )}
                     </span>
                   </div>
                 </div>
