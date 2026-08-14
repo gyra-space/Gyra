@@ -162,6 +162,27 @@
   min-height: 0;
 }
 
+/* 统一细滚动条:三栏主滚动容器,弱化常驻原生滚动条的视觉噪音(同 .ws-rail-inbox) */
+.ws-scene-shell__space,
+.ws-scene-space--dashboard,
+.ws-scene-space__body,
+.ws-agent-workspace__process {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ws-border) transparent;
+}
+.ws-scene-shell__space::-webkit-scrollbar,
+.ws-scene-space--dashboard::-webkit-scrollbar,
+.ws-scene-space__body::-webkit-scrollbar,
+.ws-agent-workspace__process::-webkit-scrollbar { width: 5px; height: 5px; }
+.ws-scene-shell__space::-webkit-scrollbar-thumb,
+.ws-scene-space--dashboard::-webkit-scrollbar-thumb,
+.ws-scene-space__body::-webkit-scrollbar-thumb,
+.ws-agent-workspace__process::-webkit-scrollbar-thumb { background: var(--ws-border); border-radius: 4px; }
+.ws-scene-shell__space::-webkit-scrollbar-track,
+.ws-scene-space--dashboard::-webkit-scrollbar-track,
+.ws-scene-space__body::-webkit-scrollbar-track,
+.ws-agent-workspace__process::-webkit-scrollbar-track { background: transparent; }
+
 .ws-agent-workspace__loading {
   display: flex;
   align-items: center;

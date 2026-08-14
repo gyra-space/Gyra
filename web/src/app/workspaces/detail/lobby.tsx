@@ -1,7 +1,7 @@
 'use client';
 
 import { useRequest } from 'ahooks';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CloudServerOutlined, SendOutlined, DeploymentUnitOutlined, InboxOutlined, RightOutlined } from '@ant-design/icons';
 import { apiInterceptors } from '@/client/api';
 import { getWorkspaceOverview } from '@/client/api/workspace';
@@ -112,6 +112,30 @@ export function Lobby({
   const recentArtifacts = (artifacts || []).slice(0, 4);
   const recentSemantics = semantics.slice(0, 5);
 
+  // 今日待办:默认只展示前 5 条,点击"查看全部"展开为限高内滚列表,避免撑高首屏
+  const INBOX_PREVIEW_COUNT = 5;
+  const [inboxExpanded, setInboxExpanded] = useState(false);
+  const visibleInbox = inboxExpanded ? pendingInbox : pendingInbox.slice(0, INBOX_PREVIEW_COUNT);
+
+  // 空间动态:右侧还有内容时给轨道加渐隐提示(滚到底后消失)
+  const feedTrackRef = useRef<HTMLDivElement>(null);
+  const [feedHasMore, setFeedHasMore] = useState(false);
+  useEffect(() => {
+    const el = feedTrackRef.current;
+    if (!el) {
+      setFeedHasMore(false);
+      return;
+    }
+    const check = () => setFeedHasMore(el.scrollWidth - el.clientWidth - el.scrollLeft > 2);
+    check();
+    el.addEventListener('scroll', check);
+    window.addEventListener('resize', check);
+    return () => {
+      el.removeEventListener('scroll', check);
+      window.removeEventListener('resize', check);
+    };
+  }, [recentArtifacts.length, recentDeliveries.length, recentSemantics.length]);
+
   return (
     <div className="ws-lobby">
       <div className="ws-lobby__scroll">
@@ -149,24 +173,37 @@ export function Lobby({
               <div className="ws-lobby__empty-hint">没有需要你介入的事项。可以跑一个剧本,或上传数据让 Agent 干活。</div>
             </div>
           ) : (
-            <div className="ws-lobby__inbox-list">
-              {pendingInbox.slice(0, 5).map((item: any) => (
+            <>
+              <div className={`ws-lobby__inbox-list${inboxExpanded ? ' ws-lobby__inbox-list--expanded' : ''}`}>
+                {visibleInbox.map((item: any) => (
+                  <div
+                    key={item.id}
+                    className="ws-lobby__inbox-item"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSelectInbox?.(item)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') onSelectInbox?.(item); }}
+                  >
+                    <span className="ws-lobby__inbox-dot" />
+                    <span className="ws-lobby__inbox-chip">{INBOX_SOURCE_LABEL[item.source_type] || item.source_type}</span>
+                    <span className="ws-lobby__inbox-title">{item.title}</span>
+                    <span className="ws-lobby__inbox-hint">点击处理</span>
+                    <RightOutlined className="ws-lobby__inbox-arrow" />
+                  </div>
+                ))}
+              </div>
+              {pendingInbox.length > INBOX_PREVIEW_COUNT && (
                 <div
-                  key={item.id}
-                  className="ws-lobby__inbox-item"
+                  className="ws-lobby__inbox-more"
                   role="button"
                   tabIndex={0}
-                  onClick={() => onSelectInbox?.(item)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') onSelectInbox?.(item); }}
+                  onClick={() => setInboxExpanded((e) => !e)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') setInboxExpanded((v) => !v); }}
                 >
-                  <span className="ws-lobby__inbox-dot" />
-                  <span className="ws-lobby__inbox-chip">{INBOX_SOURCE_LABEL[item.source_type] || item.source_type}</span>
-                  <span className="ws-lobby__inbox-title">{item.title}</span>
-                  <span className="ws-lobby__inbox-hint">点击处理</span>
-                  <RightOutlined className="ws-lobby__inbox-arrow" />
+                  {inboxExpanded ? '收起' : `查看全部 ${pendingInbox.length} 条`}
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
         </section>
 
@@ -181,7 +218,10 @@ export function Lobby({
               />
             </div>
           ) : (
-            <div className="ws-lobby__feed-track">
+            <div
+              ref={feedTrackRef}
+              className={`ws-lobby__feed-track${feedHasMore ? ' ws-lobby__feed-track--more' : ''}`}
+            >
               {recentArtifacts.map((a: any) => (
                 <div
                   key={`a${a.id}`}

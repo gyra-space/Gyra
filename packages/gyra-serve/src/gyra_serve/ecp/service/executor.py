@@ -726,12 +726,14 @@ def _preview_relation(daos, obj, payload: Dict[str, Any], ws: str, limit: int) -
         return _preview_fail(f"无法解析 join path: {path}")
     left, right = m.group(1), m.group(2)
     def _parts(ident: str):
-        tbl, _, col = ident.partition(".")
+        # 兼容 表.列 与 库.表.列(Oracle owner.table.column)两种写法:
+        # 按最后一个点拆分为 表(可含库前缀) + 列
+        tbl, _, col = ident.rpartition(".")
         return tbl, col
     lt, lc = _parts(left)
     rt, rc = _parts(right)
     if not lc or not rc:
-        return _preview_fail(f"join 条件需形如 表.列 = 表.列: {path}")
+        return _preview_fail(f"join 条件需形如 表.列 = 表.列(可含库前缀): {path}")
     sql = (
         f"SELECT a.{lc} AS fk_from, b.{rc} AS fk_to "
         f"FROM {lt} a JOIN {rt} b ON a.{lc} = b.{rc}"

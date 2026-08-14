@@ -189,6 +189,13 @@ export function GrowthCard({ workspaceId, workspaceCode, onEnterFlywheel, growth
 
   const totalTasks = (growth.tasks_trend || []).reduce((sum: number, t: { count: number }) => sum + t.count, 0);
 
+  // 折叠态摘要:关键指标内联在一行,让用户不展开也能看到成长概况
+  const summaryBits = [
+    ...(ecpWsId ? [`固化率 ${solidificationRate}%`] : []),
+    `成果 ${growth.assets_count}`,
+    `近30天任务 ${totalTasks}`,
+  ];
+
   const metrics = [
     { label: '已沉淀成果', value: growth.assets_count },
     { label: '剧本演化建议', value: growth.evolution_proposals_count },
@@ -218,6 +225,17 @@ export function GrowthCard({ workspaceId, workspaceCode, onEnterFlywheel, growth
         >
           本月空间成长
         </span>
+        {collapsed && (
+          <span
+            className="ws-growth__summary"
+            role="button"
+            tabIndex={0}
+            onClick={toggleCollapse}
+            onKeyDown={(e) => { if (e.key === 'Enter') toggleCollapse(); }}
+          >
+            {summaryBits.join(' · ')}
+          </span>
+        )}
         <div
           className="ws-growth__entry"
           role="button"
