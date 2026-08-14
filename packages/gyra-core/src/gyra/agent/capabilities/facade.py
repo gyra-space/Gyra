@@ -3,7 +3,7 @@
 协议对外锚点。独立于 v1/v2,两套架构共同消费快照。编排:
 
     List[AgentResource](配置态)
-      → ResourceManager.a_build_resource  --- 资源实例化(复用现有入口)
+      → CapabilityFactoryRegistry.build_pack  --- 资源实例化(构造期产 CapabilityPack)
       → 遍历资源:ResourceProtocol 直通 / Capability 经适配器,均走原生 declare
       → 收集 requires + topological_prepare executor
       → 叠加会话/轮次运行态(SESSION/TURN)
