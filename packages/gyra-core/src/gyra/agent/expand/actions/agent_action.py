@@ -383,7 +383,7 @@ class SubAgent(AgentAction, FunctionTool):
                 required=True
             ),
             "sync": ToolParameter(
-                type="bool",
+                type="boolean",
                 name="sync",
                 description="[deprecated] 旧参数，等价于 mode='sync'。请优先使用 mode 参数。",
                 required=False,
@@ -397,7 +397,7 @@ class SubAgent(AgentAction, FunctionTool):
                 default="sync"
             ),
             "wait": ToolParameter(
-                type="bool",
+                type="boolean",
                 name="wait",
                 description=(
                     '异步(mode="async")时是否需要等待子 Agent 结果（默认 true）。'

@@ -1,12 +1,25 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { queryChatStatus, ChatQueryResponse } from '@/client/api/chat';
 
-export type ConversationState = 'RUNNING' | 'COMPLETE' | 'FAILED' | 'WAITING' | 'UNKNOWN';
+export type ConversationState = 'RUNNING' | 'COMPLETE' | 'FAILED' | 'WAITING' | 'RETRYING' | 'INTERRUPTED' | 'UNKNOWN';
 
-// 会话是否处于"进行中"（RUNNING 或 WAITING）：
-// WAITING 表示正在等后台子任务/异步任务恢复，完成后主会话会自动 resume。
-// 仅终态（COMPLETE/FAILED）才停止轮询并触发 onComplete，从而刷新历史看到恢复内容。
-const isInProgress = (s: string | undefined) => s === 'RUNNING' || s === 'WAITING';
+const KNOWN_STATES: readonly ConversationState[] = ['RUNNING', 'COMPLETE', 'FAILED', 'WAITING', 'RETRYING', 'INTERRUPTED'];
+
+/** 后端会话 state 落库为小写(Status.X.value: running/waiting/retrying/…),
+ * 统一归一化为大写枚举,调用方只与大写比较,避免大小写失配导致轮询永不启动。 */
+export function normalizeConversationState(s: string | undefined): ConversationState {
+  const up = (s || '').toUpperCase() as ConversationState;
+  return KNOWN_STATES.includes(up) ? up : 'UNKNOWN';
+}
+
+// 会话是否处于"进行中"（RUNNING / WAITING / RETRYING）：
+// WAITING 表示正在等后台子任务/异步任务恢复，完成后主会话会自动 resume;
+// RETRYING 表示进程重启后 RecoveryDaemon 正在接管续跑。
+// 仅终态（COMPLETE/FAILED/INTERRUPTED）才停止轮询并触发 onComplete，从而刷新历史看到恢复内容。
+const isInProgress = (s: string | undefined) => {
+  const n = normalizeConversationState(s);
+  return n === 'RUNNING' || n === 'WAITING' || n === 'RETRYING';
+};
 
 interface UseChatPollingOptions {
   convId: string | null;
@@ -66,19 +79,20 @@ export function useChatPolling({
       }
 
       if (mountedRef.current) {
+        const state = normalizeConversationState(result.state);
         setData(prev => {
-          if (prev?.vis_final === result.vis_final && prev?.state === result.state) {
+          if (prev?.vis_final === result.vis_final && prev?.state === state) {
             return prev;
           }
-          return result;
+          return { ...result, state };
         });
-        setState(result.state as ConversationState);
+        setState(state);
         // 每次成功拉取(首次历史 + 后续轮询)都通知调用方增量合并 vis_final;
         // parseWorkspaceView 按 id 幂等合并,重复推送相同内容无害
         onPollRef.current?.(result);
       }
-      
-      return result;
+
+      return { ...result, state: normalizeConversationState(result.state) };
     } catch (error) {
       if (mountedRef.current) {
         setState('UNKNOWN');

@@ -21,8 +21,11 @@ think/act 循环替换为 V2 run_loop（run_step 状态机 + V2AgentRuntime 门�
 """
 from __future__ import annotations
 
+import json
 import logging
 import tempfile
+import time
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,6 +36,8 @@ from gyra.agent.core.types import AgentMessage
 from gyra.agent.core.role import ProfileConfig
 from gyra.agent.core.schema import Status
 from gyra.agent.core.action.base import ActionOutput
+from gyra.agent.core.memory.gpts.base import GptsMessage
+from gyra.agent.core.memory.gpts.file_base import WorkEntry, WorkLogStatus
 from gyra.agent.util.llm.llm_client import AgentLLMOut, AIWrapper
 from gyra.agent.core.v2 import (
     V2AgentRuntime,
@@ -69,6 +74,10 @@ class V2Agent(ReActMasterAgent):
             goal="使用 V2 事件驱动运行时（run_loop 状态机）高效解决复杂任务。",
             desc="标准主 Agent 模板（V2 引擎）：复用现有资源/工具/渲染协议，内部由 V2 run_loop 驱动。",
             aliases=["V2Agent", "v2"],
+            # 与 ReActMasterAgent 对齐：显式置 None，避免命中 ProfileConfig
+            # DynConfig 默认值（ConfigInfo 对象），导致 prompt 组装时 .strip() 崩溃。
+            system_prompt_template=None,
+            user_prompt_template=None,
         )
     )
 
@@ -79,6 +88,13 @@ class V2Agent(ReActMasterAgent):
     _v2_runtime: Optional[V2AgentRuntime] = PrivateAttr(default=None)
     # 收集 run_loop 产出的最终答案文本
     _v2_final_answer: str = PrivateAttr(default="")
+    # run_loop 内工具执行记录（tool_call_id/name/args/message_id 待回填结果）
+    _v2_pending_tool_calls: List[dict] = PrivateAttr(default_factory=list)
+    # 工具执行结果 ActionOutput（act() 返回，供 V1 外层 action_report / vis 使用）
+    _v2_tool_action_outputs: List[ActionOutput] = PrivateAttr(default_factory=list)
+    # run_loop 工具历史（按 step 分组）：[{calls:[{tool_call_id,tool_name,args}], results:{id:{content,success}}}]
+    # 每轮 thinking 经 get_extra_messages 确定性注入模型上下文，避免 DB 读回竞态
+    _v2_tool_rounds: List[dict] = PrivateAttr(default_factory=list)
 
     # ---- 渲染桥接（BAIZE vis 复用）----
     _v2_reply_message_id: str = PrivateAttr(default="")
@@ -159,8 +175,30 @@ class V2Agent(ReActMasterAgent):
 
             from gyra.agent.core.v2.llm_stream_adapter import make_gyra_llm_stream_fn
 
+            async def _get_function_calling_context():
+                """懒构建 function_calling_context（复用 V1 工具声明构建链）。
+
+                首轮先构建并缓存到 self.function_calling_context；后续轮次直接复用，
+                避免多步 run_loop 内重复全量构建。
+                """
+                try:
+                    fcc = getattr(self, "function_calling_context", None)
+                    if fcc is None or not fcc.get("tools"):
+                        fcc = await self.function_calling_params()
+                        self.function_calling_context = fcc
+                    return fcc
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"[V2Agent] function_calling_params failed: {e}"
+                    )
+                    return None
+
             thinking_fn = make_default_thinking_fn(
-                llm_stream_fn=make_gyra_llm_stream_fn(llm_client, model_alias),
+                llm_stream_fn=make_gyra_llm_stream_fn(
+                    llm_client,
+                    model_alias,
+                    get_function_calling_context=_get_function_calling_context,
+                ),
                 model_alias=model_alias,
                 context_engine=context_engine,
                 memory_bundle=getattr(self, "_memory_bundle", None),
@@ -168,6 +206,7 @@ class V2Agent(ReActMasterAgent):
                 get_work_log=_get_work_log,
                 get_context_window=_get_context_window,
                 system_prompt=None,  # 由 input_["system_prompt"] 注入
+                get_extra_messages=self._v2_build_extra_tool_messages,
             )
 
             # 2. acting_fn：复用现有工具注入（available_system_tools + resource）
@@ -241,6 +280,9 @@ class V2Agent(ReActMasterAgent):
         self._v2_reply_message_id = reply_message_id
         self._v2_start_time = datetime.now()
         self._v2_is_first_chunk = True
+        self._v2_pending_tool_calls = []
+        self._v2_tool_action_outputs = []
+        self._v2_tool_rounds = []
 
         user_prompt = self._extract_text_from_content(
             getattr(received_message, "content", None) or ""
@@ -301,6 +343,14 @@ class V2Agent(ReActMasterAgent):
                     received_message=received_message,
                 )
                 self._v2_is_first_chunk = False
+        elif step_event.event_type == "tool_call":
+            # 记录工具调用：写一条带 tool_calls 的 assistant 消息进会话，
+            # 供 run_loop 下一轮 thinking 的 ContextEngine 渲染 CALL 单元。
+            await self._persist_v2_tool_call(step_event)
+        elif step_event.event_type == "tool_result":
+            # 回填工具执行结果：写 WorkEntry（按 tool_call_id 关联），
+            # 并收集 ActionOutput 供 act() 返回（V1 外层 action_report）。
+            await self._persist_v2_tool_result(step_event)
         elif step_event.event_type == "step_done" and step_event.state is StepState.DONE:
             # 终态：重置 vis（清掉攒批）
             try:
@@ -311,6 +361,163 @@ class V2Agent(ReActMasterAgent):
             except Exception as _e:  # noqa: BLE001
                 logger.debug(f"[V2Agent] reset_stream_vis skipped: {_e}")
 
+    async def _persist_v2_tool_call(self, step_event: StepEvent) -> None:
+        """把 run_loop 的工具调用事件持久化到会话（assistant 消息 + tool_calls）。
+
+        时序说明：run_loop 下一轮 thinking 的 messages 从 gpts_memory 重新构建，
+        工具调用必须写回会话，ContextEngine 才能渲染 tool_calls + 结果，
+        LLM 后续轮次才能感知工具执行事实。
+        """
+        input_data = step_event.input or {}
+        tool_name = input_data.get("tool") or ""
+        args = input_data.get("input") or {}
+        if not tool_name:
+            return
+        gpts_memory = self.memory.gpts_memory if self.memory else None
+        if gpts_memory is None:
+            return
+        tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
+        message_id = f"msg_{uuid.uuid4().hex[:8]}"
+        try:
+            args_str = json.dumps(args, ensure_ascii=False, default=str)
+        except Exception:  # noqa: BLE001
+            args_str = "{}"
+        conv_id = self.not_null_agent_context.conv_id
+        gmsg = GptsMessage(
+            conv_id=conv_id,
+            conv_session_id=self.not_null_agent_context.conv_session_id or conv_id,
+            sender=self.name or self.role or "assistant",
+            sender_name=self.name or self.role or "assistant",
+            message_id=message_id,
+            role="assistant",
+            # content 必须置空：工具调用消息是动作声明，历史 thinking 若回流
+            # 会让模型在下一轮复述旧思考再新增，导致 thinking 文本逐轮累积重复
+            content="",
+            tool_calls=[
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": args_str},
+                }
+            ],
+            rounds=0,
+            app_code=self.not_null_agent_context.gpts_app_code,
+            data_version="v2",
+        )
+        try:
+            await gpts_memory.append_message(conv_id, gmsg, save_db=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[V2Agent] persist tool_call message failed: {e}")
+            return
+        self._v2_pending_tool_calls.append(
+            {
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "args": args,
+                "message_id": message_id,
+            }
+        )
+        # 记录到工具历史（按 step 分组；上一轮已出结果则开新组）
+        if not self._v2_tool_rounds or self._v2_tool_rounds[-1]["results"]:
+            self._v2_tool_rounds.append({"calls": [], "results": {}})
+        self._v2_tool_rounds[-1]["calls"].append(
+            {
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "args": args,
+            }
+        )
+
+    async def _persist_v2_tool_result(self, step_event: StepEvent) -> None:
+        """回填工具执行结果（WorkEntry）并收集 ActionOutput 供 act() 返回。"""
+        if not self._v2_pending_tool_calls:
+            return
+        pending = self._v2_pending_tool_calls.pop(0)
+        gpts_memory = self.memory.gpts_memory if self.memory else None
+        output = step_event.output or {}
+        result_text = str(output.get("content") or "")
+        if not result_text and output.get("error"):
+            result_text = str(output["error"])
+        success = bool(output.get("is_exe_success", True))
+
+        if gpts_memory is not None:
+            try:
+                entry = WorkEntry(
+                    timestamp=step_event.timestamp or time.time(),
+                    tool=pending["tool_name"],
+                    args=pending["args"],
+                    result=result_text or None,
+                    success=success,
+                    status=WorkLogStatus.ACTIVE.value,
+                    tool_call_id=pending["tool_call_id"],
+                    message_id=pending["message_id"],
+                    conv_id=self.not_null_agent_context.conv_id,
+                    assistant_content=self._v2_final_answer or "",
+                    round_index=0,
+                )
+                await gpts_memory.append_work_entry(
+                    self.not_null_agent_context.conv_id, entry, save_db=True
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[V2Agent] persist tool_result work_entry failed: {e}")
+
+        self._v2_tool_action_outputs.append(
+            ActionOutput(
+                content=result_text,
+                name=pending["tool_name"],
+                action_name=pending["tool_name"],
+                is_exe_success=success,
+                terminate=False,
+            )
+        )
+        # 回填工具历史：定位含该 tool_call 的 step 组
+        for rd in reversed(self._v2_tool_rounds):
+            if any(
+                c["tool_call_id"] == pending["tool_call_id"] for c in rd["calls"]
+            ):
+                rd["results"][pending["tool_call_id"]] = {
+                    "content": result_text,
+                    "success": success,
+                }
+                break
+
+    def _v2_build_extra_tool_messages(self) -> List[dict]:
+        """构造 run_loop 已执行工具的历史 LLM 消息（assistant tool_calls + tool 结果）。
+
+        每轮 thinking 注入，确保模型在后续步骤能看到工具执行事实，收敛多步循环。
+        """
+        msgs: List[dict] = []
+        for rd in self._v2_tool_rounds:
+            if not rd.get("results"):
+                continue  # 本轮尚未出结果（当前 step 正在 thinking）
+            tcs = []
+            for c in rd["calls"]:
+                try:
+                    args_str = json.dumps(c["args"], ensure_ascii=False, default=str)
+                except Exception:  # noqa: BLE001
+                    args_str = "{}"
+                tcs.append(
+                    {
+                        "id": c["tool_call_id"],
+                        "type": "function",
+                        "function": {"name": c["tool_name"], "arguments": args_str},
+                    }
+                )
+            if not tcs:
+                continue
+            msgs.append({"role": "assistant", "content": "", "tool_calls": tcs})
+            for c in rd["calls"]:
+                res = rd["results"].get(c["tool_call_id"])
+                content = res["content"] if res else "[工具执行失败/无结果]"
+                msgs.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": c["tool_call_id"],
+                        "content": content or "[空结果]",
+                    }
+                )
+        return msgs
+
     async def act(
         self,
         message: AgentMessage,
@@ -318,15 +525,18 @@ class V2Agent(ReActMasterAgent):
         reviewer: Optional[Agent] = None,
         **kwargs,
     ) -> List[ActionOutput]:
-        """run_loop 已在 thinking() 内执行工具；此处返回终止型，V1 外层直接收尾。"""
-        return [
+        """run_loop 已在 thinking() 内执行工具；此处返回工具执行记录 + 终止型收尾，
+        供 V1 外层 action_report / vis 使用（工具结果也已写回会话 WorkEntry）。"""
+        outputs = list(self._v2_tool_action_outputs or [])
+        outputs.append(
             ActionOutput(
                 content=self._v2_final_answer or "V2 引擎已执行完毕",
                 name=self.name,
                 is_exe_success=True,
                 terminate=True,
             )
-        ]
+        )
+        return outputs
 
     async def verify(
         self,

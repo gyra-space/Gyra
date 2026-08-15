@@ -40,6 +40,10 @@ interface UseSceneAgentChatResult {
   loading: boolean;
   error: string | null;
   lastInput: SceneAgentSendPayload | null;
+  /** SSE 断线自愈探测中(服务重启/网络抖动后的恢复窗口) */
+  recovering: boolean;
+  /** 手动重试断线恢复(错误横幅"重试连接"入口) */
+  retryRecover: () => void;
   /** 后端会话运行状态:RUNNING 表示后台仍在执行(可关闭页面后恢复) */
   convState: ConversationState;
   /** SSE usage_metric 事件推送的上下文消耗(实时) */
@@ -259,13 +263,67 @@ export function useSceneAgentChat({
     [convUid],
   );
 
-  const { state: convState } = useChatPolling({
+  const { state: convState, checkStatus } = useChatPolling({
     convId: convUid ?? null,
     enabled: !loading,
     visRender: 'scene_agent_workspace',
     interval: 2500,
     onPoll: handlePoll,
   });
+
+  // SSE 断线自愈:连接断开 ≠ agent 停止(服务重启/网络抖动都会断流)。
+  // 经轮询链路探测会话真实状态(checkStatus 的 onPoll 顺带把 vis_final 合并回视图):
+  // - 服务可达 → 清除错误;进行中状态由轮询接管(loading=false 已触发),继续合并产出
+  // - 不可达(服务重启中)→ 5s 退避重试,超过上限才显示连接中断错误
+  const RECOVER_MAX_ATTEMPTS = 12;
+  const RECOVER_INTERVAL_MS = 5000;
+  const [recovering, setRecovering] = useState(false);
+  const recoveringRef = useRef(false);
+  // 恢复纪元:新一轮 send 使旧恢复循环失效,避免其迟到的 setError 污染新会话
+  const recoverEpochRef = useRef(0);
+  const lastDropErrorRef = useRef<string | undefined>(undefined);
+
+  const recover = useCallback(
+    async (streamError?: string) => {
+      if (!convUid || recoveringRef.current) return;
+      recoveringRef.current = true;
+      setRecovering(true);
+      const epoch = recoverEpochRef.current;
+      try {
+        for (let attempt = 0; attempt < RECOVER_MAX_ATTEMPTS; attempt++) {
+          const result = await checkStatus();
+          if (recoverEpochRef.current !== epoch) return; // 已发起新对话,放弃本次恢复
+          if (result) {
+            setError(null);
+            return;
+          }
+          await new Promise((r) => setTimeout(r, RECOVER_INTERVAL_MS));
+        }
+        if (recoverEpochRef.current !== epoch) return;
+        // 连续探测失败(服务长时间不可达):显示连接中断错误
+        const content = streamError || '对话连接中断';
+        setError(content);
+        appendStep({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          type: 'unknown',
+          title: 'Agent error',
+          status: 'failed',
+          timestamp: Date.now(),
+          payload: { error: content },
+        });
+      } finally {
+        if (recoverEpochRef.current === epoch) {
+          recoveringRef.current = false;
+          setRecovering(false);
+        }
+      }
+    },
+    [convUid, checkStatus, appendStep],
+  );
+
+  const retryRecover = useCallback(() => {
+    void recover(lastDropErrorRef.current);
+  }, [recover]);
 
   const send = useCallback(
     (payload: SceneAgentSendPayload) => {
@@ -277,6 +335,10 @@ export function useSceneAgentChat({
       setLoading(true);
       setLastInput(payload);
       setError(null);
+      // 新对话使进行中的断线恢复失效
+      recoverEpochRef.current += 1;
+      recoveringRef.current = false;
+      setRecovering(false);
       // 提交任务、开始对话 → 通知外层(如自动折叠中间内容区)
       onConversationStart?.();
 
@@ -340,6 +402,7 @@ export function useSceneAgentChat({
           setLastInput(null);
         },
         onError: (content: string) => {
+          // 服务端 [ERROR] 帧:Agent 真实报错,直接展示(连接断开走 onStreamDrop)
           setError(content || 'Agent error');
           appendStep({
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
@@ -351,11 +414,17 @@ export function useSceneAgentChat({
           });
           setLoading(false);
         },
+        onStreamDrop: (content: string) => {
+          setLoading(false);
+          setLastInput(null);
+          lastDropErrorRef.current = content;
+          void recover(content);
+        },
         onWorkspaceEvent: handleWorkspaceEventInternal,
         onDock: (frame) => setDockWidgets((prev) => applyDockFrame(prev, frame)),
       });
     },
-    [convUid, workspaceId, taskId, focusArtifactId, chat, appendStep, appendOptimisticUser, handleWorkspaceEventInternal, onConversationStart],
+    [convUid, workspaceId, taskId, focusArtifactId, chat, appendStep, appendOptimisticUser, handleWorkspaceEventInternal, onConversationStart, recover],
   );
 
   const abort = useCallback(() => {
@@ -370,5 +439,5 @@ export function useSceneAgentChat({
     }
   }, [convUid]);
 
-  return { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
+  return { steps, workspaceView, loading, error, lastInput, recovering, retryRecover, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
 }

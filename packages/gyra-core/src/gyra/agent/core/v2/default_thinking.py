@@ -8,6 +8,7 @@
 5. StreamingContextScrubber 清洗 token
 6. yield TokenChunk / ToolCallChunk / UsageChunk
 """
+import logging
 from typing import Any, AsyncGenerator, Callable, Optional
 
 from gyra.agent.core.v2.thinking_chunk import (
@@ -15,6 +16,8 @@ from gyra.agent.core.v2.thinking_chunk import (
 )
 from gyra.agent.core.v2.tool_call_types import V2ToolCall
 from gyra.agent.core.v2.retrying_thinking import retrying_thinking
+
+logger = logging.getLogger(__name__)
 
 
 STATIC_ROOMS = ["profile", "preference"]
@@ -32,11 +35,16 @@ def make_default_thinking_fn(
     max_attempts: int = 3,
     model_fallback: Optional[Callable[[str], str]] = None,
     system_prompt: Optional[str] = None,
+    get_extra_messages: Optional[Callable] = None,  # async or sync: () -> List[message dict]
 ) -> Callable:
     """构造 ThinkingFn。
 
     llm_stream_fn: async generator factory，输入 (messages, model)，yield dict chunk：
         {"token": str, "usage": Optional[dict], "tool_calls": Optional[List[dict]]}
+
+    get_extra_messages: 可选异步回调，返回额外 LLM 消息（如 run_loop 已执行工具的
+        assistant tool_calls + tool 结果），追加在最终 user_prompt 之前。
+        用于确保工具执行事实确定性地进入模型上下文（不依赖 DB 读回竞态）。
     """
 
     async def thinking_fn(input_: dict) -> AsyncGenerator[ThinkingChunk, None]:
@@ -85,6 +93,14 @@ def make_default_thinking_fn(
                 llm_messages.append({"role": "user", "content": _todo_reminder})
         except Exception:
             pass
+        # 额外消息注入（如工具执行历史）——必须在最终 user_prompt 之前追加
+        if get_extra_messages is not None:
+            try:
+                extra = await _maybe_await(get_extra_messages())
+                if extra:
+                    llm_messages.extend(extra)
+            except Exception:
+                logger.exception("[default_thinking] get_extra_messages failed, skipping")
         # 最后一条 human 消息覆写为 user_prompt
         llm_messages.append({"role": "user", "content": user_prompt})
 

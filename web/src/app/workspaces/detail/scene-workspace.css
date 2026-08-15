@@ -2035,9 +2035,29 @@
   color: var(--ws-accent);
   border-color: var(--ws-accent);
 }
-/* 折叠后开关贴到右缘(agent 区占满) */
+/* 折叠后开关贴到右缘(agent 区占满),并显式展示“展开大厅”文字;
+   原 tiny chevron 在真实聊天内容中几乎不可见,用户会以为没有展开入口。 */
 .ws-scene-shell--space-collapsed .ws-scene-shell__space-toggle {
-  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  right: 12px;
+  width: auto;
+  min-width: 86px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 14px;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--ws-ink-2);
+  background: var(--ws-surface);
+  border-color: var(--ws-border);
+  box-shadow: var(--ws-shadow-sm);
+}
+.ws-scene-shell__space-toggle__icon,
+.ws-scene-shell__space-toggle__label {
+  line-height: 1;
 }
 /* 折叠期间新内容到达:角标提示 */
 .ws-scene-shell__space-toggle--new::after {
@@ -2068,7 +2088,7 @@
     right: 366px;
   }
   .ws-scene-shell--space-collapsed .ws-scene-shell__space-toggle {
-    right: 8px;
+    right: 12px;
   }
 }
 @media (min-width: 900px) {

@@ -70,7 +70,7 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps) {
   const inputRefInner = useRef<AgentWorkspaceInputHandle>(null);
   const inputRef = inputRefProp ?? inputRefInner;
-  const { steps, workspaceView, loading, error, lastInput, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView } = useSceneAgentChat({
+  const { steps, workspaceView, loading, error, lastInput, recovering, retryRecover, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView } = useSceneAgentChat({
     convUid,
     appCode,
     workspaceId,
@@ -122,7 +122,7 @@ export function AgentWorkspace({
           {taskId ? `任务 #${taskId} · Agent` : 'Agent 空间'}
         </span>
         <span className="ws-agent-workspace__header-state">
-          {running ? '运行中…' : error ? '出错了' : convState === 'FAILED' ? '已失败' : '就绪'}
+          {running ? '运行中…' : recovering ? '正在恢复连接…' : error ? '出错了' : convState === 'FAILED' ? '已失败' : '就绪'}
         </span>
         {onNewSession && !taskId && (
           <button
@@ -138,7 +138,19 @@ export function AgentWorkspace({
       </div>
       <div className="ws-agent-workspace__content">
         <div className="ws-agent-workspace__process">
-          {error && <Alert message={error} type="error" showIcon className="ws-agent-workspace__error" />}
+          {error && (
+            <Alert
+              message={error}
+              type="error"
+              showIcon
+              className="ws-agent-workspace__error"
+              action={
+                <Button size="small" icon={<ReloadOutlined />} onClick={retryRecover}>
+                  重试连接
+                </Button>
+              }
+            />
+          )}
           {switchingTask ? (
             <div className="ws-agent-workspace__loading">
               <Spin tip="切换任务对话中..." />

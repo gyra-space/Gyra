@@ -909,7 +909,7 @@ class ReActMasterAgent(ConversableAgent, Team):
                     ),
                     "wait_for_result": ToolParameter(
                         name="wait_for_result",
-                        type="bool",
+                        type="boolean",
                         required=False,
                         description=(
                             "是否需要等待任务结果（默认 true）。true=阻塞等待：提交后本轮结束，"

@@ -444,9 +444,13 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         # 否则会出现「先说的话显示在工具卡片之后」的顺序颠倒
         narr_ids = list(self._scene_narrations.keys())
         summary: Optional[str] = None
-        frozen_narr: List[Tuple[str, str]] = []  # (text, ts)
-        # 最终回复也作为 answer step 进 execution(稳定 id=answer-{mid}),跨轮按 id
-        # 合并保留;否则前端 summary 单值会被下一轮覆盖,历史回复丢失。
+        frozen_narr: List[Tuple[str, str, str]] = []  # (mid, text, ts)
+        # 最终回复也作为 answer step 进 execution,跨轮按 id 合并保留;否则前端
+        # summary 单值会被下一轮覆盖,历史回复丢失。
+        # 注意:answer 与阶段回复共用稳定 id narr-{mid} —— 流式期间文本先作为 answer
+        # 推送,若随后出现工具步骤,同一 id 的 step 翻转为 thinking(阶段回复),前端按 id
+        # 原地更新;若两种角色各用各的 id,旧 answer step 会成为前端合并的残留,同一段
+        # 文本同时显示为「阶段回复 + 带头像回复」两份。
         answer_step: Optional[Tuple[Dict[str, Any], str]] = None
         if narr_ids:
             last_text, last_ts = self._scene_narrations[narr_ids[-1]]
@@ -455,12 +459,12 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                 default=None,
             )
             if item_ts_max is not None and last_ts and last_ts < item_ts_max:
-                frozen_narr = [self._scene_narrations[mid] for mid in narr_ids]
+                frozen_narr = [(mid, *self._scene_narrations[mid]) for mid in narr_ids]
             else:
                 summary = last_text
-                frozen_narr = [self._scene_narrations[mid] for mid in narr_ids[:-1]]
+                frozen_narr = [(mid, *self._scene_narrations[mid]) for mid in narr_ids[:-1]]
                 answer_step = ({
-                    "id": f"answer-{narr_ids[-1]}",
+                    "id": f"narr-{narr_ids[-1]}",
                     "type": "answer",
                     "title": "回复",
                     "status": "done",
@@ -472,9 +476,9 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                 }, last_ts)
 
         execution: List[Tuple[Dict[str, Any], str]] = list(self._scene_items.values())
-        for text, ts in frozen_narr:
+        for mid, text, ts in frozen_narr:
             execution.append(({
-                "id": f"narr-{uuid.uuid5(uuid.NAMESPACE_URL, text[:64]).hex[:12]}",
+                "id": f"narr-{mid}",
                 "type": "thinking",
                 "title": "阶段回复",
                 "status": "done",

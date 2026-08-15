@@ -38,6 +38,9 @@ type ChatParams = {
   onClose?: () => void;
   onDone?: () => void;
   onError?: (content: string, error?: Error) => void;
+  /** 流传输层断开(网络错误/服务重启)。与 onError([ERROR] 帧,Agent 真实报错)区分:
+   *  传入时连接断开走本回调(调用方可做断线自愈),不传则回退到 onError。 */
+  onStreamDrop?: (content: string, error?: Error) => void;
   onWorkspaceEvent?: (event: WorkspaceEvent) => void;
   /** Composer Dock 协议：输入框上方固定区域渲染数据帧。 */
   onDock?: (frame: DockFrame) => void;
@@ -67,7 +70,7 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
   const [usageMetrics, setUsageMetrics] = useState<UsageMetrics | null>(null);
 
   const chatV1 = useCallback(
-    async ({ data, onMessage, onClose, onDone, onError, onWorkspaceEvent, onDock, ctrl }: ChatParams) => {
+    async ({ data, onMessage, onClose, onDone, onError, onStreamDrop, onWorkspaceEvent, onDock, ctrl }: ChatParams) => {
       ctrl && setCtrl(ctrl);
       if (!data?.user_input && !data?.doc_id) {
         message.warning(i18n.t('no_context_tip'));
@@ -191,7 +194,9 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
           // 用户主动中断(或流正常关闭后的 abort),不算错误,保留已产出内容
           onClose?.();
         } else {
-          onError?.(`对话连接中断: ${error?.message || '未知网络错误'}`, error);
+          const content = `对话连接中断: ${error?.message || '未知网络错误'}`;
+          if (onStreamDrop) onStreamDrop(content, error);
+          else onError?.(content, error);
         }
       }
     },

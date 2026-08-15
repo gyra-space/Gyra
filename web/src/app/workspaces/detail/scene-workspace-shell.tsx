@@ -431,7 +431,14 @@ export function SceneWorkspaceShell({
           }
         }}
       >
-        {spaceCollapsed ? '›' : '‹'}
+        {spaceCollapsed ? (
+        <>
+          <span className="ws-scene-shell__space-toggle__icon">›</span>
+          <span className="ws-scene-shell__space-toggle__label">展开大厅</span>
+        </>
+      ) : (
+        '‹'
+      )}
       </button>
       <div className="ws-scene-shell__rail">
         <SceneTaskRail
