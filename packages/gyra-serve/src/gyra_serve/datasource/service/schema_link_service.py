@@ -27,6 +27,8 @@ class TableRecommendation:
     reasons: List[str] = field(default_factory=list)
     group: str = "default"
     row_count: Optional[int] = None  # 表行数，用于过滤空表
+    # 表内最新数据时间（学习时快照），提示 Agent 数据新鲜度
+    latest_data_time: Optional[str] = None
 
 
 @dataclass
@@ -151,6 +153,7 @@ class SchemaLinkService:
 
         # Sort and return
         table_row_counts = index.get("table_row_counts", {})
+        table_latest_times = index.get("table_latest_times", {})
         recommendations = []
         for tname, score in sorted(
             scores.items(), key=lambda x: x[1], reverse=True
@@ -162,6 +165,7 @@ class SchemaLinkService:
                     reasons=reasons.get(tname, []),
                     group=table_groups.get(tname, "default"),
                     row_count=table_row_counts.get(tname),  # 添加行数信息
+                    latest_data_time=table_latest_times.get(tname),
                 )
             )
 
@@ -178,6 +182,7 @@ class SchemaLinkService:
             - relations: [{from_table, to_table, type, column}]
             - table_groups: {table_name: group_name}
             - table_row_counts: {table_name: row_count} - 用于过滤空表
+            - table_latest_times: {table_name: latest_data_time} - 数据新鲜度
         """
         table_specs = self._table_spec_dao.get_all_by_datasource(datasource_id)
         db_spec = self._db_spec_dao.get_by_datasource_id(datasource_id)
@@ -187,6 +192,7 @@ class SchemaLinkService:
         keyword_to_tables: Dict[str, Set[str]] = defaultdict(set)
         table_groups: Dict[str, str] = {}
         table_row_counts: Dict[str, int] = {}  # 新增：记录表的行数
+        table_latest_times: Dict[str, str] = {}  # 记录表的最新数据时间
 
         # Parse db spec for group info
         if db_spec and db_spec.get("spec_content"):
@@ -214,6 +220,10 @@ class SchemaLinkService:
 
             # 记录行数
             table_row_counts[tname] = row_count
+            # 记录最新数据时间
+            latest_data_time = spec.get("latest_data_time")
+            if latest_data_time:
+                table_latest_times[tname] = latest_data_time
 
             comment = spec.get("table_comment", "") or ""
             columns = spec.get("columns", []) or []
@@ -254,6 +264,7 @@ class SchemaLinkService:
             "relations": relations,
             "table_groups": table_groups,
             "table_row_counts": table_row_counts,  # 新增：行数映射
+            "table_latest_times": table_latest_times,  # 最新数据时间映射
         }
 
         logger.info(

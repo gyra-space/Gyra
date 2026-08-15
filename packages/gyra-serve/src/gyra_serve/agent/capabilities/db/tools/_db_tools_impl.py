@@ -353,11 +353,15 @@ async def get_table_spec(
                     rec_lines = ["Recommended tables based on your question:"]
                     for rec in recommendations:
                         reason_str = "; ".join(rec.reasons[:3])
-                        # 添加行数信息显示
+                        # 添加行数与数据新鲜度信息显示
                         row_info = f", rows: {rec.row_count}" if rec.row_count else ""
+                        time_info = (
+                            f", latest data: {rec.latest_data_time}"
+                            if rec.latest_data_time else ""
+                        )
                         rec_lines.append(
                             f"  - {rec.table_name} (score: {rec.score:.1f}"
-                            f"{row_info}, reasons: {reason_str})"
+                            f"{row_info}{time_info}, reasons: {reason_str})"
                         )
                     rec_header = "\n".join(rec_lines) + "\n\n"
 
@@ -1708,7 +1712,8 @@ async def search_tables(
             link_service = SchemaLinkService()
 
             # Collect all recommendations from each query
-            all_recommendations = {}  # table_name -> (score, reasons, matched_queries, group, row_count)
+            # table_name -> (score, reasons, matched_queries, group, row_count, latest_data_time)
+            all_recommendations = {}
 
             for query in search_queries:
                 recs = link_service.suggest_tables(ds_id, query, max_results=max_results)
@@ -1725,7 +1730,8 @@ async def search_tables(
                             list(rec.reasons[:3]),
                             [query],
                             rec.group,
-                            rec.row_count  # 新增：行数信息
+                            rec.row_count,  # 新增：行数信息
+                            rec.latest_data_time,  # 新增：数据新鲜度
                         ]
 
             if not all_recommendations:
@@ -1755,13 +1761,15 @@ async def search_tables(
             lines.append("")
 
             for i, (table_name, info) in enumerate(sorted_tables, 1):
-                score, reasons, matched_queries, group, row_count = info
+                score, reasons, matched_queries, group, row_count, latest_data_time = info
                 score_display = f"{score:.1f}"
                 reason_str = "; ".join(reasons[:3])
                 lines.append(f"{i}. **{table_name}**")
                 lines.append(f"   - 匹配分数: {score_display}")
                 if row_count:
                     lines.append(f"   - 数据行数: {row_count}")
+                if latest_data_time:
+                    lines.append(f"   - 最新数据时间: {latest_data_time}")
                 if len(matched_queries) > 1:
                     lines.append(f"   - 匹配意图: {', '.join(matched_queries)}")
                 lines.append(f"   - 匹配原因: {reason_str}")
@@ -1840,6 +1848,9 @@ async def _search_tables_with_llm(
                 line += f": {comment[:80]}"
             if group and group != "default":
                 line += f" [group:{group}]"
+            latest_data_time = spec.get("latest_data_time")
+            if latest_data_time:
+                line += f" [latest data: {latest_data_time}]"
             if col_str:
                 line += f" (columns: {col_str})"
             table_info_lines.append(line)
@@ -1856,6 +1867,7 @@ async def _search_tables_with_llm(
 {tables_text}
 
 请根据以上表信息，找出与用户需求最相关的表。返回格式要求：
+0. 如表带有 [latest data: ...] 标注，优先选择数据较新的表，避免选择数据过旧的表
 1. 只返回表名列表，用逗号分隔
 2. 最多返回{max_results}张表
 3. 按相关性排序，最相关的表在前

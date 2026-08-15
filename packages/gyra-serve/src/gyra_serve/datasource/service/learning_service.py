@@ -681,6 +681,7 @@ class SchemaLearningService:
                 "table_name": table_name,
                 "summary": comment,
                 "row_count": spec.get("row_count"),
+                "latest_data_time": spec.get("latest_data_time"),
                 "column_count": len(columns or []),
                 "group": spec.get("group_name", "default"),
             })
@@ -780,6 +781,11 @@ class SchemaLearningService:
         except Exception:
             pass
 
+        # Latest data time (freshness hint for exploration)
+        latest_data_time = self._get_latest_data_time(
+            connector, table_name, columns
+        )
+
         # Column value distribution for low-cardinality columns
         for col in columns:
             col_name = col.get("name", "")
@@ -845,6 +851,7 @@ class SchemaLearningService:
         table_data = {
             "table_comment": table_comment,
             "row_count": row_count,
+            "latest_data_time": latest_data_time,
             "columns_json": json.dumps(columns, ensure_ascii=False),
             "indexes_json": json.dumps(indexes, ensure_ascii=False),
             "foreign_keys_json": (
@@ -861,6 +868,7 @@ class SchemaLearningService:
             "table_name": table_name,
             "table_comment": table_comment,
             "row_count": row_count,
+            "latest_data_time": latest_data_time,
             "columns": columns,
             "indexes": indexes,
             "foreign_keys": foreign_keys,
@@ -1914,16 +1922,20 @@ class SchemaLearningService:
         # Get columns info and row count
         columns = connector.get_columns(table_name)
         row_count = self._get_row_count(connector, table_name)
+        latest_data_time = self._get_latest_data_time(
+            connector, table_name, columns
+        )
 
         # Collect new sample data
         sample_data_json = self._collect_sample_data(
             connector, table_name, columns, row_count
         )
 
-        # Update only sample_data_json and row_count
+        # Update only sample_data_json, row_count and freshness
         self._table_spec_dao.upsert(datasource_id, table_name, {
             "sample_data_json": sample_data_json,
             "row_count": row_count,
+            "latest_data_time": latest_data_time,
         })
 
         # Return updated spec
@@ -1944,6 +1956,89 @@ class SchemaLearningService:
             logger.debug(f"[LEARN] Failed to get row count for '{table_name}': {e}")
         return 0
 
+    # Time-column name preferences for freshness detection: update-class
+    # names reflect the newest change, create-class names the newest insert.
+    _UPDATE_TIME_NAMES = (
+        "updated_at", "update_time", "gmt_modified", "modified_at",
+        "last_modified", "modify_time",
+    )
+    _CREATE_TIME_NAMES = (
+        "created_at", "create_time", "gmt_create", "created",
+    )
+
+    @classmethod
+    def _pick_time_column(cls, columns: List[Dict[str, Any]]) -> Optional[str]:
+        """Pick the column best reflecting data freshness, if any.
+
+        Prefers update-class names, then create-class names, then any
+        datetime/timestamp-typed column. Accepts raw connector columns
+        (type objects) or learned columns (string types).
+        """
+        norm = []
+        for col in columns or []:
+            orig = str(col.get("name", ""))
+            ctype = str(col.get("type", "")).lower()
+            norm.append((orig, orig.lower(), ctype))
+
+        for candidates in (cls._UPDATE_TIME_NAMES, cls._CREATE_TIME_NAMES):
+            for orig, name, _ in norm:
+                if name in candidates:
+                    return orig
+        for orig, _, ctype in norm:
+            # "date" covers Oracle DATE (carries time-of-day); MySQL DATE
+            # (day granularity) is still a usable freshness hint
+            if any(t in ctype for t in ("datetime", "timestamp", "date")):
+                return orig
+        return None
+
+    def _get_latest_data_time(
+        self, connector, table_name: str, columns: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        """Get the freshest data timestamp of a table, as a string.
+
+        Strategy: pick a time column (see _pick_time_column), then
+        - with a PK: read the time col of the last row ordered by PK
+          (index-backed, avoids a full scan of MAX())
+        - without a PK: fall back to MAX(time_col)
+
+        Returns None when no time column exists or the query fails.
+        """
+        time_col = self._pick_time_column(columns)
+        if not time_col:
+            return None
+
+        quoted = connector.quote_identifier(table_name)
+        q_time = connector.quote_identifier(time_col)
+        try:
+            pk_col = None
+            try:
+                pk_info = connector.get_pk_constraint(table_name)
+                constrained = (pk_info or {}).get("constrained_columns") or []
+                if constrained:
+                    pk_col = connector.quote_identifier(constrained[0])
+            except Exception:
+                pk_col = None
+
+            if pk_col:
+                sql = connector.limit_sql(
+                    f"SELECT {q_time} FROM {quoted} "
+                    f"ORDER BY {pk_col} DESC",
+                    1,
+                )
+            else:
+                sql = f"SELECT MAX({q_time}) FROM {quoted}"
+            result = connector.run(sql)
+            if result and len(result) > 1:
+                row = tuple(result[1])
+                if row and row[0] is not None:
+                    return str(row[0])
+        except Exception as e:
+            logger.debug(
+                f"[LEARN] Failed to get latest data time for "
+                f"'{table_name}': {e}"
+            )
+        return None
+
     def _regenerate_db_spec(
         self, datasource_id: int, db_name: str
     ) -> None:
@@ -1961,6 +2056,7 @@ class SchemaLearningService:
                 "table_name": table_name,
                 "summary": comment,
                 "row_count": spec.get("row_count"),
+                "latest_data_time": spec.get("latest_data_time"),
                 "column_count": len(columns or []),
                 "group": spec.get("group_name", "default"),
             })

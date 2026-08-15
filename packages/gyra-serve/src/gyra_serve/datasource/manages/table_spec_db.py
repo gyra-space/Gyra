@@ -38,6 +38,11 @@ class TableSpecEntity(Model):
     table_name = Column(String(255), nullable=False, comment="Table name")
     table_comment = Column(Text, nullable=True, comment="Table comment/description")
     row_count = Column(Integer, nullable=True, comment="Approximate row count")
+    latest_data_time = Column(
+        String(64), nullable=True,
+        comment="Latest data time (time col of last PK row, or MAX of "
+                "a time col when no PK)",
+    )
     columns_json = Column(
         Text, nullable=False,
         comment="JSON: array of column definitions "
@@ -80,6 +85,38 @@ class TableSpecEntity(Model):
 class TableSpecDao(BaseDao):
     """DAO for table spec documents."""
 
+    def __init__(self, db_manager=None):
+        super().__init__(db_manager=db_manager)
+        self._migrate_latest_data_time()
+
+    def _migrate_latest_data_time(self) -> None:
+        """Add latest_data_time column if missing (idempotent).
+
+        CREATE TABLE IF NOT EXISTS won't add columns to an existing
+        table, so ALTER explicitly for upgrades.
+        """
+        try:
+            from sqlalchemy import inspect as sa_inspect, text
+
+            with self.session(commit=False) as session:
+                existing = {
+                    c["name"]
+                    for c in sa_inspect(
+                        session.bind
+                    ).get_columns(TableSpecEntity.__tablename__)
+                }
+                if "latest_data_time" not in existing:
+                    session.execute(
+                        text(
+                            "ALTER TABLE "
+                            f"{TableSpecEntity.__tablename__} "
+                            "ADD COLUMN latest_data_time VARCHAR(64)"
+                        )
+                    )
+                session.commit()
+        except Exception as e:
+            logger.debug("latest_data_time migration skipped: %s", e)
+
     def from_request(
         self, request: Union[Dict[str, Any], Any]
     ) -> TableSpecEntity:
@@ -109,6 +146,7 @@ class TableSpecDao(BaseDao):
             "table_name": entity.table_name,
             "table_comment": entity.table_comment,
             "row_count": entity.row_count,
+            "latest_data_time": entity.latest_data_time,
             "columns": _parse_json(entity.columns_json),
             "indexes": _parse_json(entity.indexes_json),
             "foreign_keys": _parse_json(entity.foreign_keys_json),

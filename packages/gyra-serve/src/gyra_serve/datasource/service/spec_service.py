@@ -70,6 +70,7 @@ class DbSpecService:
                     "table_name": r.get("table_name", ""),
                     "table_comment": r.get("table_comment"),
                     "row_count": r.get("row_count"),
+                    "latest_data_time": r.get("latest_data_time"),
                     "column_count": len(columns) if columns else 0,
                     "group_name": r.get("group_name"),
                 }
@@ -275,6 +276,7 @@ class DbSpecService:
             indexes = spec.get("indexes", [])
             foreign_keys = spec.get("foreign_keys", [])
             row_count = spec.get("row_count")
+            latest_data_time = spec.get("latest_data_time")
             sample_data = spec.get("sample_data")
             ddl = spec.get("create_ddl", "")
 
@@ -286,6 +288,10 @@ class DbSpecService:
             profile_parts = []
             if row_count is not None:
                 profile_parts.append(f"Rows: {row_count}")
+            if latest_data_time:
+                profile_parts.append(
+                    f"Latest data time: {latest_data_time}"
+                )
             profile_parts.append(f"Columns: {len(columns)}")
             # Collect enum columns
             enum_cols = []
