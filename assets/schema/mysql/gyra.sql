@@ -1,7 +1,7 @@
 -- ============================================================
 -- MySQL DDL Script for Gyra
 -- Version: 0.3.0
--- Generated: 2026-08-15T20:48:04.199977
+-- Generated: 2026-08-15T21:43:22.561821
 -- ============================================================
 
 SET NAMES utf8mb4;
@@ -24,8 +24,8 @@ CREATE TABLE IF NOT EXISTS `chat_history` (
   `task_id` INT NULL COMMENT 'Task id this conversation belongs to',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_conv_uid` (`conv_uid`),
-  KEY `ix_chat_history_sys_code` (`sys_code`),
   KEY `ix_chat_history_workspace_id` (`workspace_id`),
+  KEY `ix_chat_history_sys_code` (`sys_code`),
   KEY `ix_chat_history_task_id` (`task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -62,11 +62,11 @@ CREATE TABLE IF NOT EXISTS `connect_config` (
   `owner_workspace_id` INT NULL COMMENT 'Owner workspace id for workspace-owned datasets; NULL means global',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_db` (`db_name`),
-  KEY `ix_connect_config_user_name` (`user_name`),
-  KEY `ix_connect_config_sys_code` (`sys_code`),
   KEY `ix_connect_config_user_id` (`user_id`),
   KEY `idx_q_db_type` (`db_type`),
-  KEY `idx_q_owner_workspace` (`owner_workspace_id`)
+  KEY `idx_q_owner_workspace` (`owner_workspace_id`),
+  KEY `ix_connect_config_user_name` (`user_name`),
+  KEY `ix_connect_config_sys_code` (`sys_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: db_learning_subtask
@@ -86,8 +86,8 @@ CREATE TABLE IF NOT EXISTS `db_learning_subtask` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record update time',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_subtask_task_table` (`task_id`, `table_name`),
-  KEY `idx_subtask_task_status` (`task_id`, `status`),
-  KEY `idx_subtask_ds` (`datasource_id`)
+  KEY `idx_subtask_ds` (`datasource_id`),
+  KEY `idx_subtask_task_status` (`task_id`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: table_spec
@@ -143,8 +143,8 @@ CREATE TABLE IF NOT EXISTS `db_learning_task` (
   `gmt_created` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record creation time',
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record update time',
   PRIMARY KEY (`id`),
-  KEY `idx_learning_task_ds` (`datasource_id`),
-  KEY `idx_learning_task_status` (`status`)
+  KEY `idx_learning_task_status` (`status`),
+  KEY `idx_learning_task_ds` (`datasource_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_intervention
@@ -169,11 +169,11 @@ CREATE TABLE IF NOT EXISTS `server_app_intervention` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `ix_server_app_intervention_conv_uid` (`conv_uid`),
-  KEY `ix_server_app_intervention_assignee_user_id` (`assignee_user_id`),
   KEY `ix_server_app_intervention_task_id` (`task_id`),
   KEY `ix_server_app_intervention_workspace_id` (`workspace_id`),
-  KEY `ix_server_app_intervention_parent_conv_id` (`parent_conv_id`)
+  KEY `ix_server_app_intervention_parent_conv_id` (`parent_conv_id`),
+  KEY `ix_server_app_intervention_conv_uid` (`conv_uid`),
+  KEY `ix_server_app_intervention_assignee_user_id` (`assignee_user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_playbook
@@ -204,8 +204,8 @@ CREATE TABLE IF NOT EXISTS `server_app_playbook_version` (
   `created_by_user_id` INT NULL,
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `ix_server_app_playbook_version_playbook_id` (`playbook_id`),
-  UNIQUE KEY `uk_playbook_version` (`playbook_id`, `version`)
+  UNIQUE KEY `uk_playbook_version` (`playbook_id`, `version`),
+  KEY `ix_server_app_playbook_version_playbook_id` (`playbook_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_workspace
@@ -240,9 +240,9 @@ CREATE TABLE IF NOT EXISTS `server_app_workspace_member` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_workspace_member` (`workspace_id`, `user_id`),
-  KEY `ix_server_app_workspace_member_user_id` (`user_id`),
+  KEY `ix_server_app_workspace_member_is_home` (`is_home`),
   KEY `ix_server_app_workspace_member_workspace_id` (`workspace_id`),
-  KEY `ix_server_app_workspace_member_is_home` (`is_home`)
+  KEY `ix_server_app_workspace_member_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_workspace_resource
@@ -298,10 +298,10 @@ CREATE TABLE IF NOT EXISTS `server_app_workspace_inbox_item` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `ix_server_app_workspace_inbox_item_source_id` (`source_id`),
-  KEY `ix_server_app_workspace_inbox_item_workspace_id` (`workspace_id`),
   KEY `idx_inbox_user_status` (`user_id`, `inbox_status`),
+  KEY `ix_server_app_workspace_inbox_item_source_id` (`source_id`),
   KEY `ix_server_app_workspace_inbox_item_inbox_status` (`inbox_status`),
+  KEY `ix_server_app_workspace_inbox_item_workspace_id` (`workspace_id`),
   KEY `ix_server_app_workspace_inbox_item_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -321,8 +321,8 @@ CREATE TABLE IF NOT EXISTS `server_app_workspace_agent_maturity` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_workspace_agent_maturity` (`workspace_id`, `agent_id`),
   KEY `ix_server_app_workspace_agent_maturity_agent_id` (`agent_id`),
+  UNIQUE KEY `uk_workspace_agent_maturity` (`workspace_id`, `agent_id`),
   KEY `ix_server_app_workspace_agent_maturity_workspace_id` (`workspace_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -336,8 +336,8 @@ CREATE TABLE IF NOT EXISTS `server_app_workspace_agent_role` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `ix_server_app_workspace_agent_role_workspace_id` (`workspace_id`),
-  KEY `ix_server_app_workspace_agent_role_agent_id` (`agent_id`),
-  UNIQUE KEY `uk_workspace_agent_role` (`workspace_id`, `agent_id`)
+  UNIQUE KEY `uk_workspace_agent_role` (`workspace_id`, `agent_id`),
+  KEY `ix_server_app_workspace_agent_role_agent_id` (`agent_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_playbook_trace
@@ -358,9 +358,9 @@ CREATE TABLE IF NOT EXISTS `server_app_playbook_trace` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   `gmt_finalized` DATETIME NULL,
   PRIMARY KEY (`id`),
-  KEY `ix_server_app_playbook_trace_playbook_id` (`playbook_id`),
-  KEY `ix_server_app_playbook_trace_workspace_id` (`workspace_id`),
   UNIQUE KEY `ix_server_app_playbook_trace_trace_id` (`trace_id`),
+  KEY `ix_server_app_playbook_trace_workspace_id` (`workspace_id`),
+  KEY `ix_server_app_playbook_trace_playbook_id` (`playbook_id`),
   KEY `ix_server_app_playbook_trace_task_id` (`task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -384,9 +384,9 @@ CREATE TABLE IF NOT EXISTS `server_app_playbook_evolution_proposal` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `ix_server_app_playbook_evolution_proposal_proposal_id` (`proposal_id`),
   KEY `ix_server_app_playbook_evolution_proposal_workspace_id` (`workspace_id`),
-  KEY `ix_server_app_playbook_evolution_proposal_playbook_id` (`playbook_id`)
+  KEY `ix_server_app_playbook_evolution_proposal_playbook_id` (`playbook_id`),
+  UNIQUE KEY `ix_server_app_playbook_evolution_proposal_proposal_id` (`proposal_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_trigger_source
@@ -403,8 +403,8 @@ CREATE TABLE IF NOT EXISTS `server_app_trigger_source` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `ix_server_app_trigger_source_workspace_id` (`workspace_id`),
-  KEY `ix_server_app_trigger_source_target_playbook_id` (`target_playbook_id`)
+  KEY `ix_server_app_trigger_source_target_playbook_id` (`target_playbook_id`),
+  KEY `ix_server_app_trigger_source_workspace_id` (`workspace_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_skill
@@ -473,8 +473,8 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_file` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record update time',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_bucket_file_id` (`bucket`, `file_id`),
-  KEY `ix_gyra_serve_file_sys_code` (`sys_code`),
-  KEY `ix_gyra_serve_file_user_name` (`user_name`)
+  KEY `ix_gyra_serve_file_user_name` (`user_name`),
+  KEY `ix_gyra_serve_file_sys_code` (`sys_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gyra_serve_config
@@ -557,8 +557,8 @@ CREATE TABLE IF NOT EXISTS `server_app_workspace_asset_version` (
   `created_by` VARCHAR(128) NULL,
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `ix_server_app_workspace_asset_version_asset_id` (`asset_id`),
-  UNIQUE KEY `uk_workspace_asset_version` (`asset_id`, `version`)
+  UNIQUE KEY `uk_workspace_asset_version` (`asset_id`, `version`),
+  KEY `ix_server_app_workspace_asset_version_asset_id` (`asset_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_task_asset_link
@@ -569,9 +569,9 @@ CREATE TABLE IF NOT EXISTS `server_app_task_asset_link` (
   `link_type` VARCHAR(32) NOT NULL,
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_task_asset_link` (`task_id`, `asset_id`, `link_type`),
   KEY `ix_server_app_task_asset_link_asset_id` (`asset_id`),
-  KEY `ix_server_app_task_asset_link_task_id` (`task_id`)
+  KEY `ix_server_app_task_asset_link_task_id` (`task_id`),
+  UNIQUE KEY `uk_task_asset_link` (`task_id`, `asset_id`, `link_type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_asset_index
@@ -615,11 +615,11 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_llm_usage` (
   `gmt_create` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `ix_gyra_serve_llm_usage_conv_id` (`conv_id`),
-  KEY `ix_gyra_serve_llm_usage_model_name` (`model_name`),
   KEY `idx_usage_conv_time` (`conv_id`, `started_at`),
+  KEY `idx_usage_agent_time` (`agent_id`, `started_at`),
+  KEY `ix_gyra_serve_llm_usage_model_name` (`model_name`),
   KEY `ix_gyra_serve_llm_usage_agent_id` (`agent_id`),
-  KEY `ix_gyra_serve_llm_usage_started_at` (`started_at`),
-  KEY `idx_usage_agent_time` (`agent_id`, `started_at`)
+  KEY `ix_gyra_serve_llm_usage_started_at` (`started_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: recommend_question
@@ -671,8 +671,8 @@ CREATE TABLE IF NOT EXISTS `gpts_conversations` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'last update time',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_gpts_conversations` (`conv_id`),
-  KEY `idx_gpts_name` (`gpts_name`),
   KEY `ix_gpts_conversations_task_id` (`task_id`),
+  KEY `idx_gpts_name` (`gpts_name`),
   KEY `ix_gpts_conversations_workspace_id` (`workspace_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -789,8 +789,8 @@ CREATE TABLE IF NOT EXISTS `gpts_cold_segments` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'last update time',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_cold_session_hash` (`session_id`, `content_hash`),
-  KEY `idx_cold_session` (`session_id`),
-  KEY `idx_compress_session_seq` (`session_id`, `segment_index`)
+  KEY `idx_compress_session_seq` (`session_id`, `segment_index`),
+  KEY `idx_cold_session` (`session_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gpts_kanban
@@ -855,13 +855,13 @@ CREATE TABLE IF NOT EXISTS `authorization_audit_log` (
   `duration_ms` FLOAT NOT NULL DEFAULT '0.0' COMMENT 'Duration in milliseconds',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When the audit log was created',
   PRIMARY KEY (`id`),
-  KEY `idx_audit_tool` (`tool_name`),
-  KEY `idx_audit_decision` (`decision`),
   KEY `idx_audit_session` (`session_id`),
+  KEY `idx_audit_risk_level` (`risk_level`),
+  KEY `idx_audit_agent` (`agent_name`),
+  KEY `idx_audit_tool` (`tool_name`),
   KEY `idx_audit_created_at` (`created_at`),
   KEY `idx_audit_user` (`user_id`),
-  KEY `idx_audit_agent` (`agent_name`),
-  KEY `idx_audit_risk_level` (`risk_level`)
+  KEY `idx_audit_decision` (`decision`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gpts_async_tasks
@@ -883,8 +883,8 @@ CREATE TABLE IF NOT EXISTS `gpts_async_tasks` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'last update time',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_task_id` (`task_id`),
-  KEY `idx_async_tasks_conv` (`conv_id`),
-  KEY `idx_async_tasks_status` (`status`)
+  KEY `idx_async_tasks_status` (`status`),
+  KEY `idx_async_tasks_conv` (`conv_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: agent_input_queue
@@ -905,8 +905,8 @@ CREATE TABLE IF NOT EXISTS `agent_input_queue` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
   KEY `idx_input_conv_session_status` (`conv_session_id`, `status`),
-  KEY `idx_input_conv_id_status` (`conv_id`, `status`),
-  KEY `idx_input_gmt_create` (`gmt_create`)
+  KEY `idx_input_gmt_create` (`gmt_create`),
+  KEY `idx_input_conv_id_status` (`conv_id`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gpts_tool
@@ -970,8 +970,8 @@ CREATE TABLE IF NOT EXISTS `gpts_file_metadata` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'last update time',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_file_id` (`file_id`),
-  KEY `idx_file_meta_file_key` (`conv_id`, `file_key`),
   KEY `idx_file_meta_file_type` (`conv_id`, `file_type`),
+  KEY `idx_file_meta_file_key` (`conv_id`, `file_key`),
   KEY `idx_file_meta_conv_session` (`conv_id`, `conv_session_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -997,8 +997,8 @@ CREATE TABLE IF NOT EXISTS `gpts_events` (
   `event_data` LONGTEXT NULL COMMENT 'JSON event payload (tool_name, args, result, etc.)',
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'create time',
   PRIMARY KEY (`id`),
-  KEY `idx_events_message` (`message_id`),
-  KEY `idx_events_conv_seq` (`conv_id`, `sequence`)
+  KEY `idx_events_conv_seq` (`conv_id`, `sequence`),
+  KEY `idx_events_message` (`message_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gpts_app
@@ -1024,9 +1024,9 @@ CREATE TABLE IF NOT EXISTS `gpts_app` (
   `agent_version` VARCHAR(32) NULL DEFAULT 'v1' COMMENT 'agent version: v1 or v2',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_gpts_app` (`app_name`),
-  KEY `idx_gpts_app_user_code` (`user_code`),
-  KEY `idx_gpts_app_user_published` (`user_code`, `published`),
   KEY `idx_gpts_app_published` (`published`),
+  KEY `idx_gpts_app_user_published` (`user_code`, `published`),
+  KEY `idx_gpts_app_user_code` (`user_code`),
   KEY `idx_gpts_app_team_mode` (`team_mode`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1060,9 +1060,9 @@ CREATE TABLE IF NOT EXISTS `user_recent_apps` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'last update time',
   `last_accessed` DATETIME NULL COMMENT 'last access time',
   PRIMARY KEY (`id`),
-  KEY `idx_user_code` (`user_code`),
   KEY `idx_last_accessed` (`last_accessed`),
-  KEY `idx_user_r_app_code` (`app_code`)
+  KEY `idx_user_r_app_code` (`app_code`),
+  KEY `idx_user_code` (`user_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gpts_messages_system
@@ -1083,10 +1083,10 @@ CREATE TABLE IF NOT EXISTS `gpts_messages_system` (
   `retry_time` SMALLINT NULL DEFAULT 0 COMMENT '当前阶段重试次数',
   `final_status` VARCHAR(20) NULL COMMENT '当前阶段最终状态',
   PRIMARY KEY (`id`),
-  KEY `idx_message_phase` (`conv_id`, `phase`),
-  KEY `idx_message` (`message_id`),
+  KEY `idx_agent_message` (`conv_id`, `agent_message_id`),
   KEY `idx_message_type` (`conv_id`, `type`, `phase`),
-  KEY `idx_agent_message` (`conv_id`, `agent_message_id`)
+  KEY `idx_message` (`message_id`),
+  KEY `idx_message_phase` (`conv_id`, `phase`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gpts_tool_messages
@@ -1106,9 +1106,9 @@ CREATE TABLE IF NOT EXISTS `gpts_tool_messages` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'last update time',
   PRIMARY KEY (`id`),
   KEY `idx_tool_id` (`tool_id`),
+  KEY `idx_tool_name_sub_name` (`name`, `sub_name`),
   KEY `idx_session_id` (`session_id`),
-  KEY `idx_gpts_tool_messages_name` (`name`),
-  KEY `idx_tool_name_sub_name` (`name`, `sub_name`)
+  KEY `idx_gpts_tool_messages_name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gyra_serve_mcp
@@ -1155,11 +1155,11 @@ CREATE TABLE IF NOT EXISTS `sql_audit_log` (
   `duration_ms` FLOAT NULL DEFAULT '0.0' COMMENT 'Guard check duration in ms',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When the audit log was created',
   PRIMARY KEY (`id`),
-  KEY `idx_sql_audit_user` (`user_id`),
   KEY `idx_sql_audit_ds` (`datasource_id`),
   KEY `idx_sql_audit_time` (`created_at`),
   KEY `idx_sql_audit_session` (`session_id`),
-  KEY `idx_sql_audit_result` (`check_result`)
+  KEY `idx_sql_audit_result` (`check_result`),
+  KEY `idx_sql_audit_user` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: sensitive_column_config
@@ -1244,9 +1244,9 @@ CREATE TABLE IF NOT EXISTS `evaluate_manage` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record update time',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_evaluate_code` (`evaluate_code`),
-  KEY `ix_evaluate_manage_user_id` (`user_id`),
+  KEY `ix_evaluate_manage_user_name` (`user_name`),
   KEY `ix_evaluate_manage_sys_code` (`sys_code`),
-  KEY `ix_evaluate_manage_user_name` (`user_name`)
+  KEY `ix_evaluate_manage_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: prompt_manage
@@ -1271,10 +1271,10 @@ CREATE TABLE IF NOT EXISTS `prompt_manage` (
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record update time',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_prompt_name_sys_code` (`prompt_name`, `sys_code`, `prompt_language`, `model`),
+  KEY `ix_prompt_manage_prompt_language` (`prompt_language`),
+  KEY `ix_prompt_manage_sys_code` (`sys_code`),
   KEY `ix_prompt_manage_user_code` (`user_code`),
   KEY `ix_prompt_manage_user_name` (`user_name`),
-  KEY `ix_prompt_manage_sys_code` (`sys_code`),
-  KEY `ix_prompt_manage_prompt_language` (`prompt_language`),
   KEY `ix_prompt_manage_prompt_format` (`prompt_format`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1304,13 +1304,13 @@ CREATE TABLE IF NOT EXISTS `server_app_task` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  KEY `ix_server_app_task_status` (`status`),
+  KEY `ix_server_app_task_workspace_id` (`workspace_id`),
+  UNIQUE KEY `ix_server_app_task_conv_session_id` (`conv_session_id`),
   KEY `ix_server_app_task_playbook_id` (`playbook_id`),
   KEY `ix_server_app_task_assignee_user_id` (`assignee_user_id`),
-  KEY `ix_server_app_task_parent_task_id` (`parent_task_id`),
-  UNIQUE KEY `ix_server_app_task_conv_session_id` (`conv_session_id`),
   KEY `ix_server_app_task_created_by_user_id` (`created_by_user_id`),
-  KEY `ix_server_app_task_status` (`status`),
-  KEY `ix_server_app_task_workspace_id` (`workspace_id`)
+  KEY `ix_server_app_task_parent_task_id` (`parent_task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_task_relation
@@ -1321,8 +1321,8 @@ CREATE TABLE IF NOT EXISTS `server_app_task_relation` (
   `relation_type` VARCHAR(32) NOT NULL DEFAULT 'spawned_by',
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `ix_server_app_task_relation_child_task_id` (`child_task_id`),
   KEY `ix_server_app_task_relation_parent_task_id` (`parent_task_id`),
+  KEY `ix_server_app_task_relation_child_task_id` (`child_task_id`),
   KEY `idx_task_relation` (`parent_task_id`, `child_task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1387,9 +1387,9 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_job` (
   PRIMARY KEY (`id`),
   KEY `ix_gyra_serve_job_space_slug` (`space_slug`),
   KEY `ix_gyra_serve_job_lease_until` (`lease_until`),
+  KEY `ix_gyra_serve_job_not_before` (`not_before`),
   KEY `ix_gyra_serve_job_job_type` (`job_type`),
-  KEY `ix_gyra_serve_job_status` (`status`),
-  KEY `ix_gyra_serve_job_not_before` (`not_before`)
+  KEY `ix_gyra_serve_job_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: server_app_delivery
@@ -1449,8 +1449,8 @@ CREATE TABLE IF NOT EXISTS `server_app_artifact_version` (
   `created_by` VARCHAR(128) NULL,
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_artifact_version` (`artifact_id`, `version`),
-  KEY `ix_server_app_artifact_version_artifact_id` (`artifact_id`)
+  KEY `ix_server_app_artifact_version_artifact_id` (`artifact_id`),
+  UNIQUE KEY `uk_artifact_version` (`artifact_id`, `version`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gyra_serve_gyras_my
@@ -1656,8 +1656,8 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_flow` (
   KEY `ix_gyra_serve_flow_dag_id` (`dag_id`),
   KEY `ix_gyra_serve_flow_name` (`name`),
   KEY `ix_gyra_serve_flow_user_name` (`user_name`),
-  KEY `ix_gyra_serve_flow_uid` (`uid`),
-  KEY `ix_gyra_serve_flow_sys_code` (`sys_code`)
+  KEY `ix_gyra_serve_flow_sys_code` (`sys_code`),
+  KEY `ix_gyra_serve_flow_uid` (`uid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: gyra_serve_variables
@@ -1680,10 +1680,10 @@ CREATE TABLE IF NOT EXISTS `gyra_serve_variables` (
   `gmt_create` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record creation time',
   `gmt_modified` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Record update time',
   PRIMARY KEY (`id`),
-  KEY `ix_gyra_serve_variables_key_info` (`key_info`),
   KEY `ix_gyra_serve_variables_user_name` (`user_name`),
   KEY `ix_gyra_serve_variables_sys_code` (`sys_code`),
-  KEY `ix_gyra_serve_variables_name` (`name`)
+  KEY `ix_gyra_serve_variables_name` (`name`),
+  KEY `ix_gyra_serve_variables_key_info` (`key_info`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: user
@@ -1786,8 +1786,8 @@ CREATE TABLE IF NOT EXISTS `group_role` (
   `gmt_create` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_group_role` (`group_id`, `role_id`),
-  KEY `ix_group_role_group_id` (`group_id`),
-  KEY `ix_group_role_role_id` (`role_id`)
+  KEY `ix_group_role_role_id` (`role_id`),
+  KEY `ix_group_role_group_id` (`group_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: permission_definition

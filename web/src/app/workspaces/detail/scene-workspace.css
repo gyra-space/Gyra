@@ -162,26 +162,66 @@
   min-height: 0;
 }
 
-/* 统一细滚动条:三栏主滚动容器,弱化常驻原生滚动条的视觉噪音(同 .ws-rail-inbox) */
+/* 统一悬浮滚动条:默认隐去,悬停滚动容器时以纤细圆角条浮现(延续 globals.css 的设计语言);
+   8px 命中区 + 2px 透明边 + background-clip,视觉粗细收敛到 ~4px,悬停 thumb 加深 */
 .ws-scene-shell__space,
 .ws-scene-space--dashboard,
 .ws-scene-space__body,
-.ws-agent-workspace__process {
+.ws-agent-workspace__process,
+.ws-rail-inbox,
+.ws-scene-task-rail__list {
   scrollbar-width: thin;
-  scrollbar-color: var(--ws-border) transparent;
+  scrollbar-color: transparent transparent;
+}
+.ws-scene-shell__space:hover,
+.ws-scene-space--dashboard:hover,
+.ws-scene-space__body:hover,
+.ws-agent-workspace__process:hover,
+.ws-rail-inbox:hover,
+.ws-scene-task-rail__list:hover {
+  scrollbar-color: rgba(100, 116, 139, 0.35) transparent;
 }
 .ws-scene-shell__space::-webkit-scrollbar,
 .ws-scene-space--dashboard::-webkit-scrollbar,
 .ws-scene-space__body::-webkit-scrollbar,
-.ws-agent-workspace__process::-webkit-scrollbar { width: 5px; height: 5px; }
+.ws-agent-workspace__process::-webkit-scrollbar,
+.ws-rail-inbox::-webkit-scrollbar,
+.ws-scene-task-rail__list::-webkit-scrollbar { width: 8px; height: 8px; }
 .ws-scene-shell__space::-webkit-scrollbar-thumb,
 .ws-scene-space--dashboard::-webkit-scrollbar-thumb,
 .ws-scene-space__body::-webkit-scrollbar-thumb,
-.ws-agent-workspace__process::-webkit-scrollbar-thumb { background: var(--ws-border); border-radius: 4px; }
+.ws-agent-workspace__process::-webkit-scrollbar-thumb,
+.ws-rail-inbox::-webkit-scrollbar-thumb,
+.ws-scene-task-rail__list::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border: 2px solid transparent;
+  border-radius: 99px;
+  background-clip: padding-box;
+}
+.ws-scene-shell__space:hover::-webkit-scrollbar-thumb,
+.ws-scene-space--dashboard:hover::-webkit-scrollbar-thumb,
+.ws-scene-space__body:hover::-webkit-scrollbar-thumb,
+.ws-agent-workspace__process:hover::-webkit-scrollbar-thumb,
+.ws-rail-inbox:hover::-webkit-scrollbar-thumb,
+.ws-scene-task-rail__list:hover::-webkit-scrollbar-thumb { background-color: rgba(100, 116, 139, 0.32); }
+.ws-scene-shell__space::-webkit-scrollbar-thumb:hover,
+.ws-scene-space--dashboard::-webkit-scrollbar-thumb:hover,
+.ws-scene-space__body::-webkit-scrollbar-thumb:hover,
+.ws-agent-workspace__process::-webkit-scrollbar-thumb:hover,
+.ws-rail-inbox::-webkit-scrollbar-thumb:hover,
+.ws-scene-task-rail__list::-webkit-scrollbar-thumb:hover { background-color: rgba(100, 116, 139, 0.5); }
 .ws-scene-shell__space::-webkit-scrollbar-track,
 .ws-scene-space--dashboard::-webkit-scrollbar-track,
 .ws-scene-space__body::-webkit-scrollbar-track,
-.ws-agent-workspace__process::-webkit-scrollbar-track { background: transparent; }
+.ws-agent-workspace__process::-webkit-scrollbar-track,
+.ws-rail-inbox::-webkit-scrollbar-track,
+.ws-scene-task-rail__list::-webkit-scrollbar-track { background: transparent; }
+.dark .ws-scene-shell__space:hover::-webkit-scrollbar-thumb,
+.dark .ws-scene-space--dashboard:hover::-webkit-scrollbar-thumb,
+.dark .ws-scene-space__body:hover::-webkit-scrollbar-thumb,
+.dark .ws-agent-workspace__process:hover::-webkit-scrollbar-thumb,
+.dark .ws-rail-inbox:hover::-webkit-scrollbar-thumb,
+.dark .ws-scene-task-rail__list:hover::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.22); }
 
 .ws-agent-workspace__loading {
   display: flex;
@@ -201,17 +241,19 @@
 .ws-agent-workspace__input {
   padding: 8px 12px;
   flex-shrink: 0;
+  width: 100%;
+  max-width: 904px; /* 880 内容宽 + 两侧各 12 padding,与居中后的 feed 对齐 */
+  margin: 0 auto;
 }
 
-/* 当中间空间折叠、Agent 区变宽时,限制内容宽度并居中,避免铺满过宽 */
+/* 当中间空间折叠、Agent 区变宽时,限制内容宽度并居中,避免铺满过宽;
+   限宽落在内容/输入框本身(而非滚动容器),滚动条始终贴面板右缘,不悬在半空 */
 .ws-agent-workspace__content {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 880px;
-  margin: 0 auto;
 }
 
 .ws-agent-chat-input {
@@ -268,8 +310,6 @@
   min-height: 0;
   padding: 6px 12px 12px;
 }
-.ws-rail-inbox::-webkit-scrollbar { width: 5px; }
-.ws-rail-inbox::-webkit-scrollbar-thumb { background: var(--ws-border); border-radius: 4px; }
 
 /* 待办来源筛选 chips(介入/提案/任务/手动) */
 .ws-rail-inbox-filter {
@@ -579,6 +619,9 @@
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
 }
 
 /* 执行记录结尾:交付文件卡片(类似 vis manus left panel 结尾) */
@@ -1484,8 +1527,6 @@
 }
 .ws-scene-task-rail__search .ant-input { background: transparent; }
 .ws-scene-task-rail__list { flex: 1; overflow-y: auto; padding: 0 12px 12px; }
-.ws-scene-task-rail__list::-webkit-scrollbar { width: 5px; }
-.ws-scene-task-rail__list::-webkit-scrollbar-thumb { background: var(--ws-border); border-radius: 4px; }
 
 .ws-rail-empty { padding: 40px 16px; text-align: center; color: var(--ws-ink-3); }
 .ws-rail-empty-t { font-size: 12.5px; font-weight: 600; color: var(--ws-ink-2); margin-bottom: 3px; }
@@ -2009,6 +2050,7 @@
 }
 
 /* === 大厅容器折叠:Agent 空间占满主区,专注执行进展 === */
+/* 未折叠态:贴合 space/agent 接缝的圆形把手 */
 .ws-scene-shell__space-toggle {
   display: inline-flex;
   position: absolute;
@@ -2016,8 +2058,8 @@
   top: 50%;
   transform: translateY(-50%);
   right: calc(var(--ws-agent-w) + 6px);
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   background: var(--ws-surface);
   border: 1px solid var(--ws-border-subtle);
@@ -2025,41 +2067,61 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  color: var(--ws-ink-2);
-  font-size: 13px;
+  color: var(--ws-ink-3);
+  font-size: 12px;
   line-height: 1;
   padding: 0;
-  transition: right 0.25s ease, color var(--ws-transition), border-color var(--ws-transition);
+  transition: right 0.25s ease, color var(--ws-transition), border-color var(--ws-transition),
+    background var(--ws-transition), box-shadow var(--ws-transition);
 }
 .ws-scene-shell__space-toggle:hover {
   color: var(--ws-accent);
-  border-color: var(--ws-accent);
+  border-color: rgba(var(--ws-accent-rgb), 0.4);
+  background: var(--ws-accent-light);
+  box-shadow: var(--ws-shadow-md);
 }
-/* 折叠后开关贴到右缘(agent 区占满),并显式展示“展开大厅”文字;
-   原 tiny chevron 在真实聊天内容中几乎不可见,用户会以为没有展开入口。 */
+/* 折叠态:右缘 dock 式竖排 tab —— 隐藏面板的"拉手",一眼可读、Hover 浮现品牌色 */
 .ws-scene-shell--space-collapsed .ws-scene-shell__space-toggle {
   top: 50%;
   transform: translateY(-50%);
-  right: 12px;
-  width: auto;
-  min-width: 86px;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 14px;
-  gap: 4px;
+  right: 0;
+  flex-direction: column;
+  width: 30px;
+  min-width: 0;
+  height: auto;
+  padding: 12px 0 14px;
+  gap: 8px;
+  border-radius: 10px 0 0 10px;
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
-  color: var(--ws-ink-2);
+  color: var(--ws-accent);
   background: var(--ws-surface);
-  border-color: var(--ws-border);
-  box-shadow: var(--ws-shadow-sm);
+  border: 1px solid var(--ws-border-subtle);
+  border-right: none;
+  box-shadow: -3px 0 12px rgba(15, 23, 42, 0.07);
 }
-.ws-scene-shell__space-toggle__icon,
-.ws-scene-shell__space-toggle__label {
+.ws-scene-shell--space-collapsed .ws-scene-shell__space-toggle:hover {
+  background: var(--ws-accent-light);
+  border-color: rgba(var(--ws-accent-rgb), 0.35);
+  border-right: none;
+  box-shadow: -4px 0 16px rgba(var(--ws-accent-rgb), 0.14);
+}
+.ws-scene-shell__space-toggle__icon {
+  display: inline-flex;
   line-height: 1;
 }
-/* 折叠期间新内容到达:角标提示 */
+.ws-scene-shell__space-toggle__label {
+  writing-mode: vertical-rl;
+  letter-spacing: 3px;
+  line-height: 1;
+  color: var(--ws-ink-2);
+  transition: color var(--ws-transition);
+}
+.ws-scene-shell__space-toggle:hover .ws-scene-shell__space-toggle__label {
+  color: var(--ws-accent);
+}
+/* 折叠期间新内容到达:角标提示(竖排 tab 时挂在外侧左上角,避免被边缘裁切) */
 .ws-scene-shell__space-toggle--new::after {
   content: '';
   position: absolute;
@@ -2071,6 +2133,11 @@
   background: var(--ws-accent);
   box-shadow: 0 0 0 2px var(--ws-surface);
   animation: ws-rail-pulse 1.6s ease-in-out infinite;
+}
+.ws-scene-shell--space-collapsed .ws-scene-shell__space-toggle--new::after {
+  top: -3px;
+  left: -3px;
+  right: auto;
 }
 
 /* 宽屏(≥1280): rail | agent(1fr) */
@@ -2088,7 +2155,7 @@
     right: 366px;
   }
   .ws-scene-shell--space-collapsed .ws-scene-shell__space-toggle {
-    right: 12px;
+    right: 0;
   }
 }
 @media (min-width: 900px) {

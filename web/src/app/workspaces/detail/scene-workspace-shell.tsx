@@ -3,7 +3,7 @@
 import './scene-workspace.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Modal } from 'antd';
-import { CloseOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
+import { CloseOutlined, LayoutOutlined, LeftOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation } from '@/client/api';
 import { getUserId } from '@/utils';
@@ -433,11 +433,11 @@ export function SceneWorkspaceShell({
       >
         {spaceCollapsed ? (
         <>
-          <span className="ws-scene-shell__space-toggle__icon">›</span>
+          <span className="ws-scene-shell__space-toggle__icon"><LayoutOutlined /></span>
           <span className="ws-scene-shell__space-toggle__label">展开大厅</span>
         </>
       ) : (
-        '‹'
+        <LeftOutlined />
       )}
       </button>
       <div className="ws-scene-shell__rail">

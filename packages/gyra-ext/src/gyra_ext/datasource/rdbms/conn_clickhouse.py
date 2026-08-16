@@ -114,7 +114,6 @@ class ClickhouseConnector(RDBMSConnector):
             parameters.http_pool_maxsize,
             parameters.http_pool_num_pools,
             parameters.connect_timeout,
-            parameters.distributed_ddl_task_timeout,
             parameters.engine,
         )
 
@@ -129,7 +128,6 @@ class ClickhouseConnector(RDBMSConnector):
         http_pool_maxsize: int = 16,
         http_pool_num_pools: int = 12,
         connect_timeout: int = 15,
-        distributed_ddl_task_timeout: int = 300,
         engine: str = "MergeTree",
         **kwargs: Any,
     ) -> "ClickhouseConnector":
@@ -140,6 +138,10 @@ class ClickhouseConnector(RDBMSConnector):
         big_pool_mgr = httputil.get_pool_manager(
             maxsize=http_pool_maxsize, num_pools=http_pool_num_pools
         )
+        # NOTE: distributed_ddl_task_timeout is a server-level config setting
+        # (config.xml), NOT a session/query-level setting. Sending it via
+        # `settings` makes ClickHouse reject the connection with
+        # "Setting distributed_ddl_task_timeout is unknown or readonly".
         client = clickhouse_connect.get_client(
             host=host,
             user=user,
@@ -147,7 +149,6 @@ class ClickhouseConnector(RDBMSConnector):
             port=port,
             connect_timeout=connect_timeout,
             database=db_name,
-            settings={"distributed_ddl_task_timeout": distributed_ddl_task_timeout},
             pool_mgr=big_pool_mgr,
         )
 
