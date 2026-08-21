@@ -228,7 +228,13 @@ class ReadinessVO(BaseModel):
 
 
 class GraphNodeVO(BaseModel):
-    """A node in the semantic graph view."""
+    """A node in the semantic graph view.
+
+    node_kind: object = hard-layer semantic object (default);
+               asset  = registered original-asset reference (db/document/space/api);
+               kn     = knowledge-layer node (wiki doc / cross-doc entity,
+                        aggregated from the knowledge space L2 graph).
+    """
 
     model_config = ConfigDict(title="EcpGraphNode")
 
@@ -236,7 +242,8 @@ class GraphNodeVO(BaseModel):
     obj_type: str
     name: Optional[str] = None
     status: str
-    version: int
+    version: int = 0
+    node_kind: str = "object"
 
 
 class GraphLinkVO(BaseModel):

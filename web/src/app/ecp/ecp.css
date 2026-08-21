@@ -621,6 +621,55 @@
 }
 
 /* --------------------------------------------------------- graph 层 */
+.ecp-panorama {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ecp-panorama__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ecp-panorama__stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 统计 pill 同时是层过滤开关(is-off = 该层已隐藏) */
+.ecp-panorama__stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 999px;
+  background: var(--bg-elev);
+  box-shadow: var(--sh-card);
+  font-size: 12.5px;
+  color: var(--ink-700);
+  cursor: pointer;
+  transition: opacity var(--ease-expo), color var(--ease-expo);
+}
+
+.ecp-panorama__stat:hover {
+  color: var(--ink-900);
+}
+
+.ecp-panorama__stat.is-off {
+  opacity: 0.45;
+  color: var(--ink-400);
+}
+
+.ecp-panorama__stat-num {
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
 .ecp-graph {
   position: relative;
   border-radius: var(--r-lg);
@@ -635,6 +684,13 @@
   top: 14px;
   left: 14px;
   z-index: 10;
+  display: flex;
+  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.ecp-graph__legend-group {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
@@ -651,6 +707,15 @@
   font-size: 12px;
   color: var(--ink-500);
   box-shadow: var(--sh-card);
+}
+
+.ecp-graph__legend-hint {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(8px);
+  font-size: 11.5px;
+  color: var(--ink-400);
 }
 
 /* --------------------------------------------------------- drawer */

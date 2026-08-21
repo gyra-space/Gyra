@@ -849,6 +849,22 @@ class AssetRefDao(BaseDao[EcpAssetRefEntity, Any, Any]):
             rows = query.order_by(EcpAssetRefEntity.id).all()
             return [_to_asset_ref_vo(r) for r in rows]
 
+    def get_by_ref(
+        self, kind: str, ref_id: str, workspace_id: str
+    ) -> Optional[AssetRefVO]:
+        """Look up an asset reference by (kind, ref_id) within a workspace."""
+        with self.session(commit=False) as session:
+            entity = (
+                session.query(EcpAssetRefEntity)
+                .filter(
+                    EcpAssetRefEntity.workspace_id == workspace_id,
+                    EcpAssetRefEntity.kind == kind,
+                    EcpAssetRefEntity.ref_id == ref_id,
+                )
+                .first()
+            )
+            return _to_asset_ref_vo(entity) if entity else None
+
     def touch_checked(self, ref_pk: int) -> None:
         with self.session() as session:
             entity = (

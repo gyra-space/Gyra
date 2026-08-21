@@ -35,7 +35,7 @@ export const TAB_LABELS: Record<TabKey, string> = {
   assets: '资产层',
   semantics: '硬语义',
   wiki: '软知识',
-  graph: '血缘图',
+  graph: '全景图',
   miss: '未命中',
   lint: '巡检',
   settings: '设置',

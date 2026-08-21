@@ -266,6 +266,8 @@ export interface EcpGraphNode {
   name?: string | null;
   status: string;
   version: number;
+  /** object = 硬层语义对象（默认）；asset = 已登记资产引用；kn = 知识层节点 */
+  node_kind?: 'object' | 'asset' | 'kn';
 }
 
 export interface EcpGraphLink {
@@ -278,6 +280,12 @@ export interface EcpGraphLink {
 export interface EcpGraph {
   nodes: EcpGraphNode[];
   links: EcpGraphLink[];
+}
+
+export interface EcpGraphRebuildResult {
+  workspace_id: string;
+  objects: number;
+  edges: number;
 }
 
 export interface EcpSpaceInfo {
@@ -310,6 +318,12 @@ export const getEcpReadiness = (datasource_id: number, workspace_id?: string) =>
 
 export const getEcpGraph = (workspace_id?: string) =>
   GET<{ workspace_id?: string }, EcpGraph>(`${API_PREFIX}/graph`, { workspace_id });
+
+export const rebuildEcpGraph = (workspace_id?: string) =>
+  POST<Record<string, never>, EcpGraphRebuildResult>(
+    `${API_PREFIX}/graph/rebuild${workspace_id ? `?workspace_id=${encodeURIComponent(workspace_id)}` : ''}`,
+    {},
+  );
 
 export const getOrCreateEcpSpace = (workspace_id?: string) =>
   POST<Record<string, never>, EcpSpaceInfo>(

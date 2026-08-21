@@ -496,8 +496,26 @@ async def graph(
     workspace_id: Optional[str] = Query(default=None),
     service: Service = Depends(get_service),
 ) -> Result[GraphVO]:
-    """Semantic graph view (objects as nodes, materialized edges as links)."""
-    return Result.succ(service.graph(workspace_id=workspace_id))
+    """Asset-panorama graph: objects + registered assets + knowledge-layer
+    nodes, with materialized semantic edges and aggregated knowledge edges."""
+    return Result.succ(await service.graph(workspace_id=workspace_id))
+
+
+@router.post("/graph/rebuild", response_model=Result[dict])
+async def rebuild_graph(
+    workspace_id: Optional[str] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[dict]:
+    """Idempotently rebuild the materialized edge projection of a workspace.
+
+    Use after projection-rule upgrades or when assets were registered after
+    their objects (edges pointing to assets are only emitted on write; a
+    rebuild back-fills them for existing objects).
+    """
+    try:
+        return Result.succ(service.rebuild_edges(workspace_id=workspace_id))
+    except Exception as e:  # noqa: BLE001
+        return Result.failed(msg=str(e))
 
 
 # --------------------------------------------------------------------- space
