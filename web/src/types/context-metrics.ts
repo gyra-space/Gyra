@@ -108,8 +108,12 @@ export interface UsageMetrics {
   history?: number;
   /** 当前用户消息占用 token */
   user_msg?: number;
-  /** 工具列表占用 token */
+  /** 工具列表及子智能体占用 token */
   tools?: number;
+  /** 连接器及 MCP 占用 token */
+  mcp?: number;
+  /** 技能占用 token */
+  skills?: number;
   /** 分层 compressed/retained 占用 */
   layers?: { compressed: number; retained: number };
 }

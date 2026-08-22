@@ -1,4 +1,5 @@
 import type { PlaybookCommand, SkillRef } from './agent-workspace-types';
+import type { MediaParams } from '@/components/chat/input/media-params';
 
 export interface SceneAgentSendPayload {
   text: string;
@@ -7,6 +8,11 @@ export interface SceneAgentSendPayload {
   playbookCommand?: PlaybookCommand;
   /** 本次对话选用的技能(随 chat_in_params 下发,sub_type='skill(gyra)') */
   skills?: SkillRef[];
+  /** 多媒体生成参数（图片/视频），场景空间输入框设定，随 chat_in_params 下发，由多媒体子 Agent 消费 */
+  media?: MediaParams;
+  /** 本次对话的 Agent 工具权限级别(plan/auto/manual),写入 ext_info.permission_mode,
+   *  接入后端 5 级权限链(reader 只读 / 写工具按级别放行或 ASK) */
+  permission?: string;
 }
 
 export interface SendDataOptions {
@@ -49,7 +55,7 @@ export function buildSceneAgentSendData(
   options: SendDataOptions,
   convUid: string,
 ): SceneAgentSendData {
-  const { text, resources = [], model, playbookCommand, skills } = payload;
+  const { text, resources = [], model, playbookCommand, skills, media, permission } = payload;
   const { workspaceId, taskId, focusArtifactId } = options;
   const trimmed = text.trim();
 
@@ -84,6 +90,13 @@ export function buildSceneAgentSendData(
       });
     });
   }
+  if (media && Object.keys(media).length > 0) {
+    chatInParams.push({
+      param_type: 'media',
+      param_value: JSON.stringify(media),
+      sub_type: '',
+    });
+  }
 
   return {
     conv_uid: convUid,
@@ -104,6 +117,9 @@ export function buildSceneAgentSendData(
       // workbench 对话不受影响(路由对 task_id 已有时跳过)。
       ...(playbookCommand ? { playbook_id: Number(playbookCommand.playbook_id) } : {}),
       ...(focusArtifactId !== undefined ? { focus_artifact_id: Number(focusArtifactId) } : {}),
+      // 工具权限级别:写入 extra.permission_mode,接入 Agent 5 级权限链
+      // (plan=只读放行/写 ASK, auto=全放行, manual=全部 ASK)
+      ...(permission ? { permission_mode: permission } : {}),
     },
   };
 }

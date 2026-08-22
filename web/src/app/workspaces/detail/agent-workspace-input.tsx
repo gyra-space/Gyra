@@ -1,26 +1,23 @@
 'use client';
 
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
-import { Input, Popover, Tooltip, Drawer, Progress, Statistic, Row, Col } from 'antd';
+import { Input, Popover, Drawer, Progress, Statistic, Row, Col } from 'antd';
 import {
-  AppstoreOutlined,
   ArrowUpOutlined,
   CheckOutlined,
   ClearOutlined,
   CloseOutlined,
   DownOutlined,
   FileOutlined,
-  LeftOutlined,
   LoadingOutlined,
-  PaperClipOutlined,
   PlusOutlined,
   ReloadOutlined,
-  RightOutlined,
   RocketOutlined,
+  SafetyOutlined,
 } from '@ant-design/icons';
 import classNames from 'classnames';
 import { useRequest } from 'ahooks';
-import { apiInterceptors, getModelList, getSkillList, postChatModeParamsFileLoad } from '@/client/api';
+import { apiInterceptors, getModelList, getSkillList, getMCPList, postChatModeParamsFileLoad } from '@/client/api';
 import ModelIcon from '@/components/icons/model-icon';
 import { transformFileUrl } from '@/utils';
 import type { IModelData } from '@/types/model';
@@ -31,6 +28,47 @@ import {
   type UsageMetrics,
 } from '@/types/context-metrics';
 import type { AgentWorkspaceInputHandle, PlaybookCommand, SkillRef } from './agent-workspace-types';
+import {
+  PlusMenu,
+  SelectionChip,
+  type PlusMenuMcpRef,
+  type PlusMenuPermission,
+} from '@/components/chat/input/plus-menu';
+import { VoiceInputButton } from '@/components/chat/input/voice-input-button';
+import {
+  MediaParamsButton,
+  getMultimediaConfig,
+  isMultimediaApp,
+  type MediaParams,
+} from '@/components/chat/input/media-params';
+
+/** 模型 → 提供商:优先取后端 host 的 `proxy@{provider}` 前缀(model_api 以该形式编码),
+ *  其次按已知 model_name 前缀匹配,兜底归入「自定义模型」。 */
+function getModelProvider(m: IModelData): string {
+  if (m.host && m.host.startsWith('proxy@')) return m.host.slice('proxy@'.length);
+  const name = (m.model_name || '').toLowerCase();
+  const rules: [RegExp, string][] = [
+    [/^qwen/, 'Qwen'],
+    [/^deepseek/, 'DeepSeek'],
+    [/^(glm|chatglm|zhipu)/, '智谱 GLM'],
+    [/^moonshot|^kimi/, '月之暗面 Moonshot'],
+    [/^baichuan/, '百川 Baichuan'],
+    [/^minimax/, 'MiniMax'],
+    [/^doubao|^skylark/, '豆包 Doubao'],
+    [/^ernie|^wenxin/, '百度 ERNIE'],
+    [/^hunyuan|^yi-/, '混元'],
+    [/^spark|^xinghuo/, '讯飞星火'],
+    [/^gpt|^o\d/, 'OpenAI'],
+    [/^claude/, 'Anthropic'],
+    [/^gemini/, 'Google'],
+    [/^llama/, 'Meta'],
+    [/^internlm/, '上海 AI Lab'],
+  ];
+  for (const [re, label] of rules) {
+    if (re.test(name)) return label;
+  }
+  return '自定义模型';
+}
 
 /** 选了剧本时必须输入任务目标;没选剧本按原逻辑(有文本或有资源即可)。 */
 export function canSendSceneTask(
@@ -44,8 +82,89 @@ export function canSendSceneTask(
 }
 
 /**
+ * 上下文用量分类（hover 卡片图例）。
+ * 占比口径:各项 token / 上下文窗口,与总占比同口径,各行之和约等于总占比。
+ */
+function getUsageCategories(metrics: UsageMetrics) {
+  return [
+    { label: '系统提示词', value: metrics.system ?? 0, color: '#22c55e' },
+    { label: '工具及子智能体', value: metrics.tools ?? metrics.completion ?? 0, color: '#faad14' },
+    { label: '对话消息', value: (metrics.history ?? 0) + (metrics.user_msg ?? 0), color: '#8b5cf6' },
+    { label: '连接器及MCP', value: metrics.mcp ?? 0, color: '#06b6d4' },
+    { label: '技能', value: metrics.skills ?? 0, color: '#3b82f6' },
+  ];
+}
+
+/** 分类占比文案:0 显示 "0%",其余保留一位小数。 */
+function formatCategoryPct(value: number, contextWindow: number): string {
+  if (contextWindow <= 0 || value <= 0) return '0%';
+  return `${((value / contextWindow) * 100).toFixed(1)}%`;
+}
+
+/**
+ * hover 弹出的上下文用量卡片:大号百分比 + 已用/窗口 + 多色分段条 + 分类图例。
+ */
+function ContextUsageCard({
+  metrics,
+  onClick,
+}: {
+  metrics: UsageMetrics;
+  onClick?: () => void;
+}) {
+  const { context_window: contextWindow, total } = metrics;
+  const ratio = Math.min(Math.max(metrics.ratio ?? 0, 0), 1);
+  const categories = getUsageCategories(metrics);
+  return (
+    <div className="w-[280px]">
+      <div className="text-sm font-medium text-gray-800 dark:text-gray-100">上下文用量</div>
+      <div className="mt-1.5 flex items-baseline gap-2">
+        <span className="text-2xl font-semibold leading-none text-gray-900 dark:text-gray-50">
+          {(ratio * 100).toFixed(1)}%
+        </span>
+        <span className="text-xs text-gray-400 dark:text-gray-500">
+          已使用 {formatTokens(total)}/ {formatTokens(contextWindow)}
+        </span>
+      </div>
+      {/* 多色分段条:各分类按占窗口比例拼接,余量为灰色轨道 */}
+      <div className="mt-2.5 flex h-1.5 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+        {categories.map((c) => {
+          const width = contextWindow > 0 ? (c.value / contextWindow) * 100 : 0;
+          if (width <= 0) return null;
+          return (
+            <div
+              key={c.label}
+              className="h-full shrink-0"
+              style={{ width: `${Math.min(width, 100)}%`, background: c.color }}
+            />
+          );
+        })}
+      </div>
+      {/* 分类图例:右侧同时展示 token 实际量与占比 */}
+      <div className="mt-3 space-y-1.5">
+        {categories.map((c) => (
+          <div key={c.label} className="flex items-center text-xs">
+            <span className="mr-2 h-2 w-2 shrink-0 rounded-full" style={{ background: c.color }} />
+            <span className="text-gray-600 dark:text-gray-300">{c.label}</span>
+            <span className="ml-auto tabular-nums text-gray-500 dark:text-gray-400">
+              {formatTokens(c.value)}
+            </span>
+            <span className="ml-2 tabular-nums text-gray-400 dark:text-gray-500">
+              {formatCategoryPct(c.value, contextWindow)}
+            </span>
+          </div>
+        ))}
+      </div>
+      {onClick && (
+        <div className="mt-2.5 text-xs text-indigo-500 dark:text-indigo-400">点击查看完整明细</div>
+      )}
+    </div>
+  );
+}
+
+/**
  * 上下文空间消耗环形图:发送按钮旁的实时用量指示。
  * 数据来自 SSE usage_metric 事件;按使用率分级变色(绿→黄→橙→红)。
+ * hover 弹出结构化用量卡片,点击打开详情抽屉。
  */
 function ContextUsageRing({
   metrics,
@@ -64,28 +183,13 @@ function ContextUsageRing({
   const circumference = 2 * Math.PI * r;
   const dash = circumference * ratio;
   const pct = (ratio * 100).toFixed(1);
-  const layers = metrics.layers ?? { compressed: 0, retained: 0 };
-  const layerTotal = layers.compressed + layers.retained;
   return (
-    <Tooltip
-      title={
-        <div className="text-xs leading-5">
-          <div>上下文空间 {formatTokens(metrics.total)} / {formatTokens(metrics.context_window)} tokens ({pct}%)</div>
-          <div className="text-gray-400">消息 {formatTokens(metrics.prompt)} · 工具 {formatTokens(metrics.tools ?? metrics.completion)}</div>
-          {typeof metrics.system === 'number' && (
-            <div className="text-gray-400">
-              System {formatTokens(metrics.system)} · 历史 {formatTokens(metrics.history ?? 0)} · 本条 {formatTokens(metrics.user_msg ?? 0)}
-            </div>
-          )}
-          {layerTotal > 0 && (
-            <div className="text-gray-400">
-              压缩 {formatTokens(layers.compressed)} · 保留 {formatTokens(layers.retained)}
-            </div>
-          )}
-          {onClick && <div className="text-indigo-400 mt-1">点击查看详情</div>}
-        </div>
-      }
+    <Popover
+      content={<ContextUsageCard metrics={metrics} onClick={onClick} />}
+      trigger="hover"
       placement="top"
+      arrow={false}
+      styles={{ body: { padding: '14px 16px', borderRadius: 12 } }}
     >
       <div
         className="relative flex items-center justify-center h-8 w-8 rounded-full cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors"
@@ -115,7 +219,7 @@ function ContextUsageRing({
           />
         </svg>
       </div>
-    </Tooltip>
+    </Popover>
   );
 }
 
@@ -148,10 +252,10 @@ function ContextUsageDetail({
     layerTotal > 0 ? ((n / layerTotal) * 100).toFixed(1) : '0.0';
 
   const segData = [
-    { label: 'System 提示', value: system, color: '#6366f1' },
-    { label: '历史消息', value: history, color: '#0ea5e9' },
-    { label: '当前用户消息', value: userMsg, color: '#22c55e' },
-    { label: '工具列表', value: tools, color: '#f59e0b' },
+    { label: '系统提示词', value: system, color: '#22c55e' },
+    { label: '历史消息', value: history, color: '#8b5cf6' },
+    { label: '当前用户消息', value: userMsg, color: '#c4b5fd' },
+    { label: '工具及子智能体', value: tools, color: '#faad14' },
   ];
 
   const layerData = [
@@ -247,11 +351,13 @@ interface UploadingFile { id: string; file: File; status: 'uploading' | 'success
 
 interface AgentWorkspaceInputProps {
   convUid?: string;
-  onSend: (payload: { text: string; resources?: ResourceItem[]; model?: string; playbookCommand?: PlaybookCommand; skills?: SkillRef[] }) => void;
+  onSend: (payload: { text: string; resources?: ResourceItem[]; model?: string; playbookCommand?: PlaybookCommand; skills?: SkillRef[]; mcps?: PlusMenuMcpRef[]; permission?: string; media?: MediaParams }) => void;
   loading?: boolean;
   /** 运行中且无新内容时,按钮转为"进行中·可停止"状态,点击终止当前生成 */
   onStop?: () => void;
   disabled?: boolean;
+  /** 只读模式(查看角色无 space.chat.use):禁用输入并提示不可发起对话 */
+  readOnly?: boolean;
   lastInput?: { text: string } | null;
   onRetry?: () => void;
   playbooks?: { playbook_id: number; playbook_name: string }[];
@@ -260,22 +366,28 @@ interface AgentWorkspaceInputProps {
   onClearContext?: () => void;
   /** SSE usage_metric 实时推送的上下文消耗,用于发送键旁的环形图 */
   usageMetrics?: UsageMetrics | null;
+  /** 当前 app 信息（用于识别多媒体 Agent 的 capability/模型池；场景空间可 spawn 多媒体子 Agent） */
+  appInfo?: any;
+  /** 简洁模式:隐藏剧本入口(+ 菜单项与 / 命令),保留技能/附件/模型 */
+  simple?: boolean;
 }
 
 export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWorkspaceInputProps>(
-  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics }, ref) {
+  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, simple }, ref) {
     const [text, setText] = useState('');
     const [resources, setResources] = useState<ResourceItem[]>([]);
     const [uploading, setUploading] = useState<UploadingFile[]>([]);
     const [modelList, setModelList] = useState<IModelData[]>([]);
     const [selectedModel, setSelectedModel] = useState<string>('');
+    const [mediaParams, setMediaParams] = useState<MediaParams>({});
     const [showPlaybook, setShowPlaybook] = useState(false);
     const [playbookCommand, setPlaybookCommand] = useState<PlaybookCommand | null>(null);
     const [selectedSkills, setSelectedSkills] = useState<SkillRef[]>([]);
+    // + 菜单选中的 MCP 连接器
+    const [selectedMcps, setSelectedMcps] = useState<PlusMenuMcpRef[]>([]);
+    // 权限等级(默认 plan):对齐后端 agent_context.extra["permission_mode"] 的 5 级权限链
+    const [permission, setPermission] = useState<string>('plan');
     const [isFocus, setIsFocus] = useState(false);
-    // + 号菜单:root=一级菜单(文件/剧本/技能), playbook/skill=二级选择面板
-    const [plusMenuOpen, setPlusMenuOpen] = useState(false);
-    const [plusPanel, setPlusPanel] = useState<'root' | 'playbook' | 'skill'>('root');
     // 上下文用量详情抽屉开关
     const [usageDrawerOpen, setUsageDrawerOpen] = useState(false);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -294,7 +406,9 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       return data || [];
     }, {
       onSuccess: (models: IModelData[]) => {
-        const llm = models.filter(m => m.worker_type === 'llm');
+        // 只保留文本/视觉 LLM（媒体生成模型 model_type=image/video/audio 由后端过滤，
+        // 此处按 model_type 兜底，防止多媒体模型混入普通聊天模型下拉）
+        const llm = models.filter(m => m.worker_type === 'llm' && (!m.model_type || m.model_type === 'llm'));
         setModelList(llm);
         if (llm.length) setSelectedModel(llm[0].model_name);
       },
@@ -306,6 +420,21 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       return err ? [] : (res?.items || []);
     });
     const allSkills: SkillRef[] = skillList ?? [];
+
+    // MCP 列表:+ 菜单「MCP」面板的数据源
+    const { data: mcpList, loading: mcpLoading } = useRequest(async () => {
+      const [err, res] = await apiInterceptors(getMCPList({ filter: '' }, { page: '1', page_size: '100' }));
+      return err ? [] : (((res as any)?.items || []) as PlusMenuMcpRef[]);
+    });
+    const allMcps: PlusMenuMcpRef[] = mcpList ?? [];
+
+    // 权限等级选项:key 与后端 PermissionMode 对齐(plan/auto/manual),
+    // 发送时写入 ext_info.permission_mode,接入 Agent 5 级工具权限链
+    const permissionOptions: PlusMenuPermission[] = [
+      { key: 'plan', label: '默认权限', description: '常规读写,敏感写操作需确认' },
+      { key: 'auto', label: '完全访问', description: '放开全部工具与写操作权限' },
+      { key: 'manual', label: '手动确认', description: '每个写工具都需人工确认' },
+    ];
 
     // 后端上传返回的 preview_url 可能是相对路径(如 /api/v2/serve/file/files/...),
     // 前端静态导出可能与 API 不同源,直接放入 <img src> 会被浏览器按当前页面源解析,
@@ -360,6 +489,17 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const hasContent = text.trim().length > 0 || resources.length > 0 || playbookCommand !== null;
     const popoverOverlay = '[&_.ant-popover-inner]:!p-0 [&_.ant-popover-inner]:!rounded-xl [&_.ant-popover-inner]:!shadow-xl';
 
+    // 模型下拉:按提供商分组(组名来自 getModelProvider,保持添加顺序)
+    const modelGroups = useMemo(() => {
+      const map = new Map<string, IModelData[]>();
+      for (const m of modelList) {
+        const p = getModelProvider(m);
+        if (!map.has(p)) map.set(p, []);
+        map.get(p)!.push(m);
+      }
+      return [...map.entries()];
+    }, [modelList]);
+
     const handleFileUpload = async (file: File) => {
       if (!convUid) return;
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -383,13 +523,16 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       for (const f of Array.from(e.dataTransfer.files)) await handleFileUpload(f);
     };
 
+    // 只读模式(查看角色):输入与发送整体禁用
+    const inputDisabled = !!disabled || !!readOnly;
+
     const canSend = canSendSceneTask(text, resources.length > 0, playbookCommand);
     // 运行中且无可发送的新内容:提交按钮转为"进行中·可停止"状态;
     // 运行中继续输入了内容则恢复为可提交(发送新消息会先中止当前生成)
     const showStop = !!loading && !canSend;
 
     const handleSend = () => {
-      if (!canSend) return;
+      if (readOnly || !canSend) return;
       const trimmed = text.trim();
       onSend({
         text: trimmed,
@@ -397,16 +540,26 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
         model: selectedModel || undefined,
         playbookCommand: playbookCommand ?? undefined,
         skills: selectedSkills.length ? selectedSkills : undefined,
+        mcps: selectedMcps.length ? selectedMcps : undefined,
+        permission,
+        media: Object.keys(mediaParams).length ? mediaParams : undefined,
       });
       setText('');
       setResources([]);
       setPlaybookCommand(null);
       setSelectedSkills([]);
+      setSelectedMcps([]);
       setShowPlaybook(false);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        // 输入法组词阶段的回车(选词/上屏)只作用于输入法,不触发提交,
+        // 也不做 preventDefault,避免干扰候选词选择
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+        e.preventDefault();
+        handleSend();
+      }
     };
 
     const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -414,7 +567,8 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       setText(v);
       // 只有输入框"最开始"的 / 才有命令效果：文本中间的 / 不触发。
       // 已选了剧本 chip 后不再触发（单选，要换剧本先移除 chip）。
-      const isSlashCommand = v.startsWith('/') && !playbookCommand;
+      // 简洁模式不提供剧本入口,/ 仅作为普通字符。
+      const isSlashCommand = !simple && v.startsWith('/') && !playbookCommand;
       setShowPlaybook(isSlashCommand && (playbooks?.length ?? 0) > 0);
     };
 
@@ -431,6 +585,13 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     // playbooks while the picker is open (no name filter).
     const visiblePlaybooks = (playbooks ?? []);
 
+    // + 菜单「命令」面板:剧本以 / 命令形式快捷唤起
+    const commandItems = visiblePlaybooks.map((pb) => ({
+      command: pb.playbook_name,
+      name: pb.playbook_name,
+      description: '以该剧本发起任务',
+    }));
+
     const toggleSkill = (skill: SkillRef) => {
       setSelectedSkills((prev) =>
         prev.some((s) => s.skill_code === skill.skill_code)
@@ -438,102 +599,6 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
           : [...prev, skill],
       );
     };
-
-    const closePlusMenu = () => {
-      setPlusMenuOpen(false);
-      setPlusPanel('root');
-    };
-
-    // + 号菜单项共用样式:图标 + 文字,hover 浅底,圆角
-    const plusMenuItemCls =
-      'flex w-full items-center gap-2.5 px-2.5 py-2 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700/60 rounded-lg transition-colors cursor-pointer text-left';
-
-    const plusMenuContent = plusPanel === 'root' ? (
-      <div className="w-52 py-1">
-        <button
-          type="button"
-          className={plusMenuItemCls}
-          onClick={() => { fileInputRef.current?.click(); closePlusMenu(); }}
-        >
-          <PaperClipOutlined className="text-sm text-gray-500 dark:text-gray-400" />
-          <span>添加文件</span>
-        </button>
-        {(playbooks?.length ?? 0) > 0 && (
-          <button type="button" className={plusMenuItemCls} onClick={() => setPlusPanel('playbook')}>
-            <RocketOutlined className="text-sm text-gray-500 dark:text-gray-400" />
-            <span>剧本</span>
-            <RightOutlined className="ml-auto text-[10px] text-gray-400" />
-          </button>
-        )}
-        <button type="button" className={plusMenuItemCls} onClick={() => setPlusPanel('skill')}>
-          <AppstoreOutlined className="text-sm text-gray-500 dark:text-gray-400" />
-          <span>技能</span>
-          {selectedSkills.length > 0 && (
-            <span className="ml-auto text-[11px] text-indigo-500 font-medium">{selectedSkills.length}</span>
-          )}
-          {selectedSkills.length === 0 && <RightOutlined className="ml-auto text-[10px] text-gray-400" />}
-        </button>
-      </div>
-    ) : (
-      <div className="w-64">
-        <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-gray-100 dark:border-gray-700/60">
-          <button
-            type="button"
-            className="h-6 w-6 flex items-center justify-center rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors"
-            onClick={() => setPlusPanel('root')}
-            title="返回"
-          >
-            <LeftOutlined className="text-[10px]" />
-          </button>
-          <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
-            {plusPanel === 'playbook' ? '选择剧本' : '选择技能'}
-          </span>
-        </div>
-        <div className="max-h-64 overflow-y-auto py-1">
-          {plusPanel === 'playbook' && (
-            <>
-              {visiblePlaybooks.map((pb) => (
-                <button
-                  type="button"
-                  key={pb.playbook_id}
-                  className={plusMenuItemCls}
-                  onClick={() => { pickPlaybook(pb); closePlusMenu(); }}
-                >
-                  <RocketOutlined className="text-sm text-gray-400" />
-                  <span className="truncate">{pb.playbook_name}</span>
-                  {playbookCommand?.playbook_id === pb.playbook_id && (
-                    <CheckOutlined className="ml-auto text-xs text-indigo-500" />
-                  )}
-                </button>
-              ))}
-            </>
-          )}
-          {plusPanel === 'skill' && (
-            <>
-              {allSkills.length === 0 && (
-                <div className="px-3 py-2 text-xs text-gray-400">暂无可用技能</div>
-              )}
-              {allSkills.map((skill) => {
-                const checked = selectedSkills.some((s) => s.skill_code === skill.skill_code);
-                return (
-                  <button
-                    type="button"
-                    key={skill.skill_code}
-                    className={plusMenuItemCls}
-                    onClick={() => toggleSkill(skill)}
-                    title={skill.description || skill.name}
-                  >
-                    <AppstoreOutlined className="text-sm text-gray-400" />
-                    <span className="truncate">{skill.name}</span>
-                    {checked && <CheckOutlined className="ml-auto text-xs text-indigo-500" />}
-                  </button>
-                );
-              })}
-            </>
-          )}
-        </div>
-      </div>
-    );
 
     const playbookPopover = (
       <div className="w-72 max-h-72 overflow-y-auto py-1">
@@ -566,6 +631,12 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
         >
+          {/* 只读提示:查看角色(space.chat.use 无权限)不能发起对话 */}
+          {readOnly && (
+            <div className="px-4 pt-3 pb-1 text-xs text-gray-400 dark:text-gray-500">
+              只读：查看角色不能发起对话
+            </div>
+          )}
           {/* SECTION 1 — attached file chips (only when files present) */}
           {(uploading.length > 0 || resources.length > 0) && (
             <div className="px-4 pt-3 pb-2">
@@ -666,38 +737,50 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
           {/* SECTION 1.5 — selected playbook command chip (single, removable) */}
           {playbookCommand && (
             <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
-              <span className="inline-flex items-center gap-1 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 text-indigo-600 dark:text-indigo-300 rounded-md px-2 py-1 text-sm">
-                <span className="text-xs text-indigo-400">/</span>
-                <span className="font-medium">{playbookCommand.playbook_name}</span>
-                <button
-                  className="ml-0.5 text-indigo-400 hover:text-red-500 transition-colors"
-                  onClick={() => setPlaybookCommand(null)}
-                  title="移除剧本"
-                >
-                  <CloseOutlined className="text-[11px]" />
-                </button>
-              </span>
+              <SelectionChip
+                theme="indigo"
+                prefix="/"
+                label={playbookCommand.playbook_name}
+                onRemove={() => setPlaybookCommand(null)}
+                removeTitle="移除剧本"
+              />
             </div>
           )}
           {/* SECTION 1.6 — selected skill chips (multi, removable) */}
           {selectedSkills.length > 0 && (
             <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
               {selectedSkills.map((skill) => (
-                <span
+                <SelectionChip
                   key={skill.skill_code}
-                  className="inline-flex items-center gap-1 bg-cyan-50 dark:bg-cyan-900/30 border border-cyan-200 dark:border-cyan-700 text-cyan-600 dark:text-cyan-300 rounded-md px-2 py-1 text-sm"
-                >
-                  <AppstoreOutlined className="text-xs text-cyan-400" />
-                  <span className="font-medium max-w-[160px] truncate">{skill.name}</span>
-                  <button
-                    className="ml-0.5 text-cyan-400 hover:text-red-500 transition-colors"
-                    onClick={() => toggleSkill(skill)}
-                    title="移除技能"
-                  >
-                    <CloseOutlined className="text-[11px]" />
-                  </button>
-                </span>
+                  theme="violet"
+                  icon={skill.icon
+                    ? <img src={skill.icon} alt="" className="h-3.5 w-3.5 rounded object-cover" />
+                    : undefined}
+                  label={skill.name}
+                  onRemove={() => toggleSkill(skill)}
+                  removeTitle="移除技能"
+                />
               ))}
+            </div>
+          )}
+          {/* SECTION 1.7 — selected MCP chips (multi, removable) */}
+          {selectedMcps.length > 0 && (
+            <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
+              {selectedMcps.map((mcp) => {
+                const key = String(mcp.id || mcp.uuid || mcp.name);
+                return (
+                  <SelectionChip
+                    key={key}
+                    theme="emerald"
+                    icon={mcp.icon
+                      ? <img src={mcp.icon} alt="" className="h-3.5 w-3.5 rounded object-cover" />
+                      : undefined}
+                    label={mcp.name}
+                    onRemove={() => setSelectedMcps((prev) => prev.filter((m) => String(m.id || m.uuid || m.name) !== key))}
+                    removeTitle="移除 MCP"
+                  />
+                );
+              })}
             </div>
           )}
 
@@ -728,10 +811,10 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                       }
                     }
                   }}
-                  placeholder="输入指令给 Agent…(+ 添加文件/剧本/技能,/ 快捷选剧本)"
-                  className="!text-base !bg-transparent !border-0 !resize-none placeholder:!text-gray-400 !text-gray-800 dark:!text-gray-200 !shadow-none !p-0 !min-h-[60px]"
+                  placeholder={simple ? '输入指令给 Agent…(+ 添加文件/技能/MCP)' : '输入指令给 Agent…(+ 添加文件/剧本/技能/MCP,/ 快捷选剧本)'}
+                  className="!text-sm !bg-transparent !border-0 !resize-none placeholder:!text-gray-400 !text-gray-800 dark:!text-gray-200 !shadow-none !p-0 !min-h-[60px]"
                   autoSize={{ minRows: 2, maxRows: 8 }}
-                  disabled={disabled}
+                  disabled={inputDisabled}
                 />
               </div>
             </Popover>
@@ -753,29 +836,26 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
           {/* SECTION 3 — footer toolbar: left tools / right send */}
           <div className="flex items-center justify-between gap-2 px-3 pb-3 min-w-0">
             <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-visible">
-              {/* + 号菜单:添加文件 / 剧本 / 技能 */}
-              <Popover
-                open={plusMenuOpen}
-                onOpenChange={(open) => { setPlusMenuOpen(open); if (!open) setPlusPanel('root'); }}
-                content={plusMenuContent}
-                trigger="click"
-                placement="topLeft"
-                overlayClassName={popoverOverlay}
-              >
-                <button
-                  type="button"
-                  className={classNames(
-                    'h-8 w-8 rounded-full flex items-center justify-center border transition-all flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed',
-                    plusMenuOpen
-                      ? 'border-indigo-300 dark:border-indigo-600 text-indigo-500 bg-indigo-50 dark:bg-indigo-900/20 rotate-45'
-                      : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:text-indigo-500 hover:border-indigo-300 dark:hover:border-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20'
-                  )}
-                  disabled={!convUid || disabled || loading}
-                  title="添加文件 / 剧本 / 技能"
-                >
-                  <PlusOutlined className="text-sm transition-transform" />
-                </button>
-              </Popover>
+              {/* + 菜单:添加文件 / 剧本 / 技能 / MCP / 命令 */}
+              <PlusMenu
+                onAddFile={() => fileInputRef.current?.click()}
+                playbooks={simple ? undefined : visiblePlaybooks}
+                selectedPlaybook={playbookCommand}
+                onPlaybookChange={(pb) => { if (pb) pickPlaybook(pb); }}
+                skills={allSkills}
+                selectedSkills={selectedSkills}
+                onSkillsChange={setSelectedSkills}
+                mcps={allMcps}
+                mcpsLoading={mcpLoading}
+                selectedMcps={selectedMcps}
+                onMcpsChange={setSelectedMcps}
+                commands={simple ? undefined : commandItems}
+                onCommandSelect={(cmd) => {
+                  const pb = visiblePlaybooks.find((p) => p.playbook_name === cmd.command);
+                  if (pb) pickPlaybook(pb);
+                }}
+                disabled={!convUid || inputDisabled || loading}
+              />
               <input
                 ref={fileInputRef}
                 type="file"
@@ -789,54 +869,68 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                 <button
                   className="h-8 w-8 rounded-full flex items-center justify-center border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:text-indigo-500 hover:border-indigo-300 transition-all hover:bg-indigo-50 dark:hover:bg-indigo-900/20 flex-shrink-0 disabled:opacity-40"
                   onClick={onRetry}
-                  disabled={disabled}
+                  disabled={inputDisabled}
                   title="重试"
                 >
                   <ReloadOutlined className="text-sm" />
                 </button>
               )}
 
-              {/* model selector pill */}
+              {/* 权限等级 pill:常驻展示,点击弹层切换 */}
               <Popover
+                trigger="click"
+                placement="topLeft"
+                arrow={false}
+                overlayClassName={popoverOverlay}
                 content={(
-                  <div className="w-60 max-h-64 overflow-y-auto py-1">
-                    <div className="px-3 pt-1.5 pb-1 text-[11px] font-medium text-gray-400 dark:text-gray-500">选择模型</div>
-                    {modelList.length === 0 && <div className="px-3 py-2 text-xs text-gray-400">暂无可用模型</div>}
-                    {modelList.map(m => (
-                      <div
-                        key={m.model_name}
-                        className={classNames(
-                          'flex items-center gap-2.5 px-3 py-2 cursor-pointer rounded-lg transition-colors group',
-                          selectedModel === m.model_name
-                            ? 'bg-indigo-50 dark:bg-indigo-900/20'
-                            : 'hover:bg-gray-100 dark:hover:bg-gray-700/60'
-                        )}
-                        onClick={() => setSelectedModel(m.model_name)}
+                  <div className="w-64 py-1">
+                    {permissionOptions.map((p) => (
+                      <button
+                        type="button"
+                        key={p.key}
+                        className="flex w-full items-center gap-2.5 px-2.5 py-2 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700/60 rounded-lg transition-colors text-left"
+                        onClick={() => setPermission(p.key)}
                       >
-                        <ModelIcon model={m.model_name} width={18} height={18} />
-                        <span className={classNames(
-                          'text-[13px] truncate',
-                          selectedModel === m.model_name ? 'text-indigo-600 dark:text-indigo-400 font-medium' : 'text-gray-700 dark:text-gray-300'
-                        )}>{m.model_name}</span>
-                        {selectedModel === m.model_name && (
-                          <CheckOutlined className="ml-auto text-xs text-indigo-500" />
-                        )}
-                      </div>
+                        <SafetyOutlined className="text-xs text-amber-500" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate">{p.label}</span>
+                          {p.description && <span className="block truncate text-[11px] text-gray-400">{p.description}</span>}
+                        </span>
+                        {permission === p.key && <CheckOutlined className="ml-auto text-xs text-indigo-500" />}
+                      </button>
                     ))}
                   </div>
                 )}
-                trigger="click"
-                placement="topLeft"
-                overlayClassName={popoverOverlay}
               >
-                <div className="flex items-center gap-1.5 h-8 px-2.5 rounded-full cursor-pointer text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-all group flex-shrink-0">
-                  <ModelIcon model={selectedModel} width={16} height={16} />
-                  <span className="text-xs font-medium max-w-[96px] truncate">
-                    {selectedModel || '选择模型'}
-                  </span>
-                  <DownOutlined className="text-[9px] text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 transition-colors" />
-                </div>
+                <button
+                  type="button"
+                  disabled={inputDisabled}
+                  className={classNames(
+                    'flex h-8 items-center gap-1 rounded-full px-2.5 text-xs font-medium transition-all flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed',
+                    permission === 'auto'
+                      ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40'
+                      : 'bg-gray-100 dark:bg-gray-700/60 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                  )}
+                >
+                  <SafetyOutlined className="text-xs" />
+                  {permissionOptions.find((p) => p.key === permission)?.label}
+                  <DownOutlined className="text-[9px] opacity-60" />
+                </button>
               </Popover>
+
+              {/* 多媒体参数设定：仅多媒体 Agent 展示（与通用聊天页输入框一致） */}
+              {isMultimediaApp(appInfo) && (
+                <MediaParamsButton
+                  capability={getMultimediaConfig(appInfo)?.capability}
+                  modelPool={
+                    getMultimediaConfig(appInfo)?.capability === 'video'
+                      ? getMultimediaConfig(appInfo)?.video_models
+                      : getMultimediaConfig(appInfo)?.image_models
+                  }
+                  value={mediaParams}
+                  onChange={setMediaParams}
+                />
+              )}
             </div>
 
             <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -855,6 +949,53 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                 open={usageDrawerOpen}
                 onOpenChange={setUsageDrawerOpen}
               />
+              {/* model selector pill */}
+              <Popover
+                content={(
+                  <div className="w-64 max-h-64 overflow-y-auto py-1">
+                    <div className="px-3 pt-1.5 pb-1 text-[11px] font-medium text-gray-400 dark:text-gray-500">选择模型</div>
+                    {modelGroups.length === 0 && <div className="px-3 py-2 text-xs text-gray-400">暂无可用模型</div>}
+                    {modelGroups.map(([provider, models]) => (
+                      <div key={provider} className="mb-0.5">
+                        <div className="px-3 pt-2 pb-1 text-[11px] font-semibold text-gray-400 dark:text-gray-500">{provider}</div>
+                        {models.map(m => (
+                          <button
+                            type="button"
+                            key={m.model_name}
+                            className="flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer rounded-lg transition-colors text-left hover:bg-gray-100 dark:hover:bg-gray-700/60"
+                            onClick={() => setSelectedModel(m.model_name)}
+                          >
+                            <ModelIcon model={m.model_name} width={18} height={18} />
+                            <span className="min-w-0 flex-1 truncate text-[13px] text-gray-700 dark:text-gray-300">{m.model_name}</span>
+                            {selectedModel === m.model_name && (
+                              <CheckOutlined className="ml-auto text-xs text-indigo-500" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                trigger="click"
+                placement="topRight"
+                overlayClassName={popoverOverlay}
+              >
+                <button
+                  type="button"
+                  className="flex items-center gap-1.5 h-8 px-2.5 rounded-full bg-gray-100 dark:bg-gray-700/60 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all flex-shrink-0"
+                >
+                  <ModelIcon model={selectedModel} width={16} height={16} />
+                  <span className="text-xs font-medium max-w-[96px] truncate">
+                    {selectedModel || '选择模型'}
+                  </span>
+                  <DownOutlined className="text-[9px] text-gray-400" />
+                </button>
+              </Popover>
+              {/* 语音输入:浏览器原生 SpeechRecognition 转文字 */}
+              <VoiceInputButton
+                disabled={inputDisabled}
+                onTranscript={(t) => { setText((prev) => (prev ? `${prev}${t}` : t)); textareaRef.current?.focus(); }}
+              />
               <button
                 className={classNames(
                   'w-9 h-9 flex items-center justify-center transition-all !border-0 flex-shrink-0 rounded-full',
@@ -864,7 +1005,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   showStop && 'ws-stop-btn--running'
                 )}
                 onClick={showStop ? onStop : handleSend}
-                disabled={showStop ? (!onStop || disabled) : (!hasContent || disabled || !canSend)}
+                disabled={showStop ? (!onStop || inputDisabled) : (!hasContent || inputDisabled || !canSend)}
                 title={showStop ? '停止生成' : '发送'}
               >
                 {showStop

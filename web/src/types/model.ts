@@ -4,6 +4,10 @@ export type IModelData = {
   chat_scene: string;
   model_name: string;
   worker_type: string;
+  /** 模型类型: llm / embedding / rerank / video / image / audio 等。
+   * 普通聊天下拉只应出现 llm（含视觉能力 LLM），媒体生成模型（image/video/audio）
+   * 由后端 /api/v2/serve/model/models 过滤，前端以此字段兜底。 */
+  model_type?: string;
   host: string;
   port: number;
   manager_host: string;
