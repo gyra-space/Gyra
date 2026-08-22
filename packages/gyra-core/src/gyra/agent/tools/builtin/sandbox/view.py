@@ -579,13 +579,24 @@ class ViewTool(SandboxToolBase):
             is_mnt_gyra = sandbox_path.startswith("/mnt/gyra")
 
             if is_skill_path or is_mnt_gyra:
+                # 技能/知识库目录内的路径不存在：多数时候是文件名拼错（如模板名臆造）。
+                # 把父目录下的真实文件一并列出来作为候选，便于模型自纠，而非误导为"知识库未初始化"。
+                candidates = ""
+                parent_dir = posixpath.dirname(sandbox_path.rstrip("/"))
+                try:
+                    listing = await _render_directory_listing(client, parent_dir)
+                    if not listing.startswith("[错误"):
+                        candidates = "\n目录下现有文件：\n" + listing
+                except Exception as _list_err:  # noqa: BLE001
+                    logger.debug(f"[ViewTool] list candidates failed: {_list_err}")
                 return ToolResult.fail(
                     error=(
                         f"错误: 路径不存在: {sandbox_path}\n"
                         f"可能原因:\n"
-                        f"  1. 知识库正在初始化，请稍后重试\n"
-                        f"  2. 知识库初始化失败，请检查日志\n"
+                        f"  1. 路径中的文件名可能拼写有误，请从上文确认实际路径\n"
+                        f"  2. 知识库可能正在初始化，请稍后重试\n"
                         f"  3. 该技能路径在知识库中不存在"
+                        f"{candidates}"
                     ),
                     tool_name=self.name,
                 )

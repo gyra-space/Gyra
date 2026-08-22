@@ -661,7 +661,6 @@ export const CommonEn = {
   explore_agents: 'Explore',
   builder_tab_overview: 'Overview',
   builder_tab_prompts: 'Prompts',
-  builder_tab_scenes: 'Scenes',
   builder_tab_tools: 'Tools',
   builder_tab_skills: 'Skills',
   builder_tab_sub_agents: 'Sub-Agents',

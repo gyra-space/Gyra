@@ -454,10 +454,6 @@ export type IApp = {
     llm_strategy_value?: string[];
   };
   /**
-   * 绑定的场景文件ID列表
-   */
-  scenes?: string[];
-  /**
    * 扩展配置 - 分布式执行设置
    */
   ext_config?: ExtConfig;

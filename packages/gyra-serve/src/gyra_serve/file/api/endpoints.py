@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 global_system_app: Optional[SystemApp] = None
 
 
+from gyra_serve.permissions import can_delete_file, can_read_file
+from gyra_serve.utils.auth import UserRequest, get_user_from_headers
+
+
 def get_service() -> Service:
     """Get the service instance"""
     return global_system_app.get_component(SERVE_SERVICE_COMPONENT_NAME, Service)
@@ -131,10 +135,15 @@ async def upload_files(
 
 @router.get("/files/{bucket}/{file_id}", dependencies=[Depends(check_api_key)])
 async def download_file(
-    bucket: str, file_id: str, service: Service = Depends(get_service)
+    bucket: str,
+    file_id: str,
+    service: Service = Depends(get_service),
+    auth_user: UserRequest = Depends(get_user_from_headers),
 ):
     """Download a file by file_id."""
     logger.info(f"download_file: bucket={bucket}, file_id={file_id}")
+    if not can_read_file(auth_user, bucket, file_id):
+        raise HTTPException(status_code=403, detail="Permission denied for file")
     file_data, file_metadata = await blocking_func_to_async(
         global_system_app, service.download_file, bucket, file_id
     )
@@ -214,9 +223,14 @@ async def public_file(
 
 @router.delete("/files/{bucket}/{file_id}", dependencies=[Depends(check_api_key)])
 async def delete_file(
-    bucket: str, file_id: str, service: Service = Depends(get_service)
+    bucket: str,
+    file_id: str,
+    service: Service = Depends(get_service),
+    auth_user: UserRequest = Depends(get_user_from_headers),
 ):
     """Delete a file by file_id."""
+    if not can_delete_file(auth_user, bucket, file_id):
+        raise HTTPException(status_code=403, detail="Permission denied for file")
     await blocking_func_to_async(
         global_system_app, service.delete_file, bucket, file_id
     )
@@ -229,6 +243,7 @@ async def preview_file(
     bucket: Optional[str] = Query(None, description="Bucket name"),
     file_id: Optional[str] = Query(None, description="File ID"),
     service: Service = Depends(get_service),
+    auth_user: UserRequest = Depends(get_user_from_headers),
 ):
     """Preview a file (returns content with appropriate Content-Type)."""
     if not uri and not (bucket and file_id):
@@ -242,6 +257,9 @@ async def preview_file(
 
         parsed_uri = FileStorageURI.parse(uri)
         bucket, file_id = parsed_uri.bucket, parsed_uri.file_id
+
+    if not can_read_file(auth_user, bucket, file_id):
+        raise HTTPException(status_code=403, detail="Permission denied for file")
 
     file_data, file_metadata = await blocking_func_to_async(
         global_system_app, service.download_file, bucket, file_id

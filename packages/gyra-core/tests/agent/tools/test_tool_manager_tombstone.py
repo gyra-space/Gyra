@@ -40,7 +40,7 @@ ALL_TOOL_IDS = [
     "Write",
     "Edit",
     "deliver_file",
-    "Skill",  # BASIC_TOOLS
+    "skill",  # BASIC_TOOLS
     "Grep",  # BUILTIN_OPTIONAL_TOOLS
 ]
 
@@ -202,7 +202,7 @@ def test_load_callback_none_falls_back_to_default(monkeypatch):
 
     config = manager.get_agent_config("app1", "agent1")
     assert config is not None
-    for tid in ["ask_user", "Bash", "Read", "Write", "Edit", "deliver_file", "Skill"]:
+    for tid in ["ask_user", "Bash", "Read", "Write", "Edit", "deliver_file", "skill"]:
         assert config.bindings[tid].is_bound is True
 
 

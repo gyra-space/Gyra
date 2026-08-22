@@ -24,7 +24,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from .config import MultimediaAgentConfig
+from .config import (
+    MultimediaAgentConfig,
+    resolve_image_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -400,7 +403,10 @@ class MultimediaExecutor:
         kwargs: Dict[str, Any] = dict(self.config.fixed_params or {})
 
         if kind == KIND_IMAGE:
-            kwargs.setdefault("size", self.config.default_image_size)
+            # 图片尺寸支持档位名（720p/1080p/2k/4k）与直接尺寸两种写法
+            kwargs.setdefault(
+                "size", resolve_image_size(self.config.default_image_size)
+            )
             if self.config.negative_prompt:
                 kwargs.setdefault("negative_prompt", self.config.negative_prompt)
         else:
@@ -418,10 +424,10 @@ class MultimediaExecutor:
         if request.image_url_last:
             kwargs["image_url_last"] = request.image_url_last
 
-        # 请求覆盖（最高优先级），过滤空值
+        # 请求覆盖（最高优先级），过滤空值；图片 size 走档位解析
         for k, v in (request.params or {}).items():
             if v is not None and v != "":
-                kwargs[k] = v
+                kwargs[k] = resolve_image_size(v) if (k == "size" and kind == KIND_IMAGE) else v
 
         return kwargs
 

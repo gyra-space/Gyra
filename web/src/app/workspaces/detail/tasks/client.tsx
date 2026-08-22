@@ -9,6 +9,7 @@ import { useRequest } from 'ahooks';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useTranslation } from 'react-i18next';
+import { useSpaceRole } from '@/hooks/use-space-role';
 import type { ColumnsType } from 'antd/es/table';
 import Table from 'antd/es/table';
 import TriggersTable from './triggers-table';
@@ -49,6 +50,9 @@ export default function TaskListPage() {
     const [err, res] = await apiInterceptors(getWorkspaceInfo(workspaceCode));
     return err ? null : res;
   }, { refreshDeps: [workspaceCode] });
+
+  // 权限门控:发起任务/新建订阅需要 space.task.start
+  const { can } = useSpaceRole(ws?.id);
 
   const [showAll, setShowAll] = useState(false);
   const { data: tasks, loading } = useRequest(async () => {
@@ -145,9 +149,11 @@ export default function TaskListPage() {
                 {showAll ? '只看我的' : '看全部'}
               </Button>
             )}
-            <Link href={`/workspaces/detail/tasks/create?id=${workspaceCode}&type=timer`}>
-              <Button type="primary" icon={<PlusOutlined />}>新建订阅</Button>
-            </Link>
+            {can('space.task.start') && (
+              <Link href={`/workspaces/detail/tasks/create?id=${workspaceCode}&type=timer`}>
+                <Button type="primary" icon={<PlusOutlined />}>新建订阅</Button>
+              </Link>
+            )}
           </div>
         </div>
 

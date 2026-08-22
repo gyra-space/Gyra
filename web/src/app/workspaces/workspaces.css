@@ -456,16 +456,16 @@
   }
 }
 
-/* Console header bar — 独立卡片(与下方三栏有间距) */
+/* Console header bar — 悬浮于灰色画布之上,靠留白与下方浮动面板分区 */
 .ws-console-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 14px;
-  background: var(--ws-surface);
-  border: 1px solid var(--ws-border-subtle);
-  border-radius: var(--ws-radius);
+  padding: 8px 16px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   flex-wrap: wrap;
 }
 
@@ -560,6 +560,35 @@
   background: var(--ws-attention-light);
 }
 
+/* 视图模式切换(简洁/运维):header 右侧分段开关,与 rail 的 view-switch 同语言 */
+.ws-console-viewmode {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--ws-bg);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.ws-console-viewmode__tab {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ws-ink-2);
+  padding: 5px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+  transition: all .15s;
+  line-height: 1;
+}
+.ws-console-viewmode__tab:hover { color: var(--ws-ink); }
+.ws-console-viewmode__tab--on {
+  background: var(--ws-surface);
+  color: var(--ws-ink);
+  font-weight: 600;
+  box-shadow: var(--ws-shadow-sm);
+}
+
 .ws-chat-loading {
   display: flex;
   align-items: center;
@@ -652,7 +681,7 @@
   .ws-page-header { flex-direction: column; align-items: stretch; }
   .ws-page-actions { justify-content: flex-end; }
   .ws-list-grid { grid-template-columns: 1fr; }
-  .ws-console-header { padding: 10px 12px; }
+  .ws-console-header { padding: 8px 12px; }
   .ws-console-nav { width: 100%; }
   .ws-loop { padding: 12px 14px; }
   .ws-loop-label { margin-right: 12px; }

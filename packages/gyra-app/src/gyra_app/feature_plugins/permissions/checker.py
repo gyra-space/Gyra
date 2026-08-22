@@ -6,6 +6,10 @@ from fastapi import Depends, HTTPException
 
 from gyra_serve.utils.auth import UserRequest, get_user_from_headers
 
+# 协议权限入口（按 permission key 校验 + 实例级 grant），见 gyra_serve.permissions
+from gyra_serve.permissions import has as has_permission  # noqa: F401
+from gyra_serve.permissions import require as require_key  # noqa: F401
+
 
 def require_permission(
     resource_type: str,

@@ -36,6 +36,7 @@ from ..inbox import (
 )
 from ..service.service import WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService as Service
 from ..rbac import Permission, require_permission
+from gyra_serve.permissions import require_space
 
 router = APIRouter()
 
@@ -91,7 +92,7 @@ async def default_or_create_workspace(
     request: HomeWorkspaceRequest, service: Service = Depends(get_service),
 ) -> Result[WorkspaceResponse]:
     """用户首页默认空间(幂等):有标记的返回,无标记取最早创建的补标记,
-    没有任何空间则新建"我的工作台"。"""
+    没有任何空间则返回系统内置默认空间(不再为每个用户新建个人空间)。"""
     try:
         return Result.succ(service.get_or_create_home(request.user_id))
     except Exception as e:
@@ -169,7 +170,8 @@ async def update_workspace(
 
 
 @router.post("/workspaces/archive", response_model=Result[WorkspaceResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.workspace.manage"))])
 async def archive_workspace(
     request: dict, service: Service = Depends(get_service),
 ) -> Result[WorkspaceResponse]:
@@ -205,7 +207,8 @@ async def release_workspace(
 
 # ----------------------- Members -----------------------
 @router.post("/members/list", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.workspace.view"))])
 async def list_members(
     request: WorkspaceMemberListRequest,
     service: Service = Depends(get_service),
@@ -218,7 +221,8 @@ async def list_members(
 
 
 @router.post("/members/add", response_model=Result[WorkspaceMemberResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.workspace.manage"))])
 async def add_member(
     request: WorkspaceMemberRequest, service: Service = Depends(get_service),
 ) -> Result[WorkspaceMemberResponse]:
@@ -230,7 +234,8 @@ async def add_member(
 
 
 @router.post("/members/remove", response_model=Result[bool],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.workspace.manage"))])
 async def remove_member(
     request: dict, service: Service = Depends(get_service),
 ) -> Result[bool]:
@@ -244,7 +249,8 @@ async def remove_member(
 
 
 @router.post("/members/update_role", response_model=Result[WorkspaceMemberResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.workspace.manage"))])
 async def update_member_role(
     request: dict, service: Service = Depends(get_service),
 ) -> Result[WorkspaceMemberResponse]:
@@ -562,7 +568,8 @@ async def list_scene_modes() -> Result:
 
 
 @router.get("/workspaces/{workspace_id}/scene_mode", response_model=Result,
-            dependencies=[Depends(check_api_key)])
+            dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.workspace.manage"))])
 async def get_workspace_scene_mode(
     workspace_id: int,
     service: Service = Depends(get_service),
@@ -610,7 +617,8 @@ async def set_workspace_scene_mode(
 
 # ----------------------- Conversation Link -----------------------
 @router.post("/conversations/link", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.chat.use"))])
 async def link_conversation(
     request: dict, service: Service = Depends(get_service),
 ) -> Result:
@@ -628,7 +636,8 @@ async def link_conversation(
 
 
 @router.post("/conversations/list", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.workspace.view"))])
 async def list_conversations(
     request: dict, service: Service = Depends(get_service),
 ) -> Result:
@@ -644,7 +653,8 @@ async def list_conversations(
 
 
 @router.get("/conversations/lookup", response_model=Result,
-            dependencies=[Depends(check_api_key)])
+            dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.workspace.view"))])
 async def lookup_conversation(
     conv_uid: str = Query(..., description="conversation uid"),
     service: Service = Depends(get_service),
@@ -657,7 +667,8 @@ async def lookup_conversation(
 
 
 @router.get("/workspaces/{workspace_id}/conversations/current", response_model=Result,
-            dependencies=[Depends(check_api_key)])
+            dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.workspace.view"))])
 async def get_current_conversation(
     workspace_id: int,
     user_id: Optional[int] = Header(None, alias="X-User-ID"),
@@ -673,7 +684,8 @@ async def get_current_conversation(
 
 
 @router.post("/workspaces/{workspace_id}/conversations/set-current", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.chat.use"))])
 async def set_current_conversation(
     workspace_id: int,
     request: SetCurrentConversationRequest,
@@ -690,7 +702,8 @@ async def set_current_conversation(
 
 
 @router.patch("/conversations/{conv_uid}/rename", response_model=Result,
-              dependencies=[Depends(check_api_key)])
+              dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.chat.use"))])
 async def rename_conversation(
     conv_uid: str,
     request: RenameConversationRequest,
@@ -745,7 +758,8 @@ async def list_inbox(
 
 
 @router.post("/workspaces/{workspace_id}/inbox/resolve", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.manage"))])
 async def resolve_inbox(
     workspace_id: int,
     request: InboxResolveRequest,
@@ -766,7 +780,8 @@ async def resolve_inbox(
 
 
 @router.post("/workspaces/{workspace_id}/inbox/{item_id}/status", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.view"))])
 async def update_inbox_status(
     workspace_id: int,
     item_id: int,
@@ -793,7 +808,8 @@ def get_dataset_service() -> WorkspaceDatasetService:
 
 
 @router.post("/workspaces/{workspace_id}/datasets/upload", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.capability.manage"))])
 async def upload_dataset(
     workspace_id: int,
     file: UploadFile,

@@ -88,7 +88,13 @@ function normalizeStep(raw: unknown): WorkspaceExecutionStep | null {
   const r = raw as Record<string, unknown>;
   if (typeof r.id !== 'string' || typeof r.title !== 'string') return null;
   const type = VALID_TYPES.includes(r.type as string) ? (r.type as WorkspaceExecutionStep['type']) : 'tool_call';
-  const status = VALID_STATUS.includes(r.status as string) ? (r.status as WorkspaceExecutionStep['status']) : 'running';
+  // status 归一:识别 running/done/failed;未知值(completed/finished/executing 等
+  // 后端变体)回退 done 而非 running —— 回退 running 会让历史恢复的已完成
+  // 步骤永远停在转圈态。流式期间新步骤由后端显式下发 running,不受影响。
+  const rawStatus = String(r.status || '').toLowerCase();
+  const status: WorkspaceExecutionStep['status'] = VALID_STATUS.includes(rawStatus)
+    ? (rawStatus as WorkspaceExecutionStep['status'])
+    : 'done';
   return {
     id: r.id,
     type,
@@ -223,7 +229,11 @@ export function parseWorkspaceView(chunk: unknown, prev: WorkspaceView | null): 
   const planning = c.planning && typeof c.planning === 'object'
     ? (c.planning as WorkspaceView['planning'])
     : (prev?.planning ?? null);
-  const summary = typeof c.summary === 'string' ? c.summary : (prev?.summary ?? null);
+  // summary 兜底修正:execution 已按 ts 排序,时序最后一个 answer 步骤即最新回答;
+  // 后端 summary 取自 narration 插入序,可能停在中间轮的过渡文本上
+  let summary = typeof c.summary === 'string' ? c.summary : (prev?.summary ?? null);
+  const lastAnswer = [...execution].reverse().find((s) => s.type === 'answer' && (s.output || '').trim());
+  if (lastAnswer?.output) summary = lastAnswer.output;
 
   // 交付文件 / 任务文件:后端按当前轮次(agent conv)全量推送,新轮追问(新建
   // agent conv)只会带本轮文件。前端按 file_id 会话级合并:同 id 取新值、

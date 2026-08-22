@@ -162,6 +162,27 @@ def _worker_type(model_conf: Dict[str, Any]) -> str:
     return "llm"
 
 
+def _is_media_model(model_conf: Dict[str, Any]) -> bool:
+    """聊天模型下拉排除媒体生成模型（图片/视频/音频）。
+
+    与 ModelConfigCache.is_media_model_config 同口径：命中厂商级多媒体协议
+    （dashscope/volcengine/openai/google_multimedia）或 model_type 为
+    image/video/audio 即视为媒体生成模型。普通聊天只应选择文本/视觉 LLM，
+    媒体生成模型由多媒体 Agent 配置池（image_models/video_models）另行管理。
+    """
+    try:
+        from gyra.agent.util.llm.model_config_cache import is_media_model_config
+
+        return is_media_model_config(model_conf)
+    except Exception:
+        # 判定函数不可用时不误杀：按 model_type 兜底
+        return (model_conf.get("model_type") or "").lower() in (
+            "image",
+            "video",
+            "audio",
+        )
+
+
 @router.get("/models")
 async def list_models(
     user: Optional[UserRequest] = Depends(_require_model_read()),
@@ -176,7 +197,11 @@ async def list_models(
         for item in _iter_configured_models(agent_llm):
             provider_name = item["provider"]
             model_name = item["model_name"]
-            worker_type = _worker_type(item["model_conf"])
+            model_conf = item["model_conf"]
+            # 聊天模型下拉只展示文本/视觉 LLM；媒体生成模型由多媒体 Agent 配置池管理
+            if _is_media_model(model_conf):
+                continue
+            worker_type = _worker_type(model_conf)
 
             responses.append(
                 {
@@ -184,6 +209,7 @@ async def list_models(
                     "model_name": model_name,
                     "name": model_name,
                     "worker_type": worker_type,
+                    "model_type": model_conf.get("model_type", "llm"),
                     "host": f"proxy@{provider_name}",
                     "port": 0,
                     "manager_host": "system-config",

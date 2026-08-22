@@ -270,7 +270,9 @@ async def get_my_permissions(user: UserRequest = Depends(get_user_from_headers))
         "data": {
             "user_id": user.user_id,
             "roles": user.roles or [],
-            "permissions": user.permissions or {},
+            # 保留 null:RBAC 插件关闭时后端不做鉴权,前端据此放行(勿转 {})
+            "permissions": user.permissions,
+            "grants": user.grants or [],
         },
     }
 
@@ -392,6 +394,7 @@ async def get_user_effective_permissions(
             "user_id": user_id,
             "roles": perms.role_names,
             "permissions": perms.permissions_map,
+            "grants": perms.grants,
         },
     }
 
@@ -1104,3 +1107,96 @@ async def get_pending_requests_count(
     """管理员获取待审批申请数量"""
     requests, total = _dao.list_permission_requests(status="pending", page_size=1000)
     return {"success": True, "data": {"count": total}}
+
+
+# ========== Resource Grants（资源实例级授权） ==========
+class GrantCreateBody(BaseModel):
+    user_id: int
+    permission_key: str = Field(..., min_length=1, max_length=128)
+    resource_id: str = Field(..., min_length=1, max_length=255)
+    expires_at: Optional[str] = None  # ISO 格式，可空=永久
+
+
+@router.get("/grants")
+async def list_grants(
+    user_id: Optional[int] = Query(None),
+    resource_type: Optional[str] = Query(None),
+    resource_id: Optional[str] = Query(None),
+    _user: UserRequest = Depends(require_permission("system", "read")),
+):
+    """列出资源实例级授权（可按用户/资源过滤）"""
+    grants = _dao.list_grants(
+        user_id=user_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
+    )
+    return {"success": True, "data": grants}
+
+
+@router.post("/grants")
+async def create_grant(
+    body: GrantCreateBody,
+    user: UserRequest = Depends(require_permission("system", "admin")),
+):
+    """给用户开启某个具体资源的权限。
+
+    permission_key 必须是代码注册过且 grantable=True 的协议权限。
+    """
+    from gyra_serve.permissions import PermissionRegistry, parse_key
+
+    perm = PermissionRegistry.get(body.permission_key)
+    if perm is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown permission key: {body.permission_key}",
+        )
+    if not perm.grantable:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Permission {body.permission_key} is not grantable per-resource",
+        )
+
+    resource_type, _ = parse_key(body.permission_key)
+    expires_at = None
+    if body.expires_at:
+        from datetime import datetime
+
+        try:
+            expires_at = datetime.fromisoformat(body.expires_at)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="expires_at must be ISO format"
+            )
+
+    granter_id = None
+    try:
+        granter_id = int(str(user.user_no).strip()) if user.user_no else None
+    except ValueError:
+        pass
+
+    grant = _dao.create_grant(
+        user_id=body.user_id,
+        permission_key=body.permission_key,
+        resource_type=resource_type,
+        resource_id=body.resource_id,
+        expires_at=expires_at,
+        granted_by=granter_id,
+    )
+    _svc.invalidate_cache(body.user_id)
+    return {"success": True, "data": grant}
+
+
+@router.delete("/grants/{grant_id}")
+async def delete_grant(
+    grant_id: int,
+    _user: UserRequest = Depends(require_permission("system", "admin")),
+):
+    """回收资源实例级授权"""
+    grants = _dao.list_grants()
+    target = next((g for g in grants if g["id"] == grant_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="Grant not found")
+    if not _dao.delete_grant(grant_id):
+        raise HTTPException(status_code=404, detail="Grant not found")
+    _svc.invalidate_cache(target["user_id"])
+    return {"success": True}

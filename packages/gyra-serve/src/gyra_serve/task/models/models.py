@@ -15,6 +15,10 @@ from ..config import SERVER_APP_TABLE_NAME
 TASK_TABLE_NAME = SERVER_APP_TABLE_NAME
 TASK_RELATION_TABLE_NAME = f"{SERVER_APP_TABLE_NAME}_relation"
 
+# 对话型任务来源:由某个用户在页面提问/会话中产生,归属个人,他人不可见。
+# 其余来源(timer/webhook/alert/api 等订阅触发)视为空间公共任务。
+DIALOG_TRIGGERED_BY = ("page", "manual")
+
 
 def _dump_json(v):
     if v is None:
@@ -181,7 +185,21 @@ class TaskDao(BaseDao[TaskEntity, TaskRequest, TaskResponse]):
                 query = query.filter(TaskEntity.status == f.status)
             if f.type:
                 query = query.filter(TaskEntity.type == f.type)
-            if getattr(f, "mine", False) and f.user_id is not None:
+            if getattr(f, "own_and_public_only", False):
+                # 简单页面模式可见性:自己提交的任务(created_by=本人) + 空间公共任务
+                # (订阅/触发源产生的任务);别人的对话任务(page/manual)不可见。
+                public_cond = or_(
+                    TaskEntity.triggered_by.is_(None),
+                    TaskEntity.triggered_by.notin_(DIALOG_TRIGGERED_BY),
+                )
+                if f.user_id is not None:
+                    query = query.filter(or_(
+                        TaskEntity.created_by_user_id == f.user_id,
+                        public_cond,
+                    ))
+                else:
+                    query = query.filter(public_cond)
+            elif getattr(f, "mine", False) and f.user_id is not None:
                 query = query.filter(or_(
                     TaskEntity.created_by_user_id == f.user_id,
                     TaskEntity.assignee_user_id == f.user_id,

@@ -62,6 +62,30 @@ class Serve(BaseServe):
         init_endpoints(self._system_app, self._config)
         self._app_has_initiated = True
 
+    def _ensure_column_cached_tokens(self, init_db) -> None:
+        """存量 gyra_serve_llm_usage 表补 cached_tokens 列（幂等，失败只告警）。"""
+        from sqlalchemy import inspect as sa_inspect, text
+
+        from .config import SERVER_APP_TABLE_NAME
+
+        try:
+            engine = init_db.engine
+            existing = {
+                c["name"] for c in sa_inspect(engine).get_columns(SERVER_APP_TABLE_NAME)
+            }
+            if "cached_tokens" in existing:
+                return
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {SERVER_APP_TABLE_NAME} "
+                        "ADD COLUMN cached_tokens INTEGER DEFAULT 0"
+                    )
+                )
+            logger.info("usage table: added column cached_tokens")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"ensure cached_tokens column failed: {e}")
+
     def on_init(self):
         """Load the DB model so SQLAlchemy metadata registers it."""
         from .models.models import LLMUsageEntity  # noqa: F401
@@ -74,6 +98,8 @@ class Serve(BaseServe):
         try:
             init_db = self.create_or_get_db_manager()
             init_db.create_all()
+            # 存量表加列：create_all 不会 ALTER 已存在的表
+            self._ensure_column_cached_tokens(init_db)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to create usage tables: {e}")
 

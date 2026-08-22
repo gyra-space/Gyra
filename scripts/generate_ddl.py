@@ -10,6 +10,8 @@ Usage:
 """
 
 import argparse
+import hashlib
+import json
 import logging
 import sys
 import re
@@ -193,19 +195,35 @@ def main():
                         old_timestamp = old_generated.split('T')[0].replace('-', '') if old_generated else "unknown"
 
                         upgrade_filename = f"upgrade_{old_version}_{old_timestamp}_to_{version}_{current_timestamp}.sql"
-                        upgrade_file = dialect_dir / "upgrades" / upgrade_filename
+                        upgrades_dir = dialect_dir / "upgrades"
+                        upgrade_file = _dedupe_upgrade_file(upgrades_dir, upgrade_filename)
 
-                        # Generate incremental DDL
-                        # Note: We need to pass the backup file (before it's overwritten)
-                        # For now, we'll use the current file which was just written
+                        # 版本签名：追加式单调序号（现有脚本数 + 1）
+                        script_version = _next_script_version(upgrades_dir)
+
+                        # Generate incremental DDL（由 CLI 写入，便于前置版本签名头）
                         incremental_ddl = generator.generate_incremental_ddl(
                             dialect,
                             full_ddl_file,
-                            upgrade_file
+                            None,
                         )
 
                         if incremental_ddl:
+                            upgrade_file.parent.mkdir(parents=True, exist_ok=True)
+                            upgrade_file.write_text(
+                                f"-- Gyra-Schema-Version: {script_version}\n\n"
+                                + incremental_ddl,
+                                encoding="utf-8",
+                            )
                             logger.info(f"✓ Generated incremental {dialect} DDL: {upgrade_file}")
+                            _update_upgrade_manifest(
+                                upgrades_dir,
+                                upgrade_file.name,
+                                old_version,
+                                old_timestamp,
+                                version,
+                                current_timestamp,
+                            )
                         else:
                             logger.info(f"  No schema changes detected for {dialect}")
 
@@ -215,6 +233,125 @@ def main():
         logger.info("DDL generation complete!")
 
     return 0
+
+
+_UPGRADE_FILE_RE = re.compile(
+    r"^upgrade_(.+?)_(\d{8})_to_(.+?)_(\d{8})(?:_(\d{4}))?\.sql$"
+)
+
+
+def _dedupe_upgrade_file(upgrades_dir: Path, filename: str) -> Path:
+    """避免同名增量脚本被覆盖：存在则追加 _0001/_0002 序号。"""
+    candidate = upgrades_dir / filename
+    if not candidate.exists() and not _manifest_has(upgrades_dir, filename):
+        return candidate
+    stem = candidate.stem
+    seq = 1
+    while True:
+        cand = candidate.with_name(f"{stem}_{seq:04d}{candidate.suffix}")
+        if not cand.exists() and not _manifest_has(upgrades_dir, cand.name):
+            return cand
+        seq += 1
+
+
+def _next_script_version(upgrades_dir: Path) -> int:
+    """计算下一个增量脚本的版本签名（追加式单调序号）。"""
+    manifest = upgrades_dir / "manifest.json"
+    if manifest.is_file():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            return len(data.get("scripts", [])) + 1
+        except Exception:
+            pass
+    return len(list(upgrades_dir.glob("upgrade_*.sql"))) + 1
+
+
+def _manifest_has(upgrades_dir: Path, filename: str) -> bool:
+    manifest = upgrades_dir / "manifest.json"
+    if not manifest.is_file():
+        return False
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        return any(s.get("name") == filename for s in data.get("scripts", []))
+    except Exception:
+        return False
+
+
+def _update_upgrade_manifest(
+    upgrades_dir: Path,
+    filename: str,
+    from_version: str,
+    from_timestamp: str,
+    to_version: str,
+    to_timestamp: str,
+) -> None:
+    """维护 upgrades/manifest.json：有序脚本清单 + sha256 校验和，供运行器消费。"""
+    manifest_path = upgrades_dir / "manifest.json"
+    data = {"current_version": "", "scripts": []}
+    if manifest_path.is_file():
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {"current_version": "", "scripts": []}
+
+    scripts: list = data.get("scripts", [])
+    match = _UPGRADE_FILE_RE.match(filename)
+    seq = int(match.group(5) or 0) if match else 0
+
+    file_path = upgrades_dir / filename
+    # 精确去重：仅剔除同名条目
+    scripts = [s for s in scripts if s.get("name") != filename]
+
+    scripts.append(
+        {
+            "name": filename,
+            "from_version": from_version,
+            "from_timestamp": from_timestamp,
+            "to_version": to_version,
+            "to_timestamp": to_timestamp,
+            "seq": seq,
+            "checksum": hashlib.sha256(file_path.read_bytes()).hexdigest(),
+        }
+    )
+
+    # 回填目录中既有脚本（应对无 manifest 的历史目录），保证版本号 1..N 连续
+    known = {s.get("name") for s in scripts}
+    for path in sorted(upgrades_dir.glob("upgrade_*.sql")):
+        match = _UPGRADE_FILE_RE.match(path.name)
+        if match and path.name not in known:
+            scripts.append(
+                {
+                    "name": path.name,
+                    "from_version": match.group(1),
+                    "from_timestamp": match.group(2),
+                    "to_version": match.group(3),
+                    "to_timestamp": match.group(4),
+                    "seq": int(match.group(5) or 0),
+                    "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+            known.add(path.name)
+
+    scripts.sort(
+        key=lambda s: (
+            s.get("to_timestamp", ""),
+            int(s.get("seq", 0) or 0),
+            s.get("name", ""),
+        )
+    )
+    # 版本签名：按追加顺序分配单调序号（1..N），运行器据此精确计算待应用差集
+    for idx, entry in enumerate(scripts, start=1):
+        entry["version"] = idx
+    data["scripts"] = scripts
+    if scripts:
+        latest = scripts[-1]
+        data["current_version"] = (
+            f"{latest.get('to_version', '')}_{latest.get('to_timestamp', '')}"
+        )
+    manifest_path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    logger.info(f"✓ Updated manifest: {manifest_path}")
 
 
 if __name__ == "__main__":

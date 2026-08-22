@@ -25,6 +25,17 @@
       "enabled": true
     }
   },
+  "schema_migration": {
+    "enabled": true,
+    "upgrades_dir": "assets/schema/mysql/upgrades",
+    "full_ddl_file": "assets/schema/mysql/gyra.sql",
+    "baseline_existing_db": true,
+    "on_error": "abort",
+    "tolerate_duplicate": true,
+    "lock_timeout_seconds": 30,
+    "last_applied_script": "",
+    "last_applied_at": ""
+  },
   "workspace": "~/.gyra/workspace",
   "log_level": "INFO",
   "server": {

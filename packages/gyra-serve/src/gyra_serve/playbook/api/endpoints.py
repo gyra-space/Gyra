@@ -15,6 +15,7 @@ from .schemas import (
 from ..config import ServeConfig
 from ..service.service import PLAYBOOK_SERVICE_COMPONENT_NAME, PlaybookService as Service
 from gyra_serve.workspace.rbac import Permission, require_permission
+from gyra_serve.permissions import require_space
 
 router = APIRouter()
 global_system_app: Optional[SystemApp] = None
@@ -56,7 +57,8 @@ async def create_playbook(
 
 
 @router.post("/playbooks/list", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.playbook.view"))])
 async def list_playbooks(
     f: PlaybookListFilter, service: Service = Depends(get_service),
 ) -> Result:
@@ -68,7 +70,8 @@ async def list_playbooks(
 
 
 @router.get("/playbooks/info", response_model=Result[PlaybookResponse],
-            dependencies=[Depends(check_api_key)])
+            dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.playbook.view"))])
 async def get_playbook(
     playbook_id: int = Query(...),
     service: Service = Depends(get_service),
@@ -84,7 +87,8 @@ async def get_playbook(
 
 
 @router.post("/playbooks/update", response_model=Result[PlaybookResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.playbook.manage"))])
 async def update_playbook(
     request: PlaybookRequest, service: Service = Depends(get_service),
 ) -> Result[PlaybookResponse]:
@@ -96,7 +100,8 @@ async def update_playbook(
 
 
 @router.post("/playbooks/{playbook_id}/delete", response_model=Result[bool],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.playbook.manage"))])
 async def delete_playbook(
     playbook_id: int, service: Service = Depends(get_service),
 ) -> Result[bool]:
@@ -121,7 +126,8 @@ async def validate_playbook(
 
 
 @router.get("/playbooks/{playbook_id}/versions", response_model=Result,
-            dependencies=[Depends(check_api_key)])
+            dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.playbook.view"))])
 async def list_versions(
     playbook_id: int, service: Service = Depends(get_service),
 ) -> Result:
@@ -133,7 +139,8 @@ async def list_versions(
 
 
 @router.post("/playbooks/seed_builtin", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.playbook.manage"))])
 async def seed_builtin(
     workspace_id: int = Query(...),
     service: Service = Depends(get_service),

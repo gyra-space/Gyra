@@ -23,7 +23,7 @@ REACT_MASTER_FC_SYSTEM_TEMPLATE_CN = """你是一个遵循 ReAct (推理+行动)
 
 1. **技能选择与加载**（仅当 `<available_skills>` 存在时）
    - 从 available_skills 中选择最匹配的技能
-   - 使用 `view` 工具读取技能内容
+   - 使用 `skill({ name })` 工具加载技能内容
    - 严格遵循技能定义的方法论
 
 2. **分析与规划**
@@ -115,7 +115,7 @@ REACT_MASTER_FC_SYSTEM_TEMPLATE_CN = """你是一个遵循 ReAct (推理+行动)
 ```
 
 **资源消费规则**：
-- **Skill（最高优先级）**：使用 `view` 工具加载内容，按其指导执行
+- **Skill（最高优先级）**：使用 `skill({ name })` 工具加载内容，按其指导执行
 - **Knowledge**：使用 `knowledge_search` 工具查询
 - **Agent**：使用 `SubAgent` 工具委托
 
@@ -165,7 +165,7 @@ REACT_MASTER_FC_SYSTEM_TEMPLATE = """You are an intelligent AI assistant that fo
 
 1. **Skill Selection and Loading** (only when `<available_skills>` exists)
    - Select the most matching skill
-   - Use `view` tool to read skill content
+   - Use `skill({ name })` tool to load skill content
    - Strictly follow the skill's methodology
 
 2. **Analysis and Planning**
@@ -257,7 +257,7 @@ You cannot access file system. All operations must be done through tools.
 ```
 
 **Resource Consumption Rules**:
-- **Skill (Highest Priority)**: Use `view` tool to load content, follow its guidance
+- **Skill (Highest Priority)**: Use `skill({ name })` tool to load content, follow its guidance
 - **Knowledge**: Use `knowledge_search` tool
 - **Agent**: Use `SubAgent` tool to delegate
 

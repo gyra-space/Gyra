@@ -227,24 +227,71 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                 future = executor.submit(_run_async)
                 result = future.result(timeout=30)
 
-            items = [
-                ServerResponse(
-                    conv_uid=item.conv_id,
-                    conv_session_id=item.conv_session_id,
-                    user_input=item.goal,
-                    chat_mode=item.chat_mode,
-                    app_code=item.app_code,
-                    user_name=item.user_id,
-                    sys_code=request.sys_code,
-                    gmt_created=item.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                    if item.created_at
-                    else None,
-                    gmt_modified=item.updated_at.strftime("%Y-%m-%d %H:%M:%S")
-                    if item.updated_at
-                    else None,
+            # 批量补齐 workspace 归属信息(名称/编码),供前端展示归属标识与跳回空间
+            workspace_ids = {
+                item.workspace_id for item in result["items"] if item.workspace_id
+            }
+            ws_map: Dict[int, tuple] = {}
+            if workspace_ids:
+                try:
+                    from gyra_serve.workspace.models.models import (
+                        WorkspaceDao,
+                        WorkspaceEntity,
+                    )
+
+                    ws_session = WorkspaceDao().get_raw_session()
+                    try:
+                        rows = (
+                            ws_session.query(
+                                WorkspaceEntity.id,
+                                WorkspaceEntity.name,
+                                WorkspaceEntity.workspace_code,
+                            )
+                            .filter(WorkspaceEntity.id.in_(workspace_ids))
+                            .all()
+                        )
+                        ws_map = {r[0]: (r[1], r[2]) for r in rows}
+                    finally:
+                        ws_session.close()
+                except Exception as e:
+                    logger.warning(f"Failed to enrich workspace info: {e}")
+
+            items = []
+            for item in result["items"]:
+                ws_name, ws_code = ws_map.get(item.workspace_id, (None, None)) or (
+                    None,
+                    None,
                 )
-                for item in result["items"]
-            ]
+                # 会话类型:workspace_id/task_id 均无 -> 独立 Agent 会话;
+                # 仅 workspace_id -> 空间大厅会话;两者都有 -> 空间内任务会话
+                if item.workspace_id and item.task_id:
+                    conv_type = "task"
+                elif item.workspace_id:
+                    conv_type = "workspace"
+                else:
+                    conv_type = "agent"
+                items.append(
+                    ServerResponse(
+                        conv_uid=item.conv_id,
+                        conv_session_id=item.conv_session_id,
+                        user_input=item.goal,
+                        chat_mode=item.chat_mode,
+                        app_code=item.app_code,
+                        user_name=item.user_id,
+                        sys_code=request.sys_code,
+                        workspace_id=item.workspace_id,
+                        task_id=item.task_id,
+                        workspace_name=ws_name,
+                        workspace_code=ws_code,
+                        conv_type=conv_type,
+                        gmt_created=item.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if item.created_at
+                        else None,
+                        gmt_modified=item.updated_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if item.updated_at
+                        else None,
+                    )
+                )
 
             return PaginationResult(
                 items=items,

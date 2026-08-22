@@ -18,11 +18,12 @@ from gyra._private.pydantic import BaseModel, ConfigDict
 from gyra.agent.core.v2.subagent_handle import (
     SubAgentHandle, SubAgentMode, SubAgentStatus,
 )
-from gyra.agent.core.v2.runtime import run_step
+from gyra.agent.core.v2.run_loop import run_loop
 from gyra.agent.core.v2.subagent_interaction_gateway import SubAgentInteractionGateway
 from gyra.agent.core.v2.permission_gate import PermissionGate
 from gyra.agent.core.v2.permission_mode import PermissionMode
 from gyra.agent.core.v2.event_stream import EventStream
+from gyra.agent.core.v2.harness.seams import SubagentSeam
 
 if TYPE_CHECKING:
     from gyra.agent.core.v2.state_store import StateStore
@@ -44,20 +45,72 @@ class SubAgentSpawnSpec(BaseModel):
     interaction_gateway: Optional[Any] = None
     ruleset: Optional[Any] = None
     shared_conv: bool = False  # v2 新增：True=共享父 conv_id（AgentStart 语义）
+    # 生产接线（V2Agent → SubAgentRuntime）：子 agent 独立上下文
+    session_id: Optional[str] = None  # 子会话 ID（缺省 = sub_conv_id）
+    system_prompt: Optional[str] = None  # 子 agent 系统指令（透传进 run_step input_）
+    user_id: Optional[str] = None  # 触发用户标识
 
 
-class SubAgentRuntime:
+class SubAgentRuntime(SubagentSeam):
+    """V2 引擎内子 Agent 运行时（实现 :class:`SubagentSeam`）。
+
+    Single entry: spawn(spec) -> SubAgentHandle.
+    - SYNC mode: await sub-agent's run_step, return handle with result
+    - ASYNC mode: schedule run_step in background, persist transcript, return immediately
+    - Depth limiting: reject spawn if depth+1 > max_depth
+    - Independent context: each spawn creates a new sub_conv_id
+
+    P2 wraps the existing AsyncTaskManager for ASYNC mode (lifecycle, cancel,
+    wait). SYNC mode just awaits run_step directly.
+
+    生产接线：``default_thinking_fn`` / ``default_acting_fn`` 由装配层（V2Agent）
+    传入，spawn spec 未显式携带 fn 时使用默认实现——子 agent 因此可复用主引擎
+    的 ContextEngine / 工具解析，而无需工具参数透传 callable。
+    """
+
     def __init__(
         self,
         state_store: "StateStore",
         max_depth: int = 5,
         async_task_manager: Optional["AsyncTaskManager"] = None,
+        default_thinking_fn: Optional[Any] = None,
+        default_acting_fn: Optional[Any] = None,
+        default_user_id: Optional[str] = None,
+        job_registry: Optional[Any] = None,
     ):
         self._store = state_store
         self._max_depth = max_depth
         self._async_mgr = async_task_manager
+        self._default_thinking_fn = default_thinking_fn
+        self._default_acting_fn = default_acting_fn
+        self._default_user_id = default_user_id
+        # harness.jobs 本地视图：spawn/终态同步（引擎与产品层统一查询）
+        self._job_registry = job_registry
         self._handles: Dict[str, SubAgentHandle] = {}
         self._async_tasks: Dict[str, asyncio.Task] = {}
+
+    def _sync_job(self, task_id: str, status: str, **meta: Any) -> None:
+        """把子任务状态同步到 harness.jobs（注册或更新）。"""
+        if self._job_registry is None:
+            return
+        try:
+            if self._job_registry.get_status(task_id) is None:
+                handle = self._handles.get(task_id)
+                self._job_registry.register(
+                    task_id,
+                    conv_id=(
+                        handle.parent_conv_id
+                        if handle is not None
+                        else None
+                    ),
+                    kind="subagent",
+                    status=status,
+                    **meta,
+                )
+            else:
+                self._job_registry.update_status(task_id, status, **meta)
+        except Exception:  # noqa: BLE001
+            pass  # job 同步失败不影响子 agent 主流程
 
     async def spawn(self, spec: SubAgentSpawnSpec) -> SubAgentHandle:
         if spec.depth + 1 > self._max_depth:
@@ -92,6 +145,11 @@ class SubAgentRuntime:
             handle.transcript_id = transcript_id
             handle.status = SubAgentStatus.RUNNING
             self._handles[task_id] = handle
+            # 异步任务注册到 harness.jobs（终态由 _run_subagent_async 更新）
+            self._sync_job(
+                task_id, "running",
+                agent_name=spec.agent_name, sub_conv_id=sub_conv_id,
+            )
             self._async_tasks[task_id] = asyncio.create_task(
                 self._run_subagent_async(handle, spec, transcript_id)
             )
@@ -119,23 +177,98 @@ class SubAgentRuntime:
             agent_id=f"subagent-{handle.task_id}",
         )
 
+    def _resolve_sub_fns(self, spec: SubAgentSpawnSpec):
+        """子 agent 的 thinking/acting fn：spec 显式优先，缺省回退装配层默认。"""
+        thinking_fn = spec.thinking_fn or self._default_thinking_fn
+        acting_fn = spec.acting_fn or self._default_acting_fn
+        return thinking_fn, acting_fn
+
+    def _build_sub_input(
+        self, spec: SubAgentSpawnSpec, sub_conv_id: str, agent_id: str
+    ) -> Dict[str, Any]:
+        """构造子 agent run_step 输入：独立 session_id / system_prompt / conv_id。
+
+        thinking_fn 由 input_ 字段驱动（default_thinking 从 input_ 读
+        conv_id/session_id/system_prompt/agent_id），因此子 agent 可复用主引擎
+        同一闭包，并各自投影自己的事件日志（V2 单源）。
+        """
+        session_id = spec.session_id or sub_conv_id
+        input_ = {
+            "prompt": spec.task,
+            "conv_id": sub_conv_id,
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "user_id": spec.user_id or self._default_user_id,
+            "system_prompt": spec.system_prompt,
+            "is_subagent": True,
+            "subagent_depth": spec.depth + 1,
+        }
+        input_.update(spec.context or {})
+        return input_
+
+    async def _emit_sub_dialog_message(
+        self, handle: "SubAgentHandle", role: str, content: str
+    ) -> None:
+        """子 agent 的对话消息写入子 conv 事件日志（V2 单源事实）。"""
+        if not content:
+            return
+        try:
+            from gyra.agent.core.v2.event_stream import EventStream
+            from gyra.agent.core.v2.step_event import StepEvent
+            from gyra.agent.core.v2.step_state import StepState
+
+            stream = EventStream(self._store)
+            existing = await self._store.get_events(handle.sub_conv_id)
+            seq = max((e.seq for e in existing), default=-1) + 1
+            ev = StepEvent(
+                event_id=f"evt-{uuid.uuid4().hex[:8]}",
+                step_id=f"dialog-{uuid.uuid4().hex[:6]}",
+                conv_id=handle.sub_conv_id,
+                agent_id=f"subagent-{handle.task_id}",
+                parent_step_id=None,
+                state=StepState.DONE,
+                event_type=f"{role}/message",
+                input={},
+                output={"text": content},
+                seq=seq,
+                timestamp=time.time(),
+            )
+            await stream.emit(ev)
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _run_subagent(self, handle: SubAgentHandle, spec: SubAgentSpawnSpec) -> None:
-        """Sync mode: run sub-agent to completion before returning."""
+        """Sync mode: run sub-agent to completion before returning.
+
+        子 agent 用 ``run_loop``（多轮循环，非单步 run_step）驱动，收集
+        content 通道最终答案写入 handle.result——主 agent 才能拿到子结论。
+        """
         handle.status = SubAgentStatus.RUNNING
         self._handles[handle.task_id] = handle
-        input_ = {"prompt": spec.task, **spec.context}
+        thinking_fn, acting_fn = self._resolve_sub_fns(spec)
+        if thinking_fn is None:
+            handle.error = "sub-agent thinking_fn unavailable (not wired by assembler)"
+            handle.status = SubAgentStatus.FAILED
+            return
+        input_ = self._build_sub_input(
+            spec, handle.sub_conv_id, f"subagent-{handle.task_id}"
+        )
+        # V2 单源：子任务消息写入子 conv 事件日志
+        await self._emit_sub_dialog_message(handle, "user", spec.task)
         permission_gate = await self._make_permission_gate(handle, spec)
         try:
             result = {"events": []}
-            async for event in run_step(
+            answer_parts: list = []
+            async for event in run_loop(
                 agent_id=f"subagent-{handle.task_id}",
                 conv_id=handle.sub_conv_id,
-                input_={**input_, "is_subagent": True, "subagent_depth": spec.depth + 1},
+                input_=input_,
                 state_store=self._store,
-                thinking_fn=spec.thinking_fn,
-                acting_fn=spec.acting_fn,
+                thinking_fn=thinking_fn,
+                acting_fn=acting_fn,
                 parent_step_id=handle.parent_step_id,
                 permission_gate=permission_gate,
+                max_steps=max(self._max_depth * 4, 10),
             ):
                 event.metadata["is_subagent"] = True
                 event.metadata["subagent_depth"] = spec.depth + 1
@@ -147,30 +280,69 @@ class SubAgentRuntime:
                     "state": event.state.value,
                     "event_type": event.event_type,
                 })
-            handle.result = {"status": "done", "events_count": len(result["events"])}
+                if event.event_type == "llm_token":
+                    token = (event.output or {}).get("token", "")
+                    channel = (event.output or {}).get("channel", "content")
+                    if token and channel != "thinking":
+                        answer_parts.append(token)
+            handle.result = {
+                "status": "done",
+                "answer": "".join(answer_parts),
+                "events_count": len(result["events"]),
+            }
             handle.status = SubAgentStatus.DONE
+            await self._emit_sub_dialog_message(
+                handle, "assistant", "".join(answer_parts)
+            )
         except Exception as e:
             handle.error = str(e)
             handle.status = SubAgentStatus.FAILED
         handle.updated_at = time.time()
+        self._sync_job(
+            handle.task_id,
+            "completed" if handle.status is SubAgentStatus.DONE else "failed",
+            agent_name=handle.agent_name,
+        )
 
     async def _run_subagent_async(
         self, handle: SubAgentHandle, spec: SubAgentSpawnSpec, transcript_id: str,
     ) -> None:
         """Async mode: run in background, update transcript periodically."""
-        input_ = {"prompt": spec.task, **spec.context}
+        thinking_fn, acting_fn = self._resolve_sub_fns(spec)
+        if thinking_fn is None:
+            handle.error = "sub-agent thinking_fn unavailable (not wired by assembler)"
+            handle.status = SubAgentStatus.FAILED
+            await self._store.save_transcript(
+                transcript_id=transcript_id,
+                task_id=handle.task_id,
+                sub_conv_id=handle.sub_conv_id,
+                parent_step_id=handle.parent_step_id,
+                parent_conv_id=handle.parent_conv_id,
+                agent_name=handle.agent_name,
+                status="failed",
+                latest_event_seq=0,
+                payload={"error": handle.error},
+            )
+            return
+        input_ = self._build_sub_input(
+            spec, handle.sub_conv_id, f"subagent-{handle.task_id}"
+        )
+        # V2 单源：子任务消息写入子 conv 事件日志
+        await self._emit_sub_dialog_message(handle, "user", spec.task)
         permission_gate = await self._make_permission_gate(handle, spec)
         try:
             latest_seq = 0
-            async for event in run_step(
+            answer_parts: list = []
+            async for event in run_loop(
                 agent_id=f"subagent-{handle.task_id}",
                 conv_id=handle.sub_conv_id,
-                input_={**input_, "is_subagent": True, "subagent_depth": spec.depth + 1},
+                input_=input_,
                 state_store=self._store,
-                thinking_fn=spec.thinking_fn,
-                acting_fn=spec.acting_fn,
+                thinking_fn=thinking_fn,
+                acting_fn=acting_fn,
                 parent_step_id=handle.parent_step_id,
                 permission_gate=permission_gate,
+                max_steps=max(self._max_depth * 4, 10),
             ):
                 event.metadata["is_subagent"] = True
                 event.metadata["subagent_depth"] = spec.depth + 1
@@ -178,6 +350,11 @@ class SubAgentRuntime:
                     event.event_id, event.metadata,
                 )
                 latest_seq = max(latest_seq, event.seq)
+                if event.event_type == "llm_token":
+                    token = (event.output or {}).get("token", "")
+                    channel = (event.output or {}).get("channel", "content")
+                    if token and channel != "thinking":
+                        answer_parts.append(token)
                 # Persist transcript snapshot every few events
                 await self._store.save_transcript(
                     transcript_id=transcript_id,
@@ -190,8 +367,15 @@ class SubAgentRuntime:
                     latest_event_seq=latest_seq,
                     payload={"last_event_state": event.state.value},
                 )
-            handle.result = {"status": "done", "latest_seq": latest_seq}
+            handle.result = {
+                "status": "done",
+                "answer": "".join(answer_parts),
+                "latest_seq": latest_seq,
+            }
             handle.status = SubAgentStatus.DONE
+            await self._emit_sub_dialog_message(
+                handle, "assistant", "".join(answer_parts)
+            )
             await self._store.save_transcript(
                 transcript_id=transcript_id,
                 task_id=handle.task_id,
@@ -233,6 +417,20 @@ class SubAgentRuntime:
             )
         finally:
             handle.updated_at = time.time()
+            # 终态同步到 harness.jobs（completed/failed/cancelled）
+            self._sync_job(
+                handle.task_id,
+                (
+                    "completed"
+                    if handle.status is SubAgentStatus.DONE
+                    else (
+                        "cancelled"
+                        if handle.status is SubAgentStatus.CANCELLED
+                        else "failed"
+                    )
+                ),
+                agent_name=handle.agent_name,
+            )
 
     async def wait(self, handle: SubAgentHandle, timeout: Optional[float] = None) -> SubAgentHandle:
         if handle.mode is SubAgentMode.SYNC:

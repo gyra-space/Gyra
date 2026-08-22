@@ -19,7 +19,8 @@ import { useContext, useCallback, useEffect, useMemo, useState } from 'react';
 import { MultimediaAgentConfig as MultimediaAgentConfigType } from '@/types/app';
 import { configService, MediaModelOption } from '@/services/config';
 
-const IMAGE_SIZE_OPTIONS = ['512x512', '768x768', '1024x1024', '1024x1792', '1792x1024'];
+// 图片尺寸档位：720p/1080p/2k/4k 为标准档位（后端解析为具体像素），其余为直接尺寸
+const IMAGE_SIZE_OPTIONS = ['720p', '1080p', '2k', '4k', '512x512', '768x768', '1024x1024', '1024x1792', '1792x1024'];
 const VIDEO_RESOLUTION_OPTIONS = ['480p', '720p', '1080p', '2k', '4k'];
 const VIDEO_ASPECT_RATIO_OPTIONS = ['16:9', '9:16', '1:1', '4:3', '21:9'];
 

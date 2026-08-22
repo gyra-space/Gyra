@@ -112,7 +112,10 @@ class KnowledgeTool(ToolBase):
         try:
             knowledge_client = None
             if context:
-                knowledge_client = context.get_resource("knowledge_client")
+                # V1 context 可能是主 agent 本身(无 get_resource)，防御性取用
+                _get_resource = getattr(context, "get_resource", None)
+                if callable(_get_resource):
+                    knowledge_client = _get_resource("knowledge_client")
 
             if not knowledge_client:
                 return ToolResult.fail(

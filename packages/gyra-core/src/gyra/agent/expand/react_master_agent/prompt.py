@@ -24,7 +24,7 @@ REACT_MASTER_SYSTEM_TEMPLATE_CN = """你是一个遵循 ReAct (推理+行动) �
 
 1. **分析用户任务**：理解用户的核心需求和目标
 2. **匹配 Skill**：根据 Skill 的 name 和 description，选择与任务最相关的 Skill
-3. **加载 Skill 内容**：使用 `view` 工具读取 Skill 的完整内容（路径在 `<path>` 标签中）
+3. **加载 Skill 内容**：使用 `skill({ name })` 工具加载 Skill 的完整内容
 4. **遵循 Skill 指导**：按照 Skill 内容中的步骤和指导执行任务
 5. **Skill 与工具配合**：Skill 提供框架和方法论，工具提供具体执行能力
 
@@ -43,8 +43,8 @@ REACT_MASTER_SYSTEM_TEMPLATE_CN = """你是一个遵循 ReAct (推理+行动) �
 <tool_calls>
 [
   {
-    "tool_name": "view",
-    "args": {"path": "技能仓库路径/skill_database_optimization/skill.md"},
+    "tool_name": "skill",
+    "args": {"name": "skill_database_optimization"},
     "thought": "加载数据库优化Skill内容"
   }
 ]
@@ -127,7 +127,7 @@ REACT_MASTER_SYSTEM_TEMPLATE_CN = """你是一个遵循 ReAct (推理+行动) �
 ```
 
 **资源消费规则（按优先级排序）**：
-- **Skill（最高优先级）**：读取 Skill 内容作为任务执行框架。必须先使用 `view` 工具加载匹配的 Skill，然后按其指导执行
+- **Skill（最高优先级）**：读取 Skill 内容作为任务执行框架。必须先使用 `skill({ name })` 工具加载匹配的 Skill，然后按其指导执行
 - **Knowledge**：使用 `knowledge_search` 工具查询知识库
 - **Agent**：使用 `SubAgent` 工具委托给子 Agent
 - **其他**: 补充信息，按需使用
@@ -198,7 +198,7 @@ REACT_MASTER_USER_TEMPLATE_CN = """## 当前任务
 ## 指示
 
 请分析任务并确定下一步需要采取的行动。
-**重要：如果有可用的 Skill，请优先根据 Skill 的 description 选择最相关的 Skill，使用 view 工具加载 Skill 内容，然后按其指导执行任务！**
+**重要：如果有可用的 Skill，请优先根据 Skill 的 description 选择最相关的 Skill，使用 skill 工具加载 Skill 内容，然后按其指导执行任务！**
 仔细考虑使用哪些工具以及如何有效地使用它们。
 根据上述工作日志，审查已完成的工作并相应地规划你的下一步行动。
 """
@@ -231,7 +231,7 @@ REACT_MASTER_USER_TEMPLATE_ENHANCED_CN = """## 当前任务
 ## 指示
 
 请分析任务并确定下一步需要采取的行动。
-**重要：如果有可用的 Skill，请优先根据 Skill 的 description 选择最相关的 Skill，使用 view 工具加载 Skill 内容，然后按其指导执行任务！**
+**重要：如果有可用的 Skill，请优先根据 Skill 的 description 选择最相关的 Skill，使用 skill 工具加载 Skill 内容，然后按其指导执行任务！**
 仔细考虑使用哪些工具以及如何有效地使用它们。
 根据上述工作日志：
 1. 审查已使用的工具及其结果
@@ -383,7 +383,7 @@ When Skills are available in `available_skills`, you MUST follow this process:
 
 1. **Analyze User Task**: Understand the user's core needs and goals
 2. **Match Skill**: Select the most relevant Skill based on its name and description
-3. **Load Skill Content**: Use `view` tool to read the full Skill content (path in `<path>` tag)
+3. **Load Skill Content**: Use the `skill({ name })` tool to load the full Skill content
 4. **Follow Skill Guidance**: Execute the task following the steps and guidance in the Skill content
 5. **Skill + Tools**: Skills provide framework and methodology, tools provide execution capabilities
 
@@ -402,8 +402,8 @@ Next: Load Skill content to get execution framework.
 <tool_calls>
 [
   {
-    "tool_name": "view",
-    "args": {"path": "skill_repo_path/skill_database_optimization/skill.md"},
+    "tool_name": "skill",
+    "args": {"name": "skill_database_optimization"},
     "thought": "Load database optimization Skill content"
   }
 ]
@@ -481,7 +481,7 @@ Current progress: 1-2 sentences briefly stating current status and next action.
 ```
 
 **Resource Consumption Rules (by priority)**:
-- **Skill (Highest Priority)**: Read Skill content as task execution framework. MUST first load matching Skill using `view` tool, then follow its guidance
+- **Skill (Highest Priority)**: Read Skill content as task execution framework. MUST first load matching Skill using `skill({ name })` tool, then follow its guidance
 - **Knowledge**: Use `knowledge_search` tool to query knowledge base
 - **Agent**: Use `SubAgent` tool to delegate to sub-agent
 - **Others**: Supplementary information, use as needed
@@ -554,7 +554,7 @@ REACT_MASTER_USER_TEMPLATE = """## Current Task
 ## Instructions
 
 Please analyze the task and determine the next step(s) to take.
-**IMPORTANT: If Skills are available, prioritize selecting the most relevant Skill based on its description, load the Skill content using view tool, then follow its guidance!**
+**IMPORTANT: If Skills are available, prioritize selecting the most relevant Skill based on its description, load the Skill content using skill tool, then follow its guidance!**
 Think carefully about what tools to use and how to use them effectively.
 Based on the Work Log above, review what has been done and plan your next actions accordingly.
 """
@@ -587,7 +587,7 @@ REACT_MASTER_USER_TEMPLATE_ENHANCED = """## Current Task
 ## Instructions
 
 Please analyze the task and determine the next step(s) to take.
-**IMPORTANT: If Skills are available, prioritize selecting the most relevant Skill based on its description, load the Skill content using view tool, then follow its guidance!**
+**IMPORTANT: If Skills are available, prioritize selecting the most relevant Skill based on its description, load the Skill content using skill tool, then follow its guidance!**
 Think carefully about what tools to use and how to use them effectively.
 Based on the Work Log above:
 1. Review what tools have been used and their outcomes

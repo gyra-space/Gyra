@@ -16,7 +16,7 @@ import {
   CloudServerOutlined, PlusOutlined, EditOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import './space-models.css';
 
@@ -58,24 +58,36 @@ function getCfg(resource: any, key: string, fallback = '') {
  * 空间模型:为空间绑定可用模型并配置专属 token(api_key_ref 引用加密 secrets)。
  * 未配置任何空间模型时,空间任务/对话回退到全局默认模型(agent 配置)。
  * 空间管理员 owner(管理)可维护,成员只读。
+ * collapsible=true 时渲染为可折叠区块(设置页用):未配置任何模型时默认折叠,减小占位。
  */
 export function SpaceModelsTab({
-  workspaceId, workspaceCode, canManage = true,
+  workspaceId, workspaceCode, canManage = true, collapsible = false,
 }: {
   workspaceId: number;
   workspaceCode: string;
   canManage?: boolean;
+  collapsible?: boolean;
 }) {
   const { modal, message } = App.useApp();
   const [form] = Form.useForm<SpaceModelForm>();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [saving, setSaving] = useState(false);
+  // 折叠区块展开状态:有模型时默认展开,无模型时默认折叠
+  const [activeKeys, setActiveKeys] = useState<string[]>(['wsm-panel']);
+  const collapsedInit = useRef(false);
 
   const { data: resources, loading, refresh } = useRequest(async () => {
     const [err, res] = await apiInterceptors(listResources({ workspace_id: workspaceId, type: 'llm_model' }));
     return err ? [] : res || [];
   }, { refreshDeps: [workspaceId] });
+
+  // 首次加载完成后,未配置任何空间模型则默认折叠,减小占位高度
+  useEffect(() => {
+    if (loading || collapsedInit.current) return;
+    collapsedInit.current = true;
+    if (!resources?.length) setActiveKeys([]);
+  }, [loading, resources]);
 
   const { data: availableData } = useRequest(async () => {
     if (!workspaceId) return [];
@@ -197,6 +209,8 @@ export function SpaceModelsTab({
       if (err) { message.error(err.message); return; }
       message.success(editing ? '空间模型已更新' : '空间模型已添加');
       setOpen(false);
+      // 添加/更新后展开区块,便于立即查看
+      setActiveKeys(['wsm-panel']);
       refresh();
     } catch (e) {
       setSaving(false);
@@ -231,6 +245,8 @@ export function SpaceModelsTab({
         const [err] = await apiInterceptors(removeResource({ resource_id: r.id }));
         if (err) { message.error(err.message); return; }
         message.success('已移除');
+        // 移除最后一个模型后折叠
+        if (resources?.length === 1) setActiveKeys([]);
         refresh();
       },
     });
@@ -321,8 +337,8 @@ export function SpaceModelsTab({
     );
   };
 
-  return (
-    <div>
+  const content = (
+    <>
       <Alert
         type="info"
         showIcon
@@ -332,9 +348,11 @@ export function SpaceModelsTab({
       />
 
       {canManage ? (
-        <div className="flex justify-end mb-4">
-          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加空间模型</Button>
-        </div>
+        !collapsible && (
+          <div className="flex justify-end mb-4">
+            <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加空间模型</Button>
+          </div>
+        )
       ) : (
         <div className="flex justify-end mb-4 text-xs text-gray-400">
           <span>只读 · 管理员可维护空间模型</span>
@@ -343,31 +361,10 @@ export function SpaceModelsTab({
 
       {loading ? <div className="flex justify-center py-8"><Spin /></div> : !resources?.length ? (
         <div className="wsm-empty">
-          <div className="wsm-empty__art" aria-hidden="true">
-            <svg viewBox="0 0 168 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <defs>
-                <linearGradient id="wsmEmptyBg" x1="0" y1="0" x2="168" y2="128" gradientUnits="userSpaceOnUse">
-                  <stop stopColor="#eef2ff"/>
-                  <stop offset="1" stopColor="#f5f3ff"/>
-                </linearGradient>
-                <linearGradient id="wsmEmptyTile" x1="68" y1="40" x2="100" y2="72" gradientUnits="userSpaceOnUse">
-                  <stop stopColor="#6366f1"/>
-                  <stop offset="1" stopColor="#8b5cf6"/>
-                </linearGradient>
-              </defs>
-              <rect x="8" y="10" width="152" height="108" rx="18" fill="url(#wsmEmptyBg)" stroke="#e4e4f8" strokeWidth="1.5"/>
-              <path d="M84 38a14 14 0 0 0-13.6 10.2A11 11 0 0 0 63 59h42a11 11 0 0 0-7.4-10.8A14 14 0 0 0 84 38Z" fill="#c7d2fe"/>
-              <rect x="66" y="60" width="36" height="22" rx="7" fill="url(#wsmEmptyTile)"/>
-              <rect x="74" y="66" width="20" height="3" rx="1.5" fill="#fff" opacity="0.9"/>
-              <rect x="74" y="72" width="13" height="3" rx="1.5" fill="#fff" opacity="0.6"/>
-              <circle cx="118" cy="92" r="8" fill="#a5b4fc"/>
-              <circle cx="118" cy="92" r="3.4" fill="#fff" opacity="0.85"/>
-              <path d="M52 92c-2.5-2-5-2-7.5 0" stroke="#c4b5fd" strokeWidth="2" strokeLinecap="round"/>
-              <circle cx="44" cy="88" r="2" fill="#a78bfa"/>
-              <circle cx="53" cy="88" r="2" fill="#a78bfa"/>
-            </svg>
+          <div className="wsm-empty__row">
+            <CloudServerOutlined className="wsm-empty__icon" />
+            <span className="wsm-empty__title">还没有配置空间模型</span>
           </div>
-          <div className="wsm-empty__title">还没有配置空间模型</div>
           <div className="wsm-empty__desc">
             为空间绑定专属模型并配置独立 token 后,空间内的任务与对话将使用这些自定义模型。
             未配置时,一切回退到全局默认模型(agent 里配置的)。
@@ -391,6 +388,51 @@ export function SpaceModelsTab({
       >
         到系统配置管理全局模型与 API Keys
       </Button>
+    </>
+  );
+
+  return (
+    <div>
+      {collapsible ? (
+        <Collapse
+          className="wsm-section mb-4"
+          activeKey={activeKeys}
+          onChange={(keys) => setActiveKeys(Array.isArray(keys) ? (keys as string[]) : [keys as string])}
+          expandIconPosition="end"
+          items={[{
+            key: 'wsm-panel',
+            label: (
+              <div className="wsm-section__head">
+                <div className="wsm-section__title">空间模型</div>
+                <div className="wsm-section__status">
+                  {loading ? (
+                    <Spin size="small" />
+                  ) : resources?.length ? (
+                    <Tag color="blue">已配置 {resources.length} 个模型</Tag>
+                  ) : (
+                    <Tag>未配置空间模型</Tag>
+                  )}
+                </div>
+                {canManage ? (
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={(e) => { e.stopPropagation(); openAdd(); }}
+                  >
+                    添加空间模型
+                  </Button>
+                ) : (
+                  <span className="wsm-section__readonly">只读</span>
+                )}
+              </div>
+            ),
+            children: content,
+          }]}
+        />
+      ) : (
+        content
+      )}
 
       <Modal
         open={open}

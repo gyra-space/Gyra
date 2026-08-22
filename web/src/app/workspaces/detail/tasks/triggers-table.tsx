@@ -10,6 +10,7 @@ import Link from 'next/link';
 import { useTranslation } from 'react-i18next';
 import type { ColumnsType } from 'antd/es/table';
 import Table from 'antd/es/table';
+import { useSpaceRole } from '@/hooks/use-space-role';
 import '../../workspaces.css';
 
 interface TriggerRow {
@@ -38,6 +39,11 @@ const TYPE_VARIANT: Record<string, string> = {
 export default function TriggersTable({ workspaceId, workspaceCode }: { workspaceId: number; workspaceCode: string }) {
   const { t } = useTranslation();
   const { message, modal } = App.useApp();
+
+  // 权限门控:手动触发=发起任务(space.task.start);编辑/删除订阅=space.task.manage
+  const { can } = useSpaceRole(workspaceId);
+  const canStart = can('space.task.start');
+  const canManage = can('space.task.manage');
 
   const { data: triggers, loading, refresh } = useRequest(async () => {
     const [err, res] = await apiInterceptors(listTriggers({ workspace_id: workspaceId, limit: 200 }));
@@ -130,13 +136,17 @@ export default function TriggersTable({ workspaceId, workspaceCode }: { workspac
       width: 200,
       render: (_: unknown, r: TriggerRow) => (
         <div style={{ display: 'flex', gap: 6 }}>
-          <Button size="small" type="primary" ghost icon={<ThunderboltOutlined />} onClick={() => handleFire(r)}>
-            {t('triggers.fire') || 'Fire'}
-          </Button>
-          <Link href={`/workspaces/detail/tasks/create?id=${workspaceCode}&trigger_id=${r.id}&type=${r.type}`}>
-            <Button size="small">{t('edit') || 'Edit'}</Button>
-          </Link>
-          <Button size="small" danger onClick={() => handleDelete(r.id)}>{t('delete') || 'Delete'}</Button>
+          {canStart && (
+            <Button size="small" type="primary" ghost icon={<ThunderboltOutlined />} onClick={() => handleFire(r)}>
+              {t('triggers.fire') || 'Fire'}
+            </Button>
+          )}
+          {canManage && (
+            <Link href={`/workspaces/detail/tasks/create?id=${workspaceCode}&trigger_id=${r.id}&type=${r.type}`}>
+              <Button size="small">{t('edit') || 'Edit'}</Button>
+            </Link>
+          )}
+          {canManage && <Button size="small" danger onClick={() => handleDelete(r.id)}>{t('delete') || 'Delete'}</Button>}
         </div>
       ),
     },

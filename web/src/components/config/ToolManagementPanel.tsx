@@ -49,6 +49,7 @@ import {
   ThunderboltOutlined,
   TeamOutlined,
   SettingOutlined,
+  CompassOutlined,
 } from '@ant-design/icons';
 import type { ToolMetadata, ToolCategory, RiskLevel, ToolParameter } from '@/types/tool';
 import {
@@ -106,6 +107,17 @@ function getCategoryIcon(category: ToolCategory): React.ReactNode {
     default:
       return <ToolOutlined />;
   }
+}
+
+/**
+ * Get dedicated icon for sql / metric / skill tool by tool name; null otherwise.
+ */
+function getToolNameIcon(toolName: string): React.ReactNode | null {
+  const name = toolName.toLowerCase();
+  if (/(?:^|[^a-z0-9])(?:metric|指标|measure)(?:[^a-z0-9]|$)/.test(name)) return <CompassOutlined />;
+  if (/(?:^|[^a-z0-9])(?:sql|database|query_database)(?:[^a-z0-9]|$)/.test(name)) return <DatabaseOutlined />;
+  if (/(?:^|[^a-z0-9])(?:skill|技能|playbook)(?:[^a-z0-9]|$)/.test(name)) return <ThunderboltOutlined />;
+  return null;
 }
 
 /**
@@ -470,7 +482,7 @@ export function ToolManagementPanel({
       render: (name: string, record: ToolMetadata) => (
         <Space direction="vertical" size={0}>
           <Space>
-            {getCategoryIcon(record.category)}
+            {getToolNameIcon(name) || getCategoryIcon(record.category)}
             <Text strong>{name}</Text>
             {record.deprecated && (
               <Tag color="error">Deprecated</Tag>

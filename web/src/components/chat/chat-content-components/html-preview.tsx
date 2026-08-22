@@ -10,6 +10,7 @@ import { Button, Modal, Tabs } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CodePreview } from './code-preview';
+import { injectLocalLibsForReport } from '@/utils';
 /**
  * The HTML preview component is used to display HTML code and provide run, download, and full-screen functionality
  * @param {Object} props The component props
@@ -212,7 +213,7 @@ const HtmlPreview = ({ code, language = 'html' }: { code: string; language: stri
           <div className='relative'>
             <iframe
               ref={iframeRef}
-              srcDoc={parsedCode.fullCode}
+              srcDoc={injectLocalLibsForReport(parsedCode.fullCode)}
               style={{ width: '100%', height: '60vh', border: 'none' }}
               sandbox='allow-scripts allow-same-origin'
               title='HTML Preview'

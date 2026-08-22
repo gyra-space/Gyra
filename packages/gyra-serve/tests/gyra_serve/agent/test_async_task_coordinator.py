@@ -34,6 +34,8 @@ def _make_conv(extra: dict | None = None, state: str = "WAITING"):
     conv = MagicMock()
     conv.extra = json.dumps(extra) if extra is not None else None
     conv.conv_id = "conv_main_1"
+    # 真实会话里 conv_session_id 是唯一会话 ID；_resume_conv 用其作为 conv_id 传入
+    conv.conv_session_id = "conv_main_1"
     conv.gpts_name = "test_app"
     conv.user_code = "u1"
     conv.sys_code = "s1"
@@ -396,3 +398,41 @@ class TestGlobalSingleton:
         set_async_task_coordinator(coord)
         assert get_async_task_coordinator() is coord
         set_async_task_coordinator(None)
+
+
+# ---------------- harness seam 对齐：JobRegistry 本地视图 ----------------
+
+@pytest.mark.asyncio
+async def test_sync_pending_registers_job_registry():
+    """注入 job_registry 后，_sync_pending_from_managers 把任务状态同步到 JobRegistry。
+
+    纯增量：不影响 gpts_conversations.extra 台账，仅提供 harness.jobs 本地统一视图。
+    """
+    from gyra.agent.core.v2.harness.seams import JobRegistry
+
+    registry = JobRegistry()
+    agent_chat = _make_agent_chat(conv=_make_conv())
+    coord = AsyncTaskCoordinator(agent_chat=agent_chat, job_registry=registry)
+    mgr = MagicMock()
+    mgr.get_all_status = MagicMock(
+        return_value={
+            "task-1": {"conv_id": "conv_main_1", "kind": "media", "status": "running"},
+        }
+    )
+    coord.add_manager(mgr)
+
+    await coord._sync_pending_from_managers()
+
+    job = registry.get_status("task-1")
+    assert job is not None
+    assert job["conv_id"] == "conv_main_1"
+    assert job["kind"] == "media"
+    assert job["status"] == "running"
+    # 后续更新覆盖
+    mgr.get_all_status = MagicMock(
+        return_value={
+            "task-1": {"conv_id": "conv_main_1", "kind": "media", "status": "completed"},
+        }
+    )
+    await coord._sync_pending_from_managers()
+    assert registry.get_status("task-1")["status"] == "completed"

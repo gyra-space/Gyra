@@ -57,6 +57,25 @@ class ToolResolver:
             return self._lookup_resource_pack(name)
         return None
 
+    def register_tool(self, name: str, tool: Any) -> None:
+        """动态注册工具（统一入口）。
+
+        对齐 DSH ``ctx.tools`` 的注册语义：运行时（如 hook / 插件）可向
+        harness 工具总线注册新工具，无需重建 resolver。
+        """
+        self._tools[name] = tool
+
+    def unregister_tool(self, name: str) -> bool:
+        """注销工具；成功返回 True。"""
+        if name in self._tools:
+            del self._tools[name]
+            return True
+        return False
+
+    def list_tool_names(self) -> List[str]:
+        """列出当前已注册的全部工具名。"""
+        return list(self._tools.keys())
+
     def _lookup_resource_pack(self, name: str) -> Optional[Any]:
         """递归遍历 resource pack 树查找工具。"""
         return _find_tool_in_pack(self._resource_pack, name)

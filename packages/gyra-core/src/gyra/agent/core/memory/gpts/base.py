@@ -187,7 +187,11 @@ class GptsMessage:
         if self._action_report_cache is not None:
             return self._action_report_cache
 
-        if self.is_new_format and self._work_entries:
+        # 优先用 WorkEntry 重建：_work_entries 只会在 v2 消息上显式绑定
+        # （set_work_entries），是执行结果的事实源。不依赖 is_new_format ——
+        # data_version 在 DB 往返中丢失后 is_new_format=False，若按旧逻辑
+        # 会退回 DB 里的 RUNNING 空快照，导致工具步骤只有状态没有结果内容。
+        if self._work_entries:
             action_outputs = [entry.to_action_output() for entry in self._work_entries]
             self._action_report_cache = action_outputs
             return action_outputs

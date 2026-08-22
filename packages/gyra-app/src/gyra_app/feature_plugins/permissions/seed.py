@@ -2,11 +2,18 @@
 
 import logging
 
-from sqlalchemy import or_
+from sqlalchemy import or_, text as sa_text
 
 from .dao import PermissionDao
 
 logger = logging.getLogger(__name__)
+
+
+def _keys_to_tuples(permission_keys: list[str]) -> list[tuple[str, str]]:
+    """协议权限 key 列表 -> 存量 (resource_type, action) 元组列表"""
+    from gyra_serve.permissions.protocol import parse_key
+
+    return [parse_key(k) for k in permission_keys]
 
 # Default permission definitions that can be assigned to roles
 SEED_PERMISSION_DEFINITIONS = [
@@ -41,6 +48,13 @@ SEED_PERMISSION_DEFINITIONS = [
 ]
 
 SEED_ROLES = [
+    {
+        "name": "superadmin",
+        "description": "超级管理员（判定时全量绕过，不可删除）",
+        "is_system": 1,
+        "scope_type": "global",
+        "permissions": [],
+    },
     {
         "name": "guest",
         "description": "访客（仅可查看模型和监控，不能查看智能体/工具/知识库）",
@@ -162,6 +176,37 @@ SEED_ROLES = [
     },
 ]
 
+# ===== 内置空间角色（scope_type=space，绑定具体空间后生效） =====
+from gyra_serve.permissions.modules.space import (  # noqa: E402
+    SPACE_ALL,
+    SPACE_MEMBER_KEYS,
+    SPACE_VIEWER_KEYS,
+)
+
+SEED_SPACE_ROLES = [
+    {
+        "name": "space.admin",
+        "description": "空间管理（空间内全部权限）",
+        "is_system": 1,
+        "scope_type": "space",
+        "permissions": _keys_to_tuples(SPACE_ALL),
+    },
+    {
+        "name": "space.member",
+        "description": "空间使用（对话/任务/看产出，资产能力剧本只读）",
+        "is_system": 1,
+        "scope_type": "space",
+        "permissions": _keys_to_tuples(SPACE_MEMBER_KEYS),
+    },
+    {
+        "name": "space.viewer",
+        "description": "空间查看（只读，不能发起对话/任务）",
+        "is_system": 1,
+        "scope_type": "space",
+        "permissions": _keys_to_tuples(SPACE_VIEWER_KEYS),
+    },
+]
+
 
 def _ensure_system_role_permissions(
     dao: PermissionDao, role_id: int, expected_permissions: list[tuple[str, str]]
@@ -206,7 +251,7 @@ def ensure_default_roles() -> None:
 
     # 1. 创建默认角色
     admin_role_id = None
-    for role_def in SEED_ROLES:
+    for role_def in SEED_ROLES + SEED_SPACE_ROLES:
         existing = dao.get_role_by_name(role_def["name"])
         if existing:
             logger.debug(f"Seed role already exists: {role_def['name']}")
@@ -224,6 +269,7 @@ def ensure_default_roles() -> None:
                 name=role_def["name"],
                 description=role_def["description"],
                 is_system=role_def["is_system"],
+                scope_type=role_def.get("scope_type", "global"),
             )
             for resource_type, action in role_def["permissions"]:
                 dao.add_role_permission(
@@ -375,6 +421,204 @@ def _ensure_default_permission_definitions(dao: PermissionDao) -> None:
 _migration_done = False
 _workspace_migration_done = False
 _ecp_confirmer_migration_done = False
+
+
+def _table_columns(s, table: str) -> set:
+    """SQLite/通用：列出表现有列名。"""
+    from sqlalchemy import text as _text
+
+    rows = s.execute(_text(f"PRAGMA table_info({table})")).fetchall()
+    return {r[1] for r in rows}
+
+
+def _rebuild_user_role_with_scope(s) -> bool:
+    """SQLite 无法直接改唯一约束：检测 user_role 缺 scope_id 列时重建表。
+
+    返回 True 表示已重建（或新表本就含该列时返回 False）。
+    """
+    cols = _table_columns(s, "user_role")
+    if not cols:
+        return False  # 表还不存在，create_all 会按新结构建
+    if "scope_id" in cols:
+        return False
+    s.execute(sa_text(
+        """
+        CREATE TABLE user_role_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            role_id INTEGER NOT NULL,
+            scope_id INTEGER,
+            gmt_create DATETIME
+        )
+        """
+    ))
+    s.execute(sa_text(
+        """
+        INSERT INTO user_role_new (id, user_id, role_id, scope_id, gmt_create)
+        SELECT id, user_id, role_id, NULL, gmt_create FROM user_role
+        """
+    ))
+    s.execute(sa_text("DROP TABLE user_role"))
+    s.execute(sa_text("ALTER TABLE user_role_new RENAME TO user_role"))
+    s.execute(sa_text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uk_user_role "
+        "ON user_role (user_id, role_id, IFNULL(scope_id, -1))"
+    ))
+    s.execute(sa_text(
+        "CREATE INDEX IF NOT EXISTS ix_user_role_user_id ON user_role (user_id)"
+    ))
+    s.commit()
+    logger.info("Schema upgraded: user_role rebuilt with scope_id column")
+    return True
+
+
+def ensure_schema_upgrades() -> None:
+    """幂等：为存量库补齐新列/新约束（db.create_all 不会 ALTER 已有表）。
+
+    - role.scope_type
+    - permission_definition.scope_type / grantable
+    - user_role.scope_id（SQLite 需重建表换唯一约束）
+    """
+    from gyra.storage.metadata.db_manager import db
+
+    with db.session(commit=False) as s:
+        _rebuild_user_role_with_scope(s)
+
+    stmts = [
+        "ALTER TABLE role ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
+        "ALTER TABLE permission_definition ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
+        "ALTER TABLE permission_definition ADD COLUMN grantable BOOLEAN NOT NULL DEFAULT 0",
+    ]
+    with db.session(commit=False) as s:
+        for stmt in stmts:
+            try:
+                s.execute(sa_text(stmt))
+                s.commit()
+                logger.info("Schema upgraded: %s", stmt)
+            except Exception as e:  # noqa: BLE001
+                s.rollback()
+                logger.debug("Schema upgrade skipped (may exist): %s", e)
+
+
+_SPACE_ROLE_NAMES = {
+    "owner": "space.admin",
+    "contributor": "space.member",
+    "viewer": "space.viewer",
+}
+
+
+def migrate_space_role_bindings() -> None:
+    """幂等迁移：workspace_member.role -> user_role 空间级绑定。
+
+    老成员表的三值角色映射为内置空间角色（user_role.scope_id=workspace_id），
+    使空间域判定走统一协议；workspace_member 保留（成员名单/is_home 等）。
+    每次启动兜底执行，覆盖运行期新增但未双写的成员记录。
+    """
+    try:
+        from gyra.storage.metadata.db_manager import db
+        from gyra_serve.workspace.models.models import WorkspaceMemberEntity
+        from .models import UserRoleEntity
+    except Exception as e:
+        logger.debug("migrate_space_role_bindings: workspace models unavailable: %s", e)
+        return
+
+    dao = PermissionDao()
+    role_ids = {}
+    for role_name in ("space.admin", "space.member", "space.viewer"):
+        row = dao.get_role_by_name(role_name)
+        if row:
+            role_ids[role_name] = row["id"]
+    if not role_ids:
+        return
+
+    created = 0
+    try:
+        with db.session(commit=False) as s:
+            members = s.query(WorkspaceMemberEntity).all()
+            for m in members:
+                role_name = _SPACE_ROLE_NAMES.get((m.role or "").strip())
+                if not role_name or role_name not in role_ids:
+                    continue
+                uid = m.user_id
+                if uid is None:
+                    continue
+                try:
+                    uid = int(uid)
+                except (TypeError, ValueError):
+                    continue
+                exists = (
+                    s.query(UserRoleEntity)
+                    .filter(
+                        UserRoleEntity.user_id == uid,
+                        UserRoleEntity.role_id == role_ids[role_name],
+                        UserRoleEntity.scope_id == m.workspace_id,
+                    )
+                    .first()
+                )
+                if exists:
+                    continue
+                s.add(
+                    UserRoleEntity(
+                        user_id=uid,
+                        role_id=role_ids[role_name],
+                        scope_id=m.workspace_id,
+                    )
+                )
+                created += 1
+            if created:
+                s.commit()
+                logger.info(
+                    "migrate_space_role_bindings: created %d scoped bindings", created
+                )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("migrate_space_role_bindings failed: %s", e)
+
+
+def sync_permission_definitions() -> None:
+    """把代码注册的权限协议（PermissionRegistry）同步到 permission_definition 表。
+
+    幂等 upsert（以 name=permission key 为准）；代码中已删除的 key 不删库行
+    （避免误删管理员自定义引用），仅日志提示。
+    """
+    from gyra_serve.permissions import PermissionRegistry, parse_key
+
+    dao = PermissionDao()
+    existing = {d["name"]: d for d in dao.list_permission_definitions()}
+
+    created = updated = 0
+    for perm in PermissionRegistry.all():
+        resource_type, action = parse_key(perm.key)
+        description = f"{perm.name}｜{perm.description}" if perm.description else perm.name
+        row = existing.get(perm.key)
+        if row is None:
+            dao.create_permission_definition(
+                name=perm.key,
+                resource_type=resource_type,
+                action=action,
+                resource_id="*",
+                effect="allow",
+                description=description,
+                scope_type=perm.scope_type,
+                grantable=perm.grantable,
+            )
+            created += 1
+        elif (
+            row.get("scope_type") != perm.scope_type
+            or bool(row.get("grantable")) != perm.grantable
+            or row.get("description") != description
+        ):
+            dao.update_permission_definition(
+                definition_id=row["id"],
+                description=description,
+                scope_type=perm.scope_type,
+                grantable=perm.grantable,
+            )
+            updated += 1
+
+    logger.info(
+        "Permission registry synced: %d keys (%d created, %d updated)",
+        len(PermissionRegistry.keys()), created, updated,
+    )
 
 
 def migrate_ecp_confirmers() -> None:

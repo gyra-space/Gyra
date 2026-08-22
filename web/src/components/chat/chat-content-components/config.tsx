@@ -117,6 +117,65 @@ const returnSqlVal = (val: string) => {
   return val.replace(regex, match => punctuationMap[match]);
 };
 
+// react-markdown v10 不再向 code 组件传递 inline 属性,导致行内代码被当成块级代码,
+// 进而渲染成 <CodePreview>(<div>+<pre>) 被塞进 <p>,触发 "<pre>/<div> cannot be a descendant of <p>" 的 hydration 错误。
+// 这里用 pre 组件提供的上下文来区分是否位于 <pre> 中(块级代码必在 <pre> 内,行内代码不在),
+// 并结合 node 是否存在判断是否来自 react-markdown(直接调用组件时 node 为空)。
+const CodeBlockContext = React.createContext(false);
+
+type DefaultCodeRendererProps = React.ComponentProps<'code'> & { node?: unknown };
+
+function DefaultCodeRenderer({ node, className, children, style, ...props }: DefaultCodeRendererProps) {
+  const insidePre = React.useContext(CodeBlockContext);
+  const isInline = node != null && !insidePre;
+  const content = String(children);
+  const lang = className?.replace('language-', '') || '';
+  const { context, matchValues } = matchCustomeTagValues(content);
+  const match = /language-(.+)/.exec(className || '');
+
+  // Inline code spans keep their compact style
+  if (isInline) {
+    return (
+      <>
+        <code {...props} style={style} className='p-1 mx-1 rounded bg-theme-light dark:bg-theme-dark text-sm'>
+          {children}
+        </code>
+        <GPTVis
+          components={markdownComponents}
+          rehypePlugins={[rehypeRaw, rehypeKatex]}
+          // @ts-ignore
+          remarkPlugins={[remarkGfm, remarkMath, remarkMermaidPlugin]}
+        >
+          {matchValues.join('\n')}
+        </GPTVis>
+      </>
+    );
+  }
+
+  // 优化逻辑：代码块统一使用 CodePreview（mermaid 仍保持原样渲染给 remark-mermaid 处理）
+  const shouldUseCodePreview = !match || match[1] !== 'mermaid';
+
+  return (
+    <>
+      {shouldUseCodePreview ? (
+        <CodePreview code={context} language={lang || 'text'} />
+      ) : (
+        <code {...props} style={style} className='p-1 mx-1 rounded bg-theme-light dark:bg-theme-dark text-sm'>
+          {children}
+        </code>
+      )}
+      <GPTVis
+        components={markdownComponents}
+        rehypePlugins={[rehypeRaw, rehypeKatex]}
+        // @ts-ignore
+        remarkPlugins={[remarkGfm, remarkMath, remarkMermaidPlugin]}
+      >
+        {matchValues.join('\n')}
+      </GPTVis>
+    </>
+  );
+}
+
 export const codeComponents = {
   /**
    * @description
@@ -290,54 +349,7 @@ export const codeComponents = {
         return <CodePreview code={content} language='xml' />;
       },
     },
-    defaultRenderer({ node, className, children, style, ...props }) {
-      const content = String(children);
-      const lang = className?.replace('language-', '') || '';
-      const { context, matchValues } = matchCustomeTagValues(content);
-      const match = /language-(.+)/.exec(className || '');
-
-      // Inline code spans keep their compact style
-      if ((props as { inline?: boolean }).inline) {
-        return (
-          <>
-            <code {...props} style={style} className='p-1 mx-1 rounded bg-theme-light dark:bg-theme-dark text-sm'>
-              {children}
-            </code>
-            <GPTVis
-              components={markdownComponents}
-              rehypePlugins={[rehypeRaw, rehypeKatex]}
-              // @ts-ignore
-              remarkPlugins={[remarkGfm, remarkMath, remarkMermaidPlugin]}
-            >
-              {matchValues.join('\n')}
-            </GPTVis>
-          </>
-        );
-      }
-
-      // 优化逻辑：代码块统一使用 CodePreview（mermaid 仍保持原样渲染给 remark-mermaid 处理）
-      const shouldUseCodePreview = !match || match[1] !== 'mermaid';
-
-      return (
-        <>
-          {shouldUseCodePreview ? (
-            <CodePreview code={context} language={lang || 'text'} />
-          ) : (
-            <code {...props} style={style} className='p-1 mx-1 rounded bg-theme-light dark:bg-theme-dark text-sm'>
-              {children}
-            </code>
-          )}
-          <GPTVis
-            components={markdownComponents}
-            rehypePlugins={[rehypeRaw, rehypeKatex]}
-            // @ts-ignore
-            remarkPlugins={[remarkGfm, remarkMath, remarkMermaidPlugin]}
-          >
-            {matchValues.join('\n')}
-          </GPTVis>
-        </>
-      );
-    },
+    defaultRenderer: DefaultCodeRenderer,
   }),
 };
 
@@ -399,7 +411,11 @@ export const basicComponents: { [key: string]: (props: any) => React.ReactNode }
     return <p>{children}</p>;
   },
   pre({ children }) {
-    return <pre className='whitespace-pre uni-chat-md-pre' style={{ margin: 0, padding: 0 }}>{children}</pre>;
+    return (
+      <CodeBlockContext.Provider value={true}>
+        <pre className='whitespace-pre uni-chat-md-pre' style={{ margin: 0, padding: 0 }}>{children}</pre>
+      </CodeBlockContext.Provider>
+    );
   },
   a({ children, href }) {
     return (

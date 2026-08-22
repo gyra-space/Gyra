@@ -53,6 +53,13 @@ import { parseResourceValue, transformFileUrl } from '@/utils';
 import { useSearchParams } from 'next/navigation';
 import { getFileIcon, formatFileSize } from '@/utils/fileUtils';
 import { ConnectorsModal } from '@/components/chat/connectors-modal';
+import {
+  MediaParamsButton,
+  getMultimediaConfig,
+  isMultimediaApp,
+  buildMediaChatInParam,
+  type MediaParams,
+} from '@/components/chat/input/media-params';
 
 const { Panel } = Collapse;
 
@@ -264,6 +271,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     setMaxNewTokensValue,
     refreshHistory,
     modelValue,
+    setModelValue,
     selectedSkills,
     setSelectedSkills,
   } = context;
@@ -279,6 +287,11 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   const [modelSearch, setModelSearch] = useState('');
   const [isModelOpen, setIsModelOpen] = useState(false);
   const [isParamsModalOpen, setIsParamsModalOpen] = useState(false);
+
+  // 多媒体参数（图片/视频 Agent 对话输入框设定，随 chat_in_params 下发）
+  const [mediaParams, setMediaParams] = useState<MediaParams>({});
+  const multimediaConfig = useMemo(() => getMultimediaConfig(appInfo), [appInfo]);
+  const isMultimedia = useMemo(() => isMultimediaApp(appInfo), [appInfo]);
   
   // 上传中的文件列表
   const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
@@ -319,8 +332,36 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     {
       onSuccess: (models) => {
         if (models && models.length > 0) {
-          const llmModels = models.filter((m: IModelData) => m.worker_type === 'llm');
+          // 只保留文本/视觉 LLM（媒体生成模型 model_type=image/video/audio 由后端过滤，
+          // 此处按 model_type 兜底，防止多媒体模型混入普通聊天模型下拉）
+          const llmModels = models.filter((m: IModelData) => m.worker_type === 'llm' && (!m.model_type || m.model_type === 'llm'));
           setModelList(llmModels);
+
+          // 多媒体 Agent：默认选中配置的多媒体生成模型（默认模型 > 候选池第一个）
+          if (isMultimedia && multimediaConfig) {
+            const pool =
+              multimediaConfig.capability === 'video'
+                ? multimediaConfig.video_models || []
+                : multimediaConfig.image_models || [];
+            const defaultMedia =
+              multimediaConfig.capability === 'video'
+                ? multimediaConfig.default_video_model
+                : multimediaConfig.default_image_model;
+            const mediaModel = modelValue || defaultMedia || pool[0] || '';
+            if (mediaModel) {
+              setSelectedModel(mediaModel);
+              setModelValue?.(mediaModel);
+              const filteredParams = chatInParams?.filter((i: ChatInParamItem) => i.param_type !== 'model') || [];
+              const modelConfig = appInfo?.layout?.chat_in_layout?.find(
+                (i: ChatInLayoutItem) => i.param_type === 'model'
+              );
+              setChatInParams([
+                ...filteredParams,
+                { param_type: 'model', param_value: mediaModel, sub_type: modelConfig?.sub_type },
+              ]);
+            }
+            return;
+          }
           
           // 优先使用 modelValue（从页面 URL 传入），否则从 appInfo.llm_config 取第一个
           const defaultModel = modelValue || appInfo?.llm_config?.llm_strategy_value?.[0];
@@ -1175,6 +1216,19 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     const groups: Record<string, string[]> = {};
     const otherModels: string[] = [];
 
+    // 多媒体 Agent：模型选择器展示配置的多媒体生成模型（而非普通 LLM 模型）
+    if (isMultimedia) {
+      const pool = multimediaConfig?.capability === 'video'
+        ? multimediaConfig?.video_models || []
+        : multimediaConfig?.image_models || [];
+      if (pool.length > 0) {
+        groups[t('media_models_group', '多媒体生成模型')] = pool.filter((m) =>
+          m.toLowerCase().includes(modelSearch.toLowerCase())
+        );
+      }
+      return { groups, otherModels };
+    }
+
     const filtered = modelList.filter(
       (model) =>
         model.worker_type === 'llm' &&
@@ -1201,7 +1255,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     });
 
     return { groups, otherModels };
-  }, [modelList, modelSearch]);
+  }, [modelList, modelSearch, isMultimedia, multimediaConfig, t]);
 
   const modelContent = (
     <div className="w-80 flex flex-col h-[400px]">
@@ -1794,7 +1848,16 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       sub_type: 'mcp(gyra)',
     }));
 
-    const currentChatInParams = [...chatInParams, ...dynamicResourceParams, ...skillParams, ...mcpParams];
+    // 多媒体参数：多媒体 Agent 对话输入框设定的图片/视频参数（media chat_in_param）
+    const mediaChatInParam = buildMediaChatInParam(mediaParams);
+
+    const currentChatInParams = [
+      ...chatInParams,
+      ...dynamicResourceParams,
+      ...skillParams,
+      ...mcpParams,
+      ...(mediaChatInParam ? [mediaChatInParam] : []),
+    ];
 
     setUserInput('');
     setResourceValue(null);
@@ -1891,6 +1954,9 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 if (e.shiftKey) return;
+                // 输入法组词阶段的回车(选词/上屏)只作用于输入法,不触发提交,
+                // 也不做 preventDefault,避免干扰候选词选择
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (isZhInput) return;
                 e.preventDefault();
                 const resources = resourceValue ? parseResourceValue(resourceValue) || [] : [];
@@ -1961,6 +2027,20 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                 <DownOutlined className="text-[10px] text-[#8a92a6] group-hover:text-[#4f46e5] transition-colors" />
               </div>
             </Popover>
+
+            {/* 多媒体参数设定（图片/视频 Agent 对话输入框） */}
+            {isMultimedia && (
+              <MediaParamsButton
+                capability={multimediaConfig?.capability}
+                modelPool={
+                  multimediaConfig?.capability === 'video'
+                    ? multimediaConfig?.video_models
+                    : multimediaConfig?.image_models
+                }
+                value={mediaParams}
+                onChange={setMediaParams}
+              />
+            )}
           </div>
 
           {/* 右侧：会话操作(暂停/重试/清空) + 发送按钮 */}

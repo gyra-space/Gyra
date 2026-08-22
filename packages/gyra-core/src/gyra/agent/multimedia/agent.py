@@ -306,13 +306,39 @@ class MultimediaAgent(ConversableAgent):
             task = (messages[-1].content or "").strip()
 
         # 父 Agent 通过 SubAgent 的 media 参数透传的多媒体生成参数（kind/model/size/
-        # resolution/duration/aspect_ratio 等），未传字段回退到 Agent 配置默认值
+        # resolution/duration/aspect_ratio 等），未传字段回退到 Agent 配置默认值。
+        # 兼容两种形态：context["media"] 为 dict；或 media 为 JSON 字符串（对话输入
+        # chat_in_params 透传）；或参数直接平铺在 context 顶层（kind/size/resolution…）。
         media_params: Dict[str, Any] = {}
         if received_message is not None and getattr(received_message, "context", None):
             ctx = received_message.context or {}
             _media = ctx.get("media") or {}
-            if isinstance(_media, dict):
+            if isinstance(_media, str):
+                try:
+                    import json
+
+                    _parsed = json.loads(_media)
+                    if isinstance(_parsed, dict):
+                        media_params = dict(_parsed)
+                except Exception:  # noqa: BLE001 - 非法 JSON 忽略
+                    media_params = {}
+            elif isinstance(_media, dict):
                 media_params = dict(_media)
+            # 顶层直接平铺的多媒体参数（如 kind/size/resolution/duration/aspect_ratio/model）
+            for _k in (
+                "kind",
+                "model",
+                "size",
+                "resolution",
+                "duration",
+                "aspect_ratio",
+                "quality",
+                "reference_images",
+                "image_url",
+                "image_url_last",
+            ):
+                if _k in ctx and ctx[_k] not in (None, ""):
+                    media_params.setdefault(_k, ctx[_k])
 
         # 主 Agent 运行时读取 app 的多媒体配置（若已绑定）
         if getattr(self, "ext_config", None) is not None:

@@ -85,7 +85,7 @@ def test_config_hash_empty():
 # --------------------------------------------------------------------------- #
 async def test_static_snapshot_cached_on_second_assemble():
     """同 (agent_id, config_hash) 第二次 assemble 命中缓存,frozen 同一对象。"""
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     agent = _FakeAgent()
     cfg = [type("R", (), {"type": "db", "value": "x", "name": None, "version": "v2"})()]
 
@@ -102,7 +102,7 @@ async def test_static_snapshot_cached_on_second_assemble():
 
 async def test_session_parts_do_not_pollute_static_snapshot():
     """SESSION 运行态叠加在快照外,不写入缓存,不改 frozen。"""
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     agent = _FakeAgent()
     cfg = [type("R", (), {"type": "db", "value": "x", "name": None, "version": "v2"})()]
 
@@ -129,7 +129,7 @@ async def test_session_parts_do_not_pollute_static_snapshot():
 
 async def test_invalidate_config_drops_snapshot():
     """配置变更 invalidate 后,缓存失效、下次重建。"""
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     agent = _FakeAgent()
     cfg = [type("R", (), {"type": "db", "value": "x", "name": None, "version": "v2"})()]
 
@@ -149,7 +149,7 @@ async def test_invalidate_config_drops_snapshot():
 # --------------------------------------------------------------------------- #
 async def test_no_native_declare_produces_empty_resource_layer():
     """无 wrapper / declare 为空的资源 → 资源层为空(不再走 LegacyResourceAdapter)。"""
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     agent = _FakeAgent()
     cfg = [type("R", (), {"type": "fake", "value": "x", "name": None, "version": "v2"})()]
 
@@ -192,7 +192,7 @@ async def test_native_declare_resource_is_collected():
         def sub_resources(self):
             return [native]
 
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     snap = await facade.assemble(
         agent_id="a1", conv_id="c1", resource_root=_Pack(),
     )
@@ -204,7 +204,7 @@ async def test_native_declare_resource_is_collected():
 # end_session 清理
 # --------------------------------------------------------------------------- #
 async def test_end_session_clears_session_parts():
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     agent = _FakeAgent()
     cfg = [type("R", (), {"type": "db", "value": "x", "name": None, "version": "v2"})()]
 
@@ -220,7 +220,7 @@ async def test_end_session_clears_session_parts():
 
 
 def test_add_session_part_rejects_non_session_lifetime():
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     with pytest.raises(ValueError, match="SESSION lifetime"):
         facade.add_session_part(
             "c1",
@@ -230,7 +230,7 @@ def test_add_session_part_rejects_non_session_lifetime():
 
 async def test_turn_user_parts_merged():
     """本轮 TURN user_parts 进入 snapshot,与 session parts 合并。"""
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     agent = _FakeAgent()
     cfg = [type("R", (), {"type": "db", "value": "x", "name": None, "version": "v2"})()]
 
@@ -254,7 +254,7 @@ async def test_full_system_snapshot_layers_ordered():
     _FakeAgent 的 _FakeCustomResource 无 wrapper,资源层为空(legacy 桥接已移除),
     故本用例验证身份/控制/记忆三层排序。
     """
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     snap = await facade.assemble(
         agent_id="a1", conv_id="c1",
         agent=_FakeAgent(),
@@ -276,7 +276,7 @@ async def test_full_system_snapshot_layers_ordered():
 
 async def test_memory_block_not_in_cached_frozen():
     """记忆层会话级,不进 frozen 缓存;身份/控制变才重建 frozen。"""
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     agent = _FakeAgent()
     snap1 = await facade.assemble(
         agent_id="a1", conv_id="c1", agent=agent,
@@ -324,7 +324,7 @@ async def test_declare_runs_in_parallel():
         def sub_resources(self):
             return [_slow_resource(i) for i in range(8)]  # 8 个各 50ms
 
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     start = time.monotonic()
     snap = await facade.assemble(agent_id="a", conv_id="c", resource_root=_Pack())
     elapsed = time.monotonic() - start
@@ -366,7 +366,7 @@ async def test_declare_failure_does_not_block_others():
         def sub_resources(self):
             return [_ok(1), _bad(), _ok(2)]
 
-    facade = ResourceFacade()
+    facade = ResourceFacade(snapshot_cache={})  # 测试隔离：不共享进程级快照缓存
     snap = await facade.assemble(agent_id="a", conv_id="c", resource_root=_Pack())
     texts = {b.text for b in snap.frozen.system}
     assert "ok-1" in texts and "ok-2" in texts

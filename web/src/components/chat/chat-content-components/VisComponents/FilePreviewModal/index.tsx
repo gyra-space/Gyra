@@ -16,6 +16,7 @@ import {
 import { CodePreview } from '../../code-preview';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { GPTVis } from '@antv/gpt-vis';
+import { injectLocalLibsForReport } from '@/utils';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -431,7 +432,7 @@ ${content}
               <div className={styles.htmlPreviewContainer}>
                 <iframe
                   ref={iframeRef}
-                  srcDoc={parsedHtmlContent}
+                  srcDoc={injectLocalLibsForReport(parsedHtmlContent)}
                   className={styles.htmlPreviewFrame}
                   sandbox="allow-scripts allow-same-origin"
                   title="HTML Preview"

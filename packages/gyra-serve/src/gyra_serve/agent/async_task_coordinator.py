@@ -34,15 +34,32 @@ _TERMINAL = {"completed", "failed", "timeout", "cancelled"}
 class AsyncTaskCoordinator:
     """异步任务完成监听器：跟踪 pending 任务，全部终态则触发主 resume。"""
 
-    def __init__(self, agent_chat: Optional[Any] = None):
+    def __init__(
+        self,
+        agent_chat: Optional[Any] = None,
+        job_registry: Optional[Any] = None,
+    ):
         """Args:
             agent_chat: AgentChat 实例，提供 gpts_conversations / aggregation_chat 等依赖。
                 可为 None（dry-run 模式，只 log 不实际恢复）。
+            job_registry: 可选 JobRegistry（harness seams.job_registry）——
+                任务同步时的本地统一视图（引擎/其他组件可经 harness.jobs 查询）。
+                纯增量：不影响现有 gpts_conversations.extra 台账与 resume 逻辑。
         """
         self._agent_chat = agent_chat
         self._managers: List[Any] = []
         self._watch_task: Optional[asyncio.Task] = None
         self._watch_interval = 1.0
+        # harness seam 对齐：JobRegistry 本地视图（可选注入）
+        self._job_registry = job_registry
+
+    def set_job_registry(self, job_registry: Optional[Any]) -> None:
+        """运行时绑定/替换 JobRegistry 本地视图（V2Agent 装配后关联）。
+
+        幂等：None 时忽略（保留既有视图），避免多 V2Agent 实例互相清空。
+        """
+        if job_registry is not None:
+            self._job_registry = job_registry
 
     # ---------------- manager 注册与后台 watch ----------------
 
@@ -96,6 +113,20 @@ class AsyncTaskCoordinator:
                 cid = summary.get("conv_id", "")
                 if not cid:
                     continue
+                # harness seam 对齐：同步任务状态到 JobRegistry 本地视图
+                if self._job_registry is not None:
+                    try:
+                        self._job_registry.register(
+                            tid,
+                            conv_id=cid,
+                            kind=summary.get("kind", "async"),
+                            status=summary.get("status", "pending"),
+                            label=summary.get("model") or summary.get("agent_name") or "",
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug(
+                            f"[async-task-coordinator] job_registry sync failed: {e}"
+                        )
                 items = await self._read_pending(cid)
                 if any(i.get("task_id") == tid for i in items):
                     continue

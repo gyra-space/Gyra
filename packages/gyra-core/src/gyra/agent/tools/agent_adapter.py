@@ -272,7 +272,7 @@ class AgentToolAdapter:
                     if isinstance(config, dict):
                         config["sandbox_manager"] = sandbox_manager
 
-            # 注入 available_skills 和 skill_dir（供 skill_list/Skill/skill_exec 工具使用）
+            # 注入 available_skills 和 skill_dir（供 skill 工具读取使用）
             # Phase D:技能元数据改从 capability_pack 的 SkillCapability 派生
             # （旧路径读 resource_map 的 AgentSkillResource 实例）。
             if getattr(self._agent, "capability_pack", None):
@@ -321,7 +321,7 @@ class AgentToolAdapter:
 
                 if available_skills:
                     context.setdefault("available_skills", available_skills)
-                    # Also inject into config dict for skill_list/Skill/skill_exec tools
+                    # Also inject into config dict for skill tools
                     config = context.setdefault("config", {})
                     if isinstance(config, dict):
                         config.setdefault("available_skills", available_skills)

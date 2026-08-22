@@ -119,10 +119,18 @@ export default function MobileWorkspace() {
     { ready: !!workspaceId },
   );
 
+  // 任务列表:移动端为简单视图,仅拉取「自己提交的 + 空间公共(订阅触发)」任务
   const { data: tasks, refresh: refreshTasks } = useRequest(
     async () => {
       if (!workspaceId) return [];
-      const [err, res] = await apiInterceptors(listTasks({ workspace_id: workspaceId, limit: 200 }));
+      const [err, res] = await apiInterceptors(
+        listTasks({
+          workspace_id: workspaceId,
+          limit: 200,
+          own_and_public_only: true,
+          user_id: Number(getUserId()) || undefined,
+        }),
+      );
       return err ? [] : res || [];
     },
     { refreshDeps: [workspaceId] },

@@ -17,6 +17,30 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+# ---- 图片尺寸档位（面向用户的标准档位名 → 具体像素尺寸） ----
+# 用户期望图片尺寸按 720p/1080p/2k/4k 等标准档位区分，而不是只给一个裸分辨率。
+# 这里维护档位名 → provider 实际使用的 size 字符串映射；未命中档位的值按原样透传
+# （兼容旧配置里 "1024x1024" 等直接尺寸写法）。
+IMAGE_SIZE_TIERS: Dict[str, str] = {
+    "720p": "1280x720",
+    "1080p": "1920x1080",
+    "2k": "2560x1440",
+    "4k": "3840x2160",
+}
+
+
+def resolve_image_size(value: Optional[str]) -> Optional[str]:
+    """把图片尺寸档位名解析为具体像素尺寸；非档位名（或空）原样返回。
+
+    Examples:
+        resolve_image_size("1080p")  -> "1920x1080"
+        resolve_image_size("1024x1024") -> "1024x1024"
+        resolve_image_size("")       -> ""
+    """
+    if not value:
+        return value
+    return IMAGE_SIZE_TIERS.get(value.strip().lower(), value)
+
 
 class MultimediaAgentConfig(BaseModel):
     """单个多媒体 Agent 模板的固定配置。"""

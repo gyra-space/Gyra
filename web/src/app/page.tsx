@@ -11,7 +11,7 @@ import { useEffect } from 'react';
 /**
  * 首页 = 当前用户的默认场景空间。
  * 后端幂等 get-or-create(有 is_home 标记返回之,否则取最早创建的补标记,
- * 没有任何空间则新建"我的工作台"),前端只做薄跳转。
+ * 没有任何空间则返回系统内置默认空间,不再为每个用户新建个人空间),前端只做薄跳转。
  * 原通用对话首页迁至 /assistant。
  */
 export default function Home() {

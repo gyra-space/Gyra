@@ -36,13 +36,37 @@ async def available_llms(worker_type: str = "llm"):
                  if isinstance(p_conf, dict) and "model" in p_conf:
                     p_models = p_conf.get("model")
                     if isinstance(p_models, list):
+                        p_defaults = {
+                            k: v for k, v in p_conf.items() if k not in ("model", "models")
+                        }
                         for m in p_models:
                             if isinstance(m, dict) and "name" in m:
+                                # 排除媒体生成模型（图片/视频/音频），聊天只选文本/视觉 LLM
+                                try:
+                                    from gyra.agent.util.llm.model_config_cache import (
+                                        is_media_model_config,
+                                    )
+
+                                    merged = dict(p_defaults)
+                                    merged.update(m)
+                                    if is_media_model_config(merged):
+                                        continue
+                                except Exception:
+                                    pass
                                 types.add(m.get("name"))
 
         if agent_llm_conf and isinstance(agent_llm_conf.get("models"), list):
             for m in agent_llm_conf.get("models"):
                 if isinstance(m, dict) and "model" in m:
+                    try:
+                        from gyra.agent.util.llm.model_config_cache import (
+                            is_media_model_config,
+                        )
+
+                        if is_media_model_config(m):
+                            continue
+                    except Exception:
+                        pass
                     types.add(m.get("model"))
         elif agent_llm_conf and agent_llm_conf.get("model"):
             types.add(agent_llm_conf.get("model"))

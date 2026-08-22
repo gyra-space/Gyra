@@ -132,6 +132,21 @@ class ServerResponse(BaseModel):
         default=None,
         description="The task id this conversation belongs to.",
     )
+    workspace_name: Optional[str] = Field(
+        default=None,
+        description="The workspace display name (enriched from workspace table).",
+    )
+    workspace_code: Optional[str] = Field(
+        default=None,
+        description="The workspace code, used to navigate back into the workspace detail page.",
+    )
+    conv_type: Optional[str] = Field(
+        default=None,
+        description="Conversation type: agent(独立对话) / workspace(空间大厅) / task(任务会话).",
+        examples=[
+            "agent",
+        ],
+    )
     gmt_created: Optional[str] = Field(
         default=None,
         description="The record creation time.",

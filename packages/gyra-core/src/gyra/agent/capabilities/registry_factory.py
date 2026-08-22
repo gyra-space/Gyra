@@ -208,8 +208,7 @@ class CapabilityFactoryRegistry:
             type_key = getattr(ar, "type", None)
             if type_key == "datasource":
                 try:
-                    from gyra_serve.datasource.manages.connect_config_db import ConnectConfigDao
-                    entity = ConnectConfigDao().get_by_names(raw_value)
+                    entity = _get_ds_config_cached(raw_value)
                     if entity:
                         # 找到配置，返回完整信息（包括 db_id 用于 Oracle 连接）
                         return {
@@ -229,6 +228,31 @@ class CapabilityFactoryRegistry:
 
 
 _default_registry: Optional[CapabilityFactoryRegistry] = None
+
+
+# datasource 名称 → 连接配置实体 的短 TTL 缓存：serve 每轮会话都重建
+# CapabilityPack，每个 datasource 资源触发一次 ConnectConfigDao 同步 DB
+# 查询（阻塞事件循环）。60s TTL 平衡配置变更时效与查询开销。
+_DS_CONFIG_CACHE: Dict[str, tuple] = {}  # name -> (entity, expires_at)
+_DS_CONFIG_TTL_SEC = 60.0
+
+
+def _get_ds_config_cached(name: str):
+    import time as _time
+
+    hit = _DS_CONFIG_CACHE.get(name)
+    if hit and hit[1] > _time.monotonic():
+        return hit[0]
+    try:
+        from gyra_serve.datasource.manages.connect_config_db import ConnectConfigDao
+        entity = ConnectConfigDao().get_by_names(name)
+    except Exception:  # noqa: BLE001
+        entity = None
+    if entity:
+        if len(_DS_CONFIG_CACHE) >= 128:
+            _DS_CONFIG_CACHE.pop(next(iter(_DS_CONFIG_CACHE)), None)
+        _DS_CONFIG_CACHE[name] = (entity, _time.monotonic() + _DS_CONFIG_TTL_SEC)
+    return entity
 
 
 def get_default_factory_registry() -> CapabilityFactoryRegistry:

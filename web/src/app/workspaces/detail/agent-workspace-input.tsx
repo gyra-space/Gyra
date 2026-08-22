@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Input, Popover, Drawer, Progress, Statistic, Row, Col } from 'antd';
 import {
   ArrowUpOutlined,
@@ -244,6 +244,8 @@ function ContextUsageDetail({
   const history = metrics.history ?? 0;
   const userMsg = metrics.user_msg ?? 0;
   const tools = metrics.tools ?? metrics.completion ?? 0;
+  const skills = metrics.skills ?? 0;
+  const mcp = metrics.mcp ?? 0;
   const layers = metrics.layers ?? { compressed: 0, retained: 0 };
   const layerTotal = layers.compressed + layers.retained;
 
@@ -256,6 +258,8 @@ function ContextUsageDetail({
     { label: '历史消息', value: history, color: '#8b5cf6' },
     { label: '当前用户消息', value: userMsg, color: '#c4b5fd' },
     { label: '工具及子智能体', value: tools, color: '#faad14' },
+    { label: '技能', value: skills, color: '#3b82f6' },
+    { label: '连接器及MCP', value: mcp, color: '#06b6d4' },
   ];
 
   const layerData = [

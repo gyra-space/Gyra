@@ -67,6 +67,30 @@ describe('buildSceneAgentSendData', () => {
     ]);
   });
 
+  test('mcps 构造 mcp(gyra) chat_in_params, mcp_code 取 id/uuid/name', () => {
+    const mcps = [
+      { id: 'mcp-001', name: 'GitHub 连接器' },
+      { uuid: 'uuid-abc', name: 'MySQL' },
+      { name: 'Notion' },
+    ];
+    const payload: SceneAgentSendPayload = { text: '查一下', mcps };
+    const data = buildSceneAgentSendData(payload, { workspaceId: 9 }, 'c1');
+
+    expect(data.chat_in_params).toEqual([
+      { param_type: 'resource', param_value: JSON.stringify({ mcp_code: 'mcp-001', name: 'GitHub 连接器' }), sub_type: 'mcp(gyra)' },
+      { param_type: 'resource', param_value: JSON.stringify({ mcp_code: 'uuid-abc', name: 'MySQL' }), sub_type: 'mcp(gyra)' },
+      { param_type: 'resource', param_value: JSON.stringify({ mcp_code: 'Notion', name: 'Notion' }), sub_type: 'mcp(gyra)' },
+    ]);
+  });
+
+  test('permission 写入 ext_info.permission_mode; 未传时不含该字段', () => {
+    const withPerm = buildSceneAgentSendData({ text: '你好', permission: 'auto' }, { workspaceId: 9 }, 'c1');
+    expect(withPerm.ext_info).toMatchObject({ permission_mode: 'auto' });
+
+    const withoutPerm = buildSceneAgentSendData({ text: '你好' }, { workspaceId: 9 }, 'c1');
+    expect(withoutPerm.ext_info).not.toHaveProperty('permission_mode');
+  });
+
   test('focusArtifactId 写入 ext_info.focus_artifact_id', () => {
     const payload: SceneAgentSendPayload = { text: '你好' };
     const data = buildSceneAgentSendData(payload, { workspaceId: 9, focusArtifactId: 42 }, 'c1');

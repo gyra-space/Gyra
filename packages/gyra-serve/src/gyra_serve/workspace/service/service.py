@@ -31,6 +31,14 @@ from ..models.models import (
 
 WORKSPACE_SERVICE_COMPONENT_NAME = "serve_workspace_service"
 
+# 系统内置默认空间:全局唯一(懒创建),供没有任何空间的用户进入,不再为每个
+# 用户自动新建个人空间。ECP 派生 workspace 为 ecp_default,与 ECP 全局共享库
+# default 无冲突。
+DEFAULT_WORKSPACE_CODE = "default"
+DEFAULT_WORKSPACE_NAME = "默认空间"
+# 内置空间的虚拟 owner(非真实用户,不参与成员名单展示逻辑)。
+SYSTEM_OWNER_USER_ID = 0
+
 logger = logging.getLogger(__name__)
 
 
@@ -265,8 +273,8 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
         1. 成员可见空间中有 member.is_home=True 的 -> 返回
         2. 兼容存量:有旧 settings.is_home 标记(空间级)的 -> 一次性提升为用户级主空间返回
         3. 无标记 -> 取最早创建(id 最小)的补用户级标记后返回(零迁移)
-        4. 一个空间都没有 -> 新建"我的工作台"(create 的派生钩子全部生效:
-        owner 成员/默认 agent/ECP workspace 供给)
+        4. 一个空间都没有 -> 返回系统内置默认空间(懒创建,全局唯一),并自动以
+        contributor 加入,保证列表可见与空间内操作可用;不再为每个用户新建个人空间。
         归档的空间不参与选择;用户归档首页空间后,下次访问自动选下一个或新建。
         """
         spaces = self.list_workspaces(user_id)
@@ -286,13 +294,68 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
             home = min(spaces, key=lambda s: s.id)
             self._mark_home_member(home.id, user_id)
             return home
-        return self.create(
-            WorkspaceRequest(
-                name="我的工作台",
-                owner_user_id=user_id,
-                settings={"is_home": True},
+        default_ws = self._get_or_create_default_workspace()
+        self._ensure_member(default_ws.id, user_id)
+        return default_ws
+
+    def _get_or_create_default_workspace(self) -> WorkspaceResponse:
+        """系统内置默认空间(全局唯一,幂等懒创建)。
+
+        不设置空间级 settings.is_home:默认空间是共享兜底空间,不参与"提升为
+        个人主空间"的存量兼容逻辑。若被归档/释放,顺带恢复为可用状态再返回。
+        """
+        existing = self._dao.get_one({"workspace_code": DEFAULT_WORKSPACE_CODE})
+        if existing:
+            if existing.is_archived or existing.is_deleted:
+                try:
+                    self._dao.update(
+                        {"workspace_code": DEFAULT_WORKSPACE_CODE},
+                        {"is_archived": False, "is_deleted": False},
+                        force_update=True,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"restore default workspace failed: {e}")
+            return self.get_by_id(existing.id)
+        try:
+            return self.create(
+                WorkspaceRequest(
+                    workspace_code=DEFAULT_WORKSPACE_CODE,
+                    name=DEFAULT_WORKSPACE_NAME,
+                    owner_user_id=SYSTEM_OWNER_USER_ID,
+                )
             )
-        )
+        except Exception as e:  # noqa: BLE001 并发建默认空间时竞态,回查兜底
+            logger.warning(f"create default workspace raced: {e}")
+            existing = self._dao.get_one({"workspace_code": DEFAULT_WORKSPACE_CODE})
+            if existing:
+                return self.get_by_id(existing.id)
+            raise
+
+    def _ensure_member(
+        self, workspace_id: int, user_id: int, role: str = "contributor"
+    ) -> None:
+        """确保用户是该空间成员(幂等)。非成员时以指定角色加入,失败仅告警。
+
+        与 add_member 保持一致:同步 ECP 提案确认人与 RBAC 空间角色绑定。
+        """
+        if user_id is None:
+            return
+        if self._member_dao.get_role(workspace_id, user_id) is not None:
+            return
+        try:
+            self._member_dao.create(
+                WorkspaceMemberRequest(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    role=role,
+                )
+            )
+            self._sync_ecp_confirmer(workspace_id, user_id, add=True)
+            self._sync_space_role_binding(workspace_id, user_id, role)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"auto join member failed ws={workspace_id} user={user_id}: {e}"
+            )
 
     def set_home(self, user_id: int, workspace_id: int) -> Optional[WorkspaceResponse]:
         """把某空间设为用户的默认(主)空间。
@@ -364,9 +427,15 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
                 None,
             )
             self._sync_ecp_confirmer(request.workspace_id, request.user_id, add=True)
+            self._sync_space_role_binding(
+                request.workspace_id, request.user_id, request.role
+            )
             return self._member_dao.to_response(refreshed) if refreshed else None
         created = self._member_dao.create(request)
         self._sync_ecp_confirmer(request.workspace_id, request.user_id, add=True)
+        self._sync_space_role_binding(
+            request.workspace_id, request.user_id, request.role
+        )
         return created
 
     def remove_member(self, workspace_id: int, user_id: int) -> bool:
@@ -378,6 +447,7 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
             raise ValueError("cannot remove owner; transfer ownership first")
         self._member_dao.delete({"workspace_id": workspace_id, "user_id": user_id})
         self._sync_ecp_confirmer(workspace_id, user_id, add=False)
+        self._sync_space_role_binding(workspace_id, user_id, None)
         return True
 
     def update_member_role(
@@ -392,6 +462,7 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
             {"role": role},
             force_update=True,
         )
+        self._sync_space_role_binding(workspace_id, user_id, role)
         refreshed = next(
             (e for e in self._member_dao.list_by_workspace(workspace_id) if e.user_id == user_id),
             None,
@@ -400,6 +471,41 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
 
     def check_membership(self, workspace_id: int, user_id: int) -> Optional[str]:
         return self._member_dao.get_role(workspace_id, user_id)
+
+    def _sync_space_role_binding(
+        self, workspace_id: int, user_id: int, role: Optional[str]
+    ) -> None:
+        """成员角色变更时同步 user_role 空间级绑定（统一权限协议判定用）。
+
+        role=None 表示移除成员 -> 清掉该空间全部内置角色绑定。失败仅告警,
+        兜底靠启动迁移 migrate_space_role_bindings。
+        """
+        try:
+            from gyra_app.feature_plugins.permissions.dao import PermissionDao
+
+            dao = PermissionDao()
+            name_map = {
+                "owner": "space.admin",
+                "contributor": "space.member",
+                "viewer": "space.viewer",
+            }
+            for builtin in ("space.admin", "space.member", "space.viewer"):
+                row = dao.get_role_by_name(builtin)
+                if not row:
+                    continue
+                dao.remove_user_role(
+                    user_id, row["id"], scope_id=workspace_id
+                )
+            target = name_map.get((role or "").strip())
+            if target:
+                row = dao.get_role_by_name(target)
+                if row:
+                    dao.assign_role_to_user(user_id, row["id"], scope_id=workspace_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "sync space role binding failed (ws=%s user=%s role=%s): %s",
+                workspace_id, user_id, role, e,
+            )
 
     # ---------------- Resource management ----------------
     def list_resources(

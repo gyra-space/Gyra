@@ -9,7 +9,9 @@
  * EXHIBIT_RENDERERS,协议本身不变。
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { message, Table, Tag, Tooltip } from 'antd';
+import { message, Table, Tabs, Tag, Tooltip } from 'antd';
+// xlsx 浏览器端解析(v9 走 Web Worker 后台解析,不阻塞 UI;旧版 xls 不支持,仍引导下载)
+import readXlsxFile from 'read-excel-file/browser';
 import {
   DownloadOutlined,
   ExportOutlined,
@@ -24,7 +26,8 @@ import { GPTVis } from '@antv/gpt-vis';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
-import { transformFileUrl } from '@/utils';
+import { GET } from '@/client/api';
+import { injectLocalLibsForReport, resolveFileDownloadUrl, transformFileUrl } from '@/utils';
 import type { LobbyExhibit } from './agent-workspace-types';
 
 /* ═══════════════════════════════════════════════════════════════
@@ -54,8 +57,34 @@ export function resolveExhibitUrl(exhibit: LobbyExhibit): string {
   // agent_files 直接下载路径 → 走 preview 端点(返回 inline,HTML 可内联渲染)
   const agentFilePreview = resolveAgentFilePreviewUrl(raw);
   if (agentFilePreview) return agentFilePreview;
+  // 普通下载端点 /files/{bucket}/{file_id}(返回 attachment)→ 转 preview 端点
+  // (返回 inline,iframe 才能内联展示 html/图片/PDF 等可预览类型)
+  const dl = raw.match(/\/serve\/file\/files\/([^/?#]+)\/([^/?#]+)/);
+  if (dl) {
+    return `${apiBaseUrl}/api/v2/serve/file/files/preview?bucket=${encodeURIComponent(dl[1])}&file_id=${encodeURIComponent(dl[2])}`;
+  }
   if (raw.startsWith('/')) return `${apiBaseUrl}${raw}`;
   return transformFileUrl(raw);
+}
+
+/** 解析 Exhibit 的真实下载地址:落到 attachment 下载端点而非 inline 预览端点。
+ * 预览端点对 text/html 等返回 inline,浏览器只会"打开"而不会保存文件,
+ * 因此下载必须使用 /files/{bucket}/{file_id}(返回 attachment)。 */
+export function resolveExhibitDownloadUrl(exhibit: LobbyExhibit): string {
+  const { uri, url } = exhibit.source;
+  const raw = url || uri || '';
+  if (!raw) return '';
+  return resolveFileDownloadUrl(raw);
+}
+
+/** 解析 Exhibit 的内部文件 URI(供 /files/public_url 生成公开分享链接) */
+function resolveExhibitUri(exhibit: LobbyExhibit): string {
+  const { uri, url } = exhibit.source;
+  if (uri) return uri;
+  if (!url) return '';
+  if (url.startsWith('gyra-fs://')) return url;
+  const m = url.match(/[?&]uri=([^&]+)/);
+  return m ? decodeURIComponent(m[1]) : '';
 }
 
 function fmtSize(bytes?: number): string {
@@ -174,8 +203,8 @@ function Markdown({ text }: { text: string }) {
   );
 }
 
-/** 远程拉取文本内容(inline 优先,无需拉取) */
-function useExhibitText(exhibit: LobbyExhibit): { text: string | null; loading: boolean; error: string | null } {
+/** 远程拉取文本内容(inline 优先,无需拉取);skipFetch 用于二进制内容(如 xlsx)跳过文本拉取 */
+function useExhibitText(exhibit: LobbyExhibit, skipFetch = false): { text: string | null; loading: boolean; error: string | null } {
   const inline = exhibit.source.inline;
   const url = useMemo(() => resolveExhibitUrl(exhibit), [exhibit]);
   const [text, setText] = useState<string | null>(inline ?? null);
@@ -187,7 +216,7 @@ function useExhibitText(exhibit: LobbyExhibit): { text: string | null; loading: 
       setText(inline);
       return;
     }
-    if (!url) return;
+    if (skipFetch || !url) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -235,6 +264,47 @@ function FetchState({ loading, error, url }: { loading: boolean; error: string |
     );
   }
   return null;
+}
+
+/** 带加载态的 iframe 宿主:iframe 未触发 onLoad 前显示 loading,避免大页长时间空白 */
+function IframeHost({
+  src,
+  srcDoc,
+  sandbox,
+  title,
+  className,
+  style,
+}: {
+  src?: string;
+  srcDoc?: string;
+  sandbox?: string;
+  title: string;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    setLoaded(false);
+  }, [src, srcDoc]);
+  return (
+    <div className="ws-exhibit__iframe-wrap">
+      {!loaded && (
+        <div className="ws-exhibit__iframe-loading">
+          <LoadingOutlined spin style={{ fontSize: 20 }} />
+          <span>加载内容…</span>
+        </div>
+      )}
+      <iframe
+        src={src}
+        srcDoc={srcDoc}
+        sandbox={sandbox}
+        title={title}
+        className={`${className ?? ''}${loaded ? '' : ' ws-exhibit__iframe--loading'}`}
+        style={style}
+        onLoad={() => setLoaded(true)}
+      />
+    </div>
+  );
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -298,33 +368,75 @@ function HtmlR({ exhibit }: { exhibit: LobbyExhibit }) {
   const url = resolveExhibitUrl(exhibit);
   const inline = exhibit.source.inline;
   const height = exhibit.render_hints?.height;
+  const style = height ? { minHeight: height, height } : undefined;
+  const [doc, setDoc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  // 非 inline 的远程报告:拉取内容、把外部 CDN 改写成本地库后经 srcdoc 渲染;
+  // 拉取失败则回退为 iframe 原样加载,不改变既有行为。
+  useEffect(() => {
+    if (inline || !url) return;
+    let cancelled = false;
+    setDoc(null);
+    setFailed(false);
+    fetch(url)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.text();
+      })
+      .then((t) => {
+        if (!cancelled) setDoc(injectLocalLibsForReport(t));
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inline, url]);
+
   if (inline) {
     return (
-      <iframe
-        className="ws-preview__html"
-        sandbox="allow-same-origin"
+      <IframeHost
         srcDoc={inline}
+        sandbox="allow-same-origin"
         title={exhibit.title}
+        className="ws-preview__html"
         style={height ? { minHeight: height } : undefined}
       />
     );
   }
   if (!url) return <FetchState loading={false} error="无页面地址" url="" />;
-  return (
-    <iframe
-      src={url}
-      className="ws-renderer__deliverable-iframe"
-      sandbox="allow-scripts allow-same-origin"
-      title={exhibit.title}
-      style={height ? { minHeight: height, height } : undefined}
-    />
-  );
+  if (doc != null) {
+    return (
+      <IframeHost
+        srcDoc={doc}
+        sandbox="allow-scripts allow-same-origin"
+        title={exhibit.title}
+        className="ws-renderer__deliverable-iframe"
+        style={style}
+      />
+    );
+  }
+  // 拉取失败或已知无内容时,回退为 iframe 原样加载远程报告
+  if (failed) {
+    return (
+      <IframeHost
+        src={url}
+        sandbox="allow-scripts allow-same-origin"
+        title={exhibit.title}
+        className="ws-renderer__deliverable-iframe"
+        style={style}
+      />
+    );
+  }
+  return <FetchState loading error={null} url={url} />;
 }
 
 function PdfR({ exhibit }: { exhibit: LobbyExhibit }) {
   const url = resolveExhibitUrl(exhibit);
   if (!url) return <FetchState loading={false} error="无 PDF 地址" url="" />;
-  return <iframe src={url} className="ws-renderer__deliverable-iframe" title={exhibit.title} />;
+  return <IframeHost src={url} title={exhibit.title} className="ws-renderer__deliverable-iframe" />;
 }
 
 function MarkdownR({ exhibit }: { exhibit: LobbyExhibit }) {
@@ -441,15 +553,113 @@ function parseTableData(text: string, hints?: LobbyExhibit['render_hints']): Tab
   return { columns, rows };
 }
 
-function TableR({ exhibit }: { exhibit: LobbyExhibit }) {
-  const { text, loading, error } = useExhibitText(exhibit);
+/** Excel 单元格值 → 显示文本(Date 格式化为本地日期时间) */
+function cellText(v: unknown): string {
+  if (v == null) return '';
+  if (v instanceof Date) {
+    return v.toLocaleString('zh-CN', { hour12: false });
+  }
+  return String(v);
+}
+
+/** xlsx 工作表数据 → TableData(首行作表头,列数按最宽行对齐) */
+function xlsxSheetToTableData(rows: unknown[][]): TableData | null {
+  if (!rows || !rows.length) return null;
+  const width = rows.reduce((max, r) => Math.max(max, r.length), 0);
+  const headers: string[] = [];
+  for (let i = 0; i < width; i += 1) {
+    headers.push(cellText(rows[0][i]) || `列 ${i + 1}`);
+  }
+  const body = rows.slice(1).map((cells) => {
+    const obj: Record<string, string> = {};
+    headers.forEach((h, idx) => {
+      obj[h] = cellText(cells[idx]);
+    });
+    return obj;
+  });
+  return { columns: headers.map((h) => ({ title: h, dataIndex: h, key: h })), rows: body };
+}
+
+/** xlsx 二进制表格:ArrayBuffer 拉取 → 客户端解析 → 按 sheet 渲染 antd 表格 */
+function XlsxR({ exhibit }: { exhibit: LobbyExhibit }) {
   const url = resolveExhibitUrl(exhibit);
+  const [sheets, setSheets] = useState<{ name: string; data: TableData }[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!url) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(url)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.arrayBuffer();
+      })
+      .then((buf) => readXlsxFile(buf))
+      .then((all) => {
+        if (cancelled) return;
+        const parsed: { name: string; data: TableData }[] = [];
+        for (const s of all) {
+          const data = xlsxSheetToTableData(s.data as unknown[][]);
+          if (data) parsed.push({ name: s.sheet, data });
+        }
+        setSheets(parsed.length ? parsed : null);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : '解析失败');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  if (loading) return <FetchState loading error={null} url={url} />;
+  if (error) return <FetchState loading={false} error={`Excel 解析失败: ${error}`} url={url} />;
+  if (!sheets) {
+    return <FetchState loading={false} error="未解析到表格内容(文件可能为空或格式不受支持)" url={url} />;
+  }
+  const renderTable = (data: TableData) => (
+    <Table
+      columns={data.columns}
+      dataSource={data.rows.map((r, i) => ({ key: i, ...r }))}
+      size="small"
+      pagination={data.rows.length > 20 ? { pageSize: 20, showSizeChanger: false } : false}
+      scroll={{ x: true }}
+    />
+  );
+  if (sheets.length === 1) {
+    return <div className="ws-exhibit__table">{renderTable(sheets[0].data)}</div>;
+  }
+  return (
+    <div className="ws-exhibit__table">
+      <Tabs
+        size="small"
+        items={sheets.map((s) => ({ key: s.name, label: s.name, children: renderTable(s.data) }))}
+      />
+    </div>
+  );
+}
+
+function TableR({ exhibit }: { exhibit: LobbyExhibit }) {
   const mime = (exhibit.source.mime_type || '').toLowerCase();
   // xlsx 等二进制表格无法纯前端解析:引导下载 / 新窗口预览
   const isBinarySheet =
     mime.includes('spreadsheet') || /\.(xlsx|xls|numbers)$/i.test(exhibit.title);
+  // .xlsx 可客户端解析内联展示;旧版 .xls / .numbers 保持下载引导
+  const isXlsxSheet =
+    mime.includes('spreadsheetml') || /\.xlsx$/i.test(exhibit.title);
+  const { text, loading, error } = useExhibitText(exhibit, isBinarySheet);
+  const url = resolveExhibitUrl(exhibit);
 
   if (isBinarySheet && !exhibit.source.inline) {
+    if (isXlsxSheet && url) {
+      return <XlsxR exhibit={exhibit} />;
+    }
     return (
       <div className="ws-exhibit__state">
         <span style={{ fontSize: 32 }}>📊</span>
@@ -487,7 +697,7 @@ function SlidesR({ exhibit }: { exhibit: LobbyExhibit }) {
 
   if (mode === 'pdf') {
     if (!url) return <FetchState loading={false} error="无幻灯片地址" url="" />;
-    return <iframe src={url} className="ws-renderer__deliverable-iframe" title={exhibit.title} />;
+    return <IframeHost src={url} title={exhibit.title} className="ws-renderer__deliverable-iframe" />;
   }
   if (mode === 'images') {
     // inline 为图片 URL 的 JSON 数组
@@ -510,21 +720,21 @@ function SlidesR({ exhibit }: { exhibit: LobbyExhibit }) {
   // html:单文件幻灯片(内联 srcDoc 或远程 iframe),允许脚本以驱动翻页交互
   if (inline) {
     return (
-      <iframe
-        className="ws-renderer__deliverable-iframe"
-        sandbox="allow-scripts allow-same-origin"
+      <IframeHost
         srcDoc={inline}
+        sandbox="allow-scripts allow-same-origin"
         title={exhibit.title}
+        className="ws-renderer__deliverable-iframe"
       />
     );
   }
   if (!url) return <FetchState loading={false} error="无幻灯片地址" url="" />;
   return (
-    <iframe
+    <IframeHost
       src={url}
-      className="ws-renderer__deliverable-iframe"
       sandbox="allow-scripts allow-same-origin"
       title={exhibit.title}
+      className="ws-renderer__deliverable-iframe"
     />
   );
 }
@@ -630,6 +840,7 @@ function stripExt(name: string): string {
 
 export function ExhibitHost({ exhibit }: { exhibit: LobbyExhibit }) {
   const url = resolveExhibitUrl(exhibit);
+  const downloadUrl = resolveExhibitDownloadUrl(exhibit);
   const actions = exhibit.actions || ['preview', 'download'];
   const Renderer = EXHIBIT_RENDERERS[exhibit.kind] || FileR;
   const size = fmtSize(exhibit.source.file_size);
@@ -735,19 +946,15 @@ export function ExhibitHost({ exhibit }: { exhibit: LobbyExhibit }) {
   };
 
   const handleShare = async () => {
-    if (!url) {
-      message.warning('内联内容暂不支持分享链接');
-      return;
-    }
-    const copy = async (): Promise<boolean> => {
+    const copy = async (text: string): Promise<boolean> => {
       try {
-        await navigator.clipboard.writeText(url);
+        await navigator.clipboard.writeText(text);
         return true;
       } catch {
         // 降级:非安全上下文等场景 clipboard API 不可用时,用 execCommand 兜底
         try {
           const ta = document.createElement('textarea');
-          ta.value = url;
+          ta.value = text;
           ta.style.position = 'fixed';
           ta.style.opacity = '0';
           document.body.appendChild(ta);
@@ -760,7 +967,33 @@ export function ExhibitHost({ exhibit }: { exhibit: LobbyExhibit }) {
         }
       }
     };
-    if (await copy()) {
+    // 优先生成无需登录即可访问的公开分享链接(/files/public_url 返回 HMAC 签名 + 过期地址)
+    const uri = resolveExhibitUri(exhibit);
+    if (uri) {
+      try {
+        const res = await GET('/api/v2/serve/file/files/public_url', { uri, expire: 3600 });
+        const publicUrl = res.data?.data;
+        if (typeof publicUrl === 'string' && publicUrl) {
+          // 后端返回相对路径时补全 origin,保证分享出去的链接可被他人直接访问
+          const shareUrl = publicUrl.startsWith('/')
+            ? `${process.env.NEXT_PUBLIC_API_BASE_URL || ''}${publicUrl}`
+            : publicUrl;
+          if (await copy(shareUrl)) {
+            message.success('公开分享链接已复制(1 小时内有效)');
+          } else {
+            message.warning('复制失败,请在新窗口打开后手动复制地址栏链接');
+          }
+          return;
+        }
+      } catch {
+        // 公开链接生成失败,回退到当前(需鉴权的)预览地址
+      }
+    }
+    if (!url) {
+      message.warning('内联内容暂不支持分享链接');
+      return;
+    }
+    if (await copy(url)) {
       message.success('链接已复制到剪贴板');
     } else {
       message.warning('复制失败,请在新窗口打开后手动复制地址栏链接');
@@ -794,8 +1027,8 @@ export function ExhibitHost({ exhibit }: { exhibit: LobbyExhibit }) {
           {actions.includes('preview') && url && (
             <HeadTool tip="新窗口打开" icon={<ExportOutlined />} onClick={() => window.open(url, '_blank')} />
           )}
-          {actions.includes('download') && url && (
-            <HeadTool tip="下载" icon={<DownloadOutlined />} onClick={() => downloadFile(url, exhibit.title)} />
+          {actions.includes('download') && downloadUrl && (
+            <HeadTool tip="下载" icon={<DownloadOutlined />} onClick={() => downloadFile(downloadUrl, exhibit.title)} />
           )}
         </span>
       </div>

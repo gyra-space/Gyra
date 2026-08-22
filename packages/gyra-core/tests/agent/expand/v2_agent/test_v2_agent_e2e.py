@@ -81,8 +81,13 @@ def _default_rounds():
 
 
 def _build_agent(llm_rounds=None, tools=None):
-    """按 serve bind 链等价方式装配 V2Agent（不依赖真实 LLM / serve 层）。"""
-    agent = _V2AgentForTest()
+    """按 serve bind 链等价方式装配 V2Agent（不依赖真实 LLM / serve 层）。
+
+    每个 agent 注入独立的 v2_state_dir（tempdir），保证测试间事件日志隔离。
+    """
+    agent = _V2AgentForTest(
+        v2_state_dir=tempfile.mkdtemp(prefix="v2-e2e-state-")
+    )
     agent.bind(
         AgentContext(
             conv_id="conv-e2e",
@@ -152,12 +157,14 @@ async def test_v2_agent_full_run_and_render():
     # 1) 最终答案（V1 协议输出）
     assert result is not None
     assert "最终答案" in (result.content or "")
-    assert "我先调用工具" in agent._v2_final_answer
+    # 中间 step 的旁白不拼进最终答案（只保留最后一个 step 的正文），
+    # 避免最终消息 content 出现多段旁白重复
+    assert "我先调用工具" not in agent._v2_final_answer
     assert "最终答案" in agent._v2_final_answer
 
     # 2) 引擎确为 V2 run_loop：状态机事件落盘（durability-before-visibility）
     store: DbStateStore = agent._v2_state_store
-    events: list[StepEvent] = await store.get_events("conv-e2e")
+    events: list[StepEvent] = await store.get_events("sess-e2e")
     states = [e.state for e in events]
     assert StepState.INIT in states and StepState.DONE in states
     tool_calls = [e for e in events if e.event_type == "tool_call"]
@@ -172,6 +179,8 @@ async def test_v2_agent_full_run_and_render():
         (str(p.get("content", "")) + str(p.get("thinking", ""))) for p in pushes
     )
     assert "最终答案" in rendered
+    # 中间旁白虽不进入最终答案，但流式推送过程可见
+    assert "我先调用工具" in rendered
 
 
 @pytest.mark.asyncio
@@ -186,7 +195,7 @@ async def test_v2_agent_no_tool_round_single_step():
     assert "直接回答" in (result.content or "")
 
     store: DbStateStore = agent._v2_state_store
-    events = await store.get_events("conv-e2e")
+    events = await store.get_events("sess-e2e")
     tool_calls = [e for e in events if e.event_type == "tool_call"]
     assert len(tool_calls) == 0
 
@@ -216,7 +225,7 @@ async def test_v2_agent_tool_denied_by_ruleset():
     )
 
     store: DbStateStore = agent._v2_state_store
-    events = await store.get_events("conv-e2e")
+    events = await store.get_events("sess-e2e")
     echo_call = [
         e
         for e in events
@@ -236,21 +245,24 @@ async def test_v2_agent_tool_denied_by_ruleset():
 
 @pytest.mark.asyncio
 async def test_v2_agent_registered_and_resolvable():
-    """模板注册：role="V2"，gyra.agent.expand 自动扫描可解析（serve 启动路径）。"""
+    """模板注册：role="BIXIU"，gyra.agent.expand 自动扫描可解析（serve 启动路径）。"""
     from gyra.agent.core.agent_manage import get_agent_manager, scan_agents
     from gyra.agent.expand.v2_agent import V2Agent as V2AgentCls
 
-    assert V2AgentCls().role == "V2"
+    assert V2AgentCls().role == "BIXIU"
 
     scanned = scan_agents("gyra.agent.expand")
     assert any(v is V2AgentCls for v in scanned.values())
 
     # get_by_name 解析（serve _build_agent_by_gpts 的 resolve_agent_name 路径）
     manager = get_agent_manager()
-    if "V2" not in (manager.all_agents() or {}):
+    if "BIXIU" not in (manager.all_agents() or {}):
         manager.after_start()  # 模拟 serve 启动后的自动扫描注册
-    agent_cls = manager.get_by_name("V2")
+    agent_cls = manager.get_by_name("BIXIU")
     assert agent_cls is V2AgentCls
+    # 别名 "V2"/"V2Agent" 兼容历史存量配置
+    assert manager.get_by_name("V2") is V2AgentCls
+    assert manager.get_by_name("V2Agent") is V2AgentCls
 
 
 @pytest.mark.asyncio
@@ -282,5 +294,5 @@ async def test_v2_agent_subscribe_step_event():
     assert executed_seen[0].input.get("tool") == "echo"
     assert executed_seen[0].output.get("success") is True
     store: DbStateStore = agent._v2_state_store
-    persisted_ids = [e.event_id for e in await store.get_events("conv-e2e")]
+    persisted_ids = [e.event_id for e in await store.get_events("sess-e2e")]
     assert executed_seen[0].event_id in persisted_ids

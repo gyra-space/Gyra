@@ -103,7 +103,7 @@ const TerminalRenderer: FC<IProps> = ({
         )}
 
         {/* Output - use GPTVis if content contains VIS tags */}
-        {outputText && !errorText && (
+        {outputText && !errorText ? (
           hasVisContent ? (
             <div className="mt-2">
               <GPTVisLite components={markdownComponents}>{outputText}</GPTVisLite>
@@ -113,12 +113,19 @@ const TerminalRenderer: FC<IProps> = ({
               {outputText}
             </div>
           )
-        )}
+        ) : null}
 
         {/* Error output */}
         {errorText && (
           <div className="mt-2 text-red-400 whitespace-pre-wrap leading-relaxed">
             {errorText}
+          </div>
+        )}
+
+        {/* 空输出兜底:命令执行失败或未返回输出时,给出明确提示而非空白终端 */}
+        {!outputText && !errorText && !isRunning && (
+          <div className="mt-2 text-slate-400 text-xs">
+            该步骤未返回可展示的输出
           </div>
         )}
 

@@ -50,6 +50,26 @@ def test_resolve_vis_render_prefers_scene_for_workspace():
     assert chat._resolve_vis_render(ext_info={}, gpt_app=None) == "gpt_vis_all"  # type: ignore[attr-defined]
 
 
+def test_resolve_vis_render_defaults_v2_agent_to_vis_manus():
+    """v2 引擎应用未配置布局时默认 vis_manus(gpt_vis_all 不支持增量合并与步骤渲染)。"""
+    chat = SimpleAgentChat.__new__(SimpleAgentChat)
+
+    def _app(agent_version=None, team_context=None):
+        app = MagicMock()
+        app.layout = None
+        app.agent_version = agent_version
+        app.team_context = team_context
+        return app
+
+    assert chat._resolve_vis_render(ext_info={}, gpt_app=_app(agent_version="v2")) == "vis_manus"  # type: ignore[attr-defined]
+    assert (
+        chat._resolve_vis_render(ext_info={}, gpt_app=_app(team_context={"agent_version": "v2"}))  # type: ignore[attr-defined]
+        == "vis_manus"
+    )
+    # v1 应用仍走 gpt_vis_all
+    assert chat._resolve_vis_render(ext_info={}, gpt_app=_app(agent_version="v1")) == "gpt_vis_all"  # type: ignore[attr-defined]
+
+
 def test_extract_model_returns_model_name():
     """chat_in_params 含 model 参数时能抽到 param_value。"""
     chat = SimpleAgentChat.__new__(SimpleAgentChat)

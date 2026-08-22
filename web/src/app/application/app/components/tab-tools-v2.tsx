@@ -27,6 +27,7 @@ import {
   DesktopOutlined,
   RightOutlined,
   FilterOutlined,
+  CompassOutlined,
 } from '@ant-design/icons';
 
 import { AppContext } from '@/contexts';
@@ -66,6 +67,15 @@ const RISK_COLORS: Record<string, string> = {
   high: 'red',
   critical: 'red',
 };
+
+/** 工具名 → 专属图标:sql 工具 / 指标工具 / 技能工具 各用独立 logo,其余统一 ToolOutlined */
+function getToolItemIcon(tool: ToolResource): React.ReactNode {
+  const name = `${tool.name || ''} ${tool.display_name || ''}`.toLowerCase();
+  if (/(?:^|[^a-z0-9])(?:metric|指标|measure)(?:[^a-z0-9]|$)/.test(name)) return <CompassOutlined />;
+  if (/(?:^|[^a-z0-9])(?:sql|database|query_database)(?:[^a-z0-9]|$)/.test(name)) return <DatabaseOutlined />;
+  if (/(?:^|[^a-z0-9])(?:skill|技能|playbook)(?:[^a-z0-9]|$)/.test(name)) return <ThunderboltOutlined />;
+  return <ToolOutlined />;
+}
 
 // 来源标签
 const SOURCE_TAGS: Record<string, { label: string; color: string }> = {
@@ -474,11 +484,9 @@ function ToolItem({
             isAssociated ? 'bg-blue-100' : 'bg-gray-100'
           }`}
         >
-          <ToolOutlined
-            className={`text-xs ${
-              isAssociated ? 'text-blue-500' : 'text-gray-400'
-            }`}
-          />
+          <span className={`text-xs ${isAssociated ? 'text-blue-500' : 'text-gray-400'}`}>
+            {getToolItemIcon(tool)}
+          </span>
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">

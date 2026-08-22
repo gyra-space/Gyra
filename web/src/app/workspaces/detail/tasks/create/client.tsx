@@ -18,6 +18,7 @@ import {
 } from '@ant-design/icons';
 import Link from 'next/link';
 import CronEditor from './cron-editor';
+import { useSpaceRole } from '@/hooks/use-space-role';
 import '../../../workspaces.css';
 
 const { TextArea } = Input;
@@ -125,6 +126,10 @@ export default function TaskCreatePage() {
     const [err, res] = await apiInterceptors(getWorkspaceInfo(workspaceCode));
     return err ? null : res;
   }, { refreshDeps: [workspaceCode] });
+
+  // 权限门控:发起任务(手动执行/创建订阅)需要 space.task.start
+  const { can } = useSpaceRole(ws?.id);
+  const canStart = can('space.task.start');
 
   const { data: playbooks, loading: pbLoading } = useRequest(async () => {
     if (!ws?.id) return [];
@@ -465,9 +470,11 @@ export default function TaskCreatePage() {
                   <Link href={isEditing ? `/workspaces/detail/tasks?id=${workspaceCode}&tab=triggers` : `/workspaces/detail/tasks?id=${workspaceCode}`}>
                     <Button size="large">{t('tasks.cancel') || '取消'}</Button>
                   </Link>
-                  <Button type="primary" size="large" loading={submitting} onClick={handleSubmit} className="!rounded-lg">
-                    {selectedType === 'adhoc' ? '创建并执行' : (isEditing ? '保存' : '创建订阅')}
-                  </Button>
+                  {canStart && (
+                    <Button type="primary" size="large" loading={submitting} onClick={handleSubmit} className="!rounded-lg">
+                      {selectedType === 'adhoc' ? '创建并执行' : (isEditing ? '保存' : '创建订阅')}
+                    </Button>
+                  )}
                 </div>
               </Form>
             </section>

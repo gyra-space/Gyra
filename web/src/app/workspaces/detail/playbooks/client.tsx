@@ -7,6 +7,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useSpaceRole } from '@/hooks/use-space-role';
 import VisualEditor from './detail/visual-editor';
 import type { PlaybookDeclaration } from './detail/visual-editor/types';
 
@@ -81,6 +82,10 @@ export default function PlaybookListPage() {
     const [err, res] = await apiInterceptors(listPlaybooks({ workspace_id: ws.id, limit: 200 }));
     return err ? [] : res || [];
   }, { refreshDeps: [ws?.id] });
+
+  // 权限门控:剧本维护(space.playbook.manage)可建/改/删;运行/调试(space.playbook.run)
+  const { can } = useSpaceRole(ws?.id);
+  const canManage = can('space.playbook.manage');
 
   const parseDeclaration = (): PlaybookDeclaration | null => {
     try {
@@ -168,17 +173,19 @@ export default function PlaybookListPage() {
       title: t('playbooks.active') || 'Active', dataIndex: 'is_active', width: 90,
       render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? 'yes' : 'no'}</Tag>,
     },
-    {
-      title: '', key: 'actions', width: 180,
-      render: (_: any, r: any) => (
-        <div className="flex gap-2">
-          <Link href={`/workspaces/detail/playbooks/detail?id=${workspaceCode}&playbook_id=${r.id}`}>
-            <Button size="small">{t('playbooks.edit') || 'Edit'}</Button>
-          </Link>
-          <Button size="small" danger onClick={() => handleDelete(r.id)}>{t('delete') || 'Delete'}</Button>
-        </div>
-      ),
-    },
+    ...(canManage
+      ? [{
+          title: '', key: 'actions', width: 180,
+          render: (_: any, r: any) => (
+            <div className="flex gap-2">
+              <Link href={`/workspaces/detail/playbooks/detail?id=${workspaceCode}&playbook_id=${r.id}`}>
+                <Button size="small">{t('playbooks.edit') || 'Edit'}</Button>
+              </Link>
+              <Button size="small" danger onClick={() => handleDelete(r.id)}>{t('delete') || 'Delete'}</Button>
+            </div>
+          ),
+        }]
+      : []),
   ];
 
   return (
@@ -189,8 +196,8 @@ export default function PlaybookListPage() {
           <Link href={`/workspaces/detail?id=${workspaceCode}`}>
             <Button>{t('back') || 'Back'}</Button>
           </Link>
-          <Button onClick={handleSeedBuiltin}>{t('playbooks.seed_builtin') || 'Seed Built-in Examples'}</Button>
-          <Button type="primary" onClick={() => setCreateOpen(true)}>{t('playbooks.create') || '+ New Playbook'}</Button>
+          {canManage && <Button onClick={handleSeedBuiltin}>{t('playbooks.seed_builtin') || 'Seed Built-in Examples'}</Button>}
+          {canManage && <Button type="primary" onClick={() => setCreateOpen(true)}>{t('playbooks.create') || '+ New Playbook'}</Button>}
         </div>
       </div>
       <Card>

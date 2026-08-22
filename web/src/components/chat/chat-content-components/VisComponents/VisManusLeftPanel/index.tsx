@@ -1,11 +1,11 @@
 'use client';
 
-import React, { FC, useMemo, useState } from 'react';
+import React, { FC, useEffect, useMemo, useRef, useState } from 'react';
 import { Tooltip } from 'antd';
 import {
   CheckOutlined,
-  CloseOutlined,
   CheckCircleFilled,
+  CloseOutlined,
   CaretRightOutlined,
   FileOutlined,
   DownloadOutlined,
@@ -28,39 +28,40 @@ interface IProps {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Status node — 导轨上的状态节点(Linear / Manus 风格)
+   Status node — 导轨上的状态节点(轻量圆点)
    ═══════════════════════════════════════════════════════════════ */
 
 const StatusNode: FC<{ status: ManusStepStatus }> = ({ status }) => {
   if (status === 'running') {
     return (
-      <span className="relative z-10 flex h-[14px] w-[14px] flex-shrink-0 items-center justify-center rounded-full border-2 border-indigo-500 bg-white shadow-[0_0_0_3px_rgba(79,70,229,0.12)]">
-        <span className="h-[5px] w-[5px] animate-pulse rounded-full bg-indigo-500" />
+      <span className="relative z-10 flex h-[13px] w-[13px] flex-shrink-0 items-center justify-center rounded-full border-[1.5px] border-indigo-500 bg-white shadow-[0_0_0_3px_rgba(79,70,229,0.1)]">
+        <span className="h-[4px] w-[4px] animate-pulse rounded-full bg-indigo-500" />
       </span>
     );
   }
   if (status === 'completed') {
     return (
-      <span className="relative z-10 flex h-[14px] w-[14px] flex-shrink-0 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-500">
+      <span className="relative z-10 flex h-[13px] w-[13px] flex-shrink-0 items-center justify-center rounded-full border-[1.5px] border-emerald-500 bg-emerald-500">
         <CheckOutlined className="text-[7px] text-white" />
       </span>
     );
   }
   if (status === 'error') {
     return (
-      <span className="relative z-10 flex h-[14px] w-[14px] flex-shrink-0 items-center justify-center rounded-full border-2 border-red-500 bg-red-500">
+      <span className="relative z-10 flex h-[13px] w-[13px] flex-shrink-0 items-center justify-center rounded-full border-[1.5px] border-red-500 bg-red-500">
         <CloseOutlined className="text-[7px] text-white" />
       </span>
     );
   }
   // pending — 空心节点
   return (
-    <span className="relative z-10 h-[14px] w-[14px] flex-shrink-0 rounded-full border-2 border-slate-300 bg-white" />
+    <span className="relative z-10 h-[13px] w-[13px] flex-shrink-0 rounded-full border-[1.5px] border-slate-300 bg-white" />
   );
 };
 
 /* ═══════════════════════════════════════════════════════════════
-   Step card — 节点挂在导轨上,内容卡浮动在右侧
+   Step row — 轻量行:导轨状态点 + 类型小 tag + 标题 + 状态标记
+   (替代旧版多层卡片,密度对齐执行胶囊的 L2 步骤行)
    ═══════════════════════════════════════════════════════════════ */
 
 const StepCard: FC<{
@@ -75,138 +76,148 @@ const StepCard: FC<{
   return (
     <div
       className={`
-        group relative flex items-start gap-2.5 rounded-xl border px-2.5 py-2 cursor-pointer
-        transition-all duration-150
-        ${isActive
-          ? 'border-indigo-200 bg-indigo-50/60 shadow-sm'
-          : 'border-transparent hover:border-slate-200 hover:bg-slate-50'
-        }
+        group relative rounded-lg px-2 py-[5px] cursor-pointer transition-colors duration-150
+        ${isActive ? 'bg-indigo-50/70' : 'hover:bg-slate-50'}
       `}
       onClick={onClick}
     >
       {/* 状态节点(吸附在左侧导轨线上) */}
-      <span className="absolute -left-[20px] top-[10px]">
+      <span className="absolute -left-[19px] top-[9px]">
         <StatusNode status={step.status} />
       </span>
 
-      {/* 类型 icon tile */}
-      <span
-        className="mt-[1px] flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-md border text-[11px]"
-        style={{
-          color: config.color,
-          backgroundColor: `${config.color}12`,
-          borderColor: `${config.color}26`,
-        }}
-      >
-        {config.icon}
-      </span>
-
-      {/* 内容 */}
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span
-            className="text-[10px] font-semibold uppercase tracking-wider"
-            style={{ color: config.color }}
-          >
-            {config.label}
-          </span>
-          {step.status === 'running' && (
-            <LoadingOutlined className="text-[10px] text-indigo-400" spin />
-          )}
-        </div>
-        <div className="mt-px truncate text-[13px] font-medium leading-snug text-slate-800">
+      {/* 主行:类型 tag + 标题 + 状态标记 */}
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className="flex-shrink-0 rounded px-1 py-px font-mono text-[10px] leading-[15px]"
+          style={{ color: config.color, backgroundColor: `${config.color}14` }}
+        >
+          {config.label}
+        </span>
+        <span
+          className={`min-w-0 flex-1 truncate text-[12.5px] leading-snug ${
+            step.status === 'error'
+              ? 'text-red-500'
+              : step.status === 'running'
+                ? 'font-medium text-indigo-600'
+                : 'text-slate-600'
+          }`}
+        >
           {step.title}
-        </div>
-        {step.subtitle && (
-          <div className="mt-px truncate text-[11px] text-slate-400">
-            {step.subtitle}
-          </div>
+        </span>
+        {step.status === 'running' && (
+          <LoadingOutlined className="flex-shrink-0 text-[10px] text-indigo-400" spin />
         )}
-
-        {/* 思考气泡 */}
-        {thought && (
-          <div className="mt-1.5">
-            <button
-              className="flex items-center gap-1 text-[11px] font-medium text-indigo-400 transition-colors hover:text-indigo-600"
-              onClick={(e) => {
-                e.stopPropagation();
-                setThoughtExpanded(!thoughtExpanded);
-              }}
-            >
-              <BulbOutlined className="text-[10px]" />
-              思考过程
-              <CaretRightOutlined
-                className={`text-[8px] transition-transform duration-150 ${thoughtExpanded ? 'rotate-90' : ''}`}
-              />
-            </button>
-            {thoughtExpanded && (
-              <div className="mt-1.5 whitespace-pre-wrap rounded-lg border border-slate-100 bg-slate-50/80 p-2.5 text-[11.5px] leading-relaxed text-slate-500">
-                {thought}
-              </div>
-            )}
-          </div>
+        {step.status === 'error' && (
+          <span className="flex-shrink-0 rounded bg-red-50 px-1 py-px text-[10px] leading-[15px] text-red-500">
+            失败
+          </span>
         )}
       </div>
+
+      {/* 副标题(有才占行) */}
+      {step.subtitle && (
+        <div className="mt-px truncate pl-[3px] text-[11px] text-slate-400">
+          {step.subtitle}
+        </div>
+      )}
+
+      {/* 思考气泡 */}
+      {thought && (
+        <div className="mt-1">
+          <button
+            className="flex items-center gap-1 pl-[3px] text-[11px] font-medium text-indigo-400 transition-colors hover:text-indigo-600"
+            onClick={(e) => {
+              e.stopPropagation();
+              setThoughtExpanded(!thoughtExpanded);
+            }}
+          >
+            <BulbOutlined className="text-[10px]" />
+            思考过程
+            <CaretRightOutlined
+              className={`text-[8px] transition-transform duration-150 ${thoughtExpanded ? 'rotate-90' : ''}`}
+            />
+          </button>
+          {thoughtExpanded && (
+            <div className="mt-1 whitespace-pre-wrap rounded-lg border border-slate-100 bg-slate-50/80 p-2.5 text-[11.5px] leading-relaxed text-slate-500">
+              {thought}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
 
 /* ═══════════════════════════════════════════════════════════════
-   Section block — 标题 + mini 进度 + 导轨步骤列表
+   Section block — 默认折叠;运行中自动展开所在段,完成整体收敛
+   (结果为主、过程随行:过程段收起,需要时点开溯源)
    ═══════════════════════════════════════════════════════════════ */
 
 const SectionBlock: FC<{
   section: ManusThinkingSection;
   activeStepId?: string;
   stepThoughts: Record<string, string>;
+  /** 运行结束信号:is_working 变 false 时整体收敛(用户可再点开溯源) */
+  working: boolean;
   onStepClick?: (stepId: string) => void;
-}> = ({ section, activeStepId, stepThoughts, onStepClick }) => {
-  const [expanded, setExpanded] = useState(true);
+}> = ({ section, activeStepId, stepThoughts, working, onStepClick }) => {
+  const hasRunning = section.steps.some((s) => s.status === 'running');
+  const hasError = section.steps.some((s) => s.status === 'error');
+  // 默认折叠;运行中/失败的段自动展开定位
+  const [expanded, setExpanded] = useState(hasRunning || hasError);
+  const [touched, setTouched] = useState(false);
 
+  // 运行推进到本段时自动展开(用户点过则尊重手动选择)
+  useEffect(() => {
+    if (!touched && (hasRunning || hasError)) setExpanded(true);
+  }, [hasRunning, hasError, touched]);
+
+  // 运行结束 → 整段收敛(过程退场,结果为主)
+  const prevWorkingRef = useRef(working);
+  useEffect(() => {
+    if (prevWorkingRef.current && !working) {
+      setExpanded(false);
+      setTouched(false);
+    }
+    prevWorkingRef.current = working;
+  }, [working]);
+
+  const totalCount = section.steps.length;
   const completedCount = section.steps.filter(
     (s) => s.status === 'completed' || s.status === 'error'
   ).length;
-  const totalCount = section.steps.length;
-  const pct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
-  const allDone = totalCount > 0 && completedCount === totalCount;
+
+  const meta = totalCount > 0 ? `${completedCount}/${totalCount}` : undefined;
 
   return (
-    <div className="mb-1">
-      {/* Section header */}
+    <div className="mb-0.5">
+      {/* Section header:折叠开关 + 标题 + 步数 */}
       <button
-        className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-slate-50"
-        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-2 rounded-lg px-2 py-[6px] text-left transition-colors hover:bg-slate-50"
+        onClick={() => {
+          setTouched(true);
+          setExpanded(!expanded);
+        }}
+        aria-expanded={expanded}
       >
         <CaretRightOutlined
           className={`flex-shrink-0 text-[10px] text-slate-400 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
         />
-        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-slate-800">
+        <StatusNode status={hasError ? 'error' : hasRunning ? 'running' : section.is_completed ? 'completed' : 'pending'} />
+        <span className={`min-w-0 flex-1 truncate text-[12.5px] font-medium ${hasRunning ? 'text-indigo-600' : 'text-slate-700'}`}>
           {section.title}
         </span>
-        {/* mini 进度条 + 计数 */}
-        <span className="flex flex-shrink-0 items-center gap-1.5">
-          <span className="h-[3px] w-9 overflow-hidden rounded-full bg-slate-100">
-            <span
-              className={`block h-full rounded-full transition-all duration-500 ${
-                allDone
-                  ? 'bg-gradient-to-r from-emerald-400 to-emerald-500'
-                  : 'bg-gradient-to-r from-indigo-400 to-indigo-500'
-              }`}
-              style={{ width: `${pct}%` }}
-            />
+        {meta && (
+          <span className="flex-shrink-0 font-mono text-[10px] tabular-nums text-slate-400">
+            {meta}
           </span>
-          <span className="text-[10px] font-medium tabular-nums text-slate-400">
-            {completedCount}/{totalCount}
-          </span>
-        </span>
-        {section.is_completed && (
-          <CheckCircleFilled className="flex-shrink-0 text-[11px] text-emerald-500" />
         )}
       </button>
 
       {/* 导轨步骤列表 */}
       {expanded && (
-        <div className="relative ml-[15px] space-y-1 border-l-[1.5px] border-slate-200/70 py-1 pl-[13px]">
+        <div className="relative ml-[15px] space-y-0.5 border-l-[1.5px] border-slate-200/70 py-1 pl-[12px]">
           {section.steps.map((step) => (
             <StepCard
               key={step.id}
@@ -348,6 +359,7 @@ const VisManusLeftPanel: FC<IProps> = ({ data, onStepClick, onArtifactClick }) =
               section={section}
               activeStepId={active_step_id}
               stepThoughts={step_thoughts}
+              working={is_working}
               onStepClick={onStepClick}
             />
           ))

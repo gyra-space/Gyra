@@ -84,13 +84,13 @@ def mock_tool_context():
 
 
 class FakeSkillTool:
-    """模拟 skill 工具（ListSkillsTool）。"""
-    name = "list_skills"
+    """模拟统一 skill 工具。"""
+    name = "skill"
 
     async def execute(self, args, context=None):
         return V2ToolResult.ok(
             output="Available skills: sql_review",
-            tool_name="list_skills",
+            tool_name="skill",
         )
 
 
@@ -145,7 +145,7 @@ class FakeTruncator:
 def _make_full_config_tool_resolver():
     """构造满配 ToolResolver：包含 skill、DB、knowledge、sandbox 工具。"""
     return ToolResolver(system_tools={
-        "list_skills": FakeSkillTool(),
+        "skill": FakeSkillTool(),
         "execute_sql": FakeDBTool(),
         "knowledge_search": FakeKnowledgeTool(),
         "bash": FakeSandboxTool(),
@@ -179,7 +179,7 @@ def _make_thinking_full_config():
             yield {
                 "token": "",
                 "tool_calls": [
-                    {"tool": "list_skills", "input": {}},
+                    {"tool": "skill", "input": {}},
                     {"tool": "execute_sql", "input": {"sql": "SELECT 1"}},
                     {"tool": "knowledge_search", "input": {"query": "test"}},
                     {"tool": "bash", "input": {"command": "echo hello"}},
@@ -235,7 +235,7 @@ async def test_full_config_agent_runs_end_to_end(store):
     # 4 种工具都被调用
     tool_call_events = [e for e in events if e.event_type == "tool_call"]
     tool_names = [e.input.get("tool") for e in tool_call_events]
-    assert "list_skills" in tool_names
+    assert "skill" in tool_names
     assert "execute_sql" in tool_names
     assert "knowledge_search" in tool_names
     assert "bash" in tool_names
@@ -347,7 +347,7 @@ async def test_tool_resolver_returns_correct_tools():
     """验证满配 ToolResolver 能正确解析所有工具类型。"""
     resolver = _make_full_config_tool_resolver()
 
-    skill_tool = resolver.resolve("list_skills")
+    skill_tool = resolver.resolve("skill")
     assert skill_tool is not None
     assert isinstance(skill_tool, FakeSkillTool)
 
@@ -395,7 +395,7 @@ async def test_full_config_with_mcp_resource_pack(mock_tool_context):
     # 构造 ToolResolver：仅 resource_pack，无 system_tools 包含该工具
     resolver = ToolResolver(
         system_tools={
-            "list_skills": FakeSkillTool(),
+            "skill": FakeSkillTool(),
         },
         resource_pack=outer_pack,
     )
@@ -434,7 +434,7 @@ async def test_baize_vs_v2_same_prompt_both_run(store):
     # 4 工具都被调用
     tool_call_events = [e for e in events if e.event_type == "tool_call"]
     tool_names = [e.input.get("tool") for e in tool_call_events]
-    for expected in ("list_skills", "execute_sql", "knowledge_search", "bash"):
+    for expected in ("skill", "execute_sql", "knowledge_search", "bash"):
         assert expected in tool_names
 
     # BAIZE 代码路径仍存在（结构对比，不跑完整 BAIZE）

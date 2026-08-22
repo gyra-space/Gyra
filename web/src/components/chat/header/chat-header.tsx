@@ -11,6 +11,7 @@ import {
   FileTextOutlined,
   DesktopOutlined,
   PlusOutlined,
+  HistoryOutlined,
 } from '@ant-design/icons';
 import { App, Dropdown, Tooltip } from 'antd';
 import copy from 'copy-to-clipboard';
@@ -31,7 +32,7 @@ interface ChatHeaderProps {
 
 const ChatHeader: React.FC<ChatHeaderProps> = ({ isScrollToTop = false, isProcessing = false }) => {
   const { message } = App.useApp();
-  const { appInfo, refreshAppInfo, history, setHistory, onNewChat } = useContext(ChatContentContext);
+  const { appInfo, refreshAppInfo, history, setHistory, onNewChat, onToggleHistoryPanel, historyPanelOpen } = useContext(ChatContentContext);
   const { initChatId } = useContext(AppContext);
   const { t } = useTranslation();
   const searchParams = useSearchParams();
@@ -168,6 +169,20 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({ isScrollToTop = false, isProces
 
       {/* Actions */}
       <div className="flex items-center gap-1 flex-shrink-0">
+        {onToggleHistoryPanel && (
+          <Tooltip title={t('chat_history')} placement="bottom">
+            <button
+              onClick={onToggleHistoryPanel}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${
+                historyPanelOpen
+                  ? 'text-indigo-500 bg-indigo-50 dark:bg-indigo-900/30'
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-white/60'
+              }`}
+            >
+              <HistoryOutlined style={{ fontSize: 14 }} />
+            </button>
+          </Tooltip>
+        )}
         <Tooltip title="新会话" placement="bottom">
           <button
             onClick={handleNewChat}

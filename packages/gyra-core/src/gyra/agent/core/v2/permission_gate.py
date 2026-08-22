@@ -17,6 +17,7 @@ check() 是 async generator：ask 时 yield AWAITING_TOOL_PERMISSION 事件；
 调用方读完生成器后读 gate.last_result 获得最终决策。
 """
 from __future__ import annotations
+import inspect
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -46,6 +47,30 @@ _SIDE_EFFECT_PATTERNS = ("rm", "write", "delete", "execute", "bash", "shell",
 def _is_side_effecting(tool_name: str) -> bool:
     lower = tool_name.lower()
     return any(p in lower for p in _SIDE_EFFECT_PATTERNS)
+
+
+def _decision_allows(decision: Any) -> bool:
+    """把 serial 订阅者返回的决策归一化为是否放行（fail-closed）。
+
+    支持的形态：
+      - ``True``；
+      - 字符串：``allow`` / ``allow_once`` / ``allow_session``（大小写不敏感）；
+      - dict：``{"action": ...}`` 或 ``{"decision": ...}`` 同上；
+      - 枚举：``value`` / ``name`` 同上。
+    其余一律视为拒绝。
+    """
+    if decision is True:
+        return True
+    if isinstance(decision, str):
+        return decision.lower() in ("allow", "allow_once", "allow_session")
+    if isinstance(decision, dict):
+        val = decision.get("action", decision.get("decision"))
+        if isinstance(val, str):
+            return val.lower() in ("allow", "allow_once", "allow_session")
+    name = getattr(decision, "value", None) or getattr(decision, "name", None)
+    if isinstance(name, str):
+        return name.lower() in ("allow", "allow_once", "allow_session")
+    return False
 
 
 class NoInteractionAdapterError(RuntimeError):
@@ -388,13 +413,7 @@ class PermissionGate:
             )
             return
 
-        # ASK → emit + checkpoint + delegate（原 Level 5）
-        if self._adapter is None:
-            raise NoInteractionAdapterError(
-                f"PermissionGate reached ASK for tool '{tool_name}' but no "
-                f"InteractionAdapter is configured"
-            )
-
+        # ASK → serial 决策检查点 → 无裁决时 delegate 给 InteractionAdapter
         request_id = f"req-{uuid.uuid4().hex[:8]}"
         request_payload = {
             "request_id": request_id,
@@ -407,14 +426,15 @@ class PermissionGate:
             request_id, self._step_id, self._conv_id, request_payload
         )
 
+        # serial 决策检查点（对齐 DSH 审批检查点）：订阅者返回非 None/False
+        # 即裁决完成，无需 adapter / 用户介入，也不阻塞等待。
         if emit is not None:
-            # Runtime path: use the runtime's emit so seq is correctly assigned
-            persisted = await emit(
-                StepState.AWAITING_TOOL_PERMISSION,
-                "interaction_request",
-                input_data=request_payload,
+            # Runtime path: 用 runtime 的 emit 保证 seq 正确分配；
+            # 支持 mode 的 emit 走 serial 决策检查点，旧式 emit（无 mode）退化为广播。
+            dr = await self._emit_serial_event(
+                emit, StepState.AWAITING_TOOL_PERMISSION,
+                "interaction_request", request_payload,
             )
-            yield persisted
         else:
             # Unit-test path: construct event directly with seq=0 placeholder
             event = StepEvent(
@@ -430,8 +450,28 @@ class PermissionGate:
                 seq=0,
                 timestamp=time.time(),
             )
-            persisted = await self._stream.emit(event)
-            yield persisted
+            dr = await self._stream.emit_serial(event)
+        yield dr.event
+        if dr.decision is not None:
+            await self._apply_serial_decision(
+                request_id, tool_name, input_hash, dr.decision
+            )
+            return
+
+        # 无订阅者裁决 → 必须委托 InteractionAdapter 询问用户
+        if self._adapter is None:
+            # fail-closed：无 adapter 且无订阅者裁决时拒绝执行——既避免高危工具
+            # 在无审批通道下被放行（安全事故），也避免抛异常导致整轮 turn 崩溃。
+            self._cache.deny(tool_name, input_hash)
+            self.last_result = PermissionResult(
+                decision=PermissionDecision.DENY,
+                reason=(
+                    "no interaction adapter configured; "
+                    "permission request denied (fail-closed)"
+                ),
+                request_id=request_id,
+            )
+            return
 
         # Delegate to InteractionAdapter (blocks until user responds)
         response = await self._adapter.request_tool_permission(
@@ -457,4 +497,57 @@ class PermissionGate:
             decision=PermissionDecision.ALLOW,
             reason=f"user choice: {choice}",
             request_id=request_id,
+        )
+
+    @staticmethod
+    async def _emit_serial_event(
+        emit: Callable,
+        state: StepState,
+        event_type: str,
+        input_data: dict,
+    ) -> "DispatchResult":
+        """调用 runtime emit，兼容新旧两种签名。
+
+        - 新 emit（支持 ``mode`` kwarg，如 runtime._make_emit）：以 serial 模式分发，
+          返回 DispatchResult（含决策）；
+        - 旧 emit（无 mode 参数）：直接广播，返回 StepEvent，包成无决策的 DispatchResult。
+        """
+        from gyra.agent.core.v2.event_stream import DispatchResult
+
+        try:
+            supports_mode = "mode" in inspect.signature(emit).parameters
+        except (TypeError, ValueError):
+            supports_mode = False
+        if supports_mode:
+            return await emit(
+                state, event_type, input_data=input_data, mode="serial"
+            )
+        event = await emit(state, event_type, input_data=input_data)
+        return DispatchResult(event=event)
+
+    async def _apply_serial_decision(
+        self,
+        request_id: str,
+        tool_name: str,
+        input_hash: str,
+        decision: Any,
+    ) -> None:
+        """应用 serial 订阅者的裁决结果（不阻塞等待 InteractionAdapter）。
+
+        ALLOW → 清理 checkpoint + 可选 session cache；DENY → 清理 checkpoint + 记录拒绝。
+        """
+        if _decision_allows(decision):
+            await self._store.delete_interaction_checkpoint(request_id)
+            if isinstance(decision, str) and decision.lower() == "allow_session":
+                self._cache.allow_session(tool_name, input_hash)
+            self.last_result = PermissionResult(
+                decision=PermissionDecision.ALLOW,
+                reason=f"serial subscriber decision: {decision!r}",
+            )
+            return
+        await self._store.delete_interaction_checkpoint(request_id)
+        self._cache.deny(tool_name, input_hash)
+        self.last_result = PermissionResult(
+            decision=PermissionDecision.DENY,
+            reason=f"serial subscriber decision: {decision!r}",
         )

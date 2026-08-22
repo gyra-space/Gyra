@@ -40,7 +40,7 @@ async def test_emit_persists_and_returns_event(store):
 
 
 async def test_replay_yields_historical_events_in_order(store):
-    stream = EventStream(store)
+    stream = EventStream(store, batch=False)  # 关闭攒批，确保 emit 即落库
     for i in range(3):
         await stream.emit(StepEvent(
             event_id=f"evt-{i}",
@@ -57,7 +57,7 @@ async def test_replay_yields_historical_events_in_order(store):
         ))
 
     # 模拟进程重启后重放
-    new_stream = EventStream(store)
+    new_stream = EventStream(store, batch=False)
     events = []
     async for e in new_stream.replay("conv-1"):
         events.append(e)
@@ -66,7 +66,7 @@ async def test_replay_yields_historical_events_in_order(store):
 
 
 async def test_replay_since_seq(store):
-    stream = EventStream(store)
+    stream = EventStream(store, batch=False)
     for i in range(5):
         await stream.emit(StepEvent(
             event_id=f"evt-{i}",
@@ -81,7 +81,7 @@ async def test_replay_since_seq(store):
             seq=i,
             timestamp=float(i),
         ))
-    new_stream = EventStream(store)
+    new_stream = EventStream(store, batch=False)
     events = []
     async for e in new_stream.replay("conv-1", since_seq=3):
         events.append(e)

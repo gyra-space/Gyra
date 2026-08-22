@@ -12,10 +12,12 @@ ReActMaster Agent - 最佳实践的 ReAct 范式 Agent 实现
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable
 
 from gyra._private.pydantic import Field, PrivateAttr
 from gyra.configs.model_config import DATA_DIR
+from gyra_core.config.schema import DEFAULT_MAX_NEW_TOKENS
 import os
 from gyra.agent import (
     ActionOutput,
@@ -429,9 +431,14 @@ class ReActMasterAgent(ConversableAgent, Team):
         # 异步 resume 轮次强制续跑计数器及上限（避免 LLM 反复返回占位文本导致死循环）
         self._async_resume_force_count = 0
         self._async_resume_force_limit = 2
+        # 输出超长截断(finish_reason=length)强制续跑计数器及上限（避免死循环）
+        self._length_force_count = 0
+        self._length_force_limit = 2
         # 异步 resume 是否在"当前用户轮次"内持续生效（跨 LLM 迭代保持，换新用户消息时重置）
         self._async_resume_active = False
         self._async_resume_received_id = None
+        # 输出截断续跑计数按用户消息维度的重置标记
+        self._length_received_id = None
 
 
     async def preload_resource(self) -> None:
@@ -2142,15 +2149,17 @@ class ReActMasterAgent(ConversableAgent, Team):
         2. 兜底推算：tokenizer 不可用/失败时按「字符数/4」估算。
 
         返回的明细用于环形图/详情抽屉分层展示：
-        - system_tokens: system 消息占用
+        - system_tokens: system 消息占用（不含技能指令）
         - conversation_tokens: 非 system 消息占用（历史 + 当前用户消息）
         - tool_tokens: 工具列表占用
+        - skill_tokens: 技能指令（`<skill>` 指令/索引）占用，是 system_tokens 的子集
         """
         from gyra.agent.core.usage_metric import count_tokens
 
         system_tokens = 0
         conversation_tokens = 0
         tool_tokens = 0
+        skill_tokens = 0
 
         for msg in messages:
             content = msg.get("content", "")
@@ -2172,6 +2181,7 @@ class ReActMasterAgent(ConversableAgent, Team):
             msg_token_estimate = count_tokens(chunk)
             if msg.get("role") == "system":
                 system_tokens += msg_token_estimate
+                skill_tokens += self._count_skill_tokens(chunk)
             else:
                 conversation_tokens += msg_token_estimate
 
@@ -2188,7 +2198,25 @@ class ReActMasterAgent(ConversableAgent, Team):
             "system_tokens": system_tokens,
             "conversation_tokens": conversation_tokens,
             "tool_tokens": tool_tokens,
+            "skill_tokens": skill_tokens,
         }
+
+    @staticmethod
+    def _count_skill_tokens(text: str) -> int:
+        """统计 system 提示里 `<skill>...</skill>` 指令/索引块的 token 占用。
+
+        技能以 <skill>…</skill> 标记注入系统提示（见 var_skills / 项目生态），
+        这里单独切分出来，让前端「技能」分类能真实反映技能上下文占用，
+        而不是全部并入「系统提示词」。
+        """
+        from gyra.agent.core.usage_metric import count_tokens
+
+        if not text:
+            return 0
+        blocks = re.findall(r"<skill>.*?</skill>", text, re.S)
+        if not blocks:
+            return 0
+        return count_tokens("".join(blocks))
 
     async def thinking(
         self,
@@ -2437,6 +2465,7 @@ class ReActMasterAgent(ConversableAgent, Team):
                         0,
                         context_stats["conversation_tokens"] - _cur_user_tokens,
                     )
+                    _skill_tokens = context_stats.get("skill_tokens", 0) or 0
                     emit_context_usage(
                         conv_id=self.not_null_agent_context.conv_id,
                         total_tokens=context_stats["total_tokens"],
@@ -2444,10 +2473,12 @@ class ReActMasterAgent(ConversableAgent, Team):
                         prompt_tokens=context_stats["message_tokens"],
                         completion_tokens=context_stats["tool_tokens"],
                         model_name=llm_model or "",
-                        system_prompt_tokens=context_stats["system_tokens"],
+                        system_prompt_tokens=context_stats["system_tokens"]
+                        - _skill_tokens,
                         history_tokens=_history_tokens,
                         user_message_tokens=_cur_user_tokens,
                         layer_tokens=history_layer_tokens,
+                        skills=_skill_tokens,
                     )
                 except Exception as _ctx_err:  # noqa: BLE001
                     logger.debug(f"[usage] context emit skipped: {_ctx_err}")
@@ -2560,6 +2591,7 @@ class ReActMasterAgent(ConversableAgent, Team):
                         if svc_prompt > 0 and est_total > 0:
                             _scale = svc_prompt / est_total
                             _sc = lambda v: int(round(v * _scale))  # noqa: E731
+                            _skill_tokens = context_stats.get("skill_tokens", 0) or 0
                             emit_context_usage(
                                 conv_id=self.not_null_agent_context.conv_id,
                                 total_tokens=svc_prompt,
@@ -2568,7 +2600,7 @@ class ReActMasterAgent(ConversableAgent, Team):
                                 completion_tokens=_sc(context_stats["tool_tokens"]),
                                 model_name=llm_model or "",
                                 system_prompt_tokens=_sc(
-                                    context_stats["system_tokens"]
+                                    context_stats["system_tokens"] - _skill_tokens
                                 ),
                                 history_tokens=_sc(
                                     max(
@@ -2582,6 +2614,7 @@ class ReActMasterAgent(ConversableAgent, Team):
                                     k: _sc(v)
                                     for k, v in history_layer_tokens.items()
                                 },
+                                skills=_sc(_skill_tokens),
                             )
                 except Exception as _svc_err:  # noqa: BLE001
                     logger.debug(f"[usage] service-corrected emit skipped: {_svc_err}")
@@ -2656,6 +2689,11 @@ class ReActMasterAgent(ConversableAgent, Team):
         # 非异步 resume 轮次时清零强制续跑计数，避免跨轮次累计
         if not self._async_resume_active:
             self._async_resume_force_count = 0
+        # 输出截断续跑计数按"用户消息"维度重置：同一用户消息内的多次 LLM 迭代累计，
+        # 换新用户消息时清零，避免跨轮次累计。
+        if self._length_received_id != _rm_id:
+            self._length_received_id = _rm_id
+            self._length_force_count = 0
 
         # 阶段 1：解析所有可能的 action
         real_actions = self.agent_parser.parse_actions(
@@ -3050,6 +3088,28 @@ class ReActMasterAgent(ConversableAgent, Team):
                                 f"{self._async_resume_force_limit}) instead of terminate"
                             )
 
+                        # ========== 输出超长截断(finish_reason=length)的 BlankAction 兜底 ==========
+                        # 模型单次输出达到 max_new_tokens 被截断(无工具调用)时，默认 terminate
+                        # 会把截断的半截结果当最终答案交付。改为强制续跑(同异步 resume 模式)，
+                        # 并注入"用 Write/Edit 分段写文件"引导，让模型把超长结果分块落盘。
+                        # 按用户消息维度计数兜底，避免死循环。必须在 terminate 收尾逻辑之前翻转，
+                        # 否则交付/完成钩子已执行，续跑就失去意义。
+                        if (
+                            getattr(kwargs.get("agent_llm_out"), "finish_reason", None)
+                            == "length"
+                            and getattr(result, "action", None) == "blank"
+                            and getattr(result, "terminate", False)
+                            and self._length_force_count < self._length_force_limit
+                        ):
+                            result.terminate = False
+                            self._length_force_count += 1
+                            logger.warning(
+                                f"[ReActMasterAgent] LLM output truncated by max_new_tokens "
+                                f"(finish_reason=length); forcing continuation "
+                                f"({self._length_force_count}/{self._length_force_limit}) "
+                                f"to write result to file in chunks instead of terminating"
+                            )
+
                         # ========== 集成：判断是否需要自动生成报告 ==========
                         # 如果是 terminate action 且启用了自动报告
                         if (
@@ -3183,10 +3243,20 @@ class ReActMasterAgent(ConversableAgent, Team):
             if has_blank_action and act_outs:
                 # 检查BlankAction是否应该终止（terminate=True表示应该结束任务）
                 blank_action_output = act_outs[0]
+
+                # 输出超长截断(length)时，强制续跑已在循环内完成（见上方 BlankAction 兜底）；
+                # 这里按 finish_reason 选择注入"分段用工具写文件"引导而非通用无工具提醒。
+                _length_out = kwargs.get("agent_llm_out")
+                _length_fr = getattr(_length_out, "finish_reason", None)
                 if not blank_action_output.terminate:
-                    await self._inject_no_tool_call_reminder(
-                        blank_action_output, message.message_id
-                    )
+                    if _length_fr == "length":
+                        await self._inject_length_reminder(
+                            blank_action_output, message.message_id, _length_out
+                        )
+                    else:
+                        await self._inject_no_tool_call_reminder(
+                            blank_action_output, message.message_id
+                        )
 
         return act_outs
 
@@ -3241,6 +3311,60 @@ class ReActMasterAgent(ConversableAgent, Team):
                 )
         except Exception as e:
             logger.warning(f"Failed to inject no-tool-call reminder: {e}")
+
+    async def _inject_length_reminder(
+        self, action_output: ActionOutput, message_id: str, llm_out
+    ):
+        """
+        单次输出超出 max_new_tokens 被截断(finish_reason=length)时的续跑引导。
+
+        模型在一条消息里直接输出超长结果会被截断；这里提示它改用工具分段写文件，
+        避免截断的半截内容被当成最终答案交付。
+        """
+        from gyra.agent.core.memory.gpts.agent_system_message import (
+            AgentSystemMessage,
+            AgentPhase,
+            SystemMessageType,
+        )
+
+        if not self.not_null_agent_context:
+            return
+
+        # 拿到本次输出的截断上限，用于在提醒里给模型一个具体的量级参考
+        try:
+            _cap = getattr(
+                self.not_null_agent_context, "max_new_tokens", DEFAULT_MAX_NEW_TOKENS
+            )
+        except Exception:  # noqa: BLE001
+            _cap = DEFAULT_MAX_NEW_TOKENS
+
+        reminder_content = f"""【系统提醒】你上一条回复因超过模型单次最大输出长度（约 {_cap} tokens）而被截断，未能产出完整结果。
+
+请不要再在消息文本里一次性输出长内容，改用工具分段完成：
+1. 用 Write 工具把完整结果写入文件（可分多次 Write 拼出完整内容）
+2. 若文件已存在，用 Edit 工具分块追加，不要在单个工具参数里塞入超长内容
+3. 大段 HTML / 代码 / 报告请拆成多段，逐段用 Write / Edit 落盘
+4. 全部写完后用 Read 确认内容完整、再调用交付工具结束任务"""
+
+        try:
+            system_message = AgentSystemMessage.build(
+                agent_context=self.agent_context,
+                agent=self,
+                type=SystemMessageType.STATUS,
+                phase=AgentPhase.ACTION_RUN,
+                content=reminder_content,
+                final_status=Status.RUNNING,
+                reply_message_id=message_id,
+            )
+
+            if self.memory and self.memory.gpts_memory:
+                await self.memory.gpts_memory.append_system_message(system_message)
+                logger.info(
+                    "✅ Injected output-length-truncation reminder to continue "
+                    "writing result in chunks via tools"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to inject length reminder: {e}")
 
     async def _attach_delivery_files(
         self, action_out: "ActionOutput"

@@ -49,7 +49,6 @@ import {
   TerminalRenderer,
   CodeExecutionRenderer,
   HtmlTabbedRenderer,
-  SkillScriptRenderer,
   SkillCardRenderer,
   SkillReadRenderer,
   SqlQueryRenderer,
@@ -169,7 +168,13 @@ const StepRenderer: FC<{
   activeStep: ManusActiveStepInfo;
   outputs: ManusExecutionOutput[];
 }> = ({ activeStep, outputs }) => {
-  const { type, action, action_input, status } = activeStep;
+  const { action, action_input, status } = activeStep;
+  // 后端 vis_manus 协议下发大驼峰类型(Read/Bash/Grep/Write/Sql 等),
+  // 前端组件 switch 用小写匹配;此处归一化,否则 Bash 步骤落进 default → OutputRenderer → 暂无输出。
+  // 部分 lazy 壳步骤 type 为空/Other,但 action/标题带 bash 语义,同样按终端渲染,避免无输出。
+  const rawType = (activeStep.type || '').toLowerCase();
+  const bashLike = /bash|terminal|shell|cmd/.test(`${action || ''} ${activeStep.title || ''}`.toLowerCase());
+  const type = (!rawType || rawType === 'other') && bashLike ? 'bash' : rawType;
 
   const command = useMemo(() => {
     if (!action_input) return undefined;
@@ -201,8 +206,6 @@ const StepRenderer: FC<{
       return <HtmlTabbedRenderer outputs={outputs} title={activeStep.title} />;
     case 'skill':
       if (action === 'skill_read') return <SkillReadRenderer outputs={outputs} skillName={activeStep.title} />;
-      if (action === 'skill_exec' || action === 'execute_skill_script_file') return <SkillScriptRenderer outputs={outputs} skillName={activeStep.title} />;
-      if (action === 'skill_list') return <OutputRenderer outputs={outputs} />;
       if (action === 'get_skill_resource' || action === 'load_skill') return <SkillCardRenderer outputs={outputs} skillName={activeStep.title} />;
       return <SkillReadRenderer outputs={outputs} skillName={activeStep.title} />;
     default:
@@ -872,8 +875,9 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
     if (local) {
       setSelectedStep({ active_step: local.active_step, outputs: local.outputs ?? [] });
     }
-    // 非 lazy(已有 outputs)无需拉取
-    if (local && local.outputs !== undefined) return;
+    // lazy 模式下 steps_map 里的步骤只有壳(outputs=[] 或缺省),需要拉详情;
+    // 不能只看 `outputs !== undefined`——空数组同样代表未加载,否则点击过去永远显示「暂无输出」。
+    if (local && local.outputs && local.outputs.length) return;
 
     const convId = typeof window !== 'undefined'
       ? new URLSearchParams(window.location.search).get('conv_uid') || ''
@@ -1241,7 +1245,7 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
             active={activeTab === 'execution'}
             onClick={() => { setActiveTab('execution'); setSelectedStep(null); }}
             icon={<DesktopOutlined />}
-            label="执行步骤"
+            label="执行过程"
           />
           {/* 2. 任务文件 */}
           {hasTaskFiles && (
@@ -1315,8 +1319,8 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
                 onClick={() => setInputCollapsed(prev => !prev)}
               >
                 <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                  <div className={classNames('w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 text-xs', getIconBgClass(displayStep.type))}>
-                    {getStepTypeIcon(displayStep.type)}
+                  <div className={classNames('w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 text-xs', getIconBgClass((displayStep.type || 'other').toLowerCase() as ManusStepType))}>
+                    {getStepTypeIcon((displayStep.type || 'other').toLowerCase() as ManusStepType)}
                   </div>
                   <div className="text-[13px] font-medium text-gray-700 truncate">
                     {displayStep.title}

@@ -16,6 +16,7 @@ from .models import (
     REQUEST_STATUS_CANCELLED,
     REQUEST_STATUS_PENDING,
     REQUEST_STATUS_REJECTED,
+    ResourceGrantEntity,
     RoleEntity,
     RolePermissionDefEntity,
     RolePermissionEntity,
@@ -45,11 +46,18 @@ class PermissionDao:
             return self._role_row(r) if r else None
 
     def create_role(
-        self, name: str, description: Optional[str] = None, is_system: int = 0
+        self,
+        name: str,
+        description: Optional[str] = None,
+        is_system: int = 0,
+        scope_type: str = "global",
     ) -> Dict[str, Any]:
         with db.session() as s:
             r = RoleEntity(
-                name=name.strip(), description=description, is_system=is_system
+                name=name.strip(),
+                description=description,
+                is_system=is_system,
+                scope_type=scope_type,
             )
             s.add(r)
             s.flush()
@@ -159,31 +167,53 @@ class PermissionDao:
 
     # ========== User Role Assignment ==========
     def get_user_roles(self, user_id: int) -> List[Dict[str, Any]]:
-        """获取用户的直接角色（通过 user_role 表）"""
+        """获取用户的直接全局角色（scope_id IS NULL；空间角色不进全局聚合）"""
         with db.session(commit=False) as s:
             rows = (
                 s.query(RoleEntity)
                 .join(UserRoleEntity, UserRoleEntity.role_id == RoleEntity.id)
-                .filter(UserRoleEntity.user_id == user_id)
+                .filter(
+                    UserRoleEntity.user_id == user_id,
+                    UserRoleEntity.scope_id.is_(None),
+                )
                 .all()
             )
             return [self._role_row(r) for r in rows]
 
-    def assign_role_to_user(self, user_id: int, role_id: int) -> Dict[str, Any]:
-        with db.session() as s:
-            ur = UserRoleEntity(user_id=user_id, role_id=role_id)
-            s.add(ur)
-            s.flush()
-            s.refresh(ur)
-            return {"id": ur.id, "user_id": ur.user_id, "role_id": ur.role_id}
-
-    def remove_user_role(self, user_id: int, role_id: int) -> bool:
+    def assign_role_to_user(
+        self, user_id: int, role_id: int, scope_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         with db.session() as s:
             ur = (
                 s.query(UserRoleEntity)
                 .filter(
                     UserRoleEntity.user_id == user_id,
                     UserRoleEntity.role_id == role_id,
+                    UserRoleEntity.scope_id == scope_id,
+                )
+                .first()
+            )
+            if ur is None:
+                ur = UserRoleEntity(user_id=user_id, role_id=role_id, scope_id=scope_id)
+                s.add(ur)
+                s.flush()
+            return {
+                "id": ur.id,
+                "user_id": ur.user_id,
+                "role_id": ur.role_id,
+                "scope_id": ur.scope_id,
+            }
+
+    def remove_user_role(
+        self, user_id: int, role_id: int, scope_id: Optional[int] = None
+    ) -> bool:
+        with db.session() as s:
+            ur = (
+                s.query(UserRoleEntity)
+                .filter(
+                    UserRoleEntity.user_id == user_id,
+                    UserRoleEntity.role_id == role_id,
+                    UserRoleEntity.scope_id == scope_id,
                 )
                 .first()
             )
@@ -191,6 +221,22 @@ class PermissionDao:
                 return False
             s.delete(ur)
             return True
+
+    def get_scoped_user_roles(
+        self, user_id: int, scope_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """获取用户在指定空间上绑定的角色（scope_id=None 时为全局角色）"""
+        with db.session(commit=False) as s:
+            rows = (
+                s.query(RoleEntity)
+                .join(UserRoleEntity, UserRoleEntity.role_id == RoleEntity.id)
+                .filter(
+                    UserRoleEntity.user_id == user_id,
+                    UserRoleEntity.scope_id == scope_id,
+                )
+                .all()
+            )
+            return [self._role_row(r) for r in rows]
 
     def list_user_role_assignments(self, user_id: int) -> List[Dict[str, Any]]:
         with db.session(commit=False) as s:
@@ -268,6 +314,7 @@ class PermissionDao:
             "name": r.name,
             "description": r.description or "",
             "is_system": r.is_system,
+            "scope_type": getattr(r, "scope_type", "global") or "global",
             "gmt_create": r.gmt_create.isoformat() if r.gmt_create else None,
             "gmt_modify": r.gmt_modify.isoformat() if r.gmt_modify else None,
         }
@@ -327,6 +374,8 @@ class PermissionDao:
         resource_id: str = "*",
         effect: str = "allow",
         description: Optional[str] = None,
+        scope_type: str = "global",
+        grantable: bool = False,
     ) -> Dict[str, Any]:
         """创建权限定义"""
         with db.session() as s:
@@ -338,6 +387,8 @@ class PermissionDao:
                 action=action,
                 effect=effect,
                 is_active=True,
+                scope_type=scope_type,
+                grantable=grantable,
             )
             s.add(p)
             s.flush()
@@ -354,6 +405,8 @@ class PermissionDao:
         action: Optional[str] = None,
         effect: Optional[str] = None,
         is_active: Optional[bool] = None,
+        scope_type: Optional[str] = None,
+        grantable: Optional[bool] = None,
     ) -> Optional[Dict[str, Any]]:
         """更新权限定义"""
         with db.session() as s:
@@ -378,6 +431,10 @@ class PermissionDao:
                 p.effect = effect
             if is_active is not None:
                 p.is_active = is_active
+            if scope_type is not None:
+                p.scope_type = scope_type
+            if grantable is not None:
+                p.grantable = grantable
             s.flush()
             s.refresh(p)
             return self._perm_def_row(p)
@@ -476,6 +533,8 @@ class PermissionDao:
             "action": p.action,
             "effect": p.effect,
             "is_active": p.is_active,
+            "scope_type": getattr(p, "scope_type", "global") or "global",
+            "grantable": bool(getattr(p, "grantable", False)),
             "gmt_create": p.gmt_create.isoformat() if p.gmt_create else None,
             "gmt_modify": p.gmt_modify.isoformat() if p.gmt_modify else None,
         }
@@ -691,6 +750,106 @@ class PermissionDao:
                 .first()
                 is not None
             )
+
+    # ========== Resource Grant CRUD（资源实例级授权） ==========
+    def get_user_grants(self, user_id: int) -> List[Dict[str, Any]]:
+        """获取用户未过期的全部实例级授权"""
+        from datetime import datetime
+
+        with db.session(commit=False) as s:
+            rows = (
+                s.query(ResourceGrantEntity)
+                .filter(ResourceGrantEntity.user_id == user_id)
+                .order_by(ResourceGrantEntity.id.asc())
+                .all()
+            )
+            now = datetime.utcnow()
+            return [
+                self._grant_row(r)
+                for r in rows
+                if r.expires_at is None or r.expires_at > now
+            ]
+
+    def create_grant(
+        self,
+        user_id: int,
+        permission_key: str,
+        resource_type: str,
+        resource_id: str,
+        expires_at: Optional[datetime] = None,
+        granted_by: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        with db.session() as s:
+            existing = (
+                s.query(ResourceGrantEntity)
+                .filter(
+                    ResourceGrantEntity.user_id == user_id,
+                    ResourceGrantEntity.permission_key == permission_key,
+                    ResourceGrantEntity.resource_type == resource_type,
+                    ResourceGrantEntity.resource_id == resource_id,
+                )
+                .first()
+            )
+            if existing:
+                existing.expires_at = expires_at
+                existing.granted_by = granted_by
+                s.flush()
+                s.refresh(existing)
+                return self._grant_row(existing)
+            g = ResourceGrantEntity(
+                user_id=user_id,
+                permission_key=permission_key,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                expires_at=expires_at,
+                granted_by=granted_by,
+            )
+            s.add(g)
+            s.flush()
+            s.refresh(g)
+            return self._grant_row(g)
+
+    def delete_grant(self, grant_id: int) -> bool:
+        with db.session() as s:
+            g = (
+                s.query(ResourceGrantEntity)
+                .filter(ResourceGrantEntity.id == grant_id)
+                .first()
+            )
+            if not g:
+                return False
+            s.delete(g)
+            return True
+
+    def list_grants(
+        self,
+        user_id: Optional[int] = None,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        with db.session(commit=False) as s:
+            query = s.query(ResourceGrantEntity)
+            if user_id is not None:
+                query = query.filter(ResourceGrantEntity.user_id == user_id)
+            if resource_type:
+                query = query.filter(ResourceGrantEntity.resource_type == resource_type)
+            if resource_id:
+                query = query.filter(ResourceGrantEntity.resource_id == resource_id)
+            rows = query.order_by(ResourceGrantEntity.id.asc()).all()
+            return [self._grant_row(r) for r in rows]
+
+    @staticmethod
+    def _grant_row(g: ResourceGrantEntity) -> Dict[str, Any]:
+        return {
+            "id": g.id,
+            "user_id": g.user_id,
+            "permission_key": g.permission_key,
+            "resource_type": g.resource_type,
+            "resource_id": g.resource_id,
+            "expires_at": g.expires_at.isoformat() if g.expires_at else None,
+            "granted_by": g.granted_by,
+            "gmt_create": g.gmt_create.isoformat() if g.gmt_create else None,
+        }
 
     @staticmethod
     def _request_row(r: PermissionRequestEntity) -> Dict[str, Any]:

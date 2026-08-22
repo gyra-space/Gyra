@@ -14,7 +14,8 @@ def recovery():
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     store = DbStateStore(path)
-    yield RecoveryCoordinatorV2(store, lease_ttl_seconds=30), store, EventStream(store)
+    # 测试场景：关闭攒批，确保 emit 即落库
+    yield RecoveryCoordinatorV2(store, lease_ttl_seconds=30), store, EventStream(store, batch=False)
     os.unlink(path)
 
 

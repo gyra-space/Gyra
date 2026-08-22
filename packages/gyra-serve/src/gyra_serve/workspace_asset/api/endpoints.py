@@ -22,6 +22,7 @@ from ..service.maturity import MATURITY_SERVICE_COMPONENT_NAME, AssetMaturitySer
 from ..service.sediment_service import SEDIMENT_SERVICE_COMPONENT_NAME, SedimentPipeline
 from ..service.service import ASSET_SERVICE_COMPONENT_NAME, AssetService
 from gyra_serve.workspace.rbac import Permission, require_permission
+from gyra_serve.permissions import require_space
 
 router = APIRouter()
 global_system_app: Optional[SystemApp] = None
@@ -50,7 +51,8 @@ async def check_api_key(
 
 
 @router.post("/assets/create", response_model=Result[AssetResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.manage"))])
 async def create_asset(
     request: AssetRequest, service: AssetService = Depends(get_service),
 ) -> Result[AssetResponse]:
@@ -62,7 +64,8 @@ async def create_asset(
 
 
 @router.post("/assets/list", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.view"))])
 async def list_assets(
     f: AssetListFilter, service: AssetService = Depends(get_service),
 ) -> Result:
@@ -74,7 +77,8 @@ async def list_assets(
 
 
 @router.get("/assets/info", response_model=Result[AssetResponse],
-            dependencies=[Depends(check_api_key)])
+            dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.view"))])
 async def get_asset(
     asset_id: int = Query(...),
     service: AssetService = Depends(get_service),
@@ -90,7 +94,8 @@ async def get_asset(
 
 
 @router.post("/assets/update", response_model=Result[AssetResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.manage"))])
 async def update_asset(
     request: AssetRequest, service: AssetService = Depends(get_service),
 ) -> Result[AssetResponse]:
@@ -102,7 +107,8 @@ async def update_asset(
 
 
 @router.post("/assets/search", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.view"))])
 async def search_assets(
     req: AssetSearchRequest, service: AssetService = Depends(get_service),
 ) -> Result:
@@ -114,7 +120,8 @@ async def search_assets(
 
 
 @router.get("/assets/{asset_id}/versions", response_model=Result,
-            dependencies=[Depends(check_api_key)])
+            dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.view"))])
 async def list_versions(
     asset_id: int, service: AssetService = Depends(get_service),
 ) -> Result:
@@ -126,7 +133,8 @@ async def list_versions(
 
 
 @router.post("/assets/link_task", response_model=Result[TaskAssetLinkResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.manage"))])
 async def link_to_task(
     request: TaskAssetLinkRequest, service: AssetService = Depends(get_service),
 ) -> Result[TaskAssetLinkResponse]:
@@ -138,7 +146,8 @@ async def link_to_task(
 
 
 @router.get("/assets/task_links", response_model=Result,
-            dependencies=[Depends(check_api_key)])
+            dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.view"))])
 async def list_task_links(
     task_id: int = Query(...),
     service: AssetService = Depends(get_service),
@@ -230,7 +239,8 @@ async def promote_asset_maturity(
 
 
 @router.post("/assets/maturity/attest", response_model=Result[AssetResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.manage"))])
 async def attest_asset(
     request: AssetAttestRequest,
     service: AssetMaturityService = Depends(get_maturity_service),
@@ -248,7 +258,8 @@ async def attest_asset(
 
 
 @router.post("/assets/maturity/coach", response_model=Result[AssetMaturityLogResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.manage"))])
 async def coach_asset(
     request: AssetCoachRequest,
     service: AssetMaturityService = Depends(get_maturity_service),
@@ -267,7 +278,8 @@ async def coach_asset(
 
 
 @router.get("/assets/{asset_id}/maturity/logs", response_model=Result,
-            dependencies=[Depends(check_api_key)])
+            dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.view"))])
 async def list_maturity_logs(
     asset_id: int,
     service: AssetMaturityService = Depends(get_maturity_service),
@@ -280,7 +292,8 @@ async def list_maturity_logs(
 
 
 @router.post("/assets/maturity/list_by_maturity", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.view"))])
 async def list_by_maturity(
     request: AssetMaturityListRequest,
     service: AssetMaturityService = Depends(get_maturity_service),
@@ -298,7 +311,8 @@ async def list_by_maturity(
 
 # ----- 索引 API -----
 @router.post("/assets/search_indexed", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.view"))])
 async def search_indexed_assets(
     request: AssetIndexSearchRequest,
     service: AssetIndexService = Depends(get_index_service),
@@ -319,7 +333,8 @@ async def search_indexed_assets(
 
 
 @router.post("/assets/index/reconcile", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.manage"))])
 async def reconcile_index(
     request: AssetIndexReconcileRequest,
     service: AssetIndexService = Depends(get_index_service),
@@ -334,7 +349,8 @@ async def reconcile_index(
 
 # ----- 沉淀 API -----
 @router.post("/assets/sediment/check", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.asset.manage"))])
 async def sediment_check(
     request: SedimentCheckRequest,
     service: SedimentPipeline = Depends(get_sediment_service),

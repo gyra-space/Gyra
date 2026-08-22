@@ -878,12 +878,30 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
                     if matched_message_id:
                         break
 
+            # 按序配对回退：同一 conv 内 legacy 条目（按 timestamp）与
+            # 工具消息（按 created_at）数量一致时按顺序一一对应，避免
+            # 多工具步骤全部错误关联到第一条消息。
             if not matched_message_id and entry.conv_id:
                 conv_ai_messages = [
                     m for m in ai_messages if m.conv_id == entry.conv_id
                 ]
                 if conv_ai_messages:
-                    matched_message_id = conv_ai_messages[0].message_id
+                    conv_ai_messages.sort(key=lambda m: m.created_at)
+                    legacy_for_conv = [
+                        e
+                        for e in legacy_entries
+                        if e.conv_id == entry.conv_id
+                    ]
+                    legacy_for_conv.sort(key=lambda e: e.timestamp)
+                    if len(conv_ai_messages) == len(legacy_for_conv):
+                        for idx, e in enumerate(legacy_for_conv):
+                            if e is entry:
+                                matched_message_id = conv_ai_messages[
+                                    idx
+                                ].message_id
+                                break
+                    elif len(conv_ai_messages) == 1:
+                        matched_message_id = conv_ai_messages[0].message_id
 
             if matched_message_id:
                 entry.message_id = matched_message_id
@@ -1028,7 +1046,9 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
             if not cache:
                 logger.warning(f"[vis_final] cache不存在 conv_id={conv_id}")
                 return None
-            messages = await self.get_messages(conv_id)
+            # 同 vis_messages：绑定 v2 消息的 WorkEntry，终态视图也按工具消息渲染步骤，
+            # 避免依赖最终消息重复携带 action_report。
+            messages = await self.get_messages_with_work_entries(conv_id)
             logger.debug(f"[vis_final] conv_id={conv_id}, messages数量={len(messages)}, start_round={cache.start_round}")
 
             messages = messages[cache.start_round :]
@@ -1121,7 +1141,10 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
         cache = await self._get_cache(conv_id)
         if not cache:
             return None
-        messages = await self.get_messages(conv_id)
+        # 用 get_messages_with_work_entries：为 v2 新格式消息绑定 WorkEntry，
+        # 使 action_report 动态构建、vis 转换器能在流式阶段实时渲染工具步骤
+        # （get_messages 不绑 WorkEntry，V2 工具步骤会攒到最终消息一次性输出）。
+        messages = await self.get_messages_with_work_entries(conv_id)
         messages = messages[cache.start_round :]
         # 转换器可经 include_user_messages opt-in 保留 Human 消息
         # (默认 _merge_messages 会屏蔽用户消息;scene_agent_workspace 需要用户气泡)
@@ -1524,13 +1547,21 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
                     **kwargs,
                 )
             if final_view:
-                ## 如果消息通道满了 直接抛弃，不阻塞后续执行
-                cache.channel.put_nowait(final_view)
+                ## 通道满时挤出最旧帧再入队最新帧:本协议每帧都是全量视图
+                ## (前端按 step.id 幂等合并),丢旧帧不丢信息,但若直接丢新帧,
+                ## 工具步骤的 done 翻转帧可能永久丢失,前端步骤停在 running。
+                try:
+                    cache.channel.put_nowait(final_view)
+                except asyncio.QueueFull:
+                    try:
+                        cache.channel.get_nowait()
+                        cache.channel.put_nowait(final_view)
+                        logger.warning(f"Queue full for {conv_id}, evicted oldest frame to deliver latest")
+                    except (asyncio.QueueEmpty, asyncio.QueueFull):
+                        logger.warning(f"Queue full for {conv_id}, dropping message")
                 if stream_msg or gpt_msg:
                     cache.start_push = True
                 await asyncio.sleep(0)
-        except asyncio.QueueFull:
-            logger.warning(f"Queue full for {conv_id}, dropping message")
         except Exception as e:
             logger.exception(f"Error pushing message: {e}")
 
@@ -1576,10 +1607,13 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
         messages.sort(key=lambda x: x.created_at)
 
         for msg in messages:
-            if (
-                getattr(msg, "role", "") == "assistant"
-                and getattr(msg, "is_new_format", False)
-            ):
+            # data_version 在 DB 往返中丢失（gpts_messages 表无该字段），
+            # is_new_format 会变 False；带 tool_calls 的 assistant 消息是 v2
+            # 工具步骤的可靠形态信号，据此仍绑定 WorkEntry 重建 action_report。
+            is_v2_shaped = getattr(msg, "is_new_format", False) or bool(
+                getattr(msg, "tool_calls", None)
+            )
+            if getattr(msg, "role", "") == "assistant" and is_v2_shaped:
                 entries = cache.work_entries_by_message.get(msg.message_id, [])
                 if entries:
                     msg.set_work_entries(entries)

@@ -339,7 +339,43 @@ def _migration_db_storage(
                  it is necessary to compare with the GYRA/assets/schema/gyra.sql file
                  and manually make the columns changes in the MySQL database instance.
                  """
-            logger.warning(warn_msg)
+            # MySQL/OceanBase：按 gyra.json 的 schema_migration 配置自动迁移
+            _auto_migrate_mysql_schema(db, warn_msg)
+
+
+def _auto_migrate_mysql_schema(db, manual_warn_msg: str) -> None:
+    """MySQL/OceanBase 分支：按 gyra.json 的 schema_migration 配置自动迁移。
+
+    版本权威记录在数据库 gyra_schema_version 账本表；gyra.json 仅镜像。
+    迁移失败时按 on_error 策略：abort（默认）抛异常阻断启动 / warn 记录后继续。
+    """
+    from gyra_core.config import ConfigManager
+
+    sm_cfg = None
+    try:
+        cfg = ConfigManager.get()
+        sm_cfg = getattr(cfg, "schema_migration", None) if cfg else None
+    except Exception as e:
+        logger.warning(f"[SchemaMigrator] load schema_migration config failed: {e}")
+
+    enabled = bool(getattr(sm_cfg, "enabled", False))
+    if not enabled:
+        logger.warning(manual_warn_msg)
+        return
+
+    on_error = getattr(sm_cfg, "on_error", "abort")
+    try:
+        from gyra_app.initialization.schema_migrator import run_schema_migrations
+
+        run_schema_migrations(
+            db.engine,
+            db_url=str(db.engine.url),
+            cfg=sm_cfg,
+        )
+    except Exception as e:
+        logger.error(f"[SchemaMigrator] auto schema migration failed: {e}")
+        if on_error != "warn":
+            raise
 
 
 def _initialize_db(

@@ -91,12 +91,48 @@ export const transformFileUrl = (url: string): string => {
     return url; // Return original URL if transformation fails
   }
 };
+
+// Generate a direct download (attachment) URL from any file URL (preview / gyra-fs / http).
+// Preview endpoints return inline, which browsers open instead of saving; downloads must hit
+// the /files/{bucket}/{file_id} endpoint which returns Content-Disposition: attachment.
+export const resolveFileDownloadUrl = (raw: string): string => {
+  if (!raw) return '';
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+  if (raw.includes('/files/preview')) {
+    const params = new URLSearchParams(raw.split('?')[1] || '');
+    const u = params.get('uri');
+    if (u) return transformFileUrl(decodeURIComponent(u)) || '';
+    const bucket = params.get('bucket');
+    const fileId = params.get('file_id');
+    if (bucket && fileId) return `${apiBaseUrl}/api/v2/serve/file/files/${bucket}/${fileId}`;
+    return '';
+  }
+  if (raw.startsWith('gyra-fs://')) return transformFileUrl(raw);
+  if (raw.startsWith('/')) return `${apiBaseUrl}${raw}`;
+  return transformFileUrl(raw);
+};
+
 export const transformFileMarkDown = (item: any) => {
   if (!item || !item.file_name) {
     return '';
   }
   return `\n\`\`\`vis-attatch\n{"name": "${item.file_name}", "type": "text_file", "sub_type":"excel", "url": "${item.file_url}" }\n\`\`\``;
 }
+
+// Rewrite external CDN references (tailwind / echarts) in agent-generated HTML reports to local libs,
+// so previews do not fail with "echarts is not defined" when the external CDN is unreachable.
+export const injectLocalLibsForReport = (html: string): string => {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  return html
+    .replace(
+      /<script\b[^>]*\bsrc\s*=\s*(['"])(?:https?:)?\/\/cdn\.tailwindcss\.com\1[^>]*>\s*<\/script>/gi,
+      `<script src="${origin}/libs/tailwindcss.min.js"></script>`,
+    )
+    .replace(
+      /<script\b[^>]*\bsrc\s*=\s*(['"])((?:https?:)?\/\/[^'"]*echarts(?:\.min)?\.js)\1[^>]*>\s*<\/script>/gi,
+      `<script src="${origin}/libs/echarts.min.js"></script>`,
+    );
+};
 
 // Parse resourceValue to get the resource array
 export const parseResourceValue = (value: any): any[] => {

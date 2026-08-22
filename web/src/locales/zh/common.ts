@@ -667,7 +667,6 @@ export const CommonZh: Resources['translation'] = {
   explore_agents: '探索',
   builder_tab_overview: '概览',
   builder_tab_prompts: '提示词',
-  builder_tab_scenes: '场景配置',
   builder_tab_tools: '工具',
   builder_tab_skills: '技能',
   builder_tab_sub_agents: '子智能体',

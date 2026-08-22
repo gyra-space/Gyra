@@ -119,6 +119,11 @@ class EngineConfig:
     history_budget_ratio: float = 0.85  # context_window × 此比例 = 可用历史预算
     enable_invariant_repair: bool = True
     chars_per_token: int = DEFAULT_CHARS_PER_TOKEN
+    # 是否在保留区渲染工具调用（assistant tool_calls + tool 结果）。
+    # V1 路径默认 True（ContextEngine 是工具事实唯一来源）；
+    # V2 路径设为 False——工具事实由事件日志投影（ProjectorRegistry）单源提供，
+    # 避免同一工具调用经「ContextEngine 渲染」与「工具历史投影」双重进入 LLM 上下文。
+    render_tool_calls: bool = True
 
 
 @dataclass
@@ -344,6 +349,12 @@ class ContextEngine:
                 if u.ai_text and u.ai_text.strip():
                     messages.append({"role": ROLE_AI, "content": u.ai_text})
             elif u.kind == UnitKind.CALL:
+                # render_tool_calls=False（V2）：工具事实由事件日志投影单源提供，
+                # 这里只保留调用前后的旁白（ai_text），不重复渲染 tool_calls/tool 结果。
+                if not self.config.render_tool_calls:
+                    if u.ai_text and u.ai_text.strip():
+                        messages.append({"role": ROLE_AI, "content": u.ai_text})
+                    continue
                 messages.extend(self._render_call_unit(u, limit))
         return messages
 

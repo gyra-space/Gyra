@@ -1,7 +1,7 @@
 'use client';
 
-import { apiInterceptors, getWorkspaceInfo, listMembers, listResources } from '@/client/api';
-import { getUserId } from '@/utils';
+import { apiInterceptors, getWorkspaceInfo, listResources } from '@/client/api';
+import { useSpaceRole } from '@/hooks/use-space-role';
 import { Button, Card, Collapse, Empty, Spin, Tabs } from 'antd';
 import {
   DatabaseOutlined,
@@ -50,16 +50,9 @@ export default function AssetsPage() {
     return err ? null : res;
   }, { refreshDeps: [workspaceCode] });
 
-  // 权限整合:空间管理员 owner(管理)才可维护资源,成员仅可使用/确认待办。
-  const { data: myRole } = useRequest(async () => {
-    if (!ws?.id) return '';
-    const [err, res] = await apiInterceptors(listMembers({ workspace_id: ws.id }));
-    if (err) return '';
-    const list = Array.isArray(res) ? res : ((res as any)?.data || []);
-    const me = list.find((m: any) => String(m.user_id) === String(getUserId()));
-    return me?.role || '';
-  }, { refreshDeps: [ws?.id] });
-  const canManage = myRole === 'owner';
+  // 权限整合:能力维护(space.capability.manage,owner)才可维护资源装配,成员仅可查看。
+  const { can } = useSpaceRole(ws?.id);
+  const canManage = can('space.capability.manage');
 
   // 支撑资源分区折叠:资源数量加载完成后,空分区自动收起,避免整块空白。
   // 数据分区若有 ECP 入驻资产(含待接入)也保持展开,避免把 ECP 关联藏起来。

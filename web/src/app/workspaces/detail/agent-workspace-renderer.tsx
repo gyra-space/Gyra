@@ -1,37 +1,31 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { GPTVis } from '@antv/gpt-vis';
 import {
-  LoadingOutlined,
   CheckCircleFilled,
   CloseCircleFilled,
   RightOutlined,
   DownOutlined,
-  BulbOutlined,
   DesktopOutlined,
   FileOutlined,
-  FileTextOutlined,
-  FileSearchOutlined,
-  EditOutlined,
-  ConsoleSqlOutlined,
-  SearchOutlined,
-  CodeOutlined,
-  PlayCircleOutlined,
   FolderOpenOutlined,
   DownloadOutlined,
+  LoadingOutlined,
   RocketOutlined,
-  AimOutlined,
 } from '@ant-design/icons';
 import { Tooltip } from 'antd';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
-import { transformFileUrl } from '@/utils';
+import { resolveFileDownloadUrl, transformFileUrl } from '@/utils';
 import { AgentAvatar } from '@/components/common/agent-avatar';
 import UserAvatar from '@/components/common/user-avatar';
 import { STORAGE_USERINFO_KEY } from '@/utils/constants/index';
 import type { UserInfoResponse } from '@/types/userinfo';
 import VisSubagentBoard from '@/components/chat/chat-content-components/VisComponents/VisSubagentBoard';
 import { SceneAskUserCard, extractAskUserData } from './scene-ask-user-card';
+import { statusLabel } from './scene-task-rail';
+import { StepFlow } from './step-flow';
+import { buildExecutionPhases, usePlanningTimeline } from './use-execution-phases';
 import type {
   WorkspaceDeliverableFile,
   WorkspaceExecutionStep,
@@ -39,64 +33,8 @@ import type {
   WorkspaceView,
 } from './agent-workspace-types';
 
-/** 长文本默认折叠的行数阈值(按字符粗估) */
-const CLAMP_CHARS = 160;
-
-/** 状态圆点 chip:18px 柔色底 + 语义 glyph,running 带脉冲光晕(CSS 实现) */
-function StatusChip({ status }: { status: WorkspaceExecutionStep['status'] }) {
-  if (status === 'running') {
-    return (
-      <span className="ws-status-chip ws-status-chip--running">
-        <LoadingOutlined spin />
-      </span>
-    );
-  }
-  if (status === 'failed') {
-    return (
-      <span className="ws-status-chip ws-status-chip--failed">
-        <CloseCircleFilled />
-      </span>
-    );
-  }
-  return (
-    <span className="ws-status-chip ws-status-chip--done">
-      <CheckCircleFilled />
-    </span>
-  );
-}
-
-/** 根据工具 action / title 匹配专属图标,参考 vis_manus 的 type-icon 映射 */
-function getToolStepIcon(action?: string | null, title?: string) {
-  const key = `${action || ''} ${title || ''}`.toLowerCase();
-  if (/\b(read|file_search|file_read)\b|读取|搜索文件/.test(key)) {
-    return <FileSearchOutlined className="text-emerald-500" />;
-  }
-  if (/\b(edit|write|modify|update)\b|编辑|写入|修改/.test(key)) {
-    return <EditOutlined className="text-amber-500" />;
-  }
-  if (/\b(bash|shell|sh|terminal)\b|终端|命令行/.test(key)) {
-    return <ConsoleSqlOutlined className="text-purple-500" />;
-  }
-  if (/\b(grep|glob|search|find)\b|搜索|查找/.test(key)) {
-    return <SearchOutlined className="text-cyan-500" />;
-  }
-  if (/\b(python|py)\b|python/.test(key)) {
-    return <CodeOutlined className="text-blue-500" />;
-  }
-  if (/\b(html|htm|web)\b|html/.test(key)) {
-    return <CodeOutlined className="text-orange-500" />;
-  }
-  if (/\b(sql|query|db|database)\b|sql|数据库/.test(key)) {
-    return <ConsoleSqlOutlined className="text-emerald-600" />;
-  }
-  if (/\b(task|todo|job)\b|任务/.test(key)) {
-    return <PlayCircleOutlined className="text-indigo-500" />;
-  }
-  if (/\b(skill|plugin)\b|技能|插件/.test(key)) {
-    return <CodeOutlined className="text-violet-500" />;
-  }
-  return <FileTextOutlined className="text-gray-400" />;
-}
+/** 进入执行胶囊归组的步骤类型(user/answer/task_created 等由 feed 直接渲染) */
+const CAPSULE_STEP_TYPES = new Set(['tool_call', 'thinking', 'artifact', 'delivery']);
 
 /** 用户消息气泡(manus left panel 风格):气泡 + 用户头像(右侧) */
 function UserBubble({ text, avatarUrl, name }: { text: string; avatarUrl?: string | null; name?: string | null }) {
@@ -110,23 +48,34 @@ function UserBubble({ text, avatarUrl, name }: { text: string; avatarUrl?: strin
   );
 }
 
-/** Agent 最终回复:Agent 头像(左侧) + markdown 回复(与 summary 区同渲染管线) */
-function AnswerBlock({ step, agentIcon, agentName }: { step: WorkspaceExecutionStep; agentIcon?: string | null; agentName?: string | null }) {
+/** Agent 最终回复:markdown 回复(头像/名称由轮次头部统一展示,不重复) */
+function AnswerBlock({ step }: { step: WorkspaceExecutionStep }) {
   const text = step.output || '';
   if (!text) return null;
   return (
     <div className="ws-step-answer">
-      <span className="ws-step-answer__avatar">
-        <AgentAvatar icon={agentIcon} name={agentName} size={28} />
-      </span>
       <div className="ws-step-answer__content">
-        {/* @ts-ignore rehypePlugins type mismatch is pre-existing repo-wide (see chat-detail-content.tsx) */}
         <GPTVis components={markdownComponents} {...markdownPlugins}>
           {preprocessLaTeX(text)}
         </GPTVis>
       </div>
     </div>
   );
+}
+
+/**
+ * thinking 内容分流:短的推理过程进胶囊思考块(折叠);
+ * 长文本/含 markdown 结构(标题/列表/代码块)的「阶段回复」是结果性内容,
+ * 必须完整渲染在 feed 主视觉,不允许折叠进过程容器。
+ * 运行中(running)的 thinking 一律留在批内当思考块 —— 流式期间内容会
+ * 持续增长,若动态判定会造成步骤从批内跳到批外的位置跳变;等步骤落定后
+ * 再按内容分流,时序位置才稳定。
+ */
+function isSubstantialThinking(step: WorkspaceExecutionStep): boolean {
+  if (step.status === 'running') return false;
+  const text = (step.output || '').trim();
+  if (text.length > 280) return true;
+  return /^#{1,4}\s|^\s*[-*]\s|\|.*\||```/m.test(text);
 }
 
 /** 空态引导:图标 tile + 标题 + 提示 */
@@ -142,124 +91,24 @@ function EmptyState() {
   );
 }
 
-/** 工具步骤行:类型 tile + 标题 + 状态 chip + chevron,点击进场景空间看详情 */
-function ToolStepRow({
-  step,
-  onStepClick,
-}: {
-  step: WorkspaceExecutionStep;
-  onStepClick?: (s: WorkspaceExecutionStep) => void;
-}) {
-  return (
-    <div
-      className={`ws-step ws-step--tool${step.status === 'running' ? ' ws-step--running' : ''}${step.status === 'failed' ? ' ws-step--failed' : ''}`}
-      role={onStepClick ? 'button' : undefined}
-      tabIndex={onStepClick ? 0 : undefined}
-      onClick={() => onStepClick?.(step)}
-      onKeyDown={(e) => {
-        if (onStepClick && (e.key === 'Enter' || e.key === ' ')) {
-          e.preventDefault();
-          onStepClick(step);
-        }
-      }}
-    >
-      <span className="ws-step__badge">
-        {getToolStepIcon(step.action, step.title)}
-      </span>
-      <span className="ws-step__title">{step.title}</span>
-      <StatusChip status={step.status} />
-      {onStepClick && <RightOutlined className="ws-step__chevron" />}
-    </div>
-  );
-}
-
-/** 思考/阶段回复:弱化内联文本,过长折叠 */
-function ThinkingBlock({ step }: { step: WorkspaceExecutionStep }) {
-  const [expanded, setExpanded] = useState(false);
-  const text = step.output || '';
-  const needClamp = text.length > CLAMP_CHARS;
-  return (
-    <div className={`ws-step-think${step.status === 'running' ? ' ws-step-think--running' : ''}`}>
-      <div className="ws-step-think__head">
-        <span className="ws-step-think__badge">
-          <BulbOutlined />
-        </span>
-        <span className="ws-step-think__label">{step.title}</span>
-        {step.status === 'running' && (
-          <span className="ws-status-chip ws-status-chip--running">
-            <LoadingOutlined spin />
-          </span>
-        )}
-      </div>
-      <div className={`ws-step-think__text${needClamp && !expanded ? ' ws-step-think__text--clamp' : ''}`}>
-        {text}
-      </div>
-      {needClamp && (
-        <button type="button" className="ws-step-think__toggle" onClick={() => setExpanded((v) => !v)}>
-          {expanded ? '收起' : '展开全部'}
-          <DownOutlined className={`ws-step-think__toggle-icon${expanded ? ' ws-step-think__toggle-icon--up' : ''}`} />
-        </button>
-      )}
-    </div>
-  );
-}
-
-/** 任务计划卡片:badge + goal + 进度计数 + hairline 进度条 + rail 步骤节点 */
-function PlanningCard({ planning }: { planning: NonNullable<WorkspaceView['planning']> }) {
-  const total = planning.steps.length;
-  const done = planning.steps.filter((s) => s.status === 'done').length;
-  const hasFailed = planning.steps.some((s) => s.status === 'failed');
-  const allDone = total > 0 && done === total;
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-
-  return (
-    <div className="ws-plan">
-      <div className="ws-plan__head">
-        <span className="ws-plan__badge">
-          <AimOutlined />
-        </span>
-        <div className="ws-plan__head-text">
-          <div className="ws-plan__label">任务计划</div>
-          <div className="ws-plan__goal">{planning.goal}</div>
-        </div>
-        <span className={`ws-plan__count${allDone ? ' ws-plan__count--done' : ''}`}>
-          {done}/{total}
-        </span>
-      </div>
-      <div className="ws-plan__bar">
-        <i
-          className={`ws-plan__bar-fill${allDone ? ' ws-plan__bar-fill--done' : ''}${hasFailed ? ' ws-plan__bar-fill--failed' : ''}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <div className="ws-plan__steps">
-        {planning.steps.map((s) => (
-          <div key={s.id} className={`ws-plan-step ws-plan-step--${s.status}`}>
-            <span className="ws-plan-step__node" />
-            <span className="ws-plan-step__title">{s.title}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-const TASK_STATUS_LABEL: Record<string, string> = {
-  running: '执行中',
-  pending_trigger: '等待触发',
-  delivered: '已交付',
-  awaiting_human: '待介入',
-  closed: '已关闭',
-  failed: '已失败',
-  done: '已完成',
-};
-
 const TRIGGER_LABEL: Record<string, string> = {
   manual: '手动',
   timer: '定时',
   webhook: 'Webhook',
   alert: '告警',
 };
+
+/** 运行中指示器:Agent 流式产出时置底展示「正在运行」loading 效果,让人感知任务仍在推进 */
+function RunningIndicator({ label }: { label?: string }) {
+  return (
+    <div className="ws-agent-running" role="status" aria-live="polite">
+      <span className="ws-agent-running__dots" aria-hidden>
+        <i /><i /><i />
+      </span>
+      <span className="ws-agent-running__text">{label ? `${label} 运行中…` : 'Agent 运行中…'}</span>
+    </div>
+  );
+}
 
 /** 任务卡片:Agent 创建任务后在对话记录中渲染,点击进入任务对话 */
 function TaskCreatedCard({
@@ -271,7 +120,7 @@ function TaskCreatedCard({
 }) {
   const taskId = step.task_id;
   const rawStatus = step.task_status || step.status;
-  const statusLabel = TASK_STATUS_LABEL[rawStatus] || rawStatus;
+  const label = statusLabel(rawStatus);
   const isRunning = rawStatus === 'running' || rawStatus === 'pending_trigger';
   const isFailed = rawStatus === 'failed';
   const triggerLabel = step.triggered_by ? (TRIGGER_LABEL[step.triggered_by] || step.triggered_by) : null;
@@ -308,7 +157,7 @@ function TaskCreatedCard({
           {taskId && <span className="ws-task-card__id">#{taskId}</span>}
           {step.playbook_name && <span className="ws-task-card__playbook">{step.playbook_name}</span>}
           {triggerLabel && <span className="ws-task-card__trigger">{triggerLabel}</span>}
-          <span className={`ws-task-card__status ws-task-card__status--${rawStatus}`}>{statusLabel}</span>
+          <span className={`ws-task-card__status ws-task-card__status--${rawStatus}`}>{label}</span>
         </div>
       </div>
       {clickable && <RightOutlined className="ws-task-card__chevron" />}
@@ -387,8 +236,8 @@ const resolveTaskFileDownloadUrl = (file: WorkspaceTaskFile): string | null => {
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
   const raw = file.download_url || file.oss_url;
   if (!raw) return null;
-  if (raw.startsWith('http')) return transformFileUrl(raw);
-  if (raw.startsWith('gyra-fs://')) return transformFileUrl(raw);
+  if (raw.startsWith('http')) return resolveFileDownloadUrl(raw);
+  if (raw.startsWith('gyra-fs://')) return resolveFileDownloadUrl(raw);
   if (raw.startsWith('/')) return `${apiBaseUrl}${raw}`;
   if (file.object_path) {
     return `${apiBaseUrl}/api/oss/getFileByFileName?fileName=${encodeURIComponent(file.object_path)}`;
@@ -482,12 +331,15 @@ function TaskFilesStrip({
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Main component — 单一 feed:计划 → 步骤 → 摘要 → 交付文件卡片
-   (交付/任务文件点击后在中间容器区域打开,不再使用 tab 切换)
+   Main component — 按轮次的对话 feed:用户消息 → StepFlow 顺序流(过程,
+   按 Todo 分组折叠 / 无 Todo 平铺展开) → 回答/交付文件卡片(结果)。
+   结果占据主视觉;交付文件默认展示在 feed 底部,不折叠。
    ═══════════════════════════════════════════════════════════════ */
 
 export interface AgentWorkspaceRendererProps {
   view: WorkspaceView;
+  /** 会话是否运行中(决定末轮胶囊处于实时态还是收敛态) */
+  running?: boolean;
   onStepClick?: (step: WorkspaceExecutionStep) => void;
   /** 点击交付文件卡片:在中间容器渲染文件内容 */
   onDeliverableClick?: (file: WorkspaceDeliverableFile) => void;
@@ -503,7 +355,30 @@ export interface AgentWorkspaceRendererProps {
   agentName?: string | null;
 }
 
-export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, onTaskClick, onSubagentClick, onInteractionResume, agentIcon, agentName }: AgentWorkspaceRendererProps) {
+/** 一轮对话:user 步骤(可无,恢复场景) + 后续步骤序列 */
+interface ConversationRound {
+  key: string;
+  user?: WorkspaceExecutionStep;
+  steps: WorkspaceExecutionStep[];
+}
+
+/** 按 user 步骤把执行记录切成对话轮次 */
+function splitRounds(execution: WorkspaceExecutionStep[]): ConversationRound[] {
+  const rounds: ConversationRound[] = [];
+  let current: ConversationRound = { key: 'round-0', steps: [] };
+  for (const step of execution) {
+    if (step.type === 'user') {
+      if (current.user || current.steps.length) rounds.push(current);
+      current = { key: `round-${rounds.length + 1}`, user: step, steps: [] };
+    } else {
+      current.steps.push(step);
+    }
+  }
+  if (current.user || current.steps.length) rounds.push(current);
+  return rounds;
+}
+
+export function AgentWorkspaceRenderer({ view, running = false, onStepClick, onDeliverableClick, onTaskClick, onSubagentClick, onInteractionResume, agentIcon, agentName }: AgentWorkspaceRendererProps) {
   const deliverable_files = view.deliverable_files ?? [];
   const task_files = view.task_files ?? [];
   const hasDeliverables = deliverable_files.length > 0;
@@ -515,12 +390,106 @@ export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, 
       return null;
     }
   }, []);
-  // 已有 answer step(每轮最终回复)时,summary 不再单独渲染,避免重复
-  const hasAnswer = view.execution.some((s) => s.type === 'answer');
+  // 流式跟随:底部哨兵,运行中每条新内容都把最新产出滚入可视区;
+  // 非运行态加载历史时同样默认定位到最新一屏。只滚动最近的
+  // 「overflow-y 容器」,避免连带把整页/外层壳也带滚。
+  const endRef = useRef<HTMLDivElement>(null);
+  const runningRef = useRef(running);
+  runningRef.current = running;
+  // 是否跟随最新(运行中 / 初次加载 / 用户贴近底部时为 true)
+  const followRef = useRef(true);
+  const prevExecLenRef = useRef(0);
+
+  const getScrollContainer = useCallback(() => {
+    const el = endRef.current;
+    if (!el) return null;
+    let node: HTMLElement | null = el.parentElement;
+    while (node) {
+      const overflowY = getComputedStyle(node).overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') return node;
+      node = node.parentElement;
+    }
+    return null;
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const c = getScrollContainer();
+    if (c) {
+      c.scrollTop = c.scrollHeight;
+    } else {
+      try {
+        endRef.current?.scrollIntoView({ block: 'end' });
+      } catch {
+        /* 兜底:jsdom 等环境未实现 scrollIntoView */
+      }
+    }
+  }, [getScrollContainer]);
+
+  // 内容高度变化(图片/代码高亮/新步骤渲染导致增长)时,若处于跟随则重滚到底,
+  // 解决「加载历史后图片才加载、仍停留在旧高度」的问题。
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return;
+    const feed = endRef.current?.parentElement;
+    if (!feed) return;
+    const ro = new ResizeObserver(() => {
+      if (followRef.current) scrollToBottom();
+    });
+    ro.observe(feed);
+    return () => ro.disconnect();
+  }, [scrollToBottom]);
+
+  // 内容 / 运行状态变化:运行中或初次加载(0→N)强制跟随到最新;
+  // 其余情况仅在用户仍贴近底部时继续跟随。
+  useEffect(() => {
+    const len = view.execution.length;
+    const fresh = prevExecLenRef.current === 0 && len > 0;
+    prevExecLenRef.current = len;
+    if (runningRef.current || fresh) {
+      followRef.current = true;
+      scrollToBottom();
+      return;
+    }
+    const c = getScrollContainer();
+    if (!c) return;
+    const distance = c.scrollHeight - c.scrollTop - c.clientHeight;
+    if (distance < 80) {
+      scrollToBottom();
+    } else {
+      followRef.current = false;
+    }
+  }, [view.execution, view, running, scrollToBottom, getScrollContainer]);
+
+  // 用户手动滚动:远离底部则暂停跟随,回到底部恢复。
+  useEffect(() => {
+    const c = getScrollContainer();
+    if (!c) return;
+    const onScroll = () => {
+      if (runningRef.current) return;
+      const distance = c.scrollHeight - c.scrollTop - c.clientHeight;
+      followRef.current = distance < 80;
+    };
+    c.addEventListener('scroll', onScroll, { passive: true });
+    return () => c.removeEventListener('scroll', onScroll);
+  }, [getScrollContainer]);
+  // 已有完整回复(answer step 或实质内容的「阶段回复」)时,summary 不再单独渲染,避免重复
+  const hasAnswer = view.execution.some(
+    (s) => s.type === 'answer' || (s.type === 'thinking' && isSubstantialThinking(s)),
+  );
   // 任务文件含交付文件,过滤掉已在交付卡片中展示的,避免重复
   const extraTaskFiles = task_files.filter(
     (f) => !deliverable_files.some((d) => d.file_id === f.file_id),
   );
+
+  // planning 状态观测时间线(planning 属于最新一轮);归组按胶囊批次执行,避免跨轮次步骤混入
+  const planningTimeline = usePlanningTimeline(view.planning);
+  const rounds = useMemo(() => {
+    // 会话不在运行时,步骤的 running 状态视为遗留脏数据(历史恢复/中断会话),
+    // 展示层统一归正为 done —— 避免「外层已完成、内层转圈圈」的矛盾态。
+    const execution = running
+      ? view.execution
+      : view.execution.map((s) => (s.status === 'running' ? { ...s, status: 'done' as const } : s));
+    return splitRounds(execution);
+  }, [view.execution, running]);
 
   // 任务文件点击 → 适配为交付文件形状,在中间容器预览
   const handleTaskFileOpen = onDeliverableClick
@@ -541,39 +510,89 @@ export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, 
 
   return (
     <div className="ws-agent-renderer">
-      {view.planning && <PlanningCard planning={view.planning} />}
       {/* 异步子 agent 任务看板:点击卡片内联/新标签打开子会话 */}
       {view.subagents && view.subagents.length > 0 && (
         <VisSubagentBoard data={{ items: view.subagents }} onOpenSubagent={onSubagentClick} />
       )}
-      {view.execution.map((step) => {
-        if (step.type === 'user') {
-          return <UserBubble key={step.id} text={step.output || ''} avatarUrl={userInfo?.avatar_url} name={userInfo?.nick_name} />;
+      {rounds.map((round, roundIdx) => {
+        const isLastRound = roundIdx === rounds.length - 1;
+        // 轮内节点:连续过程步骤攒批 → StepFlow 顺序流;其余(answer/任务卡片/ask_user)直接渲染
+        const nodes: ReactNode[] = [];
+        let batch: WorkspaceExecutionStep[] = [];
+        let batchKey = '';
+        const flushBatch = () => {
+          if (!batch.length) return;
+          const batchSteps = batch;
+          batch = [];
+          // 归组只作用于当前批次(时序:流内的步骤即轮内该区间,绝不混入其它轮次);
+          // planning 时间线仅对末轮有意义
+          const phases = buildExecutionPhases(
+            batchSteps,
+            isLastRound ? view.planning : null,
+            planningTimeline,
+          );
+          const flowRunning = running && isLastRound && batchSteps[batchSteps.length - 1].status === 'running';
+          nodes.push(
+            <StepFlow
+              key={batchKey}
+              phases={phases}
+              running={flowRunning}
+              onStepClick={onStepClick}
+            />,
+          );
+        };
+        for (const step of round.steps) {
+          // 「阶段回复」分流:含实质结论内容的 thinking 以回复块完整渲染在主流
+          if (step.type === 'thinking' && isSubstantialThinking(step)) {
+            flushBatch();
+            nodes.push(<AnswerBlock key={step.id} step={step} />);
+            continue;
+          }
+          if (CAPSULE_STEP_TYPES.has(step.type)) {
+            if (!batch.length) batchKey = `flow-${step.id}`;
+            batch.push(step);
+            continue;
+          }
+          flushBatch();
+          if (step.type === 'answer') {
+            nodes.push(<AnswerBlock key={step.id} step={step} />);
+          } else if (step.type === 'task_created') {
+            nodes.push(<TaskCreatedCard key={step.id} step={step} onTaskClick={onTaskClick} />);
+          } else if (onInteractionResume && extractAskUserData(step.output ?? step.vis)) {
+            // ask_user 交互:直接把确认卡片渲染在 feed 里,用户可就地选择并续跑对话
+            nodes.push(<SceneAskUserCard key={step.id} step={step} onResume={onInteractionResume} />);
+          }
         }
-        if (step.type === 'answer') {
-          return <AnswerBlock key={step.id} step={step} agentIcon={agentIcon} agentName={agentName} />;
-        }
-        if (step.type === 'thinking') {
-          return <ThinkingBlock key={step.id} step={step} />;
-        }
-        if (step.type === 'task_created') {
-          return <TaskCreatedCard key={step.id} step={step} onTaskClick={onTaskClick} />;
-        }
-        // ask_user 交互:直接把确认卡片渲染在 Agent 空间 feed 里(而非折叠成工具行),
-        // 用户可就地选择并续跑对话。数据在 step.output(drsk-confirm fence)。
-        if (onInteractionResume && extractAskUserData(step.output ?? step.vis)) {
-          return <SceneAskUserCard key={step.id} step={step} onResume={onInteractionResume} />;
-        }
-        return <ToolStepRow key={step.id} step={step} onStepClick={onStepClick} />;
+        flushBatch();
+        // 轮次头部:仅当本轮含 Agent 侧产出(步骤流/回复/任务卡片)时展示
+        const hasAgentOutput = round.steps.some(
+          (s) => s.type !== 'user',
+        );
+        return (
+          <Fragment key={round.key}>
+            {round.user && (
+              <UserBubble
+                text={round.user.output || ''}
+                avatarUrl={userInfo?.avatar_url}
+                name={userInfo?.nick_name}
+              />
+            )}
+            {hasAgentOutput && (
+              <div className="ws-round-head">
+                <span className="ws-round-head__avatar">
+                  <AgentAvatar icon={agentIcon} name={agentName} size={22} />
+                </span>
+                <span className="ws-round-head__name">{agentName || 'Agent'}</span>
+              </div>
+            )}
+            {nodes}
+          </Fragment>
+        );
       })}
       {!view.execution.length && !view.summary && <EmptyState />}
       {view.summary && !hasAnswer && (
         <div className="ws-step-answer">
-          <span className="ws-step-answer__avatar">
-            <AgentAvatar icon={agentIcon} name={agentName} size={28} />
-          </span>
           <div className="ws-step-answer__content">
-            {/* @ts-ignore rehypePlugins type mismatch is pre-existing repo-wide (see chat-detail-content.tsx) */}
             <GPTVis components={markdownComponents} {...markdownPlugins}>
               {preprocessLaTeX(view.summary)}
             </GPTVis>
@@ -618,7 +637,7 @@ export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, 
                       onClick={(e) => {
                         e.stopPropagation();
                         const a = document.createElement('a');
-                        a.href = transformFileUrl(downloadUrl);
+                        a.href = resolveFileDownloadUrl(downloadUrl);
                         a.download = file.file_name || 'download';
                         a.style.display = 'none';
                         document.body.appendChild(a);
@@ -640,6 +659,9 @@ export function AgentWorkspaceRenderer({ view, onStepClick, onDeliverableClick, 
       {extraTaskFiles.length > 0 && (
         <TaskFilesStrip files={extraTaskFiles} onOpen={handleTaskFileOpen} />
       )}
+      {/* 运行中:底部 loading 指示 + 自动滚动哨兵 */}
+      <div ref={endRef} className="ws-agent-renderer__end" aria-hidden />
+      {running && <RunningIndicator label={agentName || undefined} />}
     </div>
   );
 }

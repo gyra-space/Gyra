@@ -59,12 +59,14 @@ class DBCapability(Capability):
         db_id: Any = None,
         db_type: str = "",
         dialect: str = "",
+        inject_schema: bool = True,
     ):
         self._db_name = db_name
         self._db_id = db_id
         self._datasource_id: Any = db_id
         self._db_type = db_type
         self._dialect = dialect or db_type
+        self._inject_schema = inject_schema
         self._connector: Any = None
         self._status = ExecutorStatus.UNINITIALIZED
 
@@ -72,7 +74,11 @@ class DBCapability(Capability):
     def from_config(cls, value: dict, system_app: Any = None) -> "DBCapability":
         """从 AgentResource.value dict 构造(不建连接;prepare 时建)。
 
-        value 形如 {"db_name":..., "db_id":...}。无 I/O。
+        value 形如 {"db_name":..., "db_id":..., "inject_schema": bool}。无 I/O。
+
+        ``inject_schema``（默认 True 兼容 V1）：False 时不声明 DataRequirement，
+        ``fetch()`` 返回空——schema 详情由 V2 ``db({action: "describe_tables"})``
+        工具按需取（对齐 DSH tool-db "不拼 schema 进 system prompt"）。
         """
         value = value or {}
         db_name = value.get("db_name") or value.get("name") or ""
@@ -84,12 +90,14 @@ class DBCapability(Capability):
         # 而新版本的 DBCapability 延迟到 prepare 时建连接，但传递的参数可能不完整
         db_type = value.get("db_type", "")
         dialect = value.get("dialect", "")
+        inject_schema = bool(value.get("inject_schema", True))
 
         return cls(
             db_name=db_name,
             db_id=db_id,
             db_type=db_type,
             dialect=dialect,
+            inject_schema=inject_schema,
         )
 
     @property
@@ -119,7 +127,12 @@ class DBCapability(Capability):
 
     # ----------------------------- 输入投影(declare 纯 + 占位) ------------- #
     def declare(self, config: Any = None) -> List[Contribution]:
-        """库基本信息(纯文本)+ 表列表占位(DataRequirement,fetch 回填)。"""
+        """库基本信息(纯文本)+ 可选 DataRequirement(fetch 回填)。
+
+        当 ``inject_schema=False``（V2 DSH 模式）时只发基本 info，不声明
+        DataRequirement，schema 详情由 ``db({action: "describe_tables"})`` 按需
+        取，避免污染 system prompt（KV-cache 友好）。
+        """
         contribs: List[Contribution] = []
         basic_text = self._build_basic_info()
         if basic_text:
@@ -133,6 +146,8 @@ class DBCapability(Capability):
                     order=40,
                 )
             )
+        if not self._inject_schema:
+            return contribs
         ds_id = self._datasource_id
         if ds_id is not None:
             req = DataRequirement(
@@ -253,6 +268,9 @@ class DBCapability(Capability):
 
     # ----------------------------- fetch(填 DataRequirement,异步) -------- #
     async def fetch(self, requirement: DataRequirement) -> Any:
+        if not self._inject_schema:
+            # V2 DSH 模式：不预填 schema，按需由 ``db`` 工具取
+            return ""
         if requirement.kind == "db_prompt":
             return await self._fetch_db_prompt(requirement)
         raise NotImplementedError(f"[db-capability] unsupported fetch kind: {requirement.kind}")

@@ -6,19 +6,20 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from gyra.agent.core.v2.v2_event_emitter import V2EventEmitter
 from gyra.agent.core.v2.v2_vis_component import VisComponentTag, VisOperationType
 from gyra_serve.agent.agents.chat.v2_chat_schemas import V2ChatRequest
+from gyra_serve.permissions import require as require_permission_key
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v2", tags=["V2 Chat"])
 
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[Depends(require_permission_key("agent.chat"))])
 async def v2_chat(request: V2ChatRequest):
     """V2 Chat SSE 端点
 

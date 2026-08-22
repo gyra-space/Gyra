@@ -1,0 +1,315 @@
+{
+  "current_version": "0.3.0_20260822",
+  "scripts": [
+    {
+      "name": "upgrade_0.3.0_20260730_to_0.3.0_20260730.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260730",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260730",
+      "seq": 0,
+      "checksum": "a9e0e6db801d10fddd1cdc08410538a58cc77de58a667fd901620c2a77e4d4bf",
+      "version": 1
+    },
+    {
+      "name": "upgrade_0.3.0_20260801_to_0.3.0_20260801.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260801",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260801",
+      "seq": 0,
+      "checksum": "732ad539b9bee837fe238b5fe33708d92c3b7159ed4f3d94a84a6af4fa193181",
+      "version": 2
+    },
+    {
+      "name": "upgrade_0.3.0_20260802_to_0.3.0_20260802.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260802",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260802",
+      "seq": 0,
+      "checksum": "7db88aa0e663251c93c98f528e1ce7ff82a5b36b5f8c7a81d13d46350c6415de",
+      "version": 3
+    },
+    {
+      "name": "upgrade_0.3.0_20260803_to_0.3.0_20260803.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260803",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260803",
+      "seq": 0,
+      "checksum": "c401aa099ea3cac193be57fef63e9c0523779be462ec7e836b24b60ac34ba7b4",
+      "version": 4
+    },
+    {
+      "name": "upgrade_0.3.0_20260804_to_0.3.0_20260804.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260804",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260804",
+      "seq": 0,
+      "checksum": "76222a94f15d0f835546997f38db35b9e8f307657915726ed6cd9c7816d46356",
+      "version": 5
+    },
+    {
+      "name": "upgrade_0.3.0_20260805_to_0.3.0_20260805.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260805",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260805",
+      "seq": 0,
+      "checksum": "52b54f177a8f5fc0cd11477727ffde44486d8bce4fed7d6c337a5c8ece6fa3f2",
+      "version": 6
+    },
+    {
+      "name": "upgrade_0.3.0_20260806_to_0.3.0_20260806.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260806",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260806",
+      "seq": 0,
+      "checksum": "e65ba37677caa6088bcaec7f43249eabaf07f4b2041b80019e287ee2166f8db9",
+      "version": 7
+    },
+    {
+      "name": "upgrade_0.3.0_20260807_to_0.3.0_20260807.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260807",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260807",
+      "seq": 0,
+      "checksum": "ab3ce256e14e39c5b41616587bc484bd9974ad0bd49e78f9e37d3681581475a4",
+      "version": 8
+    },
+    {
+      "name": "upgrade_0.3.0_20260808_to_0.3.0_20260808.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260808",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260808",
+      "seq": 0,
+      "checksum": "1354745b4871726624b69e2c22a117f3998c8b73a3bd23c1c79b9e18ff135d90",
+      "version": 9
+    },
+    {
+      "name": "upgrade_0.3.0_20260809_to_0.3.0_20260809.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260809",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260809",
+      "seq": 0,
+      "checksum": "115ae66f3ba88285a6e6a262deb787245e866855982c29e8e385013b83103d75",
+      "version": 10
+    },
+    {
+      "name": "upgrade_0.3.0_20260810_to_0.3.0_20260810.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260810",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260810",
+      "seq": 0,
+      "checksum": "2635b935e99b9510eaec5c693f6c241632d0c326a2341ebe22ee4f7953b105f7",
+      "version": 11
+    },
+    {
+      "name": "upgrade_0.3.0_20260811_to_0.3.0_20260811.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260811",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260811",
+      "seq": 0,
+      "checksum": "80cd0c3ed1c75767942d16ac827bf3f652886c355e24f536400f7b5894aadce7",
+      "version": 12
+    },
+    {
+      "name": "upgrade_0.3.0_20260812_to_0.3.0_20260812.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260812",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260812",
+      "seq": 0,
+      "checksum": "d4e416d156aab543773df466ef21f48fa5a42c2ab69a7a1e77a40868eea38713",
+      "version": 13
+    },
+    {
+      "name": "upgrade_0.3.0_20260813_to_0.3.0_20260813.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260813",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260813",
+      "seq": 0,
+      "checksum": "cf631ceb35f0b7af7ae70eae95a5fcda6a972668a5a0cad3f7d2152ceed2ec05",
+      "version": 14
+    },
+    {
+      "name": "upgrade_0.3.0_20260814_to_0.3.0_20260814.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260814",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260814",
+      "seq": 0,
+      "checksum": "3b07187d1ff5183937c8805e59fe31c94137540973e1a60d6af270bda88185fc",
+      "version": 15
+    },
+    {
+      "name": "upgrade_0.3.0_20260815_to_0.3.0_20260815.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260815",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260815",
+      "seq": 0,
+      "checksum": "9a61a5d1356b080a8522ba6ceb12f72450ce747aa1a941f60d85c9fe495126c5",
+      "version": 16
+    },
+    {
+      "name": "upgrade_0.3.0_20260819_to_0.3.0_20260819.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260819",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260819",
+      "seq": 0,
+      "checksum": "e99d1d19616487cea5aca863592622314238178a6893e91140d631b77c2ec034",
+      "version": 17
+    },
+    {
+      "name": "upgrade_0.3.0_20260819_to_0.3.0_20260819_0001.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260819",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260819",
+      "seq": 1,
+      "checksum": "27d2e460b50e356ea5ba7c64903b8d3eb12bac19d4bee3d3ec826749b62c71c3",
+      "version": 18
+    },
+    {
+      "name": "upgrade_0.3.0_20260819_to_0.3.0_20260819_0002.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260819",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260819",
+      "seq": 2,
+      "checksum": "1b4279eeecc9c1118d08d88425dbd900f1f1029399f4de07e0b2d7f2a11a2063",
+      "version": 19
+    },
+    {
+      "name": "upgrade_0.3.0_20260819_to_0.3.0_20260819_0003.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260819",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260819",
+      "seq": 3,
+      "checksum": "eb380968ba8f8d4a2806f7075131b49a0b0b8b66257adb812dfffa53abd3ba1a",
+      "version": 20
+    },
+    {
+      "name": "upgrade_0.3.0_20260820_to_0.3.0_20260820.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260820",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260820",
+      "seq": 0,
+      "checksum": "6606dbbe0a61dca62154a1c2486eedcfa0c6e518f61ecf2ea6280f71504e5095",
+      "version": 21
+    },
+    {
+      "name": "upgrade_0.3.0_20260820_to_0.3.0_20260820_0001.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260820",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260820",
+      "seq": 1,
+      "checksum": "ab19d8bbf2328a45494fec36c28e153d43e531878e186350fe00e3542b89bdeb",
+      "version": 22
+    },
+    {
+      "name": "upgrade_0.3.0_20260820_to_0.3.0_20260820_0002.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260820",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260820",
+      "seq": 2,
+      "checksum": "745e3873f686457793d88c5da7f500b2420cd834cad1fb6faf0973f708057961",
+      "version": 23
+    },
+    {
+      "name": "upgrade_0.3.0_20260821_to_0.3.0_20260821.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260821",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260821",
+      "seq": 0,
+      "checksum": "e9afaf9687d4b107721bc7b75483e61ed2079066700cbb60d987acf12271b11b",
+      "version": 24
+    },
+    {
+      "name": "upgrade_0.3.0_20260821_to_0.3.0_20260821_0001.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260821",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260821",
+      "seq": 1,
+      "checksum": "b655eed7bbd822b947f2a2ea74336ec16d8f4ce14e3215cb70a5f0ed2e457a8f",
+      "version": 25
+    },
+    {
+      "name": "upgrade_0.3.0_20260821_to_0.3.0_20260821_0002.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260821",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260821",
+      "seq": 2,
+      "checksum": "a0736aea60c55e8b3d79964923a211e20a1af0ec7f20a5745481f90434f30ab1",
+      "version": 26
+    },
+    {
+      "name": "upgrade_0.3.0_20260821_to_0.3.0_20260821_0003.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260821",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260821",
+      "seq": 3,
+      "checksum": "cc7ff100ac41ad73b3acae047ee3698987be0b9257cfaffe2f4cdac4b8ac7be0",
+      "version": 27
+    },
+    {
+      "name": "upgrade_0.3.0_20260821_to_0.3.0_20260821_0004.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260821",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260821",
+      "seq": 4,
+      "checksum": "d6fdaea5f0870864a5ce96789d29f241b237ffb03de20d039a29fbf10d6ec002",
+      "version": 28
+    },
+    {
+      "name": "upgrade_0.3.0_20260822_to_0.3.0_20260822.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260822",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260822",
+      "seq": 0,
+      "checksum": "1cc173fb737ec3b93081003bb9a8683226505bb06c7affef3f58dec986007f03",
+      "version": 29
+    },
+    {
+      "name": "upgrade_0.3.0_20260822_to_0.3.0_20260822_0001.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260822",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260822",
+      "seq": 1,
+      "checksum": "d407b1530841601239b0b8ab1aa6495ec9bb536c3ccbab28c9d969f76af2eef0",
+      "version": 30
+    },
+    {
+      "name": "upgrade_0.3.0_20260822_to_0.3.0_20260822_0002.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260822",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260822",
+      "seq": 2,
+      "checksum": "db3f931534aed649b486cd7f626f466d2e5135ca97efd26da74cccfbcc7a5abb",
+      "version": 31
+    }
+  ]
+}

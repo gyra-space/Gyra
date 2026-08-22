@@ -650,21 +650,6 @@ def register_serve_apps(
 
     # ################################ Channel Serve Register End   ################
 
-    # ################################ Scene Serve Register Begin ################
-    from gyra_serve.scene.serve import Serve as SceneServe
-
-    system_app.register(
-        SceneServe,
-        config=get_config(
-            serve_configs,
-            SceneServe.name,
-            gyra_serve.scene.serve.ServeConfig,
-            api_keys=global_api_keys,
-        ),
-    )
-
-    # ################################ Scene Serve Register End   ################
-
     # ################################ Streaming Config Serve Register Begin ################
     from gyra_serve.streaming.serve import Serve as StreamingConfigServe
 

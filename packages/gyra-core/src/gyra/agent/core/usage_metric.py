@@ -212,6 +212,8 @@ def emit_context_usage(
     history_tokens: int = 0,
     user_message_tokens: int = 0,
     layer_tokens: Optional[Dict[str, int]] = None,
+    skills: int = 0,
+    mcp: int = 0,
 ) -> None:
     """推送**当前上下文空间占用**快照到已注册回调（供环形图展示当前占用）。
 
@@ -225,6 +227,8 @@ def emit_context_usage(
     - prompt_tokens: 全部消息 token（system + history + 当前用户消息）
     - completion_tokens: 工具列表 token
     - system_prompt_tokens / history_tokens / user_message_tokens: 消息内部分类
+    - skills: 技能（`<skill>` 指令/索引）占用 token
+    - mcp: 连接器及 MCP 工具占用 token
     - layer_tokens: 分层 compressed/retained 的 token 占用
 
     明细统一写入 by_model["__context_detail__"]，由回调读取后透传给 SSE payload。
@@ -248,6 +252,8 @@ def emit_context_usage(
             "history": int(history_tokens or 0),
             "user_msg": int(user_message_tokens or 0),
             "tools": int(completion_tokens or 0),
+            "skills": int(skills or 0),
+            "mcp": int(mcp or 0),
             "layers": {
                 "compressed": int((layer_tokens or {}).get("compressed") or 0),
                 "retained": int((layer_tokens or {}).get("retained") or 0),

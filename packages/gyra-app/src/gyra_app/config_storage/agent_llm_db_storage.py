@@ -35,10 +35,12 @@ def load_agent_llm_dict() -> Optional[Dict[str, Any]]:
     return None
 
 
-def load_agent_llm_model_names() -> list:
+def load_agent_llm_model_names(exclude_media: bool = True) -> list:
     """从数据库读取 agent_llm 配置并提取所有模型名（数据库优先，分布式共享）。
 
     同时兼容前端格式（providers/models）与后端格式（provider/model）。
+    ``exclude_media=True`` 时排除媒体生成模型（图片/视频/音频），避免聊天模型
+    下拉混入多媒体生成模型；模型配置与协议在 provider 级，判定时需合并两者。
     无记录或异常时返回空列表，调用方应回退到内存配置。
     """
     data = load_agent_llm_dict()
@@ -54,12 +56,26 @@ def load_agent_llm_model_names() -> list:
         models = p.get("models")
         if not isinstance(models, list):
             models = p.get("model")
+        p_defaults = {k: v for k, v in p.items() if k not in ("models", "model")}
         for m in models or []:
             if not isinstance(m, dict):
                 continue
             name = m.get("name") or m.get("model")
-            if name:
-                names.add(name)
+            if not name:
+                continue
+            if exclude_media:
+                try:
+                    from gyra.agent.util.llm.model_config_cache import (
+                        is_media_model_config,
+                    )
+
+                    merged = dict(p_defaults)
+                    merged.update(m)
+                    if is_media_model_config(merged):
+                        continue
+                except Exception:
+                    pass
+            names.add(name)
     return list(names)
 
 

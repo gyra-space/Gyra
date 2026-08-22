@@ -41,6 +41,9 @@ build-backend = "hatchling.build"
 cache = [
     "rocksdict",
 ]
+asr = [
+    "faster-whisper>=1.0.0",
+]
 
 observability = [
     "opentelemetry-api",

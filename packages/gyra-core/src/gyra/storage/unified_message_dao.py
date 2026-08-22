@@ -477,6 +477,8 @@ class UnifiedMessageDAO:
                             chat_mode=entity.chat_mode or "chat_normal",
                             state="complete",
                             app_code=entity.app_code,
+                            workspace_id=entity.workspace_id,
+                            task_id=entity.task_id,
                             created_at=(entity.gmt_created - tz_offset)
                             if entity.gmt_created
                             else None,
@@ -549,6 +551,8 @@ class UnifiedMessageDAO:
                             chat_mode=entity.team_mode or "gpts_v2",
                             state=entity.state or "active",
                             app_code=entity.gpts_name,
+                            workspace_id=entity.workspace_id,
+                            task_id=entity.task_id,
                             created_at=entity.created_at,
                             updated_at=entity.updated_at,
                             source="v2",

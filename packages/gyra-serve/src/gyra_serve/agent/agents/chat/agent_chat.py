@@ -156,6 +156,87 @@ def _merge_scene_dynamic_context(gpt_app: GptsApp, ext_info: Dict[str, Any]) -> 
         )
 
 
+def _build_media_chat_param_prompt(media_value: str) -> str:
+    """把用户对话输入框设定的多媒体生成参数（media chat_in_param，JSON 字符串）
+    渲染为系统提示片段，让场景 Agent（父 Agent）在 spawn 多媒体子 Agent 时，
+    通过 Agent 工具的 media 字段把这些参数原样传给多媒体 Agent。
+
+    Returns:
+        渲染后的提示片段；无有效参数时返回空字符串。
+    """
+    try:
+        parsed = json.loads(media_value) if isinstance(media_value, str) else media_value
+        if not isinstance(parsed, dict) or not parsed:
+            return ""
+        from gyra.agent.multimedia.config import resolve_image_size
+
+        lines = []
+        kind = parsed.get("kind")
+        if kind:
+            lines.append(f"- 类型(kind)：{kind}（{'视频' if kind == 'video' else '图片'}）")
+        if parsed.get("model"):
+            lines.append(f"- 生成模型(model)：{parsed['model']}")
+        if parsed.get("size"):
+            lines.append(f"- 图片尺寸(size)：{parsed['size']}（即 {resolve_image_size(str(parsed['size']))}）")
+        if parsed.get("resolution"):
+            lines.append(f"- 视频分辨率(resolution)：{parsed['resolution']}")
+        if parsed.get("aspect_ratio"):
+            lines.append(f"- 视频宽高比(aspect_ratio)：{parsed['aspect_ratio']}")
+        if parsed.get("duration"):
+            lines.append(f"- 视频时长(duration，秒)：{parsed['duration']}")
+        if parsed.get("quality"):
+            lines.append(f"- 质量(quality)：{parsed['quality']}")
+        if not lines:
+            return ""
+        note = (
+            "## 用户已设定多媒体生成参数\n"
+            "用户在本轮对话输入框设定了以下图片/视频生成参数。如果本次任务需要生成"
+            "图片或视频（例如调用多媒体子 Agent），你必须把这些参数原样通过 "
+            "Agent 工具的 media 字段传给多媒体子 Agent（子 Agent 未配置的字段"
+            "才会使用其默认值）：\n"
+            + "\n".join(lines)
+        )
+        return note
+    except Exception:  # noqa: BLE001 - 非法 JSON 忽略
+        return ""
+
+
+def _ensure_lobby_conv_link(
+    system_app,
+    workspace_id: Optional[int],
+    conv_id: str,
+    user_code: Optional[str],
+    task_id: Optional[int],
+) -> None:
+    """大厅直接对话(task_id 为空)兜底:确保会话进入空间任务列表。
+
+    前端在进入空间/新会话时已 link,此处兜底覆盖前端 link 失败或绕过的路径,
+    保证对话(无论工具执行报错还是对话出错)都能在任务列表可见。
+    link_conversation 是幂等 upsert,task_id=None 不覆盖已有任务的关联;
+    任务对话(task_id 非空)由任务创建时 link,这里跳过。
+    """
+    if not workspace_id or task_id:
+        return
+    try:
+        from gyra_serve.workspace.service.service import (
+            WORKSPACE_SERVICE_COMPONENT_NAME,
+            WorkspaceService,
+        )
+
+        ws_svc = system_app.get_component(
+            WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService
+        )
+        ws_svc.link_conversation(
+            workspace_id=int(workspace_id),
+            conv_uid=conv_id,
+            user_id=(
+                int(user_code) if user_code and str(user_code).isdigit() else None
+            ),
+        )
+    except Exception as e:
+        logger.warning(f"[workspace] ensure lobby conv link failed: {e}")
+
+
 def _inject_workspace_context(
     *,
     system_app,
@@ -1301,6 +1382,18 @@ class AgentChat(BaseComponent, ABC):
             return "scene_agent_workspace"
         if gpt_app and gpt_app.layout and gpt_app.layout.chat_layout:
             return gpt_app.layout.chat_layout.name
+        # v2 引擎未配置布局时默认 vis_manus:
+        # gpt_vis_all 不支持流式增量合并(前端按帧替换,后一帧覆盖前一帧)
+        # 也不渲染工具执行步骤
+        team_context = getattr(gpt_app, "team_context", None)
+        context_version = getattr(team_context, "agent_version", None)
+        if isinstance(team_context, dict):
+            context_version = team_context.get("agent_version")
+        if (
+            getattr(gpt_app, "agent_version", None) == "v2"
+            or context_version == "v2"
+        ):
+            return "vis_manus"
         return "gpt_vis_all"
 
     async def aggregation_chat(
@@ -1376,6 +1469,14 @@ class AgentChat(BaseComponent, ABC):
             from gyra_serve.workspace.event_bus import register_workspace_queue
 
             register_workspace_queue(int(_ws_id_for_bus), workspace_event_queue)
+            # 大厅直接对话(task_id 为空)兜底:确保会话进入空间任务列表
+            _ensure_lobby_conv_link(
+                self.system_app,
+                int(_ws_id_for_bus),
+                conv_id,
+                user_code,
+                ext_info.get("task_id"),
+            )
         _inject_workspace_context(
             system_app=self.system_app,
             workspace_id=ext_info.get("workspace_id"),
@@ -1390,6 +1491,16 @@ class AgentChat(BaseComponent, ABC):
             event_queue=workspace_event_queue,
             app_code=gpt_app.app_code,
         )
+        # 多媒体生成参数（media chat_in_param）：注入系统提示，让场景 Agent（父
+        # Agent）在 spawn 多媒体子 Agent 时，通过 Agent 工具的 media 字段透传。
+        _media_param = next(
+            (p for p in (chat_in_params or []) if getattr(p, "param_type", None) == "media"),
+            None,
+        )
+        if _media_param is not None and getattr(_media_param, "param_value", None):
+            _media_note = _build_media_chat_param_prompt(_media_param.param_value)
+            if _media_note:
+                system_prompt_parts.append(_media_note)
         if system_prompt_parts:
             ext_info["system_prompt"] = "\n\n".join(system_prompt_parts).strip()
 
@@ -1608,7 +1719,7 @@ class AgentChat(BaseComponent, ABC):
                 stream_complete = False
 
                 # Check if task failed immediately
-                await asyncio.sleep(0.1)  # Give task a moment to start
+                await asyncio.sleep(0)  # yield to let the task run its sync prefix
                 if task.done() and task.exception():
                     exc = task.exception()
                     logger.error(f"Task failed immediately: {exc}")
@@ -2061,38 +2172,6 @@ class AgentChat(BaseComponent, ABC):
                 context, app, need_sandbox
             )
 
-            # 初始化场景文件到沙箱（如果应用绑定了场景）
-            # 注意：每个Agent有独立的场景文件目录，避免多Agent共享沙箱时的冲突
-            if sandbox_manager and app.scenes and len(app.scenes) > 0:
-                try:
-                    from gyra.agent.core.sandbox.scene_initializer import (
-                        initialize_scenes_for_agent,
-                    )
-
-                    scene_init_result = await initialize_scenes_for_agent(
-                        app_code=app.app_code,
-                        agent_name=app.app_name or app.app_code or "default_agent",
-                        scenes=app.scenes,
-                        sandbox_manager=sandbox_manager,
-                    )
-                    if scene_init_result.get("success"):
-                        logger.info(
-                            f"[AgentChat] Scene files initialized for {app.app_code}: "
-                            f"{len(scene_init_result.get('files', []))} files "
-                            f"in {scene_init_result.get('scenes_dir', 'unknown')}"
-                        )
-                    else:
-                        logger.warning(
-                            f"[AgentChat] Failed to initialize scene files for {app.app_code}: "
-                            f"{scene_init_result.get('message')}"
-                        )
-                except Exception as scene_init_error:
-                    logger.warning(
-                        f"[AgentChat] Error initializing scene files for {app.app_code}: "
-                        f"{scene_init_error}"
-                    )
-                    # 场景初始化失败不影响主流程
-
             # 统一治理：子 Agent 不再在此预构建/hire。子 Agent 一律以 AppResource
             # （type=app）注入 capability_pack/resource_map，派发时经 _resolve_app_code
             # 命中后由 GptAppResource._start_app 按需构建。app.details 与 workspace
@@ -2169,6 +2248,40 @@ class AgentChat(BaseComponent, ABC):
                     .build()
                 )
 
+                # V2 引擎接线：把 V2Agent 的 JobRegistry（harness.jobs）关联到
+                # AsyncTaskCoordinator 本地视图——manager 任务状态同步进 registry，
+                # 引擎/子 agent 经 harness.jobs 查询（纯增量，不影响 serve 台账）。
+                # engine 为懒装配（首轮 thinking 时构建），build 时 registry 可能
+                # 尚为 None：注册 engine-ready 钩子，装配完成后回调绑定。
+                if hasattr(recipient, "v2_job_registry"):
+                    try:
+                        if hasattr(recipient, "set_v2_engine_ready_hook"):
+
+                            async def _bind_v2_job_registry(agent: Any) -> None:
+                                try:
+                                    _reg = agent.v2_job_registry
+                                    if (
+                                        _reg is not None
+                                        and self.async_task_coord is not None
+                                    ):
+                                        self.async_task_coord.set_job_registry(_reg)
+                                except Exception as _e:  # noqa: BLE001
+                                    logger.debug(
+                                        f"[AgentChat] v2 job_registry bind failed: {_e}"
+                                    )
+
+                            recipient.set_v2_engine_ready_hook(_bind_v2_job_registry)
+                            # 历史会话复用已装配的 engine：立即绑定
+                            _v2_reg = recipient.v2_job_registry
+                            if (
+                                _v2_reg is not None
+                                and self.async_task_coord is not None
+                            ):
+                                self.async_task_coord.set_job_registry(_v2_reg)
+                    except Exception as _e:  # noqa: BLE001
+                        logger.debug(f"[AgentChat] v2 job_registry wiring failed: {_e}")
+
+
                 # 统一治理：不再 hire 预构建子 Agent 到主 Team（子 Agent 按需经
                 # AppResource/_dispatch_to_app 构建），避免把主代理/子代理提前实例化。
 
@@ -2181,24 +2294,6 @@ class AgentChat(BaseComponent, ABC):
                     temp_profile.system_prompt_template = app.system_prompt_template
                 if app.user_prompt_template:
                     temp_profile.user_prompt_template = app.user_prompt_template
-
-                # 如果应用有场景，读取场景内容并注入到Agent的System Prompt
-                if app.scenes and len(app.scenes) > 0 and sandbox_manager:
-                    try:
-                        scene_content = await self._load_and_inject_scenes(
-                            agent_name=app.app_name or app.app_code or "default_agent",
-                            scenes=app.scenes,
-                            sandbox_manager=sandbox_manager,
-                            agent_profile=temp_profile,
-                        )
-                        if scene_content:
-                            logger.info(
-                                f"[AgentChat] 场景内容已注入Agent: "
-                                f"{len(scene_content)} 字符"
-                            )
-                    except Exception as e:
-                        logger.warning(f"[AgentChat] 场景内容注入失败: {e}")
-                        # 场景注入失败不影响主流程
 
                 recipient.bind(temp_profile)
 
@@ -2532,6 +2627,33 @@ class AgentChat(BaseComponent, ABC):
                             if memory_bundle:
                                 # Inject bundle to agent via private attribute
                                 recipient._memory_bundle = memory_bundle
+                                # 装配 V2 读路径管线（prefetch/scrub/静态块）。
+                                # 按 conv_session_id 键控跨轮共享：serve 每轮换
+                                # conv_uid，按轮键控 prefetch 永远跨轮 miss。
+                                try:
+                                    from gyra.agent.core.memory.hook_dispatcher import (
+                                        get_memory_pipeline as _get_session_pipeline,
+                                        register_memory_pipeline as _register_session_pipeline,
+                                    )
+                                    from gyra.agent.core.memory.read_pipeline import (
+                                        MemoryReadPipeline,
+                                    )
+
+                                    _sess_id = (
+                                        getattr(
+                                            recipient.agent_context, "conv_session_id", None
+                                        )
+                                        or recipient.agent_context.conv_id
+                                    )
+                                    _pipeline = _get_session_pipeline(_sess_id)
+                                    if _pipeline is None:
+                                        _pipeline = MemoryReadPipeline()
+                                        _register_session_pipeline(_sess_id, _pipeline)
+                                    memory_bundle.pipeline = _pipeline
+                                except Exception as pipe_e:  # noqa: BLE001
+                                    logger.warning(
+                                        f"[AgentChat] Memory pipeline wiring failed: {pipe_e}"
+                                    )
                                 # Register the bundle with the conversation's
                                 # HookManager so the memory dispatcher can
                                 # find it, and so the default memory hooks
@@ -2660,70 +2782,6 @@ class AgentChat(BaseComponent, ABC):
             logger.info(
                 f"_build_agent_by_gpts:{app.app_code},{app.app_name}, end:{datetime.now()}"
             )
-
-    async def _load_and_inject_scenes(
-        self,
-        agent_name: str,
-        scenes: List[str],
-        sandbox_manager: SandboxManager,
-        agent_profile: Any,
-    ) -> str:
-        """
-        从沙箱加载场景内容并注入到Agent的System Prompt
-
-        Args:
-            agent_name: Agent名称
-            scenes: 场景ID列表
-            sandbox_manager: 沙箱管理器
-            agent_profile: Agent配置对象
-
-        Returns:
-            注入的场景内容
-        """
-        from gyra.agent.core.sandbox.scene_initializer import get_scene_initializer
-
-        initializer = get_scene_initializer(sandbox_manager)
-        scene_contents = []
-
-        # 读取每个场景文件
-        for scene_id in scenes:
-            try:
-                content = await initializer.read_scene_file(agent_name, scene_id)
-                if content:
-                    # 解析YAML Front Matter，提取有效内容
-                    parts = content.split("---\n")
-                    if len(parts) >= 3:
-                        # 有Front Matter，提取body部分
-                        body = "---\n".join(parts[2:])
-                        scene_contents.append(f"## 场景: {scene_id}\n\n{body}")
-                    else:
-                        # 没有Front Matter，使用全部内容
-                        scene_contents.append(f"## 场景: {scene_id}\n\n{content}")
-
-                    logger.debug(f"[AgentChat] 加载场景内容: {scene_id}")
-            except Exception as e:
-                logger.warning(f"[AgentChat] 加载场景 {scene_id} 失败: {e}")
-
-        if not scene_contents:
-            return ""
-
-        # 构建场景提示词
-        scene_separator = "\n\n---\n\n"
-        scene_prompt = f"""# 场景定义
-
-你是根据以下场景定义来协助用户的智能助手。请严格遵循场景定义中的角色设定、工作流程和工具使用规范。
-
-{scene_separator.join(scene_contents)}
-
----
-
-"""
-
-        # 注入到Agent的System Prompt
-        original_prompt = agent_profile.system_prompt_template or ""
-        agent_profile.system_prompt_template = scene_prompt + original_prompt
-
-        return scene_prompt
 
     async def add_duplicate_allow_tools(self, resources: List[AgentResource]):
         if not resources:
@@ -3134,6 +3192,22 @@ class AgentChat(BaseComponent, ABC):
                                 param.param_value
                             ]
 
+                    elif param.param_type == "media":
+                        # 多媒体生成参数（对话输入框设定的图片/视频参数）。
+                        # JSON 字符串 → dict；图片尺寸档位名（720p/1080p/2k/4k）解析为具体像素。
+                        media_value = param.param_value
+                        try:
+                            parsed = json.loads(media_value) if isinstance(media_value, str) else media_value
+                            if isinstance(parsed, dict):
+                                from gyra.agent.multimedia.config import resolve_image_size
+                                if parsed.get("size"):
+                                    parsed["size"] = resolve_image_size(str(parsed["size"]))
+                                llm_context["media"] = parsed
+                            else:
+                                llm_context["media"] = media_value
+                        except Exception:  # noqa: BLE001 - 非法 JSON 原样透传
+                            llm_context["media"] = media_value
+
                     elif param.param_type == AppParamType.Temperature.value:
                         temperature = param.param_value
                         logger.info("用户指定了模型Temperature，优先使用")
@@ -3502,6 +3576,8 @@ class AgentChat(BaseComponent, ABC):
                                     "history": detail.get("history") or 0,
                                     "user_msg": detail.get("user_msg") or 0,
                                     "tools": detail.get("tools") or 0,
+                                    "skills": detail.get("skills") or 0,
+                                    "mcp": detail.get("mcp") or 0,
                                     "layers": detail.get("layers")
                                     or {"compressed": 0, "retained": 0},
                                 },
@@ -3526,6 +3602,30 @@ class AgentChat(BaseComponent, ABC):
                 need_sandbox=True,
                 **ext_info,
             )
+
+            # 记忆检索入口预取：agent 构建完成到首次 LLM 调用之间还有
+            # 引擎装配/prompt 组装一大段路，用 fire-and-forget 预取把
+            # thinking 里的同步 hybrid 检索换成 prefetch 命中。
+            _prefetch_memory_bundle = getattr(recipient, "_memory_bundle", None)
+            _prefetch_pipeline = getattr(_prefetch_memory_bundle, "pipeline", None)
+            if _prefetch_memory_bundle is not None and _prefetch_pipeline is not None:
+                _prefetch_query = user_query.content if user_query else ""
+
+                async def _prefetch_memories() -> None:
+                    try:
+                        result = (
+                            await _prefetch_memory_bundle.manager.retrieve_relevant_memories(
+                                query=_prefetch_query,
+                                exclude_rooms=["profile", "preference"],
+                            )
+                        )
+                        _prefetch_pipeline.get_prefetch_cache().set_result(
+                            _prefetch_query, result
+                        )
+                    except Exception as pf_e:  # noqa: BLE001
+                        logger.debug(f"[AgentChat] memory prefetch failed: {pf_e}")
+
+                asyncio.create_task(_prefetch_memories())
 
             # 工具执行授权配置：从 ext_info 或 app ext_config 读取 authorization_config
             # (dict)，挂到 agent。ToolAction 据此按 mode/tool_overrides/白黑名单决定

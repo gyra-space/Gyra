@@ -30,12 +30,12 @@ body {
   --brand-active: #4338ca;
   --brand-soft: #eef0fe;
 
-  /* Ink —— 文字五级(800 为正文软墨色) */
+  /* Ink —— 文字五级(800 为正文软墨色);500/400 加深一档,次级文字更实不飘 */
   --ink-900: #14161c;
   --ink-800: #262b38;
   --ink-700: #3b4154;
-  --ink-500: #5d6577;
-  --ink-400: #8a92a6;
+  --ink-500: #4d5666;
+  --ink-400: #79818f;
   --ink-300: #b4bac8;
 
   /* Line —— 描边两级，宁浅勿深 */
@@ -59,10 +59,10 @@ body {
   --r-lg: 14px;
   --r-xl: 20px;
 
-  /* Shadow —— 弥散、低透明，替代描边堆叠 */
-  --sh-card: 0 1px 2px rgba(16, 24, 40, 0.04);
-  --sh-pop: 0 4px 16px rgba(16, 24, 40, 0.08);
-  --sh-modal: 0 12px 40px rgba(16, 24, 40, 0.12);
+  /* Shadow —— 适度纵深,确立面板层级;描边立边界、阴影给重量 */
+  --sh-card: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --sh-pop: 0 6px 20px rgba(16, 24, 40, 0.12);
+  --sh-modal: 0 16px 48px rgba(16, 24, 40, 0.16);
   --sh-glow: 0 0 0 4px rgba(var(--brand-rgb), 0.08);
 
   /* Typography —— Inter 承接 Latin/数字(可变字重),中文回落 PingFang SC */

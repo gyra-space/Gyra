@@ -143,6 +143,67 @@ async def test_multi_step_turn(store):
     assert len(tool_results) == 1
 
 
+async def test_multi_step_tool_history_global_seq(store):
+    """多步工具循环：事件 seq 全局单调续号，工具历史投影保持时序与配对正确。
+
+    回归 Bug A：旧实现每步 seq 从 0 开始，且各步 token 数不同导致 tool_call 落点
+    不同（step2 的 tool_call 可能排到 step1 之前），get_events 按 seq 排序会把
+    多步事件交错打乱，project_tool_history 输出乱序/错配，模型看不到正确工具历史
+    而陷入工具死循环。
+    """
+    from gyra.agent.core.v2.event_projection import project_tool_history
+    from gyra.agent.core.v2.tool_call_types import V2ToolResult
+
+    state = {"call": 0}
+
+    async def thinking(input_):
+        state["call"] += 1
+        if state["call"] == 1:
+            # 第 1 步：多发几轮 token → tool_call 落在更高 seq
+            for i in range(5):
+                yield {"token": f"t1-{i}"}
+            yield {"tool_calls": [{"tool": "tool_1", "input": {"k": 1}}]}
+        elif state["call"] == 2:
+            # 第 2 步：少发 token → tool_call 落在更低 seq（旧实现下会先于 step1）
+            yield {"token": "t2"}
+            yield {"tool_calls": [{"tool": "tool_2", "input": {"k": 2}}]}
+        else:
+            yield {"token": "final"}
+
+    async def acting(tool_call, ctx):
+        return V2ToolResult.ok(output=f"res-{tool_call.name}", tool_name=tool_call.name)
+
+    async for _ in run_loop(
+        agent_id="a1", conv_id="c1",
+        input_={"prompt": "hi", "session_id": "s1"},
+        state_store=store,
+        thinking_fn=thinking,
+        acting_fn=acting,
+        max_steps=5,
+    ):
+        pass
+
+    events = await store.get_events("c1")
+    # 全局单调：step2 的 tool_call seq 必须大于 step1 的 tool_call seq
+    tc_seqs = {
+        ev.input.get("tool"): ev.seq
+        for ev in events
+        if ev.event_type == "tool_call"
+    }
+    assert tc_seqs.get("tool_1") is not None and tc_seqs.get("tool_2") is not None
+    assert tc_seqs["tool_1"] < tc_seqs["tool_2"], (
+        f"seq 非全局单调（tool_call 错位）: {tc_seqs}"
+    )
+
+    # 投影必须严格按执行顺序配对：tool_1 → res-tool_1, tool_2 → res-tool_2
+    msgs = await project_tool_history(store, "c1")
+    assert len(msgs) == 4, f"投影消息数错误: {msgs}"
+    assert msgs[0]["tool_calls"][0]["function"]["name"] == "tool_1"
+    assert msgs[1]["content"] == "res-tool_1"
+    assert msgs[2]["tool_calls"][0]["function"]["name"] == "tool_2"
+    assert msgs[3]["content"] == "res-tool_2"
+
+
 async def test_max_steps_no_double_turn_complete(store):
     """max_steps reached on no-tool step should fire turn_complete only once."""
     call_count = {"n": 0}

@@ -370,6 +370,10 @@ async def chat_query(
         vis_render: 可视化协议名称
     """
     logger.info(f"chat_query: {conv_id}")
+    from gyra_serve.permissions import can_read_conversation
+
+    if not can_read_conversation(user_token, conv_id, allow_unknown_owner=True):
+        return Result.failed(code="E0105", msg="无权访问该会话")
     try:
         result = await multi_agents.query_chat(conv_id=conv_id, vis_render=vis_render)
         if result is None:
@@ -398,6 +402,10 @@ async def vis_step_detail(
     step_id: str,
     user_token: UserRequest = Depends(get_user_from_headers),
 ):
+    from gyra_serve.permissions import can_read_conversation
+
+    if not can_read_conversation(user_token, conv_id, allow_unknown_owner=True):
+        return Result.failed(code="E0105", msg="无权访问该会话")
     """按 step_id 查询单个执行步骤详情。
 
     vis_manus 布局左侧步骤点击时按需拉取(lazy_loading 模式),返回该步骤的
@@ -982,8 +990,23 @@ async def model_types():
                     if isinstance(p_conf, dict) and "model" in p_conf:
                         p_models = p_conf.get("model")
                         if isinstance(p_models, list):
+                            p_defaults = {
+                                k: v for k, v in p_conf.items() if k not in ("model", "models")
+                            }
                             for m in p_models:
                                 if isinstance(m, dict) and "name" in m:
+                                    # 排除媒体生成模型（图片/视频/音频），聊天只选文本/视觉 LLM
+                                    try:
+                                        from gyra.agent.util.llm.model_config_cache import (
+                                            is_media_model_config,
+                                        )
+
+                                        merged = dict(p_defaults)
+                                        merged.update(m)
+                                        if is_media_model_config(merged):
+                                            continue
+                                    except Exception:
+                                        pass
                                     types.add(m.get("name"))
 
         return Result.succ(list(types))

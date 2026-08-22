@@ -69,7 +69,7 @@ class UnifiedCompactionConfig:
     prune_protect_tokens: int = 10000  # 废弃：使用 prune_protect_ratio 替代
     prune_protect_ratio: float = 0.15  # 保留最近 15% 上下文空间的消息
     min_messages_keep: int = 20
-    prune_protected_tools: Tuple[str, ...] = ("skill", "Skill", "skill_exec", "skill_list")
+    prune_protected_tools: Tuple[str, ...] = ("skill", "Skill")
 
     # 自适应剪枝配置
     enable_adaptive_pruning: bool = True

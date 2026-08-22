@@ -1,4 +1,3 @@
-import json
 import logging
 from enum import Enum
 from typing import List, Optional, Dict, Union
@@ -117,8 +116,8 @@ class GptVisConverter(VisProtocolConverter):
 
         messages_view.append(
             {
-                "sender": message["sender"],
-                "model": message["model"],
+                "sender": message.get("sender"),
+                "model": message.get("model"),
                 "markdown": msg_markdown,
             }
         )
@@ -134,14 +133,21 @@ class GptVisConverter(VisProtocolConverter):
             return ""
         messages_view = []
 
-        action_report_str = message.action_report
+        action_reports = message.action_report
         view_info = message.content
-        if action_report_str and len(action_report_str) > 0:
-            action_out = ActionOutput.from_dict(json.loads(action_report_str))
-            if action_out is not None:  # noqa
-                if action_out.is_exe_success or is_last_message:  # noqa
-                    view = action_out.view
-                    view_info = view if view else action_out.content
+        if action_reports:
+            # v2: action_report 已是 List[ActionOutput];老数据为 JSON 字符串
+            if isinstance(action_reports, str):
+                action_reports = ActionOutput.parse_action_reports(action_reports)
+            elif not isinstance(action_reports, list):
+                action_reports = [action_reports]
+            views = [
+                report.view or report.content
+                for report in action_reports
+                if report.is_exe_success or is_last_message
+            ]
+            if views:
+                view_info = "\n".join(views)
 
         thinking = message.thinking
         vis_thinking = self.vis_inst(SystemVisTag.VisThinking.value)

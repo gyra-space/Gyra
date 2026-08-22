@@ -16,6 +16,12 @@ import markdownComponents, { markdownPlugins } from '@/components/chat/chat-cont
 import DockPanel from '@/components/chat/dock/dock-panel';
 import { GPTVis } from '@antv/gpt-vis';
 import { useSearchParams } from 'next/navigation';
+import { AgentWorkspaceRenderer } from '@/app/workspaces/detail/agent-workspace-renderer';
+import { buildManusWorkspaceView } from '@/app/workspaces/detail/manus-to-workspace-view';
+import type { ManusRightPanelData } from '@/types/manus';
+// 左栏「工作流」风格步骤进展复用 AgentWorkspaceRenderer,其布局样式(ws-*)来自场景空间 CSS,
+// /chat 独立页默认不加载该 CSS,此处显式引入以避免左栏失去骨架样式。
+import '@/app/workspaces/detail/scene-workspace.css';
 
 type ShareMode = 'conversation' | 'process' | 'report' | null;
 
@@ -177,6 +183,27 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
   // The running window shown in right panel: override (from deliverable click) or latest
   const displayRunningWindow = overrideRunningWindow || latestRunningWindow;
 
+  // 解析最新 manus-right-panel → WorkspaceView,驱动左栏「工作流」风格步骤进展(图2 简洁模式),
+  // 替代原来的执行胶囊分组卡片。无数据时回退原有 planning_window 渲染。
+  const manusRight = useMemo<ManusRightPanelData | null>(() => {
+    const rw = displayRunningWindow || latestRunningWindow;
+    if (!rw) return null;
+    const fm = rw.match(/```manus-right-panel\s*\n([\s\S]*?)\n```/);
+    if (!fm) return null;
+    try {
+      const parsed = JSON.parse(fm[1]);
+      return parsed && typeof parsed === 'object' ? (parsed as ManusRightPanelData) : null;
+    } catch {
+      return null;
+    }
+  }, [displayRunningWindow, latestRunningWindow]);
+
+  const workspaceView = useMemo(
+    () => buildManusWorkspaceView(showMessages, manusRight),
+    [showMessages, manusRight],
+  );
+  const hasWorkspaceSteps = workspaceView.execution.length > 0;
+
   // Agent 预设提问:优先取 appInfo.recommend_questions,兼容多种字段形态
   const recommendQuestions = useMemo(() => {
     const raw = appInfo?.recommend_questions || [];
@@ -301,7 +328,29 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
 
           {/* Chat messages */}
           <div className="flex-1 overflow-y-auto min-w-0" ref={scrollRef}>
-            {hasMessages ? (
+            {hasWorkspaceSteps ? (
+              /* 图2 简洁模式:工作流风格左栏(用户消息 → 工具步骤顺序流 → 最终结论) */
+              <div className={classNames("w-full px-4 py-3", !isRightPanelVisible && "max-w-[768px] mx-auto")}>
+                <div className="ws-manus-renderer">
+                  <AgentWorkspaceRenderer
+                    view={workspaceView}
+                    running={isProcessing}
+                    agentIcon={appInfo?.icon}
+                    agentName={appInfo?.app_name}
+                    onStepClick={(step) => {
+                      if (step.type !== 'tool_call') return;
+                      const convId = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('conv_uid') || '' : '';
+                      ee.emit(EVENTS.CLICK_FOLDER, { uid: step.id, conv_id: convId });
+                      ee.emit(EVENTS.OPEN_PANEL);
+                    }}
+                    onDeliverableClick={(file) => {
+                      ee.emit(EVENTS.SWITCH_TAB, { tab: `deliverable_${file.file_id}` });
+                    }}
+                    onInteractionResume={(text) => handleChat?.(text)}
+                  />
+                </div>
+              </div>
+            ) : hasMessages ? (
               <div className={classNames("w-full px-4 py-3", !isRightPanelVisible && "max-w-[768px] mx-auto")}>
                 <div className="w-full space-y-1.5">
                   {showMessages.map((content, index) => (

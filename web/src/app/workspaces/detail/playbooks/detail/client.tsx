@@ -7,6 +7,7 @@ import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useSpaceRole } from '@/hooks/use-space-role';
 import VisualEditor from './visual-editor';
 import type { PlaybookDeclaration } from './visual-editor/types';
 
@@ -54,6 +55,11 @@ export default function PlaybookEditorPage() {
     const [err, res] = await apiInterceptors(getWorkspaceInfo(workspaceCode));
     return err ? null : res;
   }, { refreshDeps: [workspaceCode] });
+
+  // 权限门控:保存=剧本维护;校验/Fire=运行调试
+  const { can } = useSpaceRole(ws?.id);
+  const canManage = can('space.playbook.manage');
+  const canRun = can('space.playbook.run');
 
   const { data: playbook, loading } = useRequest(async () => {
     if (!playbookId) return null;
@@ -190,9 +196,9 @@ export default function PlaybookEditorPage() {
           <Tag>v{playbook.current_version}</Tag>
         </div>
         <div className="flex gap-2">
-          <Button onClick={handleValidate}>{t('playbooks.validate') || 'Validate'}</Button>
-          <Button type="primary" loading={saving} onClick={handleSave}>{t('save') || 'Save'}</Button>
-          <Button loading={firing} onClick={handleFire}>{t('playbooks.fire') || 'Fire Task'}</Button>
+          {canRun && <Button onClick={handleValidate}>{t('playbooks.validate') || 'Validate'}</Button>}
+          {canManage && <Button type="primary" loading={saving} onClick={handleSave}>{t('save') || 'Save'}</Button>}
+          {canRun && <Button loading={firing} onClick={handleFire}>{t('playbooks.fire') || 'Fire Task'}</Button>}
         </div>
       </div>
 

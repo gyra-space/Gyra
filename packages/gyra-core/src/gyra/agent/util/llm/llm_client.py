@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -18,12 +19,73 @@ from gyra.core import (
 )
 from gyra.core.interface.output_parser import BaseOutputParser
 from gyra.util.error_types import LLMChatError
+from gyra.util.model_utils import TokenDetails
 from gyra.util.tracer import root_tracer
 
 logger = logging.getLogger(__name__)
 
 # 思考深度(reasoning_effort)合法取值。越界值不会透传到 provider,规避非法参数报错。
 REASONING_EFFORT_VALUES = {"minimal", "low", "medium", "high"}
+
+
+def _extract_cached_tokens(usage: Optional[Dict[str, Any]]) -> int:
+    """从 provider usage dict 提取缓存命中 token 数。
+
+    兼容两种形态：DeepSeek 风格 ``prompt_cache_hit_tokens`` 平铺字段；
+    OpenAI 风格 ``prompt_tokens_details.cached_tokens`` 嵌套字段。
+    """
+    if not usage:
+        return 0
+    try:
+        hit = usage.get("prompt_cache_hit_tokens")
+        if hit:
+            return int(hit)
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            return int(details.get("cached_tokens") or 0)
+    except (TypeError, ValueError):
+        pass
+    return 0
+
+
+def _is_placeholder_key(key: Optional[str]) -> bool:
+    """检查 api_key 是否是占位符。"""
+    if not key:
+        return True
+    if key.startswith("${"):
+        return True
+    placeholder_patterns = [
+        "sk-...",
+        "sk-xxxx",
+        "your_api_key",
+        "xxx",
+        "placeholder",
+    ]
+    key_lower = key.lower()
+    if any(pattern in key_lower for pattern in placeholder_patterns):
+        return True
+    return False
+
+
+# provider 进程级缓存：provider 对象无网络连接、不可变，key 含配置指纹
+# （模型配置变更→新 key→自动 miss 重建；secrets 轮换需重启生效）。
+# AIWrapper 每轮会话重建（agent build 时新建），实例级缓存跨轮必失效，
+# 提升为模块级后全链路（V1/V2/记忆 processor/知识 ingest）共享。
+_PROVIDER_CACHE: "Dict[tuple, LLMProvider]" = {}
+_PROVIDER_CACHE_CAP = 64
+_PROVIDER_CACHE_ORDER: "List[tuple]" = []  # FIFO 淘汰（key 自失效，LRU 非必需）
+
+
+def _provider_cache_get(key: tuple) -> Optional[LLMProvider]:
+    return _PROVIDER_CACHE.get(key)
+
+
+def _provider_cache_put(key: tuple, provider: LLMProvider) -> None:
+    if len(_PROVIDER_CACHE) >= _PROVIDER_CACHE_CAP:
+        oldest = _PROVIDER_CACHE_ORDER.pop(0)
+        _PROVIDER_CACHE.pop(oldest, None)
+    _PROVIDER_CACHE[key] = provider
+    _PROVIDER_CACHE_ORDER.append(key)
 
 
 def _usage_to_metrics(usage: Optional[Dict[str, Any]]) -> Optional[ModelInferenceMetrics]:
@@ -40,10 +102,12 @@ def _usage_to_metrics(usage: Optional[Dict[str, Any]]) -> Optional[ModelInferenc
         prompt = int(usage.get("prompt_tokens") or 0)
         completion = int(usage.get("completion_tokens") or 0)
         total = int(usage.get("total_tokens") or (prompt + completion))
+        cached = _extract_cached_tokens(usage)
         return ModelInferenceMetrics(
             prompt_tokens=prompt,
             completion_tokens=completion,
             total_tokens=total,
+            prompt_tokens_details=TokenDetails(cached_tokens=cached),
         )
     except Exception as e:  # noqa: BLE001
         logger.debug(f"[usage] usage_to_metrics failed: {e}")
@@ -278,7 +342,6 @@ class AIWrapper:
         self._llm_config = llm_config
         self._provider: Optional[LLMProvider] = None
         self._output_parser = output_parser or BaseOutputParser(is_stream_out=False)
-        self._provider_cache: Dict[str, LLMProvider] = {}
 
         if self._llm_config:
             self._init_provider()
@@ -432,43 +495,42 @@ class AIWrapper:
         if llm_model and ModelConfigCache.has_model(llm_model):
             model_config_dict = ModelConfigCache.get_config(llm_model)
             if model_config_dict:
-                if llm_model not in self._provider_cache:
-                    try:
-                        temp_llm_config = AgentLLMConfig.from_dict(model_config_dict)
-                        provider_name = temp_llm_config.provider.lower()
-                        # 优先使用配置中的 protocol，否则根据 provider 推断
-                        protocol = model_config_dict.get("protocol")
-                        if not protocol:
-                            from gyra.agent.util.llm.model_config_cache import infer_protocol
-                            protocol = infer_protocol(provider_name)
+                provider = None
+                cache_key: Optional[tuple] = None
+                try:
+                    temp_llm_config = AgentLLMConfig.from_dict(model_config_dict)
+                    provider_name = temp_llm_config.provider.lower()
+                    # 优先使用配置中的 protocol，否则根据 provider 推断
+                    protocol = model_config_dict.get("protocol")
+                    if not protocol:
+                        from gyra.agent.util.llm.model_config_cache import infer_protocol
+                        protocol = infer_protocol(provider_name)
 
-                        base_url = temp_llm_config.base_url
+                    base_url = temp_llm_config.base_url
+                    # 缓存键含配置指纹（含配置中的 api_key 哈希；占位符不展开，
+                    # 避免命中路径上查 secrets DB）。模型配置变更 → 新 key →
+                    # 自动 miss 重建。
+                    configured_key = temp_llm_config.api_key
+                    key_fp = hashlib.md5(
+                        str(
+                            (
+                                llm_model,
+                                protocol,
+                                base_url,
+                                temp_llm_config.model,
+                                configured_key
+                                if not _is_placeholder_key(configured_key)
+                                else "<placeholder>",
+                            )
+                        ).encode()
+                    ).hexdigest()[:12]
+                    cache_key = (llm_model, key_fp)
+                    provider = _provider_cache_get(cache_key)
 
-                        # 检查 api_key 是否是占位符
-                        def _is_placeholder_key(key: Optional[str]) -> bool:
-                            if not key:
-                                return True
-                            if key.startswith("${"):
-                                return True
-                            placeholder_patterns = [
-                                "sk-...",
-                                "sk-xxxx",
-                                "your_api_key",
-                                "xxx",
-                                "placeholder",
-                            ]
-                            key_lower = key.lower()
-                            if any(
-                                pattern in key_lower for pattern in placeholder_patterns
-                            ):
-                                return True
-                            return False
-
-                        api_key = temp_llm_config.api_key
-                        is_placeholder = _is_placeholder_key(api_key)
-
+                    if provider is None:
+                        api_key = configured_key
                         # 优先级：系统设置(secrets) > 配置文件 > 环境变量
-                        if not api_key or is_placeholder:
+                        if not api_key or _is_placeholder_key(api_key):
                             api_key = _get_api_key_from_secrets(provider_name, base_url)
                             if api_key:
                                 logger.info(
@@ -486,16 +548,19 @@ class AIWrapper:
                             model=temp_llm_config.model,
                         )
                         if provider:
-                            self._provider_cache[llm_model] = provider
+                            _provider_cache_put(cache_key, provider)
                             logger.info(
                                 f"Created {protocol} provider for model={llm_model} (provider={provider_name})"
                             )
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to create provider for model {llm_model}: {e}"
-                        )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to create provider for model {llm_model}: {e}"
+                    )
 
-                self._provider = self._provider_cache.get(llm_model)
+                # 构建失败不清空既有 provider（如测试注入的 mock 或上次成功
+                # 构建的 provider），避免回退模型配置残缺导致后续调用全崩。
+                if provider is not None:
+                    self._provider = provider
 
         llm_context = extra_kwargs.get("llm_context")
         stream_out = extra_kwargs.get("stream_out", True)
@@ -827,6 +892,7 @@ class AIWrapper:
                             else None
                         ),
                         tokens_per_sec=_tps,
+                        cached_tokens=_extract_cached_tokens(_u),
                     )
                 )
             except Exception as _ue:  # noqa: BLE001

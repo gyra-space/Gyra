@@ -132,7 +132,8 @@ async def test_gpt_msg_history_dict_reports():
 
 @pytest.mark.asyncio
 async def test_intermediate_replies_become_steps_not_summary():
-    """多条 assistant 文本:最新一条进 summary,之前的凝固为阶段回复步骤。"""
+    """多条 assistant 文本:每条都作为 answer 步骤按时序内联,最新一条同时进 summary。
+    不再凝固为 thinking「阶段回复」—— 文本组件与 thinking(推理)各自独立展示。"""
     conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
     msgs = [
         _make_gpt_msg(content="先查一下", message_id="m1"),
@@ -140,14 +141,14 @@ async def test_intermediate_replies_become_steps_not_summary():
     ]
     payload = _extract_payload(await conv.final_view(messages=msgs))
     assert payload["summary"] == "最终结果如下"
-    narr_steps = [s for s in payload["execution"] if s["type"] == "thinking"]
-    assert len(narr_steps) == 1
-    assert narr_steps[0]["output"] == "先查一下"
+    answer_steps = [s for s in payload["execution"] if s["type"] == "answer"]
+    assert [s["output"] for s in answer_steps] == ["先查一下", "最终结果如下"]
 
 
 @pytest.mark.asyncio
 async def test_text_before_tool_inlines_not_summary():
-    """文本先于工具调用产生(时序):文本凝固为内联步骤排在工具前,不再压底为 summary。"""
+    """文本先于工具调用产生(时序):文本作为 answer 步骤按时序排在工具前;
+    最新 narration 仍进 summary(前端有 answer step 时不重复渲染)。"""
     conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
     # 1) LLM 先输出文本(stream content 携带 start_time)
     await conv.visualization(messages=[], stream_msg={
@@ -164,9 +165,10 @@ async def test_text_before_tool_inlines_not_summary():
     payload = _extract_payload(
         await conv.visualization(messages=[], stream_msg={"message_id": "m1"})
     )
-    assert payload["summary"] is None
+    assert payload["summary"] == "先检查当前可用的模型"
     steps = payload["execution"]
-    assert [s["type"] for s in steps] == ["thinking", "tool_call"]
+    # 文本组件(answer)按时序在工具步骤之前,不凝固为 thinking
+    assert [s["type"] for s in steps] == ["answer", "tool_call"]
     assert steps[0]["output"] == "先检查当前可用的模型"
     assert steps[1]["action"] == "list_media_models"
 
@@ -194,8 +196,8 @@ async def test_text_after_tool_stays_summary():
     )
     assert payload["summary"] == "已找到可用模型"
     steps = payload["execution"]
-    # 最终回复同时作为 answer step 进 execution(跨轮保留),顺序仍在工具之后
-    assert [s["type"] for s in steps] == ["thinking", "tool_call", "answer"]
+    # 两段文本各自作为 answer 步骤按时序内联,顺序不错乱
+    assert [s["type"] for s in steps] == ["answer", "tool_call", "answer"]
     assert steps[-1]["output"] == "已找到可用模型"
 
 
@@ -214,9 +216,9 @@ async def test_final_reply_also_becomes_answer_step():
 
 
 @pytest.mark.asyncio
-async def test_answer_step_flips_to_stage_reply_with_stable_id():
-    """流式文本先作为 answer 推送;工具随后到达时同一 id(narr-{mid})就地翻转为阶段回复,
-    前端按 id 合并不会残留旧 answer 步骤导致同一段文本显示两份。"""
+async def test_answer_step_keeps_text_type_when_tool_arrives():
+    """流式文本先作为 answer 推送;工具随后到达时 id(narr-{mid})保持 answer 类型不变、
+    按时序排在工具之前 —— 文本组件不翻转为 thinking,与工具步骤各自独立。"""
     conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
     # 1) 流式文本:此时是唯一 narration → answer step
     out = await conv.visualization(messages=[], stream_msg={
@@ -225,7 +227,7 @@ async def test_answer_step_flips_to_stage_reply_with_stable_id():
     steps = _extract_payload(out)["execution"]
     assert [(s["id"], s["type"]) for s in steps] == [("narr-m1", "answer")]
 
-    # 2) 工具调用(更晚 start_time):文本降级为阶段回复,id 不变
+    # 2) 工具调用(更晚 start_time):文本保持 answer,按 ts 排在工具前
     out = await conv.visualization(messages=[], stream_msg={
         "message_id": "m1",
         "action_report": [_make_action_output(
@@ -234,7 +236,7 @@ async def test_answer_step_flips_to_stage_reply_with_stable_id():
         )],
     })
     steps = _extract_payload(out)["execution"]
-    assert [(s["id"], s["type"]) for s in steps] == [("narr-m1", "thinking"), ("t1", "tool_call")]
+    assert [(s["id"], s["type"]) for s in steps] == [("narr-m1", "answer"), ("t1", "tool_call")]
 
 
 @pytest.mark.asyncio

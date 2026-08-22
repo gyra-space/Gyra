@@ -16,7 +16,7 @@ _logger = logging.getLogger(__name__)
 # 遗留配置迁移阈值：max_new_tokens 超过此值视为"本是上下文空间却误填进输出上限"，
 # 迁移到 context_window 并把输出上限重置为默认。输出上限极少超过 32K，超过几乎都是误配。
 LEGACY_MAX_TOKENS_AS_CONTEXT_THRESHOLD = 32768
-DEFAULT_MAX_NEW_TOKENS = 4096
+DEFAULT_MAX_NEW_TOKENS = 8192
 DEFAULT_CONTEXT_WINDOW = 128000
 
 
@@ -482,6 +482,55 @@ class MediaGenDefaults(BaseModel):
     audio_default_model: Optional[str] = Field(default=None)
 
 
+class SchemaMigrationConfig(BaseModel):
+    """表结构自动迁移配置（MySQL 增量脚本）。
+
+    版本权威记录在数据库 gyra_schema_version 账本表（多实例安全）；
+    ``last_applied_script`` / ``last_applied_at`` 仅作为 gyra.json 镜像，
+    由运行器回写，用于人工查看与恢复提示，不应手改。
+    """
+
+    enabled: bool = Field(
+        True, description="服务启动时自动执行增量迁移脚本"
+    )
+    upgrades_dir: str = Field(
+        "assets/schema/mysql/upgrades",
+        description="增量脚本目录（相对项目根目录，或绝对路径）",
+    )
+    full_ddl_file: str = Field(
+        "assets/schema/mysql/gyra.sql",
+        description="全量 DDL 文件（空库初始化时执行）",
+    )
+    baseline_existing_db: bool = Field(
+        True,
+        description="存量库（已有 Gyra 表但无版本记录）首次启动自动 baseline，"
+        "不执行历史脚本",
+    )
+    assume_current_version: Optional[str] = Field(
+        None,
+        description="存量库首次 baseline 指定的版本（增量脚本文件名）。仅当存量库实际"
+        "落后于最新 schema 时设置；不设置则 baseline 到最新。"
+        "baseline 之后的增量脚本仍会执行",
+    )
+    on_error: str = Field(
+        "abort", description="真实错误策略：abort 阻断启动 / warn 记录后继续"
+    )
+    tolerate_duplicate: bool = Field(
+        True,
+        description="容忍'已存在'类错误（MySQL 1050/1060/1061/1091），使脚本可重复执行",
+    )
+    lock_timeout_seconds: int = Field(
+        30, description="MySQL GET_LOCK 等待时长（秒），多实例互斥迁移"
+    )
+    # 以下为运行器回写镜像字段，勿手改
+    last_applied_script: Optional[str] = Field(
+        None, description="镜像：最后一次成功执行的脚本名"
+    )
+    last_applied_at: Optional[str] = Field(
+        None, description="镜像：最后一次执行时间（ISO 格式）"
+    )
+
+
 class AppConfig(BaseModel):
     name: str = "Gyra"
     version: str = "0.1.0"
@@ -512,6 +561,11 @@ class AppConfig(BaseModel):
 
     # 媒体生成（图片/视频）默认模型配置
     media_gen: MediaGenDefaults = Field(default_factory=MediaGenDefaults)
+
+    # 表结构自动迁移配置（MySQL 增量脚本）
+    schema_migration: SchemaMigrationConfig = Field(
+        default_factory=SchemaMigrationConfig
+    )
 
     workspace: str = Field(
         default_factory=lambda: str(get_gyra_home() / "workspace")

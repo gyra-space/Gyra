@@ -485,7 +485,7 @@ export class InteractionService {
         const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
         return `${protocol}//${url.host}`;
       }
-      return 'ws://127.0.0.1:7777';
+      return 'ws://127.0.0.1:8888';
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

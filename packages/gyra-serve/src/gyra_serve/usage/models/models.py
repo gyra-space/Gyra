@@ -53,6 +53,7 @@ class LLMUsageEntity(Model):
     latency_ms = Column(Integer, default=0)
     first_token_ms = Column(Integer, nullable=True)
     tokens_per_sec = Column(Float, nullable=True)
+    cached_tokens = Column(Integer, default=0)  # prompt 缓存命中 token 数
     stream = Column(Integer, default=1)
     error_code = Column(Integer, default=0)
     cost_usd = Column(Float, default=0.0)
@@ -123,6 +124,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
             latency_ms=record.latency_ms or 0,
             first_token_ms=record.first_token_ms,
             tokens_per_sec=record.tokens_per_sec,
+            cached_tokens=record.cached_tokens or 0,
             stream=1 if record.stream else 0,
             error_code=record.error_code or 0,
             cost_usd=cost,
@@ -169,6 +171,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
             latency_ms=entity.latency_ms or 0,
             first_token_ms=entity.first_token_ms,
             tokens_per_sec=entity.tokens_per_sec,
+            cached_tokens=entity.cached_tokens or 0,
             stream=entity.stream if entity.stream is not None else 1,
             error_code=entity.error_code or 0,
             cost_usd=entity.cost_usd or 0.0,
@@ -211,6 +214,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
                     func.sum(LLMUsageEntity.prompt_tokens).label("prompt_tokens"),
                     func.sum(LLMUsageEntity.completion_tokens).label("completion_tokens"),
                     func.sum(LLMUsageEntity.total_tokens).label("total_tokens"),
+                    func.sum(LLMUsageEntity.cached_tokens).label("cached_tokens"),
                     func.sum(LLMUsageEntity.cost_usd).label("cost_usd"),
                     func.avg(LLMUsageEntity.latency_ms).label("avg_latency_ms"),
                     func.avg(LLMUsageEntity.tokens_per_sec).label("avg_tokens_per_sec"),
@@ -225,6 +229,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
             prompt_tokens=int(row.prompt_tokens or 0),
             completion_tokens=int(row.completion_tokens or 0),
             total_tokens=int(row.total_tokens or 0),
+            cached_tokens=int(row.cached_tokens or 0),
             cost_usd=float(row.cost_usd or 0.0),
             avg_latency_ms=float(row.avg_latency_ms) if row.avg_latency_ms is not None else None,
             avg_tokens_per_sec=float(row.avg_tokens_per_sec)
@@ -247,6 +252,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
                         func.sum(LLMUsageEntity.prompt_tokens).label("prompt_tokens"),
                         func.sum(LLMUsageEntity.completion_tokens).label("completion_tokens"),
                         func.sum(LLMUsageEntity.total_tokens).label("total_tokens"),
+                        func.sum(LLMUsageEntity.cached_tokens).label("cached_tokens"),
                         func.sum(LLMUsageEntity.cost_usd).label("cost_usd"),
                         func.avg(LLMUsageEntity.latency_ms).label("avg_latency_ms"),
                         func.avg(LLMUsageEntity.tokens_per_sec).label("avg_tokens_per_sec"),
@@ -267,6 +273,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
                 prompt_tokens=int(r.prompt_tokens or 0),
                 completion_tokens=int(r.completion_tokens or 0),
                 total_tokens=int(r.total_tokens or 0),
+                cached_tokens=int(r.cached_tokens or 0),
                 cost_usd=float(r.cost_usd or 0.0),
                 avg_latency_ms=float(r.avg_latency_ms) if r.avg_latency_ms is not None else None,
                 avg_tokens_per_sec=float(r.avg_tokens_per_sec)
@@ -290,6 +297,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
                         func.sum(LLMUsageEntity.prompt_tokens).label("prompt_tokens"),
                         func.sum(LLMUsageEntity.completion_tokens).label("completion_tokens"),
                         func.sum(LLMUsageEntity.total_tokens).label("total_tokens"),
+                        func.sum(LLMUsageEntity.cached_tokens).label("cached_tokens"),
                         func.sum(LLMUsageEntity.cost_usd).label("cost_usd"),
                         func.avg(LLMUsageEntity.latency_ms).label("avg_latency_ms"),
                         func.avg(LLMUsageEntity.tokens_per_sec).label("avg_tokens_per_sec"),
@@ -308,6 +316,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
                 prompt_tokens=int(r.prompt_tokens or 0),
                 completion_tokens=int(r.completion_tokens or 0),
                 total_tokens=int(r.total_tokens or 0),
+                cached_tokens=int(r.cached_tokens or 0),
                 cost_usd=float(r.cost_usd or 0.0),
                 avg_latency_ms=float(r.avg_latency_ms) if r.avg_latency_ms is not None else None,
                 avg_tokens_per_sec=float(r.avg_tokens_per_sec)
@@ -331,6 +340,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
                         func.sum(LLMUsageEntity.prompt_tokens).label("prompt_tokens"),
                         func.sum(LLMUsageEntity.completion_tokens).label("completion_tokens"),
                         func.sum(LLMUsageEntity.total_tokens).label("total_tokens"),
+                        func.sum(LLMUsageEntity.cached_tokens).label("cached_tokens"),
                         func.sum(LLMUsageEntity.cost_usd).label("cost_usd"),
                         func.avg(LLMUsageEntity.latency_ms).label("avg_latency_ms"),
                         func.avg(LLMUsageEntity.tokens_per_sec).label("avg_tokens_per_sec"),
@@ -349,6 +359,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
                 prompt_tokens=int(r.prompt_tokens or 0),
                 completion_tokens=int(r.completion_tokens or 0),
                 total_tokens=int(r.total_tokens or 0),
+                cached_tokens=int(r.cached_tokens or 0),
                 cost_usd=float(r.cost_usd or 0.0),
                 avg_latency_ms=float(r.avg_latency_ms) if r.avg_latency_ms is not None else None,
                 avg_tokens_per_sec=float(r.avg_tokens_per_sec)

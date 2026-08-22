@@ -32,6 +32,10 @@ interface UseSceneAgentChatOptions {
   onWorkspaceEvent?: (event: WorkspaceEvent) => void;
   /** 用户在 Agent 空间提交任务、开始一轮对话时触发(用于折叠中间内容区) */
   onConversationStart?: () => void;
+  /** 是否启用轮询/连接:简洁模式与运维模式共用同一会话时,只让一个实例接管 */
+  enabled?: boolean;
+  /** 会话创建回调:convUid 为空时由外层在首次发送前创建并注入 */
+  onConvCreated?: (convUid: string) => Promise<string | null>;
 }
 
 interface UseSceneAgentChatResult {
@@ -136,6 +140,8 @@ export function useSceneAgentChat({
   playbooks,
   onWorkspaceEvent,
   onConversationStart,
+  enabled = true,
+  onConvCreated,
 }: UseSceneAgentChatOptions): UseSceneAgentChatResult {
   const [steps, setSteps] = useState<AgentStep[]>([]);
   const [loading, setLoading] = useState(false);
@@ -144,7 +150,51 @@ export function useSceneAgentChat({
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(EMPTY_WORKSPACE_VIEW);
   const [dockWidgets, setDockWidgets] = useState<Record<string, DockWidget>>({});
   const abortRef = useRef<AbortController | null>(null);
-  const { chat, usageMetrics } = useChat({ app_code: appCode || '' });
+  const { chat, usageMetrics, resetUsageMetrics } = useChat({ app_code: appCode || '' });
+  // convUid 内部态:外部未提供时(简洁模式延迟创建会话)由 ensureConvUid 填充,
+  // 提供时跟随外部 prop;这样 send 不依赖外层 re-render。
+  const [internalConvUid, setInternalConvUid] = useState<string | undefined>(undefined);
+  const effectiveConvUid = convUid ?? internalConvUid;
+
+  const ensureConvUid = useCallback(async (): Promise<string | null> => {
+    if (convUid) return convUid;
+    if (internalConvUid) return internalConvUid;
+    if (onConvCreated) {
+      const newUid = await onConvCreated('');
+      if (newUid) {
+        setInternalConvUid(newUid);
+        return newUid;
+      }
+    }
+    return null;
+  }, [convUid, internalConvUid, onConvCreated]);
+
+  // 外部 convUid 回到 undefined(简洁模式返回欢迎态)时清掉内部会话:
+  // 否则下次发送会复用上一轮 ensureConvUid 创建的旧会话,而不是新建。
+  useEffect(() => {
+    if (convUid === undefined) setInternalConvUid(undefined);
+  }, [convUid]);
+
+  // 会话/任务切换(effectiveConvUid 变化)时清空上一会话的视图与执行记录:
+  // workspaceView 是会话级累积状态(步骤按 id 合并、旧条目保留),若不重置,
+  // 新会话的 vis_final 会与旧会话的步骤混在一起 —— 任务列表里打开第二个任务时
+  // 仍会展示第一个任务的内容。放在 mergeTaskCards 之前,保证先清空、
+  // 再由任务卡片重注入与轮询重建新会话视图。
+  // prev 为 undefined 时跳过:欢迎态首次发送新建会话(回到欢迎态时已清空过),
+  // 再清一次会抹掉 send 刚上屏的乐观用户消息。
+  const prevConvUidRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevConvUidRef.current;
+    prevConvUidRef.current = effectiveConvUid;
+    if (prev === undefined || prev === effectiveConvUid) return;
+    setWorkspaceView(EMPTY_WORKSPACE_VIEW);
+    setSteps([]);
+    setDockWidgets({});
+    // 清空上一会话的上下文用量:useChat 的 usageMetrics 是 hook 级状态,
+    // 仅由新的 SSE usage_metric 事件更新,不随会话切换自动重置,
+    // 否则输入框环形图会残留上一会话的用量数据。
+    resetUsageMetrics();
+  }, [effectiveConvUid, resetUsageMetrics]);
 
   // 刷新/恢复视图后重注入任务卡片:任务卡片由 SSE task_created 事件注入,
   // 不落在后端 vis_final 数据中,刷新会消失。这里随任务列表/会话变化,
@@ -209,6 +259,23 @@ export function useSceneAgentChat({
     setWorkspaceView(EMPTY_WORKSPACE_VIEW);
   }, []);
 
+  // SSE 结束(done/close/error)兜底:把仍停在 running 的工具/思考步骤翻成终态。
+  // 后端工具结果帧可能因丢帧/WorkEntry 绑定失败未下发,前端若不兜底会永远转圈。
+  // finalStatus:正常结束置 done,出错置 failed。answer/user 等其它类型不动。
+  const settleRunningSteps = useCallback((finalStatus: 'done' | 'failed') => {
+    const settles = (s: WorkspaceExecutionStep) =>
+      (s.type === 'tool_call' || s.type === 'thinking') && s.status === 'running';
+    setWorkspaceView((prev) => {
+      if (!prev.execution.some(settles)) return prev;
+      return {
+        ...prev,
+        execution: prev.execution.map((s) =>
+          settles(s) ? { ...s, status: finalStatus } : s,
+        ),
+      };
+    });
+  }, []);
+
   // 乐观上屏:发送/追问即把用户消息插入视图,不等后端首帧。服务端回显同文本
   // user 步骤时由 dedupOptimisticUser 移除乐观步骤,避免重复。
   const appendOptimisticUser = useCallback((text: string) => {
@@ -246,7 +313,7 @@ export function useSceneAgentChat({
   const handlePoll = useCallback(
     (res: ChatQueryResponse) => {
       // 过滤 convUid 快速切换时滞后的旧会话响应,避免脏合并
-      if (res.conv_id && convUid && res.conv_id !== convUid) return;
+      if (res.conv_id && effectiveConvUid && res.conv_id !== effectiveConvUid) return;
       // 轮询链路:回放 dock 帧,与 SSE onDock 共用同一份合并逻辑
       if (res.dock) {
         setDockWidgets((prev) => applyDockFrame(prev, res.dock!));
@@ -260,12 +327,12 @@ export function useSceneAgentChat({
         });
       }
     },
-    [convUid],
+    [effectiveConvUid],
   );
 
   const { state: convState, checkStatus } = useChatPolling({
-    convId: convUid ?? null,
-    enabled: !loading,
+    convId: effectiveConvUid ?? null,
+    enabled: enabled && !loading && !!effectiveConvUid,
     visRender: 'scene_agent_workspace',
     interval: 2500,
     onPoll: handlePoll,
@@ -285,7 +352,7 @@ export function useSceneAgentChat({
 
   const recover = useCallback(
     async (streamError?: string) => {
-      if (!convUid || recoveringRef.current) return;
+      if (!effectiveConvUid || recoveringRef.current) return;
       recoveringRef.current = true;
       setRecovering(true);
       const epoch = recoverEpochRef.current;
@@ -318,7 +385,7 @@ export function useSceneAgentChat({
         }
       }
     },
-    [convUid, checkStatus, appendStep],
+    [effectiveConvUid, checkStatus, appendStep],
   );
 
   const retryRecover = useCallback(() => {
@@ -326,9 +393,12 @@ export function useSceneAgentChat({
   }, [recover]);
 
   const send = useCallback(
-    (payload: SceneAgentSendPayload) => {
+    async (payload: SceneAgentSendPayload) => {
       const { text } = payload;
-      if (!convUid || !text.trim()) return;
+      if (!text.trim()) return;
+      // 简洁模式:无 convUid 时先创建会话再发送
+      const uid = await ensureConvUid();
+      if (!uid) return;
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
@@ -346,7 +416,7 @@ export function useSceneAgentChat({
       // 时在 routeObject 里去重(服务端 output 会截断,用前缀匹配)
       appendOptimisticUser(text);
 
-      const data = buildSceneAgentSendData(payload, { workspaceId, taskId, focusArtifactId }, convUid);
+      const data = buildSceneAgentSendData(payload, { workspaceId, taskId, focusArtifactId }, uid);
 
       chat({
         ctrl,
@@ -396,10 +466,12 @@ export function useSceneAgentChat({
         onDone: () => {
           setLoading(false);
           setLastInput(null);
+          settleRunningSteps('done');
         },
         onClose: () => {
           setLoading(false);
           setLastInput(null);
+          settleRunningSteps('done');
         },
         onError: (content: string) => {
           // 服务端 [ERROR] 帧:Agent 真实报错,直接展示(连接断开走 onStreamDrop)
@@ -413,6 +485,7 @@ export function useSceneAgentChat({
             payload: { error: content || 'Agent error' },
           });
           setLoading(false);
+          settleRunningSteps('failed');
         },
         onStreamDrop: (content: string) => {
           setLoading(false);
@@ -424,7 +497,7 @@ export function useSceneAgentChat({
         onDock: (frame) => setDockWidgets((prev) => applyDockFrame(prev, frame)),
       });
     },
-    [convUid, workspaceId, taskId, focusArtifactId, chat, appendStep, appendOptimisticUser, handleWorkspaceEventInternal, onConversationStart, recover],
+    [workspaceId, taskId, focusArtifactId, chat, appendStep, appendOptimisticUser, handleWorkspaceEventInternal, onConversationStart, recover, ensureConvUid, settleRunningSteps],
   );
 
   const abort = useCallback(() => {
@@ -432,12 +505,13 @@ export function useSceneAgentChat({
     setLoading(false);
     // 真正终止对话:取消后端 agent task。SSE 断开(abort)本身不终止 agent,
     // 主动停止需调 stop_chat 接口(状态置 INTERRUPTED)。
-    if (convUid) {
-      stopChat({ conv_session_id: convUid }).catch(() => {
+    const uid = effectiveConvUid;
+    if (uid) {
+      stopChat({ conv_session_id: uid }).catch(() => {
         /* 终止失败不阻塞 UI,后端 task 可能已结束 */
       });
     }
-  }, [convUid]);
+  }, [effectiveConvUid]);
 
   return { steps, workspaceView, loading, error, lastInput, recovering, retryRecover, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
 }

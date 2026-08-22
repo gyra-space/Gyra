@@ -7,9 +7,12 @@ from gyra.agent.tools.builtin.sandbox.shell_exec import ShellExecTool
 from gyra.sandbox.sandbox_utils import validate_shell_command, is_high_risk_command
 
 
-def _make_mock_sandbox_client(work_dir="/home/ubuntu"):
+def _make_mock_sandbox_client(
+    work_dir="/home/ubuntu", skill_dir="/data/skill"
+):
     client = MagicMock()
     client.work_dir = work_dir
+    client.skill_dir = skill_dir
     client.agent_file_system = None
     client.shell = MagicMock()
     client.shell.exec_command = AsyncMock(
@@ -28,6 +31,37 @@ async def test_allows_workspace_command():
     result = await tool.execute({"command": "cat /home/ubuntu/file.txt"}, context=ctx)
     assert result.success
     client.shell.exec_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_allows_skill_dir_command():
+    """Regression: shell_exec must not falsely reject paths inside skill_dir
+    (e.g. ``find <skill_dir>/data-analysis -name '*.html'``). The path fence
+    must whitelist skill_dir just like LocalShellClient does."""
+    client = _make_mock_sandbox_client("/home/ubuntu", skill_dir="/data/skill")
+    tool = ShellExecTool()
+    ctx = {"sandbox_client": client}
+
+    result = await tool.execute(
+        {
+            "command": "find /data/skill/data-analysis -type f -name '*.html' | head -20"
+        },
+        context=ctx,
+    )
+    assert result.success
+    client.shell.exec_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_still_blocks_escape_outside_allowed_roots():
+    """Escape that is neither under work_dir nor skill_dir stays blocked."""
+    client = _make_mock_sandbox_client("/home/ubuntu", skill_dir="/data/skill")
+    tool = ShellExecTool()
+    ctx = {"sandbox_client": client}
+
+    result = await tool.execute({"command": "cat /etc/passwd"}, context=ctx)
+    assert not result.success
+    client.shell.exec_command.assert_not_awaited()
 
 
 @pytest.mark.asyncio

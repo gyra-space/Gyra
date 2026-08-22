@@ -23,6 +23,7 @@ class UserRequest(BaseModel):
     # 新增字段（插件关闭时为 None，表示不做权限检查）
     permissions: Optional[Dict[str, List[str]]] = None  # resource_type -> [actions]
     roles: Optional[List[str]] = None  # 用户拥有的角色名列表
+    grants: Optional[List[Dict]] = None  # 资源实例级授权 [{permission_key, resource_type, resource_id, ...}]
 
 
 def _is_permissions_enabled() -> bool:
@@ -86,9 +87,9 @@ def get_user_from_headers(
 ) -> UserRequest:
     """统一用户解析入口。
 
-    permissions OFF: 返回 mock admin（现有行为，完全不变）
-    permissions ON:  验证 JWT session → 加载 RBAC 权限
-                     但如果 X-User-ID 为 'admin'，则允许 bypass（本地开发模式）
+    permissions OFF: 返回 mock admin（开发模式，完全不变）
+    permissions ON:  必须携带 gyra_session cookie 或 Bearer token，
+                     验签失败 401（fail-closed，不接受 X-User-ID 自报身份）
     """
     try:
         if not _is_permissions_enabled():
@@ -107,42 +108,14 @@ def get_user_from_headers(
                 real_name="gyra",
             )
 
-        # ===== 插件开启：优先检查 X-User-ID header (本地开发 bypass) =====
-        # 支持本地开发：设置 X-User-ID: admin 可 bypass OAuth
-        if x_user_id == "admin":
-            from gyra_app.feature_plugins.permissions.service import PermissionService
-            # Look up admin user by name to get the correct ID
-            admin_user_id = 3
-            try:
-                from gyra_app.auth.user_service import UserEntity
-                from gyra.storage.metadata.db_manager import db
-                with db.session(commit=False) as s:
-                    admin_user = s.query(UserEntity).filter(UserEntity.name == "admin").first()
-                    if admin_user:
-                        admin_user_id = admin_user.id
-            except Exception:
-                pass
-            perms = PermissionService().get_user_permissions(admin_user_id)
-            return UserRequest(
-                user_id="admin",
-                user_no=str(admin_user_id),
-                real_name="System Admin",
-                nick_name="System Admin",
-                role="admin",
-                permissions=perms.permissions_map,
-                roles=perms.role_names,
-            )
-
-        # ===== 验证 JWT session =====
+        # ===== 插件开启：验证 session（fail-closed） =====
         token = None
         if request:
             token = request.cookies.get("gyra_session")
-            logger.info(f"[auth] Reading cookie: gyra_session={token[:20] if token else 'None'}, all_cookies={list(request.cookies.keys())}")
         if not token and authorization:
             token = authorization.replace("Bearer ", "")
-            logger.info(f"[auth] Using Authorization header: token={token[:20] if token else 'None'}")
         if not token:
-            logger.warning(f"[auth] No token found - rejecting with 401")
+            logger.warning("[auth] No session token found - rejecting with 401")
             raise HTTPException(status_code=401, detail="Authentication required")
 
         from gyra_app.auth.session import verify_session_token
@@ -180,6 +153,7 @@ def get_user_from_headers(
             role=user_role,
             permissions=perms.permissions_map,
             roles=perms.role_names,
+            grants=perms.grants,
         )
     except HTTPException:
         raise

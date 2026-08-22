@@ -3,8 +3,12 @@
 这是 claude-code 式 TODO 闭环的核心：todowrite 写入后，每轮 thinking() 调用本函数
 把进度注入 llm_messages，让 LLM 始终看到当前任务状态并自行推进。
 
-V1（react_master_agent.thinking）和 V2（default_thinking_fn）共用此函数，
-避免两套注入逻辑、便于日后 V2 切换零返工。
+**V1 only**（react_master_agent.thinking）。V2 已切换到 DSH tool-todo 设计：
+TODO 状态通过 model 自己的 tool_call 历史 + 工具结果回显承载，**不**进
+system prompt / user reminder。详见 ``gyra.agent.core.v2.default_thinking``。
+
+V2 切换零返工：V1 移除 reminder 注入时，把 ``build_todo_reminder`` 调用点
+删掉即可，函数本身可保留（V1 仍在用）。
 """
 import logging
 from typing import Any, List, Optional

@@ -84,6 +84,10 @@ class PromptRegistry:
 
     def set_agent_prompts_dir(self, prompts_dir: Optional[Path]) -> None:
         """设置 Agent 级别的模板目录"""
+        # 幂等：同目录重复设置不清空重扫（agent 每轮重建时 PromptAssembler
+        # 会重复走 set+initialize，模板未变时不应全量清空再读盘）
+        if self._agent_prompts_dir == prompts_dir and self._initialized:
+            return
         self._agent_prompts_dir = prompts_dir
         self._templates.clear()
         self._initialized = False

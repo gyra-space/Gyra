@@ -15,6 +15,7 @@ import ChatPageSkeleton from '@/components/chat/content/chat-page-skeleton';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { ChatContext, ChatContentContext, SelectedSkill, ContextMetricsProvider } from '@/contexts';
 import HomeChat from '@/components/chat/content/home-chat';
+import HistoryArchivePanel from '@/components/layout/history-archive-panel';
 import { useTranslation } from 'react-i18next';
 import { clearAllEventListeners } from '@/utils/event-emitter';
 import { applyDockFrame } from '@/components/chat/dock/apply-dock-frame';
@@ -93,6 +94,8 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
   const [selectedSkills, setSelectedSkills] = useState<SelectedSkill[]>([]);
   const [currentConvSessionId, setCurrentConvSessionId] = useState<string>(chatId);
   const [sseActive, setSseActive] = useState(false);
+  // 左侧历史会话面板:默认折叠为图标轨,点击展开
+  const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
   // Composer Dock 协议：输入框上方固定区域 widget map（by id），SSE 与轮询共用合并
   const [dockWidgets, setDockWidgets] = useState<Record<string, DockWidget>>({});
   const chatInputRef = useRef<HTMLInputElement | null>(null);
@@ -706,6 +709,10 @@ if (initMessage.model) {
 // 这里在 JSX 外先做类型收窄，避免在 JSX 内联 `as` 断言触发 SWC 解析错误。
 const resourceValueForContext = resourceValue as Record<string, unknown> | null;
 
+// 独立 Agent 对话页(/chat)左侧内嵌全局历史会话面板(与侧边栏档案面板同源,
+// 含搜索/类型分类/按周分组);空间内嵌(minimal 或带 workspaceId)不展示,避免干扰场景空间自身布局。
+const showHistoryPanel = !props.minimal && !workspaceId && !!app_code;
+
 const sessionContent = (
     <ContextMetricsProvider convId={chatId}>
       <ChatContentContext.Provider
@@ -746,6 +753,8 @@ const sessionContent = (
           chatInParams,
           isPollingMode,
           onNewChat,
+          historyPanelOpen,
+          onToggleHistoryPanel: showHistoryPanel ? () => setHistoryPanelOpen(v => !v) : undefined,
           dockWidgets,
         }}
       >
@@ -755,6 +764,14 @@ const sessionContent = (
             ? contentRender()
             : (
               <Flex flex={1} className='min-h-0 overflow-hidden'>
+                {showHistoryPanel && historyPanelOpen && (
+                  <HistoryArchivePanel
+                    open
+                    inline
+                    appCode={app_code}
+                    onCollapse={() => setHistoryPanelOpen(false)}
+                  />
+                )}
                 <Layout className='bg-gradient-light bg-cover bg-center dark:bg-gradient-dark w-full h-full'>
                   <Layout className='bg-transparent h-full'>{contentRender()}</Layout>
                 </Layout>

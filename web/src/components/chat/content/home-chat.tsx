@@ -1018,8 +1018,9 @@ const [recommendedMcps, setRecommendedMcps] = useState<any[]>([]);
     {
       onSuccess: (models) => {
         if (models && models.length > 0) {
-          // Filter only LLM models
-          const llmModels = models.filter((m: IModelData) => m.worker_type === 'llm');
+          // Filter only LLM models (media generation models model_type=image/video/audio
+          // are excluded by backend; this model_type check is a frontend fallback)
+          const llmModels = models.filter((m: IModelData) => m.worker_type === 'llm' && (!m.model_type || m.model_type === 'llm'));
           setModelList(llmModels);
 
           // Default selection logic: prioritize app's configured model

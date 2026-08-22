@@ -12,7 +12,6 @@ import {
   Modal,
   Popconfirm,
   Select,
-  Slider,
   Space,
   Switch,
   Tag,
@@ -118,11 +117,6 @@ function inferProtocol(provider?: string) {
   return name || "openai";
 }
 
-const MAX_TOKENS_MARKS: Record<number, string> = {
-  0: "0",
-  1000000: "1M",
-};
-
 function formatTokens(value?: number) {
   if (value === undefined || value === null) return "-";
   if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
@@ -194,7 +188,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                   return {
                     name: model.name || "",
                     temperature: model.temperature ?? 0.7,
-                    max_new_tokens: model.max_new_tokens ?? 4096,
+                    max_new_tokens: model.max_new_tokens ?? 32768,
                     context_window: model.context_window ?? 128000,
                     top_p: model.top_p,
                     reasoning_effort: model.reasoning_effort,
@@ -370,7 +364,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
             return {
               name: model.name,
               temperature: model.temperature ?? 0.7,
-              max_new_tokens: model.max_new_tokens ?? 4096,
+              max_new_tokens: model.max_new_tokens ?? 32768,
               context_window: model.context_window ?? 128000,
               top_p: model.top_p,
               reasoning_effort: model.reasoning_effort,
@@ -686,11 +680,12 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                 {modelFields.length > 0 && (
                                   <>
                                     <div className="grid grid-cols-12 gap-3 px-3 pb-1 text-xs text-gray-400 font-medium">
-                                      <div className="col-span-3">模型名称</div>
+                                      <div className="col-span-2">模型名称</div>
                                       <div className="col-span-2">类型</div>
                                       <div className="col-span-1">Temp</div>
                                       <div className="col-span-1">Top P</div>
-                                      <div className="col-span-2">Max Tokens</div>
+                                      <div className="col-span-2">上下文空间</div>
+                                      <div className="col-span-1">Max Tokens</div>
                                       <div className="col-span-1">深度</div>
                                       <div className="col-span-1">能力标签</div>
                                       <div className="col-span-1 text-right">默认 / 操作</div>
@@ -810,17 +805,27 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                                 "context_window",
                                               ]}
                                               className="!mb-0"
-                                              tooltip="模型上下文空间（输入+输出总预算），用于上下文压缩与用量统计"
+                                              tooltip="模型上下文空间（输入+输出总预算），单位 K（1K=1024 tokens），用于上下文压缩与用量统计"
+                                              getValueProps={(value) => ({
+                                                value:
+                                                  value === undefined || value === null
+                                                    ? value
+                                                    : Math.round(value / 1024),
+                                              })}
+                                              normalize={(value) =>
+                                                value === undefined || value === null
+                                                  ? value
+                                                  : Math.round(Number(value)) * 1024
+                                              }
                                             >
-                                              <Slider
+                                              <InputNumber
+                                                size="small"
+                                                style={{ width: "100%" }}
                                                 min={0}
-                                                max={1000000}
-                                                step={1024}
-                                                marks={MAX_TOKENS_MARKS}
-                                                tooltip={{
-                                                  formatter: (value) =>
-                                                    formatTokens(value),
-                                                }}
+                                                max={976}
+                                                step={8}
+                                                addonAfter="K"
+                                                placeholder="125"
                                               />
                                             </Form.Item>
                                           </div>
@@ -834,15 +839,27 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                                 "max_new_tokens",
                                               ]}
                                               className="!mb-0"
-                                              tooltip="单次最大生成（输出）token 数，作为 max_tokens 发给模型"
+                                              tooltip="单次最大生成（输出）token 数（单位 K，1K=1024 tokens），作为 max_tokens 发给模型"
+                                              getValueProps={(value) => ({
+                                                value:
+                                                  value === undefined || value === null
+                                                    ? value
+                                                    : Math.round(value / 1024),
+                                              })}
+                                              normalize={(value) =>
+                                                value === undefined || value === null
+                                                  ? value
+                                                  : Math.round(Number(value) * 1024)
+                                              }
                                             >
                                               <InputNumber
                                                 size="small"
                                                 style={{ width: "100%" }}
                                                 min={0}
-                                                max={131072}
-                                                step={1024}
-                                                placeholder="4096"
+                                                max={128}
+                                                step={1}
+                                                addonAfter="K"
+                                                placeholder="32"
                                               />
                                             </Form.Item>
                                           </div>
@@ -961,7 +978,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                       {
                         name: "",
                         temperature: 0.7,
-                        max_new_tokens: 4096,
+                        max_new_tokens: 32768,
                         model_type: "llm",
                         capabilities: ["text"],
                         is_default: true,

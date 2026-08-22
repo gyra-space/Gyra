@@ -7,8 +7,9 @@ prepare 自管 skill_code/path 解析(facade 时序已改 prepare 先于 declare
 补 skill_code + 解析 sandbox path(get_skill_directory + FS 检查)。无 _SYSTEM_APP/
 service 不可用时降级不崩(declare 用现有 path/空)。
 
-execute 不收编:read_skill/list_skills 工具暂走 Route A builtin(沙箱/local fs 读,
-SandboxToolBase)。本轮 SkillCapability 自管 prepare/declare,execute 保持 Route A。
+execute 不收编:read_skill 工具暂走 Route A builtin(沙箱/local fs 读,
+SandboxToolBase);skill_list/skill_exec 已废弃删除。本轮 SkillCapability 自管
+prepare/declare,execute 保持 Route A。
 
 """
 
@@ -34,14 +35,11 @@ logger = logging.getLogger(__name__)
 
 # 模板对齐 agent_skills.py:19-36(技能列表 XML)
 _SKILL_PROMPT_TEMPLATE = """<agent-skills>
-这里是你可使用的agent-skill的元数据信息，skill的完整文件存在沙箱环境计算机的技能仓库目录中。下面是skill的基础信息包含skill名称'name'，能力介绍'description', 相对路径:'path', 仓库分支:'branch'.
+这是你可使用的 agent-skill 元数据信息。想激活并使用某个 skill 时，请调用 `skill({ name })` 工具加载它的完整指令，再按指令执行。
 {% for item in skills %}\
 <{{loop.index }}>\
 <name>{{item.name }}</name>
 <description>{{item.description}}</description>
-{% if item.path %}\
-<path>{{item.path}}</path>
-{% endif %}\
 {% if item.owner %}\
 <owner>{{item.owner}}</owner>
 {% endif %}\
@@ -68,9 +66,10 @@ class SkillCapability(Capability):
 
     capability_id = "skill"
 
-    def __init__(self, skills: Optional[List[dict]] = None):
+    def __init__(self, skills: Optional[List[dict]] = None, inject_system_catalog: bool = True):
         self._skills = skills
         self._legacy: Any = None
+        self._inject_system_catalog = inject_system_catalog
         self._status = ExecutorStatus.UNINITIALIZED
 
     @classmethod
@@ -82,6 +81,7 @@ class SkillCapability(Capability):
         AgentSkillResource 实例。
         """
         value = value or {}
+        inject_system_catalog = bool(value.get("inject_system_catalog", True))
         skills = None
         if value.get("skill_name") or value.get("name"):
             skills = [
@@ -99,7 +99,7 @@ class SkillCapability(Capability):
                     "debug_info": value.get("debug_info"),
                 }
             ]
-        return cls(skills=skills)
+        return cls(skills=skills, inject_system_catalog=inject_system_catalog)
 
     @property
     def executor_id(self) -> str:
@@ -107,6 +107,10 @@ class SkillCapability(Capability):
 
     # ----------------------------- 输入投影(declare 纯) ------------------ #
     def declare(self, config: Any = None) -> List[Contribution]:
+        # V2 用 SkillRegistry/SkillCatalogConsumer 统一治理 skill 事实源；
+        #   此时跳过 <agent-skills> SYSTEM 注入，避免目录重复（DSH tool-skill）。
+        if not self._inject_system_catalog:
+            return []
         skills = self._resolve_skills()
         if not skills:
             return []
@@ -243,7 +247,7 @@ class SkillCapability(Capability):
         return None
 
     async def execute(self, call: ExecutorCall) -> Any:
-        # read_skill/list_skills 暂走 Route A builtin(SandboxToolBase)。
+        # read_skill 暂走 Route A builtin(SandboxToolBase)。
         raise NotImplementedError(
             "SkillCapability.execute 未收编 —— skill 工具暂走 Route A builtin"
         )

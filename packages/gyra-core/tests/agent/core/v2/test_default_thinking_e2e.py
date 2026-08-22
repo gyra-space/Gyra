@@ -31,11 +31,6 @@ async def test_default_thinking_fn_with_run_loop_end_to_end(store):
         yield {"tool_calls": [{"tool": "echo", "input": {"text": "hi"}}]}
         yield {"token": "Final answer"}
 
-    context_engine = MagicMock()
-    build_out = MagicMock()
-    build_out.messages = [{"role": "user", "content": "hi"}]
-    context_engine.build_messages = AsyncMock(return_value=build_out)
-
     class FakeEchoTool:
         name = "echo"
         async def execute(self, args, context=None):
@@ -54,11 +49,8 @@ async def test_default_thinking_fn_with_run_loop_end_to_end(store):
     thinking_fn = make_default_thinking_fn(
         llm_stream_fn=mock_llm_stream,
         model_alias="test-model",
-        context_engine=context_engine,
         memory_bundle=None,
-        get_session_messages=lambda sid: [],
-        get_work_log=lambda cid: [],
-        get_context_window=lambda m: 4096,
+        context_provider=lambda *a, **k: [{"role": "user", "content": "hi"}],
         system_prompt="You are a test agent.",
     )
 

@@ -146,6 +146,24 @@ def normalize_protocol(protocol: Optional[str]) -> str:
         return ""
     return PROTOCOL_ALIASES.get(protocol, protocol)
 
+
+def is_media_model_config(config: Optional[Dict[str, Any]]) -> bool:
+    """判定模型配置是否为媒体生成模型（图片/视频/音频）。
+
+    与 ``ModelConfigCache._is_media_model`` 同口径：
+    - 归一化后 protocol 属于 MEDIA_PROTOCOLS（厂商级多媒体协议）；
+    - 或 model_type 显式为 image/video/audio。
+
+    供 /api/v2/serve/model/models、/api/v1/model/types 等聊天模型下拉接口复用，
+    避免媒体生成模型混入普通聊天模型列表（防聊天污染）。普通聊天只应展示
+    LLM（含视觉能力 LLM，其 model_type 仍为 llm）。
+    """
+    if not config:
+        return False
+    if normalize_protocol(config.get("protocol")) in MEDIA_PROTOCOLS:
+        return True
+    return (config.get("model_type") or "").lower() in _MEDIA_MODEL_TYPES
+
 # 接入协议推断映射：provider 名称 -> 协议
 def infer_protocol(provider_name: str) -> str:
     """根据 provider 来源名称推断接入协议"""

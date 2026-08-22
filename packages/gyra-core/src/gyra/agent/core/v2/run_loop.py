@@ -4,19 +4,35 @@
 turn 结束触发 HookManager.turn_complete，conversation 结束触发 conversation_complete。
 """
 import dataclasses
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Dict, List, Optional
 
 from gyra.agent.core.v2.event_stream import EventStream
-from gyra.agent.core.v2.runtime import run_step
+from gyra.agent.core.v2.runtime import run_step, _resolve_harness_deps
 from gyra.agent.core.v2.state_store import StateStore
 from gyra.agent.core.v2.step_event import StepEvent
 from gyra.agent.core.v2.step_state import StepState
+
+if TYPE_CHECKING:
+    from gyra.agent.core.v2.harness.context import HarnessContext
 
 
 _AWAITING_STATES = {
     StepState.AWAITING_USER,
     StepState.AWAITING_TOOL_PERMISSION,
     StepState.AWAITING_SUB_AGENT,
+}
+
+
+# 真正挂起 turn 的交互状态（run_loop 收到即中断）。
+# - AWAITING_SUB_AGENT：子 agent 派发中间态，runtime 在 spawn 后随即 emit
+#   tool_result 继续本 step，中断会导致 spawn 永不执行 → 不中断。
+# - AWAITING_TOOL_PERMISSION：PermissionGate 在 yield 该事件后继续 await
+#   InteractionAdapter（同步阻塞等用户审批），中断会杀死 adapter 等待 →
+#   不中断（无 adapter 时 gate 已 fail-closed 拒绝，不会走到该状态）。
+# - AWAITING_USER：AskUserAdapter 已持久化 interaction_checkpoint，turn 中断
+#   由 serve 层挂起 conversation，用户响应后经 checkpoint resume → 中断。
+_TURN_SUSPENDING_STATES = {
+    StepState.AWAITING_USER,
 }
 
 
@@ -36,8 +52,8 @@ async def run_loop(
     agent_id: str,
     conv_id: str,
     input_: dict,
-    state_store: StateStore,
-    thinking_fn: Callable,
+    state_store: Optional[StateStore] = None,
+    thinking_fn: Optional[Callable] = None,
     acting_fn: Optional[Callable] = None,
     *,
     parent_step_id: Optional[str] = None,
@@ -48,12 +64,40 @@ async def run_loop(
     user_id: Optional[str] = None,
     request_meta: Optional[dict] = None,
     event_stream: Optional[EventStream] = None,
+    harness: Optional["HarnessContext"] = None,
 ) -> AsyncGenerator[StepEvent, None]:
     """多轮循环。
 
     event_stream：共享 EventStream（P0 插件订阅挂载点），透传给每个 run_step；
     缺省时各 step 自建（无订阅者，行为与旧版一致）。
+
+    harness：统一服务总线。提供时从 harness 解包未显式传入的依赖
+    （storage / events / approval / subagents / hooks / thinking / acting），
+    显式参数优先——向后兼容旧调用方式。
     """
+    # HarnessContext 解包：显式参数优先于 harness（事件流绑定一致性见 helper）
+    deps = _resolve_harness_deps(
+        harness,
+        state_store=state_store,
+        event_stream=event_stream,
+        permission_gate=permission_gate,
+        subagent_runtime=subagent_runtime,
+        thinking_fn=thinking_fn,
+        acting_fn=acting_fn,
+        hook_manager=hook_manager,
+    )
+    state_store = deps["state_store"]
+    event_stream = deps["event_stream"]
+    permission_gate = deps["permission_gate"]
+    subagent_runtime = deps["subagent_runtime"]
+    thinking_fn = deps["thinking_fn"]
+    acting_fn = deps["acting_fn"]
+    hook_manager = deps["hook_manager"]
+    if state_store is None:
+        raise ValueError("state_store (or harness.storage) is required")
+    if thinking_fn is None:
+        raise ValueError("thinking_fn (or harness.thinking_fn) is required")
+
     turn_ctx = _TurnContext(
         round=0,
         user_prompt=input_.get("prompt", ""),
@@ -86,10 +130,12 @@ async def run_loop(
         ):
             yield step_event
 
-            # 收集 final_answer（来自 llm_token）
+            # 收集 final_answer（来自 llm_token；只取 content 通道，
+            # thinking 推理文本不属于最终答案）
             if step_event.event_type == "llm_token":
                 token = step_event.output.get("token", "") if step_event.output else ""
-                if token:
+                channel = step_event.output.get("channel", "content") if step_event.output else "content"
+                if token and channel != "thinking":
                     final_answer_parts.append(token)
 
             # 检查 tool_calls
@@ -97,7 +143,7 @@ async def run_loop(
                 last_had_tool_calls = True
 
             # 检查 awaiting 状态
-            if step_event.state in _AWAITING_STATES:
+            if step_event.state in _TURN_SUSPENDING_STATES:
                 turn_ctx.interrupted = True
                 # turn_complete NOT fired here — an interrupted turn is not "complete".
                 # Memory tier1 (write_turn_lightweight) registered on turn_complete

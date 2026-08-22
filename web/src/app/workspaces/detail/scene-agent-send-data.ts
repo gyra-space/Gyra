@@ -1,5 +1,6 @@
 import type { PlaybookCommand, SkillRef } from './agent-workspace-types';
 import type { MediaParams } from '@/components/chat/input/media-params';
+import type { PlusMenuMcpRef } from '@/components/chat/input/plus-menu';
 
 export interface SceneAgentSendPayload {
   text: string;
@@ -8,6 +9,8 @@ export interface SceneAgentSendPayload {
   playbookCommand?: PlaybookCommand;
   /** 本次对话选用的技能(随 chat_in_params 下发,sub_type='skill(gyra)') */
   skills?: SkillRef[];
+  /** 本次对话选用的 MCP 连接器(随 chat_in_params 下发,sub_type='mcp(gyra)') */
+  mcps?: PlusMenuMcpRef[];
   /** 多媒体生成参数（图片/视频），场景空间输入框设定，随 chat_in_params 下发，由多媒体子 Agent 消费 */
   media?: MediaParams;
   /** 本次对话的 Agent 工具权限级别(plan/auto/manual),写入 ext_info.permission_mode,
@@ -55,7 +58,7 @@ export function buildSceneAgentSendData(
   options: SendDataOptions,
   convUid: string,
 ): SceneAgentSendData {
-  const { text, resources = [], model, playbookCommand, skills, media, permission } = payload;
+  const { text, resources = [], model, playbookCommand, skills, mcps, media, permission } = payload;
   const { workspaceId, taskId, focusArtifactId } = options;
   const trimmed = text.trim();
 
@@ -87,6 +90,18 @@ export function buildSceneAgentSendData(
         param_type: 'resource',
         param_value: JSON.stringify(skill),
         sub_type: 'skill(gyra)',
+      });
+    });
+  }
+  if (mcps && mcps.length > 0) {
+    mcps.forEach((mcp) => {
+      chatInParams.push({
+        param_type: 'resource',
+        param_value: JSON.stringify({
+          mcp_code: mcp.id || mcp.uuid || mcp.name,
+          name: mcp.name,
+        }),
+        sub_type: 'mcp(gyra)',
       });
     });
   }

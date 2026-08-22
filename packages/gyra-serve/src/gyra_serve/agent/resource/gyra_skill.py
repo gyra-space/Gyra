@@ -21,14 +21,11 @@ from gyra.util.i18n_utils import _
 
 # Skill prompt template
 agent_skill_prompt_template = """<agent-skills>
-这里是你可使用的agent-skill的元数据信息，skill的完整文件存在沙箱环境计算机的技能仓库目录中。下面是skill的基础信息包含skill名称'name'，能力介绍'description', 相对路径:'path', 仓库分支:'branch'.
+这是你可使用的 agent-skill 元数据信息。想激活并使用某个 skill 时，请调用 `skill({ name })` 工具加载它的完整指令，再按指令执行。
 {% for item in skills %}\
 <{{loop.index }}>\
 <name>{{item.name}}</name>
 <description>{{item.description}}</description>
-{% if item.path %}\
-<path>{{item.path}}</path>
-{% endif %}\
 {% if item.owner %}\
 <owner>{{item.owner}}</owner>
 {% endif %}\

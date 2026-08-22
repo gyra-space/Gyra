@@ -193,12 +193,6 @@ class GptsApp(BaseModel):
         default_factory=list, description="关联的多个场景策略"
     )
 
-    ## 场景文件列表（绑定到应用的.md场景文件）
-    scenes: List[str] = Field(
-        default_factory=list,
-        description="绑定的场景文件ID列表，如 ['coding', 'schedule', 'deploy']",
-    )
-
     creator: Optional[str] = None
     editor: Optional[str] = None
 

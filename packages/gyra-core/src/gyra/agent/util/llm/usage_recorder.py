@@ -41,6 +41,9 @@ class LLMUsageRecord:
     first_token_ms: Optional[int] = None  # 首 token 耗时（ms）
     tokens_per_sec: Optional[float] = None
 
+    # 可选成本明细
+    cached_tokens: int = 0  # prompt 缓存命中 token 数（DeepSeek/OpenAI 等支持时）
+
 
 # 已注册的 recorder 回调列表
 _recorders: List[Callable[[LLMUsageRecord], Awaitable[None]]] = []

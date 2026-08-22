@@ -11,19 +11,11 @@ async def _fake_llm_stream(messages, model):
 
 
 async def test_yields_token_chunks():
-    context_engine = MagicMock()
-    build_out = MagicMock()
-    build_out.messages = [{"role": "user", "content": "hi"}]
-    context_engine.build_messages = AsyncMock(return_value=build_out)
-
     thinking_fn = make_default_thinking_fn(
         llm_stream_fn=lambda messages, model: _fake_llm_stream(messages, model),
         model_alias="test-model",
-        context_engine=context_engine,
         memory_bundle=None,
-        get_session_messages=lambda sid: [],
-        get_work_log=lambda cid: [],
-        get_context_window=lambda model: 128000,
+        context_provider=lambda *a, **k: [{"role": "user", "content": "hi"}],
     )
     chunks = []
     async for c in thinking_fn({"prompt": "hi", "conv_id": "c1", "session_id": "s1"}):
@@ -36,11 +28,6 @@ async def test_yields_token_chunks():
 
 async def test_scrubs_token_through_memory_pipeline():
     """memory_bundle.pipeline.scrub_stream_delta 应被调用清洗 token。"""
-    context_engine = MagicMock()
-    build_out = MagicMock()
-    build_out.messages = [{"role": "user", "content": "hi"}]
-    context_engine.build_messages = AsyncMock(return_value=build_out)
-
     pipeline = MagicMock()
     pipeline.scrub_stream_delta = MagicMock(side_effect=lambda t: t.replace("<memory-context>", ""))
     pipeline.consume_prefetch = AsyncMock(return_value=None)
@@ -52,11 +39,8 @@ async def test_scrubs_token_through_memory_pipeline():
     thinking_fn = make_default_thinking_fn(
         llm_stream_fn=lambda m, mo: _fake_llm_stream(m, mo),
         model_alias="test",
-        context_engine=context_engine,
         memory_bundle=bundle,
-        get_session_messages=lambda sid: [],
-        get_work_log=lambda cid: [],
-        get_context_window=lambda model: 128000,
+        context_provider=lambda *a, **k: [{"role": "user", "content": "hi"}],
     )
     chunks = []
     async for c in thinking_fn({"prompt": "hi", "conv_id": "c1", "session_id": "s1"}):

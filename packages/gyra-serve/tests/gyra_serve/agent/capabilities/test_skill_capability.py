@@ -32,6 +32,30 @@ def test_skill_capability_empty_when_no_skills():
     assert SkillCapability().declare() == []
 
 
+def test_skill_capability_skips_system_when_dsh_mode():
+    """DSH 模式（inject_system_catalog=False）→ declare 跳过 <agent-skills> SYSTEM。
+
+    V2 用 SkillRegistry/SkillCatalogConsumer 统一治理 skill 事实源，避免目录重复。
+    """
+    from gyra_serve.agent.capabilities.skill import SkillCapability
+
+    skills = [{"name": "s1", "description": "d1", "path": "/p1", "owner": "o", "branch": "master"}]
+    # 构造器关闭
+    assert SkillCapability(skills=skills, inject_system_catalog=False).declare() == []
+    # from_config 透传关闭
+    cap = SkillCapability.from_config(
+        {
+            "skill_name": "s1",
+            "skill_description": "d1",
+            "skill_path": "/p1",
+            "inject_system_catalog": False,
+        }
+    )
+    assert cap.declare() == []
+    # 默认仍开启（V1 兼容）
+    assert SkillCapability(skills=skills).declare() != []
+
+
 def test_skill_capability_discovered_by_registry():
     """CapabilityRegistry.discover 发现 skill 目录。"""
     from gyra.agent.capabilities.registry import CapabilityRegistry

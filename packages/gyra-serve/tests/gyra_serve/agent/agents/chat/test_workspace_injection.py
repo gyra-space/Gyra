@@ -13,6 +13,7 @@ if "gyra_app.config" not in sys.modules:
     sys.modules["gyra_app.config"] = MagicMock()
 
 from gyra_serve.agent.agents.chat.agent_chat import (
+    _ensure_lobby_conv_link,
     _inject_workspace_context,
 )
 
@@ -193,3 +194,64 @@ async def test_inject_workspace_context_never_appends_toolkit_agent():
     assert ext_info["extra_agents"] == []
     assert extra_agents == []
     assert fake_agent not in ext_info["extra_agents"]
+
+
+def test_ensure_lobby_conv_link_links_workspace_conv():
+    """大厅直接对话(task_id 为空)兜底:确保会话进入空间任务列表。"""
+    system_app = MagicMock()
+    ws_svc = MagicMock()
+    system_app.get_component.return_value = ws_svc
+
+    _ensure_lobby_conv_link(
+        system_app, workspace_id=1, conv_id="conv-1", user_code="42", task_id=None
+    )
+
+    ws_svc.link_conversation.assert_called_once_with(
+        workspace_id=1, conv_uid="conv-1", user_id=42
+    )
+
+
+def test_ensure_lobby_conv_link_skips_task_conversation():
+    """任务对话(task_id 非空)跳过兜底,避免覆盖任务创建时建立的关联。"""
+    system_app = MagicMock()
+    ws_svc = MagicMock()
+    system_app.get_component.return_value = ws_svc
+
+    _ensure_lobby_conv_link(
+        system_app, workspace_id=1, conv_id="conv-1", user_code="42", task_id=7
+    )
+
+    ws_svc.link_conversation.assert_not_called()
+
+
+def test_ensure_lobby_conv_link_noop_without_workspace():
+    """无 workspace_id 时不执行任何 link。"""
+    system_app = MagicMock()
+    _ensure_lobby_conv_link(system_app, workspace_id=None, conv_id="conv-1", user_code="42", task_id=None)
+    system_app.get_component.assert_not_called()
+
+
+def test_ensure_lobby_conv_link_swallows_link_error():
+    """link 失败只记日志,不阻断对话。"""
+    system_app = MagicMock()
+    system_app.get_component.return_value = MagicMock()
+    system_app.get_component.return_value.link_conversation.side_effect = RuntimeError("db down")
+
+    _ensure_lobby_conv_link(
+        system_app, workspace_id=1, conv_id="conv-1", user_code="42", task_id=None
+    )  # should not raise
+
+
+def test_ensure_lobby_conv_link_non_numeric_user_code():
+    """user_code 非数字时 user_id 落 None(无主 link,对所有用户可见)。"""
+    system_app = MagicMock()
+    ws_svc = MagicMock()
+    system_app.get_component.return_value = ws_svc
+
+    _ensure_lobby_conv_link(
+        system_app, workspace_id=1, conv_id="conv-1", user_code="abc", task_id=None
+    )
+
+    ws_svc.link_conversation.assert_called_once_with(
+        workspace_id=1, conv_uid="conv-1", user_id=None
+    )

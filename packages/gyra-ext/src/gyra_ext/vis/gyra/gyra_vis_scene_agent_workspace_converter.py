@@ -240,6 +240,12 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         action_id = self._report_get(report, "action_id")
         if not action_id:
             return
+        # 终止型收尾(terminate=True)不是工具步骤:其 content 即最终回答正文,
+        # 已由 answer/summary 通道渲染;当作工具步骤会多出一条「Agent 名+对勾」
+        # 伪步骤,且其 start_time 晚于最终文本,会把最终回复挤成前置「阶段回复」。
+        # 与 manus 转换器对 terminate 的跳过逻辑对齐。
+        if self._report_get(report, "terminate"):
+            return
         key = f"tool-{action_id}"
 
         state = str(self._report_get(report, "state") or "").lower()
@@ -439,48 +445,26 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         return {"goal": goal or "任务计划", "steps": steps}
 
     def _build_view(self, plans_map: Optional[Dict[str, Any]], messages: List[Any]) -> Dict[str, Any]:
-        # 阶段回复凝固为 execution 步骤;仅当最新一条 assistant 文本在时序上是最后的输出时,
-        # 才作为底部 summary —— 若文本之后又产生了工具/任务步骤,该文本需按时序内联,
-        # 否则会出现「先说的话显示在工具卡片之后」的顺序颠倒
+        # narration(assistant 正文文本)一律作为 answer 步骤按时序内联 —— 与 thinking
+        # (推理 think-{mid}) / tool_call(工具步骤) 三类各自独立,哪个有就展示哪个,不拼不接。
+        # 最新一条 narration 同时进 summary 供底部兜底;前端检测到已有 answer step 后
+        # 不再重复渲染 summary,避免同文本两份。
         narr_ids = list(self._scene_narrations.keys())
         summary: Optional[str] = None
-        frozen_narr: List[Tuple[str, str, str]] = []  # (mid, text, ts)
-        # 最终回复也作为 answer step 进 execution,跨轮按 id 合并保留;否则前端
-        # summary 单值会被下一轮覆盖,历史回复丢失。
-        # 注意:answer 与阶段回复共用稳定 id narr-{mid} —— 流式期间文本先作为 answer
-        # 推送,若随后出现工具步骤,同一 id 的 step 翻转为 thinking(阶段回复),前端按 id
-        # 原地更新;若两种角色各用各的 id,旧 answer step 会成为前端合并的残留,同一段
-        # 文本同时显示为「阶段回复 + 带头像回复」两份。
-        answer_step: Optional[Tuple[Dict[str, Any], str]] = None
         if narr_ids:
-            last_text, last_ts = self._scene_narrations[narr_ids[-1]]
-            item_ts_max = max(
-                (ts for _, ts in self._scene_items.values() if ts),
-                default=None,
-            )
-            if item_ts_max is not None and last_ts and last_ts < item_ts_max:
-                frozen_narr = [(mid, *self._scene_narrations[mid]) for mid in narr_ids]
-            else:
-                summary = last_text
-                frozen_narr = [(mid, *self._scene_narrations[mid]) for mid in narr_ids[:-1]]
-                answer_step = ({
-                    "id": f"narr-{narr_ids[-1]}",
-                    "type": "answer",
-                    "title": "回复",
-                    "status": "done",
-                    "action": None,
-                    "action_input": None,
-                    "output": last_text[:_MAX_OUTPUT_CHARS],
-                    "artifact": None,
-                    "vis": None,
-                }, last_ts)
+            # 取时序最新的一条 narration;若全部无 ts(如离线重建的消息无 created_at),
+            # 回退为插入序最后一条 —— 保持「最新一条进 summary」的既有语义。
+            with_ts = [v for v in self._scene_narrations.values() if v[1]]
+            latest = max(with_ts, key=lambda it: it[1]) if with_ts else self._scene_narrations[narr_ids[-1]]
+            summary = latest[0]
 
         execution: List[Tuple[Dict[str, Any], str]] = list(self._scene_items.values())
-        for mid, text, ts in frozen_narr:
+        for mid in narr_ids:
+            text, ts = self._scene_narrations[mid]
             execution.append(({
                 "id": f"narr-{mid}",
-                "type": "thinking",
-                "title": "阶段回复",
+                "type": "answer",
+                "title": "回复",
                 "status": "done",
                 "action": None,
                 "action_input": None,
@@ -488,8 +472,6 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                 "artifact": None,
                 "vis": None,
             }, ts))
-        if answer_step is not None:
-            execution.append(answer_step)
 
         # 按时间交错排序(无 ts 的排后,稳定)
         execution.sort(key=lambda item: item[1] or "￿")

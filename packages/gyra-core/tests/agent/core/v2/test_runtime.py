@@ -88,7 +88,8 @@ async def test_resume_step_redoes_incomplete(store):
     # 手动塞一个 THINKING 事件模拟崩溃
     from gyra.agent.core.v2.event_stream import EventStream
     from gyra.agent.core.v2.step_event import StepEvent
-    stream = EventStream(store)
+    # 测试场景：关闭攒批，确保 emit 即落库
+    stream = EventStream(store, batch=False)
     await stream.emit(StepEvent(
         event_id="evt-pre",
         step_id="step-pre",

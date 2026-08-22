@@ -52,6 +52,25 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
+# 进程级静态快照缓存
+# --------------------------------------------------------------------------- #
+# ResourceFacade 每轮会话随 agent 实例重建（serve 层每轮新建 agent），
+# 实例级 _snapshot_cache 跨轮必 miss（declare 全量 + prepare I/O 每轮重算）。
+# 缓存键 (agent_id, layer_hash) 已含内容哈希——资源变更→新 key→自动 miss，
+# 故可安全跨实例共享；超上限按 FIFO 淘汰最旧条目。
+_SHARED_SNAPSHOT_CACHE: Dict[Tuple[str, Any], "FrozenBundle"] = {}
+_SHARED_REQUIRES_CACHE: Dict[Tuple[str, Any], List[str]] = {}
+_SHARED_CACHE_CAP = 64
+
+
+def _shared_cache_put(cache: dict, key: tuple, value: Any) -> None:
+    if len(cache) >= _SHARED_CACHE_CAP:
+        oldest = next(iter(cache))
+        cache.pop(oldest, None)
+    cache[key] = value
+
+
+# --------------------------------------------------------------------------- #
 # 配置哈希(缓存失效键)
 # --------------------------------------------------------------------------- #
 def compute_config_hash(agent_resources: List[Any]) -> str:
@@ -102,13 +121,17 @@ class ResourceFacade:
     ):
         self.registry = registry or InMemoryExecutorRegistry()
         # 静态快照缓存:(agent_id, config_hash) → FrozenBundle
+        # 缺省共享进程级缓存（跨 agent 实例/跨轮命中）；测试可传入独立 dict 隔离。
         self._snapshot_cache: Dict[Tuple[str, str], FrozenBundle] = (
-            snapshot_cache if snapshot_cache is not None else {}
+            snapshot_cache if snapshot_cache is not None else _SHARED_SNAPSHOT_CACHE
         )
         # 会话级运行态:(conv_id) → List[Contribution](SESSION lifetime)
         self._session_store: Dict[str, List[Contribution]] = {}
-        # 每 config 的 required executor ids 缓存(供静态快照命中时复用)
-        self._requires_cache: Dict[Tuple[str, str], List[str]] = {}
+        # 每 config 的 required executor ids 缓存(供静态快照命中时复用)；
+        # 与 snapshot_cache 同生命周期（显式注入 snapshot_cache 时保持实例隔离）
+        self._requires_cache: Dict[Tuple[str, str], List[str]] = (
+            _SHARED_REQUIRES_CACHE if snapshot_cache is None else {}
+        )
         # executor 工厂(executor_id → Executor),由接入层提供。沙箱/DB 连接器等
         # 在此注册。无则跳过 executor 链路(纯协议层、无执行投影时)。
         self.executor_provider: ExecutorProvider = executor_provider or {}
@@ -182,8 +205,8 @@ class ResourceFacade:
                 conv_id=conv_id, identity=identity, control_block=control_block,
             )
             frozen = bundle.freeze(config_hash=config_hash)
-            self._snapshot_cache[cache_key] = frozen
-            self._requires_cache[cache_key] = required_ids
+            _shared_cache_put(self._snapshot_cache, cache_key, frozen)
+            _shared_cache_put(self._requires_cache, cache_key, required_ids)
             executors_ready = built_ready
         else:
             required_ids = self._requires_cache.get(cache_key, [])

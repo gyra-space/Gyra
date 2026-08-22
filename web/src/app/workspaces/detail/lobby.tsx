@@ -2,7 +2,8 @@
 
 import { useRequest } from 'ahooks';
 import { useEffect, useRef, useState } from 'react';
-import { CloudServerOutlined, SendOutlined, DeploymentUnitOutlined, InboxOutlined, RightOutlined } from '@ant-design/icons';
+import { Switch } from 'antd';
+import { CloudServerOutlined, SendOutlined, DeploymentUnitOutlined, InboxOutlined, RightOutlined, DashboardOutlined } from '@ant-design/icons';
 import { apiInterceptors } from '@/client/api';
 import { getWorkspaceOverview } from '@/client/api/workspace';
 import { ObjectDetailDrawer } from '@/app/ecp/components/common';
@@ -94,7 +95,8 @@ export function Lobby({
       if (err) return null;
       return res || null;
     },
-    { refreshDeps: [workspaceId, refreshKey] },
+    // keepPreviousData: 4s 轮询刷新时保留旧数据,避免内容被卸载后重挂载(骨架屏/入场动画重放造成闪烁)
+    { refreshDeps: [workspaceId, refreshKey], keepPreviousData: true },
   );
 
   const deliveries = overview?.deliveries ?? [];
@@ -116,6 +118,19 @@ export function Lobby({
   const INBOX_PREVIEW_COUNT = 5;
   const [inboxExpanded, setInboxExpanded] = useState(false);
   const visibleInbox = inboxExpanded ? pendingInbox : pendingInbox.slice(0, INBOX_PREVIEW_COUNT);
+
+  // 专注模式:隐藏成长概览/飞轮入口,只留待办与动态(按空间记忆)
+  const focusKey = `ws-lobby-focus-${workspaceId}`;
+  const [focusMode, setFocusMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(focusKey) === '1';
+  });
+  const toggleFocus = (v: boolean) => {
+    setFocusMode(v);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(focusKey, v ? '1' : '0');
+    }
+  };
 
   // 空间动态:右侧还有内容时给轨道加渐隐提示(滚到底后消失)
   const feedTrackRef = useRef<HTMLDivElement>(null);
@@ -139,6 +154,14 @@ export function Lobby({
   return (
     <div className="ws-lobby">
       <div className="ws-lobby__scroll">
+        {/* 大厅顶栏:标题 + 专注开关(隐藏成长/飞轮区块) */}
+        <div className="ws-lobby__bar">
+          <span className="ws-lobby__bar-title"><DashboardOutlined /> 空间工作台</span>
+          <label className="ws-lobby__focus">
+            <span>专注</span>
+            <Switch size="small" checked={focusMode} onChange={toggleFocus} />
+          </label>
+        </div>
         {/* 空间问候条 + 开始工作区(推荐问题/可跑剧本,让用户不用想"问什么") */}
         <SpaceGuideCard
           workspaceId={workspaceId}
@@ -149,7 +172,7 @@ export function Lobby({
           resources={resources}
           playbooks={playbooks}
           triggers={triggers}
-          loading={overviewLoading}
+          loading={overviewLoading && !overview}
           onGuide={onGuide}
           onAsk={onAsk}
           onRunPlaybook={onRunPlaybook}
@@ -268,15 +291,17 @@ export function Lobby({
           )}
         </section>
 
-        {/* 成长概览(收敛为一行,保留飞轮入口) */}
-        <GrowthCard
-          workspaceId={workspaceId}
-          workspaceCode={workspaceCode}
-          growth={overview?.growth}
-          ecpConfirmedCount={overview?.ecp_confirmed_count}
-          ecpPendingCount={overview?.ecp_pending_count}
-          onEnterFlywheel={onEnterFlywheel}
-        />
+        {/* 成长概览(收敛为一行,保留飞轮入口);专注模式下隐藏 */}
+        {!focusMode && (
+          <GrowthCard
+            workspaceId={workspaceId}
+            workspaceCode={workspaceCode}
+            growth={overview?.growth}
+            ecpConfirmedCount={overview?.ecp_confirmed_count}
+            ecpPendingCount={overview?.ecp_pending_count}
+            onEnterFlywheel={onEnterFlywheel}
+          />
+        )}
       </div>
       <ObjectDetailDrawer
         obj={selectedSemantic}

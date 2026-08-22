@@ -173,19 +173,17 @@ async def test_no_ruleset_no_adapter_defaults_to_allow(store, stream):
     assert gate.last_result.decision is PermissionDecision.ALLOW
 
 
-async def test_no_ruleset_but_ask_action_without_adapter_raises(store, stream):
-    # If somehow no ruleset but mode says ask... can't happen in practice,
-    # but guard: if decision would be ASK and no adapter, raise clear error
-    from gyra.agent.core.v2.permission_gate import NoInteractionAdapterError
-    # Build a gate with no ruleset AND no adapter; force the ASK path by using
-    # a ruleset that returns ASK
+async def test_no_ruleset_but_ask_action_without_adapter_denies_fail_closed(store, stream):
+    # If decision would be ASK but no adapter is configured, the gate must
+    # fail-closed (DENY) rather than raise — raising kills the whole turn in
+    # production; denying is safe and observable via last_result.
     ruleset = PermissionRuleset(rules={
         "rm": PermissionRule(tool_pattern="rm", action=PermissionAction.ASK)
     }, default_action=PermissionAction.ALLOW)
     gate = _gate(store, stream, ruleset=ruleset, interaction_adapter=None)
-    with pytest.raises(NoInteractionAdapterError):
-        async for _ in gate.check({"tool": "rm", "input": {}}):
-            pass
+    events = [e async for e in gate.check({"tool": "rm", "input": {}})]
+    assert gate.last_result.decision is PermissionDecision.DENY
+    assert "fail-closed" in (gate.last_result.reason or "")
 
 
 async def test_ask_reads_response_choice_not_action(store, stream):

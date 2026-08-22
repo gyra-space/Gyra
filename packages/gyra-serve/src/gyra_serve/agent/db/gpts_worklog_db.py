@@ -46,6 +46,17 @@ class GptsWorkLogEntity(Model):
     step_index = Column(
         Integer, nullable=False, default=0, comment="The step index in the session"
     )
+    # 工具步骤与 GptsMessage 的关联键（V2 据此重建 action_report）
+    message_id = Column(
+        String(128),
+        nullable=True,
+        comment="关联的 GptsMessage ID (用于重建 action_report)",
+    )
+    tool_call_id = Column(
+        String(128),
+        nullable=True,
+        comment="工具调用 ID (用于关联 tool message)",
+    )
 
     # 工具信息
     tool = Column(String(255), nullable=False, comment="Tool name")
@@ -105,6 +116,8 @@ class GptsWorkLogDao(BaseDao):
             session_id=session_id,
             agent_id=agent_id,
             step_index=entry.get("step_index", 0),
+            message_id=entry.get("message_id"),
+            tool_call_id=entry.get("tool_call_id"),
             tool=entry.get("tool", ""),
             args=json.dumps(entry.get("args"), ensure_ascii=False)
             if entry.get("args")
@@ -134,6 +147,8 @@ class GptsWorkLogDao(BaseDao):
             "session_id": entity.session_id,
             "agent_id": entity.agent_id,
             "step_index": entity.step_index,
+            "message_id": entity.message_id,
+            "tool_call_id": entity.tool_call_id,
             "timestamp": entity.timestamp.timestamp() if entity.timestamp else 0.0,
             "tool": entity.tool,
             "args": json.loads(entity.args) if entity.args else None,

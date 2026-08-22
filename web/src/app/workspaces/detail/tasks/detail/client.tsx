@@ -18,6 +18,7 @@ import {
   WarningOutlined, CheckCircleOutlined,
 } from '@ant-design/icons';
 import ChatSession from '@/components/chat/chat-session';
+import { useSpaceRole } from '@/hooks/use-space-role';
 
 const { TextArea } = Input;
 
@@ -40,6 +41,9 @@ export default function TaskDetailPage() {
 
   const workspaceId = task?.workspace_id;
   const appCode = task?.context?.app_code || task?.assigned_agents?.[0] || 'main';
+
+  // 权限门控:启动任务=space.task.start;关闭任务=space.task.manage
+  const { can } = useSpaceRole(workspaceId);
 
 
   const { data: artifacts } = useRequest(async () => {
@@ -143,7 +147,7 @@ export default function TaskDetailPage() {
           </div>
         </div>
         <div className="flex gap-2">
-          {['draft', 'pending_trigger', 'failed'].includes(task.status) && (
+          {can('space.task.start') && ['draft', 'pending_trigger', 'failed'].includes(task.status) && (
             <Button type="primary" icon={<ThunderboltOutlined />} loading={starting} onClick={handleStart}>
               {t('tasks.start') || 'Start'}
             </Button>
@@ -153,7 +157,7 @@ export default function TaskDetailPage() {
               <Button type="primary" icon={<WarningOutlined />}>{t('tasks.review') || 'Review'}</Button>
             </Link>
           )}
-          {(task.status === 'delivered' || task.status === 'running' || task.status === 'awaiting_human') && (
+          {can('space.task.manage') && (task.status === 'delivered' || task.status === 'running' || task.status === 'awaiting_human') && (
             <Button onClick={() => setCloseOpen(true)} type="primary" icon={<CheckCircleOutlined />}>
               {t('tasks.close') || 'Close (with distill)'}
             </Button>

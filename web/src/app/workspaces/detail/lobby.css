@@ -14,13 +14,24 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* 统一悬浮滚动条:默认隐去,悬停滚动容器时以纤细圆角条浮现(与 space/rail 同语言) */
   scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.ws-lobby__scroll:hover {
   scrollbar-color: var(--ws-border) transparent;
 }
 
-/* 细滚动条:弱化常驻原生滚动条的视觉噪音(与 .ws-rail-inbox 同款) */
-.ws-lobby__scroll::-webkit-scrollbar { width: 5px; }
-.ws-lobby__scroll::-webkit-scrollbar-thumb { background: var(--ws-border); border-radius: 4px; }
+.ws-lobby__scroll::-webkit-scrollbar { width: 8px; }
+.ws-lobby__scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border: 2px solid transparent;
+  border-radius: 99px;
+  background-clip: padding-box;
+}
+.ws-lobby__scroll:hover::-webkit-scrollbar-thumb { background-color: var(--ws-border); }
+.ws-lobby__scroll:hover::-webkit-scrollbar-thumb:hover { background-color: var(--ws-ink-3); }
 .ws-lobby__scroll::-webkit-scrollbar-track { background: transparent; }
 
 /* 四宫格:宽屏 2 列,窄屏自动落 1 列。
@@ -1036,4 +1047,31 @@
   .ws-growth__entry-orb > .anticon {
     animation: none;
   }
+}
+
+/* 大厅顶栏:标题 + 专注开关 */
+.ws-lobby__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px 0;
+  flex-shrink: 0;
+}
+.ws-lobby__bar-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ws-ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+.ws-lobby__focus {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--ws-ink-2);
+  cursor: pointer;
+  user-select: none;
 }

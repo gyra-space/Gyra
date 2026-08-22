@@ -2,17 +2,28 @@
 
 import './scene-workspace.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button, Modal } from 'antd';
-import { CloseOutlined, LayoutOutlined, LeftOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
+import { App, Button, Modal, Drawer } from 'antd';
+import { CloseOutlined, LeftOutlined, MenuFoldOutlined, MenuUnfoldOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation } from '@/client/api';
+import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation, getAppInfo } from '@/client/api';
 import { getUserId } from '@/utils';
+import { useSpaceRole } from '@/hooks/use-space-role';
+import { useUserInput } from '@/hooks/use-user-input';
 import type { WorkspaceEvent } from '@/hooks/use-chat';
 import type { AgentStep, DetailContext } from './agent-types';
 import { AgentWorkspace } from './agent-workspace';
+import { AgentWorkspaceInput } from './agent-workspace-input';
 import { SceneSpace } from './scene-space';
-import { SceneTaskRail } from './scene-task-rail';
+import { SceneTaskRail, statusLabel } from './scene-task-rail';
+import { SceneSimpleRail, type SimpleHistoryItem } from './scene-simple-rail';
+import { SceneSimpleInbox } from './scene-simple-inbox';
+import { SceneSimpleWorkspace } from './scene-simple-workspace';
 import type { AgentWorkspaceInputHandle } from './agent-workspace-types';
+import { useSceneAgentChat } from './use-scene-agent-chat';
+import type { WorkspaceViewMode } from './use-view-mode';
+
+/** 欢迎态「试试这些」预设问题的兜底默认值;工作空间 settings 未配置时使用 */
+const DEFAULT_SUGGEST_QUESTIONS = ['帮我看看这周的数据情况'];
 
 /** 判断当前任务列表里是否有活跃任务(running 等会变化的状态),决定是否开轮询。 */
 export function hasActiveTask(tasks: any[]): boolean {
@@ -35,6 +46,11 @@ interface SceneWorkspaceShellProps {
   /** 从会话列表选中会话时携带的 task_id:number=进 task 对话,null=workspace 级会话,
    * undefined=非列表触发(初始/任务栏进入)。 */
   pendingTaskId?: number | null | undefined;
+  /** 视图模式(由页面 header 持有,记忆到 localStorage) */
+  viewMode: WorkspaceViewMode;
+  /** 简洁模式抽屉状态(header 待办角标 / 左栏「待办收件箱」共用) */
+  simpleDrawer?: 'inbox' | 'overview' | null;
+  onSimpleDrawerChange?: (drawer: 'inbox' | 'overview' | null) => void;
 }
 
 export function SceneWorkspaceShell({
@@ -49,8 +65,14 @@ export function SceneWorkspaceShell({
   convLoadError,
   retryLoadConv,
   pendingTaskId,
+  viewMode,
+  simpleDrawer,
+  onSimpleDrawerChange,
 }: SceneWorkspaceShellProps) {
   const workspaceId = workspace?.id;
+  // 权限门控:对话输入区需 space.chat.use(查看角色只读,不发对话)
+  const { can } = useSpaceRole(workspaceId);
+  const chatReadOnly = !can('space.chat.use');
   const [previewItem, setPreviewItem] = useState<any>(null);
   const [detailContext, setDetailContext] = useState<DetailContext>('dashboard');
   const [activeTaskId, setActiveTaskId] = useState<number | null>(null);
@@ -83,6 +105,8 @@ export function SceneWorkspaceShell({
   const bumpInbox = () => setInboxTick((t) => t + 1);
   const prevActiveTaskId = useRef<number | null>(null);
   const agentInputRef = useRef<AgentWorkspaceInputHandle>(null);
+  // 简洁模式:中间区是否显示欢迎页(无会话/任务时 true,有内容时 false)
+  const [simpleShowWelcome, setSimpleShowWelcome] = useState(true);
 
   // 隐式上下文:用户当前在中间区域查看的交付物(artifact),发消息时自动带入 agent 上下文。
   // 仅 file-preview/entity-card 且有 artifact_id 时生效;点 chip × 设 focusDismissed 取消带入。
@@ -116,6 +140,17 @@ export function SceneWorkspaceShell({
     message.success(tip);
   };
 
+  // 简洁模式:convUid 为空时,首次发送前创建会话并注入
+  const ensureConversation = async (): Promise<string | null> => {
+    if (!workspaceId) return null;
+    const [, newConv] = await apiInterceptors(createConversation({ workspace_id: workspaceId }));
+    if (!newConv?.conv_uid) return null;
+    await apiInterceptors(linkConversation({ workspace_id: workspaceId, conv_uid: newConv.conv_uid, user_id: Number(getUserId()) || undefined }));
+    await apiInterceptors(setCurrentConversation(workspaceId, newConv.conv_uid));
+    onConvChanged?.(newConv.conv_uid);
+    return newConv.conv_uid;
+  };
+
   // 中屏(900–1279px)默认收起左 rail 为抽屉;小屏默认展示场景空间
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return;
@@ -132,16 +167,24 @@ export function SceneWorkspaceShell({
     return (data || []).map((p: any) => ({ playbook_id: p.id, playbook_name: p.name }));
   }, { refreshDeps: [workspaceId] });
 
+  // Agent 头像数据:appCode 对应 app 的 icon/name(与通用聊天页同源)
+  const { data: appInfoTuple } = useRequest(
+    async () => (appCode ? apiInterceptors(getAppInfo({ app_code: appCode })) : ([null, null] as any)),
+    { refreshDeps: [appCode] },
+  );
+  const appInfo = appInfoTuple?.[1];
+
   // 会话维度列表:剧本任务会话 + 大厅会话统一按 conv 维度展示。
   // refreshDeps 含 workspaceConvUid/taskConvUid:清理(新开会话)/切换会话/进入任务对话后自动刷新,
-  // 新会话按 gmt_modified 倒序自然置顶。
+  // 新会话按 gmt_modified 倒序自然置顶。listsRefreshKey:对话开始(onConversationStart)即刷新,
+  // 让后端兜底 link 的新会话/出错对话第一时间进入任务列表。
   const { data: conversations } = useRequest(
     async () => {
       if (!workspaceId) return [];
       const [, data] = await apiInterceptors(listConversations({ workspace_id: workspaceId, user_id: Number(getUserId()) || undefined, limit: 200 }));
       return data || [];
     },
-    { refreshDeps: [workspaceId, workspaceConvUid, taskConvUid] },
+    { refreshDeps: [workspaceId, workspaceConvUid, taskConvUid, listsRefreshKey] },
   );
 
   useEffect(() => {
@@ -199,6 +242,9 @@ export function SceneWorkspaceShell({
     if (task) {
       setPreviewItem(task);
       setDetailContext('task-detail');
+      // 切任务后默认在大厅中间区展示该会话的最终结果;若当前大厅曾被折叠(上一轮对话提交后),
+      // 这里展开确保最终回复默认可见。
+      expandSpace();
     }
   };
 
@@ -390,164 +436,444 @@ export function SceneWorkspaceShell({
   const rightConvUid = activeTaskId ? taskConvUid : workspaceConvUid;
   const rightTaskId = activeTaskId ? activeTaskId : undefined;
 
+  // ── 简洁模式:数据与回调 ──────────────────────────────────────────────
+  const isSimple = viewMode === 'simple';
+  // 简洁模式:欢迎态 = 当前未打开任何任务/会话(有历史时也展示,历史在左栏)
+  const simpleWelcome = isSimple && simpleShowWelcome && !activeTaskId;
+
+  // 欢迎态「试试这些」预设问题:优先读取工作空间配置 settings.suggest_questions,
+  // 为空或未配置时回退到默认问题。
+  const suggestQuestions = useMemo(() => {
+    const cfg = (workspace as any)?.settings?.suggest_questions;
+    if (Array.isArray(cfg)) {
+      const list = cfg.filter((q: unknown) => typeof q === 'string' && q.trim().length > 0);
+      if (list.length > 0) return list;
+    }
+    return DEFAULT_SUGGEST_QUESTIONS;
+  }, [workspace]);
+
+  // 简洁模式复用同一份会话(chat hook),保证与运维模式零数据孤岛;
+  // enabled 仅在简洁模式开启(运维模式由 AgentWorkspace 自己接管,避免双轮询)。
+  // 欢迎态不传 convUid:首页输入框提交即新建会话(onConvCreated -> ensureConversation),
+  // 而不是续写页面加载时恢复的旧 current conversation。
+  const simpleChat = useSceneAgentChat({
+    convUid: simpleWelcome ? undefined : rightConvUid,
+    appCode,
+    workspaceId,
+    taskId: rightTaskId,
+    focusArtifactId: focus?.id,
+    tasks,
+    playbooks,
+    enabled: viewMode === 'simple',
+    onConvCreated: ensureConversation,
+    onWorkspaceEvent: handleWorkspaceEvent,
+    onConversationStart: () => {
+      setSimpleShowWelcome(false);
+      onRefreshLists?.();
+    },
+  });
+
+  // 简洁模式历史项:任务 + 大厅会话统一按时间倒序
+  const simpleItems = useMemo<SimpleHistoryItem[]>(() => {
+    const taskItems: SimpleHistoryItem[] = (tasks || []).map((t) => ({
+      key: `task-${t.id}`,
+      kind: 'task',
+      id: t.id,
+      title: t.title || `任务 #${t.id}`,
+      status:
+        // 进行中:running/pending_trigger + draft(准备中)/blocked(阻塞)都归入进行中,
+        // 不能折叠成绿色「已完成」—— 与运维模式 statusToTab 的分组语义保持一致
+        t.status === 'running' || t.status === 'pending_trigger' ||
+        t.status === 'draft' || t.status === 'blocked'
+          ? 'running'
+          : t.status === 'awaiting_human'
+            ? 'waiting'
+            : t.status === 'failed'
+              ? 'failed'
+              : 'done',
+      statusLabel: statusLabel(t.status),
+      updatedAt: t.gmt_created || t.started_at || t.gmt_modified || '',
+      convUid: t.conv_session_id || undefined,
+      taskId: t.id,
+    }));
+    const lobbyItems: SimpleHistoryItem[] = (conversations || [])
+      .filter((c: any) => c.task_id == null)
+      .map((c: any) => ({
+        key: `conv-${c.conv_uid}`,
+        kind: 'lobby',
+        id: c.conv_uid,
+        title: c.title || `会话 ${String(c.conv_uid || '').slice(0, 8)}`,
+        status: 'done',
+        statusLabel: '大厅会话',
+        updatedAt: c.gmt_created || c.gmt_modified || '',
+        convUid: c.conv_uid,
+        taskId: null,
+      }));
+    return [...taskItems, ...lobbyItems].sort((a, b) => {
+      const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return tb - ta;
+    });
+  }, [tasks, conversations]);
+
+  // 简洁模式:点击历史项进入对应任务/会话
+  // 大厅会话(lobby):切 conv → 继续该会话的对话
+  // 任务会话(task):进任务对话(activeTaskId → taskConvUid),且当前任务已绑定大厅会话时,
+  // 一并把大厅会话切到任务的 conv,保证返回大厅时停留在该任务会话(直接使用的延续感)
+  const handleSimpleOpenItem = (item: SimpleHistoryItem) => {
+    setSimpleShowWelcome(false);
+    if (item.kind === 'task' && item.taskId) {
+      handleEnterConversation(item.taskId);
+      if (item.convUid && item.convUid !== workspaceConvUid) {
+        onConvChanged?.(item.convUid, item.taskId);
+      }
+      return;
+    }
+    if (item.convUid) {
+      handleOpenConversation(item.convUid, null);
+    }
+  };
+
+  // 简洁模式:点击「新任务」回到欢迎态,等待输入;不立刻创建会话,
+  // 首次发送时才新建(convUid 未传入 -> ensureConversation),避免遗留空会话
+  const handleSimpleNew = () => {
+    setSimpleShowWelcome(true);
+    setActiveTaskId(null);
+    setDetailContext('dashboard');
+    setPreviewItem(null);
+  };
+
+  // 简洁模式:待办入口 → 右侧滑出待办抽屉(不切模式,不打断当前会话)
+  const handleSimpleOpenInbox = () => {
+    onSimpleDrawerChange?.('inbox');
+  };
+
+  // 简洁模式:推荐问题 → 填入输入框并聚焦
+  const handleSimpleAsk = (text?: string) => {
+    if (text) agentInputRef.current?.insertText(`${text} `);
+    agentInputRef.current?.focus();
+  };
+
+  // 简洁模式:输入框发送后隐藏欢迎页;
+  // 运行中追问复用与运维模式一致的「补充输入」链路(投递到后端队列,不开新 SSE)
+  const { submitUserInput } = useUserInput(rightConvUid);
+  const handleSimpleSend = async (payload: any) => {
+    setSimpleShowWelcome(false);
+    if (simpleChat.loading || simpleChat.convState === 'RUNNING') {
+      simpleChat.appendOptimisticUser(payload.text);
+      submitUserInput(payload.text);
+    } else {
+      // convUid 可能为空(简洁模式首次发送),由 hook 内部 ensureConvUid 创建
+      await simpleChat.send(payload);
+    }
+  };
+
+  // ── 渲染 ────────────────────────────────────────────────────────────
+
   return (
     <div
-      className={`ws-scene-shell${railOpen ? '' : ' ws-scene-shell--rail-closed'}${spaceCollapsed ? ' ws-scene-shell--space-collapsed' : ''}`}
+      className={`ws-scene-shell${railOpen ? '' : ' ws-scene-shell--rail-closed'}${spaceCollapsed ? ' ws-scene-shell--space-collapsed' : ''}${isSimple ? ' ws-scene-shell--simple' : ''}`}
       data-pane={mobilePane}
     >
-      <div className="ws-scene-shell__mobile-tabs" role="tablist">
-        {([['rail', '任务'], ['space', '空间'], ['agent', 'Agent']] as const).map(([key, label]) => (
-          <span
-            key={key}
-            role="tab"
-            aria-selected={mobilePane === key}
-            className={`ws-scene-shell__mobile-tab${mobilePane === key ? ' ws-scene-shell__mobile-tab--on' : ''}`}
-            onClick={() => setMobilePane(key)}
-          >
-            {label}
-          </span>
-        ))}
-      </div>
-      <button
-        type="button"
-        className="ws-scene-shell__rail-toggle"
-        aria-label={railOpen ? '收起任务栏' : '展开任务栏'}
-        onClick={() => setRailOpen((v) => !v)}
-      >
-        {railOpen ? '‹' : '›'}
-      </button>
-      {/* 大厅容器折叠开关:折叠后 Agent 空间占满主区专注执行;有新内容时亮角标 */}
-      <button
-        type="button"
-        className={`ws-scene-shell__space-toggle${spaceHasNew ? ' ws-scene-shell__space-toggle--new' : ''}`}
-        aria-label={spaceCollapsed ? '展开大厅' : '折叠大厅'}
-        title={spaceCollapsed ? '展开大厅' : '折叠大厅,专注执行进展'}
-        onClick={() => {
-          if (spaceCollapsed) {
-            expandSpace();
-          } else {
-            setSpaceCollapsed(true);
-            setSpaceHasNew(false);
-          }
-        }}
-      >
-        {spaceCollapsed ? (
+      {isSimple ? (
+        /* ── 简洁模式 ── */
         <>
-          <span className="ws-scene-shell__space-toggle__icon"><LayoutOutlined /></span>
-          <span className="ws-scene-shell__space-toggle__label">展开大厅</span>
+          {/* 左栏折叠/展开按钮(简洁模式常驻) */}
+          <button
+            type="button"
+            className="ws-scene-shell__rail-toggle"
+            aria-label={railOpen ? '收起历史列表' : '展开历史列表'}
+            onClick={() => setRailOpen((v) => !v)}
+          >
+            <span className="ws-scene-shell__rail-toggle__icon">{railOpen ? <LeftOutlined /> : <RightOutlined />}</span>
+          </button>
+          {/* 左栏:历史任务列表(可折叠) */}
+          <div className="ws-scene-shell__rail">
+            <SceneSimpleRail
+              items={simpleItems}
+              currentConvUid={rightConvUid}
+              currentTaskId={activeTaskId}
+              inboxCount={interventions?.length || 0}
+              disabled={switchingTask}
+              onOpenItem={handleSimpleOpenItem}
+              onNewConversation={handleSimpleNew}
+              onOpenInbox={handleSimpleOpenInbox}
+            />
+          </div>
+          {/* 中间:欢迎态 或 运行态双栏(输入条在左侧步骤流卡片内底部) */}
+          <div className="ws-scene-shell__space">
+            {simpleWelcome ? (
+              <div className="ws-simple-welcome">
+                <div className="ws-simple-welcome__hero">
+                  <span className="ws-simple-welcome__ava">✦</span>
+                  <h1 className="ws-simple-welcome__title">{workspace?.name || '场景空间'}</h1>
+                  <p className="ws-simple-welcome__sub">
+                    {workspace?.description || '输入指令,Agent 帮你完成任务'}
+                  </p>
+                </div>
+                <div className="ws-simple-welcome__composer">
+                  <AgentWorkspaceInput
+                    ref={agentInputRef}
+                    convUid={rightConvUid}
+                    appInfo={appInfo}
+                    onSend={handleSimpleSend}
+                    loading={simpleChat.loading}
+                    onStop={simpleChat.abort}
+                    disabled={switchingTask}
+                    readOnly={chatReadOnly}
+                    simple
+                    playbooks={[]}
+                    focus={focus}
+                    onClearFocus={() => setFocusDismissed(true)}
+                    usageMetrics={simpleChat.usageMetrics}
+                  />
+                </div>
+                <div className="ws-simple-welcome__sugg">
+                  <div className="ws-simple-welcome__sugg-label">试试这些</div>
+                  <div className="ws-simple-welcome__sugg-row">
+                    {(playbooks || []).slice(0, 2).map((pb: any) => (
+                      <button
+                        key={pb.playbook_id}
+                        type="button"
+                        className="ws-simple-welcome__sugg-item"
+                        onClick={() => handleSimpleAsk(`跑一下「${pb.playbook_name}」`)}
+                      >
+                        跑一下「{pb.playbook_name}」
+                      </button>
+                    ))}
+                    {suggestQuestions.map((q) => (
+                      <button
+                        key={q}
+                        type="button"
+                        className="ws-simple-welcome__sugg-item"
+                        onClick={() => handleSimpleAsk(q)}
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="ws-simple-run">
+                <SceneSimpleWorkspace
+                  // 切换会话/任务时强制重挂载:重置右侧已选步骤/文件等内部状态,
+                  // 避免打开第二个任务后右侧仍停留第一个任务的步骤详情
+                  key={rightConvUid}
+                  view={simpleChat.workspaceView}
+                  running={simpleChat.loading || simpleChat.convState === 'RUNNING'}
+                  error={simpleChat.error}
+                  switchingTask={switchingTask}
+                  convLoadError={convLoadError}
+                  retryLoadConv={retryLoadConv}
+                  agentIcon={appInfo?.icon}
+                  agentName={appInfo?.app_name}
+                  onInteractionResume={(msg) => simpleChat.send({ text: msg })}
+                  onExit={() => {
+                    setSimpleShowWelcome(true);
+                    setActiveTaskId(null);
+                  }}
+                  inputSlot={
+                    <AgentWorkspaceInput
+                    ref={agentInputRef}
+                    convUid={rightConvUid}
+                    appInfo={appInfo}
+                    onSend={handleSimpleSend}
+                    loading={simpleChat.loading}
+                    onStop={simpleChat.abort}
+                    disabled={switchingTask}
+                    readOnly={chatReadOnly}
+                    simple
+                    playbooks={[]}
+                    focus={focus}
+                    onClearFocus={() => setFocusDismissed(true)}
+                    onClearContext={() => handleNewConversation('已清空上下文')}
+                    usageMetrics={simpleChat.usageMetrics}
+                  />
+                  }
+                />
+              </div>
+            )}
+          </div>
+          {/* 简洁模式:待办抽屉(右侧滑出,不切模式不打断当前会话;内容为真实待办列表) */}
+          <Drawer
+            title="待办收件箱"
+            placement="right"
+            width={420}
+            open={simpleDrawer === 'inbox'}
+            onClose={() => onSimpleDrawerChange?.(null)}
+          >
+            <SceneSimpleInbox
+              workspaceId={workspaceId}
+              disabled={switchingTask}
+              onOpenItem={(item) => {
+                // 点击待办:关抽屉并按类型进入(任务对话 / 介入 / 提案 / 手动详情)
+                onSimpleDrawerChange?.(null);
+                handleSelectInbox(item);
+              }}
+              onResolved={onRefreshLists}
+            />
+          </Drawer>
         </>
       ) : (
-        <LeftOutlined />
-      )}
-      </button>
-      <div className="ws-scene-shell__rail">
-        <SceneTaskRail
-          tasks={tasks}
-          interventions={interventions}
-          workspaceId={workspaceId}
-          activeTaskId={activeTaskId}
-          disabled={switchingTask}
-          playbooks={playbooks}
-          onRefreshLists={onRefreshLists}
-          inboxTick={inboxTick}
-          onPreview={(item, kind) => {
-            handlePreview(item, kind);
-            setMobilePane('space');
-            if (window.matchMedia('(max-width: 1279px)').matches) setRailOpen(false);
-          }}
-          onEnterConversation={(taskId) => {
-            handleEnterConversation(taskId);
-            setMobilePane('agent');
-          }}
-          onReference={handleReference}
-          conversations={conversations || []}
-          currentConvUid={rightConvUid}
-          onOpenConversation={(convUid, taskId) => {
-            handleOpenConversation(convUid, taskId);
-            setMobilePane(taskId ? 'agent' : 'space');
-            if (window.matchMedia('(max-width: 1279px)').matches) setRailOpen(false);
-          }}
-        />
-      </div>
-      <div className="ws-scene-shell__space">
-        <SceneSpace
-          context={detailContext}
-          previewItem={previewItem}
-          activeTask={activeTask}
-          workspaceId={workspaceId}
-          workspaceCode={workspace?.workspace_code}
-          appCode={appCode}
-          playbooks={playbooks}
-          onBack={handleBackToDashboard}
-          onProposalResolved={bumpInbox}
-          onEnterFlywheel={handleEnterFlywheel}
-          onGuide={handleGuideAction}
-          onSelectInbox={handleSelectInbox}
-          onAsk={handleAsk}
-          onRunPlaybook={handleQuickRun}
-          listsRefreshKey={listsRefreshKey}
-          onSelectTask={(taskId) => {
-            const task = tasks.find((t) => t.id === taskId);
-            if (task) handlePreview(task, 'task');
-          }}
-          onSelectArtifact={(artifact) => {
-            setPreviewItem({ payload: { artifact_id: artifact.id, title: artifact.title, type: artifact.type } });
-            setDetailContext('entity-card');
-            setFocusDismissed(false);
-            expandSpace();
-          }}
-          onSelectDelivery={(delivery) => {
-            setPreviewItem({ payload: { delivery_id: delivery.id, title: delivery.title } });
-            setDetailContext('delivery-detail');
-            setFocusDismissed(false);
-            expandSpace();
-          }}
-        />
-      </div>
-      <div className="ws-scene-shell__agent">
-        {activeTaskId && (
-          <div className="ws-scene-shell__agent-mode">
-            <span>任务对话: {activeTaskId}</span>
-            <Button size="small" icon={<CloseOutlined />} onClick={() => setActiveTaskId(null)}>退出任务对话</Button>
+        /* ── 运维模式(原有布局) ── */
+        <>
+          <div className="ws-scene-shell__mobile-tabs" role="tablist">
+            {([['rail', '任务'], ['space', '空间'], ['agent', 'Agent']] as const).map(([key, label]) => (
+              <span
+                key={key}
+                role="tab"
+                aria-selected={mobilePane === key}
+                className={`ws-scene-shell__mobile-tab${mobilePane === key ? ' ws-scene-shell__mobile-tab--on' : ''}`}
+                onClick={() => setMobilePane(key)}
+              >
+                {label}
+              </span>
+            ))}
           </div>
-        )}
-        <AgentWorkspace
-          convUid={rightConvUid}
-          appCode={appCode}
-          workspaceId={workspaceId}
-          taskId={rightTaskId}
-          focus={focus}
-          onClearFocus={() => setFocusDismissed(true)}
-          onClearContext={activeTaskId ? undefined : () => handleNewConversation('已清空上下文')}
-          onNewSession={activeTaskId ? undefined : () => handleNewConversation('已开启新会话')}
-          onStepClick={handleStepClick}
-          onDeliverableClick={(file) => {
-            setPreviewItem({ payload: { deliverable_file: file } });
-            setDetailContext('file-preview');
-            setFocusDismissed(false);
-            expandSpace();
-            setMobilePane('space');
-          }}
-          onTaskClick={(taskId) => {
-            handleEnterConversation(taskId);
-            setMobilePane('agent');
-          }}
-          onSubagentClick={handleSubagentClick}
-          onWorkspaceEvent={handleWorkspaceEvent}
-          onConversationStart={() => {
-            setSpaceCollapsed(true);
-            // 会话开始即刷新任务列表:回合前路由预建的会话内任务(页面输入命中剧本)
-            // 在 chat 流里创建,不产生 task_created SSE 事件,靠这里第一时间入列表。
-            onRefreshLists?.();
-          }}
-          inputRef={agentInputRef}
-          switchingTask={switchingTask}
-          convLoadError={convLoadError}
-          retryLoadConv={retryLoadConv}
-          playbooks={playbooks}
-          tasks={tasks}
-        />
-      </div>
+          <button
+            type="button"
+            className="ws-scene-shell__rail-toggle"
+            aria-label={railOpen ? '收起任务栏' : '展开任务栏'}
+            onClick={() => setRailOpen((v) => !v)}
+          >
+            <span className="ws-scene-shell__rail-toggle__icon">{railOpen ? <LeftOutlined /> : <RightOutlined />}</span>
+          </button>
+          {/* 大厅容器折叠开关:折叠后 Agent 空间占满主区专注执行;有新内容时亮角标 */}
+          <button
+            type="button"
+            className={`ws-scene-shell__space-toggle${spaceHasNew ? ' ws-scene-shell__space-toggle--new' : ''}`}
+            aria-label={spaceCollapsed ? '展开大厅' : '折叠大厅'}
+            title={spaceCollapsed ? '展开大厅' : '折叠大厅,专注执行进展'}
+            onClick={() => {
+              if (spaceCollapsed) {
+                expandSpace();
+              } else {
+                setSpaceCollapsed(true);
+                setSpaceHasNew(false);
+              }
+            }}
+          >
+            {spaceCollapsed ? (
+              <>
+                <span className="ws-scene-shell__space-toggle__icon"><MenuUnfoldOutlined /></span>
+                <span className="ws-scene-shell__space-toggle__label">展开大厅</span>
+              </>
+            ) : (
+              <span className="ws-scene-shell__space-toggle__icon"><MenuFoldOutlined /></span>
+            )}
+          </button>
+          <div className="ws-scene-shell__rail">
+            <SceneTaskRail
+              tasks={tasks}
+              interventions={interventions}
+              workspaceId={workspaceId}
+              activeTaskId={activeTaskId}
+              disabled={switchingTask}
+              playbooks={playbooks}
+              onRefreshLists={onRefreshLists}
+              inboxTick={inboxTick}
+              onPreview={(item, kind) => {
+                handlePreview(item, kind);
+                setMobilePane('space');
+                if (window.matchMedia('(max-width: 1279px)').matches) setRailOpen(false);
+              }}
+              onEnterConversation={(taskId) => {
+                handleEnterConversation(taskId);
+                setMobilePane('agent');
+              }}
+              onReference={handleReference}
+              conversations={conversations || []}
+              currentConvUid={rightConvUid}
+              onOpenConversation={(convUid, taskId) => {
+                handleOpenConversation(convUid, taskId);
+                setMobilePane(taskId ? 'agent' : 'space');
+                if (window.matchMedia('(max-width: 1279px)').matches) setRailOpen(false);
+              }}
+            />
+          </div>
+          <div className="ws-scene-shell__space">
+            <SceneSpace
+              context={detailContext}
+              previewItem={previewItem}
+              activeTask={activeTask}
+              workspaceId={workspaceId}
+              workspaceCode={workspace?.workspace_code}
+              appCode={appCode}
+              playbooks={playbooks}
+              onBack={handleBackToDashboard}
+              onProposalResolved={bumpInbox}
+              onEnterFlywheel={handleEnterFlywheel}
+              onGuide={handleGuideAction}
+              onSelectInbox={handleSelectInbox}
+              onAsk={handleAsk}
+              onRunPlaybook={handleQuickRun}
+              listsRefreshKey={listsRefreshKey}
+              onSelectTask={(taskId) => {
+                const task = tasks.find((t) => t.id === taskId);
+                if (task) handlePreview(task, 'task');
+              }}
+              onSelectArtifact={(artifact) => {
+                setPreviewItem({ payload: { artifact_id: artifact.id, title: artifact.title, type: artifact.type } });
+                setDetailContext('entity-card');
+                setFocusDismissed(false);
+                expandSpace();
+              }}
+              onSelectDelivery={(delivery) => {
+                setPreviewItem({ payload: { delivery_id: delivery.id, title: delivery.title } });
+                setDetailContext('delivery-detail');
+                setFocusDismissed(false);
+                expandSpace();
+              }}
+            />
+          </div>
+          <div className="ws-scene-shell__agent">
+            {activeTaskId && (
+              <div className="ws-scene-shell__agent-mode">
+                <span>任务对话: {activeTaskId}</span>
+                <Button size="small" icon={<CloseOutlined />} onClick={() => setActiveTaskId(null)}>退出任务对话</Button>
+              </div>
+            )}
+            <AgentWorkspace
+              convUid={rightConvUid}
+              appCode={appCode}
+              workspaceId={workspaceId}
+              taskId={rightTaskId}
+              focus={focus}
+              chatReadOnly={chatReadOnly}
+              onClearFocus={() => setFocusDismissed(true)}
+              onClearContext={activeTaskId ? undefined : () => handleNewConversation('已清空上下文')}
+              onNewSession={activeTaskId ? undefined : () => handleNewConversation('已开启新会话')}
+              onStepClick={handleStepClick}
+              onDeliverableClick={(file) => {
+                setPreviewItem({ payload: { deliverable_file: file } });
+                setDetailContext('file-preview');
+                setFocusDismissed(false);
+                expandSpace();
+                setMobilePane('space');
+              }}
+              onTaskClick={(taskId) => {
+                handleEnterConversation(taskId);
+                setMobilePane('agent');
+              }}
+              onSubagentClick={handleSubagentClick}
+              onWorkspaceEvent={handleWorkspaceEvent}
+              onConversationStart={() => {
+                setSpaceCollapsed(true);
+                // 会话开始即刷新任务列表:回合前路由预建的会话内任务(页面输入命中剧本)
+                // 在 chat 流里创建,不产生 task_created SSE 事件,靠这里第一时间入列表。
+                onRefreshLists?.();
+              }}
+              inputRef={agentInputRef}
+              switchingTask={switchingTask}
+              convLoadError={convLoadError}
+              retryLoadConv={retryLoadConv}
+              playbooks={playbooks}
+              tasks={tasks}
+            />
+          </div>
+        </>
+      )}
 
       {/* 剧本快捷启动:选择后 @引用 带入输入框(壳内执行,不跳转剧本页) */}
       <Modal

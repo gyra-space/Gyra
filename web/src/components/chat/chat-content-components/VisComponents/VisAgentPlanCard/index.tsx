@@ -27,6 +27,7 @@ import {
   ToolOutlined,
   PictureOutlined,
   ExportOutlined,
+  CompassOutlined,
 } from '@ant-design/icons';
 import { Avatar, Button, Tooltip } from 'antd';
 import { ee, EVENTS } from '@/utils/event-emitter';
@@ -72,6 +73,7 @@ const TOOL_ICON_COLOR = '#64748b';
 
 const toolNameIconMap: Array<{ keywords: string[]; icon: React.ReactNode; color: string; label: string }> = [
   { keywords: ['skill'], icon: <ThunderboltOutlined />, color: TOOL_ICON_COLOR, label: '技能' },
+  { keywords: ['metric', 'execute_metric_query', '指标', 'measure'], icon: <CompassOutlined />, color: TOOL_ICON_COLOR, label: '指标' },
   { keywords: ['deliver', 'export', 'send'], icon: <ExportOutlined />, color: TOOL_ICON_COLOR, label: '交付' },
   { keywords: ['sql', 'database', 'db_', 'mysql', 'postgres', 'sqlite', 'query', 'table_spec', 'table_info', 'schema', 'get_table'], icon: <DatabaseOutlined />, color: TOOL_ICON_COLOR, label: 'SQL' },
   { keywords: ['shell', 'bash', 'terminal', 'command', 'exec_command', 'ssh'], icon: <CodeOutlined />, color: TOOL_ICON_COLOR, label: '终端' },

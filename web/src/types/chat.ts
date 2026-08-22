@@ -82,6 +82,12 @@ export type IChatDialogueSchema = {
   state?: 'RUNNING' | 'COMPLETE' | 'FAILED' | 'WAITING' | (string & {});
   gmt_created?: string; // 创建时间
   gmt_modified?: string; // 修改时间
+  // 归属信息(统一会话列表返回):workspace_id/task_id 均无 -> 独立 Agent 会话
+  workspace_id?: number | null;
+  task_id?: number | null;
+  workspace_name?: string;
+  workspace_code?: string;
+  conv_type?: 'agent' | 'workspace' | 'task' | (string & {});
 };
 
 export type UserParam = {

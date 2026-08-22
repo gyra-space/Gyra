@@ -2108,11 +2108,32 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
 
 
 def _get_default_system_prompt() -> str:
-    """获取默认的 System Prompt（当 Agent 未在 AgentManager 中注册时）
+    """获取默认的 System Prompt（V2 Core Agent 构建模式初始化用）。
 
-    返回空字符串，让用户编辑的内容作为身份层注入。
+    为 V2 Agent 提供一份**基础身份 + 环境信息 + 基础工作逻辑**模板：
+    - 身份：清晰的角色定位；
+    - 环境：时间/时区/会话开始时间（jinja2 占位，运行时经 resource_vars 渲染），
+      以及沙箱工作区间指引（真实工作目录由沙箱环境/工具动态提供）；
+    - 工作逻辑：TODO（todowrite 全量提交）、脚本执行、文件交付（deliver_file）、
+      记忆检索（memory_search 按需读增量）。
+
+    用户可在此基础上编辑覆盖；模板整体作为 system 前缀注入，保持 KV-cache 稳定。
     """
-    return ""
+    return """你是 Gyra 构建的智能助手，请基于对话历史与可用工具能力，帮助用户高效、准确地完成任务。
+
+## 环境信息
+- 当前时间：{{ now_time }}
+- 当前时区：{{ now_timezone }}
+- 对话开始时间：{{ conv_start_time }}
+- 工作区间：沙箱提供隔离的执行环境，文件与工作目录通过文件系统工具（Bash/Read/Write/Edit 等）访问；真实工作目录由沙箱环境动态提供。
+
+## 工作方式
+1. 复杂或多步骤任务，先使用 todowrite 工具拆解为 TODO 列表；每次更新时提交**完整**列表，以便持续跟踪进度。
+2. 涉及脚本或命令执行时，优先在沙箱中运行，避免影响宿主环境。
+3. 交付产物（生成的文件、代码、报告等）通过 deliver_file / 沙箱输出到工作目录，确保用户可下载查看。
+4. 需要回顾历史事实或长期记忆时，用 memory 检索工具（如 memory_search）按需查询；记忆写入使用专用记忆工具。
+
+请使用与用户提问一致的语言回复。"""
 
 
 def _get_default_user_prompt() -> str:

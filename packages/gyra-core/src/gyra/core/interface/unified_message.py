@@ -288,6 +288,12 @@ class UnifiedConversationSummary:
     chat_mode: str = "chat_normal"
     state: str = "active"
     app_code: Optional[str] = None
+    # 归属信息:workspace_id/task_id 为空表示独立的 Agent 会话;
+    # 仅 workspace_id 表示场景空间大厅会话,两者都有表示空间内任务会话。
+    workspace_id: Optional[int] = None
+    task_id: Optional[int] = None
+    workspace_name: Optional[str] = None
+    workspace_code: Optional[str] = None
     message_count: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -307,6 +313,10 @@ class UnifiedConversationSummary:
             "chat_mode": self.chat_mode,
             "state": self.state,
             "app_code": self.app_code,
+            "workspace_id": self.workspace_id,
+            "task_id": self.task_id,
+            "workspace_name": self.workspace_name,
+            "workspace_code": self.workspace_code,
             "message_count": self.message_count,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

@@ -92,23 +92,21 @@ def make_gyra_llm_stream_fn(
         # 避免把中间帧（arguments 未闭合）当成最终调用导致工具执行报错。
         last_tool_calls: Optional[list] = None
         # AIWrapper.create 流式输出 content/thinking_content 是"累积全量"，
-        # 逐帧取增量 token，避免 _v2_final_answer += 全量导致文本重复。
-        prev_full_text = ""
+        # 逐帧取增量 token。**thinking 与 content 分通道各自累积、各自求差**，
+        # 避免合并拼接后前缀失配把整段已累积文本当成单个 token 重复发射。
+        prev_thinking = ""
+        prev_content = ""
+
+        def _delta(acc: str, prev: str) -> str:
+            """累积全量对上一帧求差；前缀失配（异常/新段）退化为全量。"""
+            if prev and acc.startswith(prev):
+                return acc[len(prev):]
+            return acc
+
         async for model_output in ai_wrapper.create(**create_kwargs):
-            chunk = {}
             # AgentLLMOut has .content and .thinking_content, not .text
             text = getattr(model_output, "content", None) or ""
             thinking = getattr(model_output, "thinking_content", None) or ""
-            # Combine thinking and content for full text
-            full_text = (thinking + text) if thinking and text else (thinking or text)
-            if full_text:
-                if full_text.startswith(prev_full_text) and prev_full_text:
-                    delta = full_text[len(prev_full_text):]
-                else:
-                    delta = full_text  # 前缀不匹配（异常/新段）退化为全量
-                prev_full_text = full_text
-                if delta:
-                    chunk["token"] = delta
             usage = None
             if getattr(model_output, "metrics", None):
                 usage_dict = {}
@@ -119,9 +117,29 @@ def make_gyra_llm_stream_fn(
                     usage_dict["completion_tokens"] = metrics.completion_tokens
                 if hasattr(metrics, "total_tokens") and metrics.total_tokens:
                     usage_dict["total_tokens"] = metrics.total_tokens
+                _details = getattr(metrics, "prompt_tokens_details", None)
+                _cached = getattr(_details, "cached_tokens", None)
+                if _cached:
+                    usage_dict["cached_tokens"] = int(_cached)
                 if usage_dict:
-                    chunk["usage"] = usage_dict
                     usage = usage_dict
+            # 分通道发射：同一帧可能同时含 thinking 与 content 增量
+            emitted = 0
+            if thinking:
+                t_delta = _delta(thinking, prev_thinking)
+                prev_thinking = thinking
+                if t_delta:
+                    yield {"token": t_delta, "channel": "thinking", "usage": usage}
+                    emitted += 1
+            if text:
+                c_delta = _delta(text, prev_content)
+                prev_content = text
+                if c_delta:
+                    yield {"token": c_delta, "channel": "content", "usage": usage}
+                    emitted += 1
+            if not emitted and usage:
+                # 无 token 增量但带 usage（流结束帧）：独立 usage 事件
+                yield {"usage": usage}
             tool_calls = getattr(model_output, "tool_calls", None)
             if tool_calls:
                 if isinstance(tool_calls, str):
@@ -146,8 +164,6 @@ def make_gyra_llm_stream_fn(
                     if complete:
                         # 覆盖为最新累积全量（后续帧含完整 arguments）
                         last_tool_calls = complete
-            if chunk:
-                yield chunk
         # 流结束后兜底：完整 tool_calls 只产出一次（兼容无 finish/usage 信号的单帧输出）
         if last_tool_calls:
             yield {"tool_calls": last_tool_calls}

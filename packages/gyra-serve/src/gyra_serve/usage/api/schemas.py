@@ -23,6 +23,7 @@ class UsageCallVO(BaseModel):
     latency_ms: int = 0
     first_token_ms: Optional[int] = None
     tokens_per_sec: Optional[float] = None
+    cached_tokens: int = 0
     stream: int = 1
     error_code: int = 0
     cost_usd: float = 0.0
@@ -41,6 +42,7 @@ class ConversationUsageVO(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_tokens: int = 0
     cost_usd: float = 0.0
     avg_latency_ms: Optional[float] = None
     avg_tokens_per_sec: Optional[float] = None
@@ -57,6 +59,7 @@ class AgentUsageVO(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_tokens: int = 0
     cost_usd: float = 0.0
     avg_latency_ms: Optional[float] = None
     avg_tokens_per_sec: Optional[float] = None
@@ -73,6 +76,7 @@ class ModelUsageVO(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_tokens: int = 0
     cost_usd: float = 0.0
     avg_latency_ms: Optional[float] = None
     avg_tokens_per_sec: Optional[float] = None
@@ -89,6 +93,7 @@ class OverviewVO(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_tokens: int = 0
     cost_usd: float = 0.0
     avg_latency_ms: Optional[float] = None
     avg_tokens_per_sec: Optional[float] = None

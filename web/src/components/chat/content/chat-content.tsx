@@ -461,12 +461,14 @@ const ChatContent: React.FC<{
                 /* 审美间距:文本卡片(VisContentCard)与 task 卡片之间贴齐(0px),
                    仅相邻两个都是 task(VisAgentPlanCard)时,后者向下推开 8px,
                    形成任务流内的分组呼吸感,而非所有卡片一刀切。用 + 前驱兄弟选择器
-                   精确命中"前一个 pre 内是 task 卡片"的连续 task。 */
-                .markdown-content-wrap:has(> pre) > pre:has(> .VisAgentPlanCardClass) + pre:has(> .VisAgentPlanCardClass) {
+                   精确命中"前一个 pre 内是 task 卡片"的连续 task。
+                   聚合卡片(d-agent-plan-group → VisAgentPlanGroupCardClass)同样是
+                   task 语义,四种相邻组合都要覆盖,否则涉及聚合卡的相邻会贴在一起。 */
+                .markdown-content-wrap:has(> pre) > pre:has(> :is(.VisAgentPlanCardClass, .VisAgentPlanGroupCardClass)) + pre:has(> :is(.VisAgentPlanCardClass, .VisAgentPlanGroupCardClass)) {
                   margin-top: 8px !important;
                 }
                 /* 分段渲染(VisSegmentedMarkdown)下等价的 task-task 间距 */
-                .vis-fence-segment:has(> .VisAgentPlanCardClass) + .vis-fence-segment:has(> .VisAgentPlanCardClass) {
+                .vis-fence-segment:has(> :is(.VisAgentPlanCardClass, .VisAgentPlanGroupCardClass)) + .vis-fence-segment:has(> :is(.VisAgentPlanCardClass, .VisAgentPlanGroupCardClass)) {
                   margin-top: 8px;
                 }
                 .vis-fence-segment {

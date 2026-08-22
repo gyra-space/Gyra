@@ -11,6 +11,8 @@ from typing import Optional
 from fastapi import APIRouter, Query, Depends, HTTPException
 
 from gyra.storage.unified_message_dao import UnifiedMessageDAO
+from gyra_serve.permissions import can_read_conversation
+from gyra_serve.utils.auth import UserRequest, get_user_from_headers
 from gyra_serve.unified_api.schemas import (
     UnifiedMessageListResponse,
     UnifiedMessageResponse,
@@ -44,7 +46,8 @@ async def list_conversations(
     filter_text: Optional[str] = Query(None, description="过滤关键字（搜索摘要/目标）"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
-    unified_dao: UnifiedMessageDAO = Depends(get_unified_dao)
+    unified_dao: UnifiedMessageDAO = Depends(get_unified_dao),
+    auth_user: UserRequest = Depends(get_user_from_headers),
 ):
     """
     获取对话列表（统一API）
@@ -59,6 +62,13 @@ async def list_conversations(
     - page_size: 每页数量
     """
     try:
+        # 归属过滤：登录态下非管理员只能看自己的会话（开发模式保持原行为）
+        if auth_user.permissions is not None and not (
+            auth_user.role == "admin"
+            or "admin" in (auth_user.roles or [])
+            or "superadmin" in (auth_user.roles or [])
+        ):
+            user_id = auth_user.user_id or auth_user.user_no
         result = await unified_dao.list_conversations(
             user_id=user_id,
             sys_code=sys_code,
@@ -105,6 +115,7 @@ async def list_conversations(
 )
 async def get_conversation_messages(
     conv_id: str,
+    auth_user: UserRequest = Depends(get_user_from_headers),
     limit: Optional[int] = Query(50, ge=1, le=500, description="消息数量限制"),
     offset: int = Query(0, ge=0, description="偏移量"),
     include_thinking: bool = Query(False, description="是否包含思考过程"),
@@ -126,6 +137,10 @@ async def get_conversation_messages(
     - include_action_report: 是否包含动作报告
     """
     try:
+        if not can_read_conversation(auth_user, conv_id):
+            return APIResponse.error_response(
+                code="FORBIDDEN", message="Permission denied"
+            )
         messages = await unified_dao.get_messages_by_conv_id(
             conv_id=conv_id,
             limit=limit,
@@ -168,6 +183,7 @@ async def get_conversation_messages(
 )
 async def get_session_messages(
     session_id: str,
+    auth_user: UserRequest = Depends(get_user_from_headers),
     limit: int = Query(50, ge=1, le=500, description="消息数量限制"),
     unified_dao: UnifiedMessageDAO = Depends(get_unified_dao)
 ):
@@ -181,6 +197,11 @@ async def get_session_messages(
             session_id=session_id,
             limit=limit
         )
+        _conv_for_auth = str(getattr(messages[0], "conv_id", "") or session_id) if messages else session_id
+        if not can_read_conversation(auth_user, _conv_for_auth):
+            return APIResponse.error_response(
+                code="FORBIDDEN", message="Permission denied"
+            )
         
         message_responses = [
             UnifiedMessageResponse.from_unified_message(msg)
@@ -209,6 +230,7 @@ async def get_session_messages(
 )
 async def get_conversation_render(
     conv_id: str,
+    auth_user: UserRequest = Depends(get_user_from_headers),
     render_type: str = Query(
         "vis",
         regex="^(vis|markdown|simple)$",
@@ -228,6 +250,10 @@ async def get_conversation_render(
     - simple: 简单格式（Core V1）
     """
     try:
+        if not can_read_conversation(auth_user, conv_id):
+            return APIResponse.error_response(
+                code="FORBIDDEN", message="Permission denied"
+            )
         start_time = time.time()
         cached = False
         
@@ -286,6 +312,7 @@ async def get_conversation_render(
 )
 async def get_latest_messages(
     conv_id: str,
+    auth_user: UserRequest = Depends(get_user_from_headers),
     limit: int = Query(10, ge=1, le=50, description="消息数量"),
     unified_dao: UnifiedMessageDAO = Depends(get_unified_dao)
 ):
@@ -295,6 +322,10 @@ async def get_latest_messages(
     用于快速加载最新对话内容
     """
     try:
+        if not can_read_conversation(auth_user, conv_id):
+            return APIResponse.error_response(
+                code="FORBIDDEN", message="Permission denied"
+            )
         messages = await unified_dao.get_latest_messages(
             conv_id=conv_id,
             limit=limit

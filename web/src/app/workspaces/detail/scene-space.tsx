@@ -8,8 +8,8 @@ import { GPTVis } from '@antv/gpt-vis';
 import dayjs from 'dayjs';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
 import ChatSession from '@/components/chat/chat-session';
-import { apiInterceptors, getArtifactInfo, getDeliveryInfo, listArtifacts, listDeliveries, listUsageCalls } from '@/client/api';
-import { transformFileUrl } from '@/utils';
+import { apiInterceptors, getArtifactInfo, getDeliveryInfo, listArtifacts } from '@/client/api';
+import { resolveFileDownloadUrl, transformFileUrl } from '@/utils';
 import { Lobby } from './lobby';
 import { FlywheelWorkspace } from './flywheel';
 import { AgentWorkspaceRenderer } from './agent-workspace-renderer';
@@ -17,7 +17,7 @@ import { extractAskUserData } from './scene-ask-user-card';
 import { parseWorkspaceView, deliverableFileToExhibit } from './parse-workspace-view';
 import { parseSceneAgentWorkspaceString } from './parse-scene-agent-workspace-string';
 import { ExhibitHost, resolveAgentFilePreviewUrl } from './lobby-exhibit';
-import { statusLabel, triggerLabel } from './scene-task-rail';
+import { statusLabel } from './scene-task-rail';
 import { EcpProposalDetail } from './ecp-proposal-detail';
 import { DataAssetsTab } from './assets/data-assets-tab';
 import TriggersTable from './tasks/triggers-table';
@@ -56,6 +56,12 @@ export interface SceneSpaceProps {
 
 const STATUS_COLOR: Record<string, string> = {
   running: 'processing',
+  pending_trigger: 'warning',
+  draft: 'default',
+  blocked: 'warning',
+  awaiting_human: 'warning',
+  delivered: 'success',
+  closed: 'success',
   done: 'success',
   failed: 'error',
   pending: 'default',
@@ -86,57 +92,40 @@ function KV({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
-/** 任务详情:基本信息(触发/剧本/时间) + 产物 + 交付 + 消耗 */
+/** 任务最终结果(切换任务时中间区默认视图):
+ * 聚焦展示最终回复(整段 markdown,Agent 空间过窄看不全) + 交付文件列表,
+ * 去掉基本信息/消耗等杂项。由左栏任务/会话列表与大堂任务卡片切换任务时触发。 */
 function TaskDetail({
   task,
-  playbookName,
   artifacts,
-  deliveries,
-  usage,
   onSelectArtifact,
 }: {
   task: any;
-  playbookName?: string | null;
   artifacts: any[];
-  deliveries: any[];
-  usage: { calls: number; tokens: number; cost: number } | null;
   onSelectArtifact?: (a: any) => void;
 }) {
+  const finals = artifacts.filter((a: any) => a.type === 'final_message');
+  const files = artifacts.filter((a: any) => a.type === 'file');
+  const others = artifacts.filter((a: any) => a.type !== 'final_message' && a.type !== 'file');
   return (
     <div className="ws-preview">
       <div className="ws-preview__head">
         <span className="ws-preview__title">{task.title || `Task ${task.id}`}</span>
         <Tag color={STATUS_COLOR[task.status] || 'default'}>{statusLabel(task.status)}</Tag>
       </div>
-      {task.description && (
-        <section className="ws-preview__section">
-          <div className="ws-preview__section-title">描述</div>
-          <div className="ws-preview__markdown">{task.description}</div>
-        </section>
-      )}
       <section className="ws-preview__section">
-        <div className="ws-preview__section-title">基本信息</div>
-        <div>
-          <KV k="触发" v={`${triggerLabel(task)}${task.trigger_ref ? ` · ${task.trigger_ref}` : ''}`} />
-          <KV k="剧本" v={playbookName || (task.playbook_id ? `playbook_${task.playbook_id}` : '—')} />
-          <KV k="类型" v={task.type || 'adhoc'} />
-          <KV k="创建时间" v={fmtTime(task.gmt_created)} />
-          <KV k="更新时间" v={fmtTime(task.gmt_modified)} />
-          <KV k="开始时间" v={fmtTime(task.started_at)} />
-          <KV k="关闭时间" v={fmtTime(task.closed_at)} />
-        </div>
-      </section>
-      <section className="ws-preview__section">
-        <div className="ws-preview__section-title">产出 ({artifacts.length})</div>
-        {artifacts.length === 0 && <div className="ws-preview__empty">暂无产出</div>}
-        {/* 最终答复:最终发送给 Human 的 message 内容,直接渲染 */}
-        {artifacts.filter((a: any) => a.type === 'final_message').map((a: any) => (
+        <div className="ws-preview__section-title">最终回复</div>
+        {finals.length === 0 && <div className="ws-preview__empty">暂无文本回复</div>}
+        {finals.map((a: any) => (
           <div key={a.id} className="ws-preview__markdown" style={{ marginBottom: 12 }}>
             {a.content_text ? <Markdown text={a.content_text} /> : <div className="ws-preview__empty">(无内容)</div>}
           </div>
         ))}
-        {/* 产出文件:运行期间标记的交付文件,点击打开文件链接 */}
-        {artifacts.filter((a: any) => a.type === 'file').map((a: any) => (
+      </section>
+      <section className="ws-preview__section">
+        <div className="ws-preview__section-title">交付文件 ({files.length})</div>
+        {files.length === 0 && <div className="ws-preview__empty">暂无交付文件</div>}
+        {files.map((a: any) => (
           <div
             key={a.id}
             className="ws-preview__field ws-td-link"
@@ -152,8 +141,7 @@ function TaskDetail({
             ) : null}
           </div>
         ))}
-        {/* 其他类型(历史数据 report/alert 等):保持原有点击查看 */}
-        {artifacts.filter((a: any) => a.type !== 'final_message' && a.type !== 'file').map((a: any) => (
+        {others.map((a: any) => (
           <div
             key={a.id}
             className="ws-preview__field ws-td-link"
@@ -166,30 +154,6 @@ function TaskDetail({
             <Tag>{a.type}</Tag>
           </div>
         ))}
-      </section>
-      <section className="ws-preview__section">
-        <div className="ws-preview__section-title">交付 ({deliveries.length})</div>
-        {deliveries.length === 0 && <div className="ws-preview__empty">暂无交付记录</div>}
-        {deliveries.map((d: any) => (
-          <div key={d.id} className="ws-preview__field">
-            <span className="ws-preview__field-value">{d.title || `delivery_${d.id}`}</span>
-            <Tag>{d.channel}</Tag>
-            <Tag color={DELIVERY_STATUS_COLOR[d.status] || 'default'}>{d.status}</Tag>
-            <span className="ws-preview__field-key">{fmtTime(d.sent_at || d.gmt_created)}</span>
-          </div>
-        ))}
-      </section>
-      <section className="ws-preview__section">
-        <div className="ws-preview__section-title">消耗</div>
-        {usage ? (
-          <div>
-            <KV k="调用次数" v={String(usage.calls)} />
-            <KV k="Tokens" v={usage.tokens.toLocaleString()} />
-            <KV k="费用" v={`$${usage.cost.toFixed(4)}`} />
-          </div>
-        ) : (
-          <div className="ws-preview__empty">暂无调用记录</div>
-        )}
       </section>
     </div>
   );
@@ -427,7 +391,7 @@ function ArtifactPreview({ artifactId, title, type }: { artifactId: number; titl
                     type="button"
                     className="ws-exhibit__tool"
                     aria-label="下载"
-                    onClick={() => downloadFile(resolvedUrl, artifact.title || `artifact_${artifactId}`)}
+                    onClick={() => downloadFile(resolveFileDownloadUrl(resolvedUrl), artifact.title || `artifact_${artifactId}`)}
                   >
                     <DownloadOutlined />
                   </button>
@@ -574,32 +538,6 @@ export function SceneSpace({
   );
   const artifacts = artifactsRes?.[1] || [];
 
-  const { data: deliveriesRes } = useRequest(
-    async () => (taskId ? apiInterceptors(listDeliveries({ workspace_id: workspaceId, task_id: taskId })) : null),
-    { refreshDeps: [taskId, workspaceId] }
-  );
-  const deliveries = deliveriesRes?.[1] || [];
-
-  const convSessionId = task?.conv_session_id;
-  const { data: usageRes } = useRequest(
-    async () => (convSessionId ? apiInterceptors(listUsageCalls({ conv_id: convSessionId, page_size: 200 })) : null),
-    { refreshDeps: [convSessionId] }
-  );
-  const usage = useMemo(() => {
-    const items: any[] = usageRes?.[1]?.items || [];
-    if (!items.length) return null;
-    return {
-      calls: usageRes?.[1]?.total_count ?? items.length,
-      tokens: items.reduce((s, c) => s + (c.total_tokens || 0), 0),
-      cost: items.reduce((s, c) => s + (c.cost_usd || 0), 0),
-    };
-  }, [usageRes]);
-
-  const playbookName = useMemo(
-    () => playbooks?.find((p) => p.playbook_id === task?.playbook_id)?.playbook_name || null,
-    [playbooks, task?.playbook_id],
-  );
-
   if (context === 'dashboard') {
     return (
       <div className="ws-scene-space ws-scene-space--dashboard">
@@ -661,10 +599,7 @@ export function SceneSpace({
           {task && (
             <TaskDetail
               task={task}
-              playbookName={playbookName}
               artifacts={artifacts}
-              deliveries={deliveries}
-              usage={usage}
               onSelectArtifact={onSelectArtifact}
             />
           )}

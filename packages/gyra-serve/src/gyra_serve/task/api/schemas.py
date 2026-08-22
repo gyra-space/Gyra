@@ -72,6 +72,13 @@ class TaskListFilter(BaseModel):
     user_id: Optional[int] = None
     assignee_user_id: Optional[int] = None
     mine: bool = Field(False, description="我发起的或指派给我的(created_by or assignee)")
+    own_and_public_only: bool = Field(
+        False,
+        description=(
+            "仅看自己提交的任务 + 空间公共任务(订阅/触发源产生的 timer/webhook/alert 等任务);"
+            "别人的对话任务(page/manual 且非本人创建)不可见。简单页面模式使用。"
+        ),
+    )
     include_archived: bool = False
     limit: int = 100
 

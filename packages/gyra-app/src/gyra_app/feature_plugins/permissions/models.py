@@ -57,6 +57,12 @@ class RoleEntity(Model):
     name = Column(String(64), unique=True, nullable=False, comment="角色名")
     description = Column(Text, nullable=True, comment="角色描述")
     is_system = Column(Integer, default=0, comment="1=内置不可删除")
+    scope_type = Column(
+        String(16),
+        default="global",
+        nullable=False,
+        comment="角色域: global=全局角色 / space=空间角色(须绑定具体空间)",
+    )
     gmt_create = Column(DateTime, default=datetime.utcnow, nullable=False)
     gmt_modify = Column(
         DateTime,
@@ -90,14 +96,22 @@ class RolePermissionEntity(Model):
 
 
 class UserRoleEntity(Model):
-    """用户-角色关联表"""
+    """用户-角色关联表（scope_id=NULL 为全局绑定，否则为空间级绑定）"""
 
     __tablename__ = "user_role"
-    __table_args__ = (UniqueConstraint("user_id", "role_id", name="uk_user_role"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "role_id", "scope_id", name="uk_user_role"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, nullable=False, index=True, comment="user.id")
     role_id = Column(Integer, nullable=False, index=True, comment="role.id")
+    scope_id = Column(
+        Integer,
+        nullable=True,
+        default=None,
+        comment="空间级绑定的 workspace.id；NULL=全局绑定",
+    )
     gmt_create = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -126,6 +140,18 @@ class PermissionDefinitionEntity(Model):
     action = Column(String(32), nullable=False, comment="操作类型")
     effect = Column(String(16), default="allow", comment="allow/deny")
     is_active = Column(Boolean, default=True, comment="是否启用")
+    scope_type = Column(
+        String(16),
+        default="global",
+        nullable=False,
+        comment="权限域: global / space",
+    )
+    grantable = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="是否允许开资源实例级授权",
+    )
     gmt_create = Column(DateTime, default=datetime.utcnow, nullable=False)
     gmt_modify = Column(
         DateTime,
@@ -148,6 +174,31 @@ class RolePermissionDefEntity(Model):
     permission_def_id = Column(
         Integer, nullable=False, index=True, comment="permission_definition.id"
     )
+    gmt_create = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ResourceGrantEntity(Model):
+    """资源实例级授权表（用户 <-> 具体资源实例，与角色正交）"""
+
+    __tablename__ = "resource_grant"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "permission_key", "resource_type", "resource_id",
+            name="uk_resource_grant",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True, comment="user.id")
+    permission_key = Column(
+        String(128), nullable=False, comment="协议权限 key，如 agent.chat"
+    )
+    resource_type = Column(String(64), nullable=False, comment="资源类型")
+    resource_id = Column(
+        String(255), nullable=False, comment="具体资源实例ID，*表示该类型全部"
+    )
+    expires_at = Column(DateTime, nullable=True, comment="过期时间，NULL=永久")
+    granted_by = Column(Integer, nullable=True, comment="授权人 user.id")
     gmt_create = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 

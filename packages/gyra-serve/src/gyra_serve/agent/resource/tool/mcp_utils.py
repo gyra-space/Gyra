@@ -86,26 +86,48 @@ def _is_sse_url(url: str) -> bool:
 
 @asynccontextmanager
 async def create_mcp_client(url: str, headers: Optional[dict] = None, timeout: Optional[int] = None):
-    """按 URL 自动选择 MCP 传输方式，产出 (read, write) 双向流。
+    """按 URL 自动选择 MCP 传输方式，产出 (read, write, http_diagnostic) 三元组。
 
     - SSE（路径含 `/sse`）：使用 ``sse_client``。
     - Streamable HTTP（其余 HTTP(S) URL）：使用 ``streamable_http_client``，
       通过 ``httpx2.AsyncClient`` 透传 headers 与超时。
+
+    ``http_diagnostic`` 记录 Streamable HTTP 调用过程中最近一次 4xx/5xx 响应的
+    状态码与响应体片段。mcp SDK 对非 JSON-RPC 错误体只返回泛化的
+    ``MCPError(-32603, 'Server returned an error response')``，原始 HTTP 信息
+    会被丢弃；这里在传输层补采，便于调用方透出真实失败原因。
     """
     if _is_sse_url(url):
         async with sse_client(
             url=url, headers=headers, sse_read_timeout=timeout if timeout is not None else 300.0
         ) as (read, write):
-            yield read, write
+            yield read, write, {}
         return
     # Streamable HTTP
     import httpx2
     from mcp.client.streamable_http import streamable_http_client
 
+    http_diagnostic: dict = {}
+
+    async def _record_error_response(response: Any):
+        if getattr(response, "status_code", 0) >= 400:
+            try:
+                await response.aread()
+                body = response.text
+            except Exception:  # noqa: BLE001
+                body = ""
+            http_diagnostic["status"] = getattr(response, "status_code", None)
+            http_diagnostic["reason"] = getattr(response, "reason_phrase", None)
+            http_diagnostic["body"] = body[:2000]
+
     request_timeout = httpx2.Timeout(timeout if timeout is not None else 60.0)
-    async with httpx2.AsyncClient(headers=headers, timeout=request_timeout) as http_client:
+    async with httpx2.AsyncClient(
+        headers=headers,
+        timeout=request_timeout,
+        event_hooks={"response": [_record_error_response]},
+    ) as http_client:
         async with streamable_http_client(url, http_client=http_client) as (read, write):
-            yield read, write
+            yield read, write, http_diagnostic
 
 
 def get_tool_input_schema(tool: Any) -> dict:
@@ -198,7 +220,7 @@ async def get_mcp_tool_list(
                     headers["x-mcp-hash-key"],
                     headers["cookie"],
                 ) = trace_id, rpc_id, str(uuid.uuid4()), cookie
-                async with create_mcp_client(server, headers=headers) as (read, write):
+                async with create_mcp_client(server, headers=headers) as (read, write, _http_diag):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
                         list_tools = await session.list_tools()
@@ -281,7 +303,10 @@ async def call_mcp_tool(
     if not tool_id:
         tool_id = str(uuid.uuid4())
 
+    http_diagnostic: Optional[dict] = None
+
     async def call_tool(server: str, arguments: dict):
+        nonlocal http_diagnostic
         # 将 arguments 转换为 JSON 可序列化的格式
         serializable_arguments = _make_json_serializable(arguments)
 
@@ -311,7 +336,7 @@ async def call_mcp_tool(
                 mcp_server = server
             async with create_mcp_client(
                 mcp_server, headers=headers, timeout=timeout
-            ) as (read, write):
+            ) as (read, write, http_diagnostic):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     # 使用序列化后的参数调用 MCP 工具
@@ -349,13 +374,46 @@ async def call_mcp_tool(
         # 工具未找到/不存在：远端工具列表可能已变更，主动失效缓存，下次 list 重新拉取。
         if _is_tool_missing_error(e):
             invalidate_mcp_tool_cache(mcp_name, server)
-        raise ValueError(f"MCP服务{mcp_name}:{tool_name}工具调用异常!", e)
+        reason = _format_mcp_call_error(e, http_diagnostic)
+        raise ValueError(f"MCP服务{mcp_name}:{tool_name}工具调用异常! 原因: {reason}", e) from e
 
 
 def _is_tool_missing_error(err: Any) -> bool:
     """判断错误是否因工具不存在/未找到导致（tools/list_changed 的等价失效信号）。"""
     msg = str(err).lower()
     return any(kw in msg for kw in ("unknown tool", "tool not found", "not found", "method not found", "no tool named"))
+
+
+def _unwrap_exception(err: BaseException) -> BaseException:
+    """递归解包 ExceptionGroup，返回最内层首个异常（mcp SDK 内部用 TaskGroup 包装异常）。"""
+    while isinstance(err, BaseExceptionGroup) and err.exceptions:
+        err = err.exceptions[0]
+    return err
+
+
+def _format_mcp_call_error(e: BaseException, http_diagnostic: Optional[dict] = None) -> str:
+    """把 MCP 调用异常解析为可读的失败原因，透出真实错误而非 SDK 的泛化消息。"""
+    inner = _unwrap_exception(e)
+    parts = []
+    code = getattr(inner, "code", None)
+    message = getattr(inner, "message", None)
+    if code is not None or message is not None:
+        # MCPError 等协议层异常
+        detail = message or str(inner)
+        parts.append(f"协议错误 code={code}, message={detail}")
+        data = getattr(inner, "data", None)
+        if data:
+            parts.append(f"data={str(data)[:2000]}")
+    else:
+        parts.append(f"{type(inner).__name__}: {str(inner)}")
+    if http_diagnostic:
+        status = http_diagnostic.get("status")
+        if status is not None:
+            parts.append(f"HTTP {status} {http_diagnostic.get('reason', '')}".rstrip())
+        body = http_diagnostic.get("body")
+        if body:
+            parts.append(f"响应体: {body[:2000]}")
+    return "; ".join(parts)
 
 
 def get_im_token(cookie: str):

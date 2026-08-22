@@ -70,13 +70,16 @@ async def emit_usage_metric(
     model: str,
     this_call: Dict[str, int],
     current_state: StepState = StepState.THINKING,
-) -> None:
+):
     """Emit a usage_metric StepEvent with this call, cumulative totals, and ratio.
 
     Args:
         current_state: The current step state. Defaults to THINKING. Callers
             should pass the actual current state (e.g., ACTING) to avoid
             IllegalTransitionError.
+
+    Returns:
+        持久化后的 ``usage_metric`` StepEvent（run_step 把它 yield 给订阅者/SSE）。
     """
     aggregate = await aggregate_usage(store, conv_id)
     cumulative = {
@@ -87,7 +90,7 @@ async def emit_usage_metric(
     context_window = _get_context_window(model)
     ratio = cumulative["total"] / context_window if context_window > 0 else 0.0
 
-    await emit(
+    return await emit(
         current_state,
         "usage_metric",
         output_data={

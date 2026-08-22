@@ -277,8 +277,16 @@ async def list_latest_conv(
     response_model=Result[List[MessageVo]],
     dependencies=[Depends(check_api_key)],
 )
-async def get_history_messages(con_uid: str, service: Service = Depends(get_service)):
+async def get_history_messages(
+    con_uid: str,
+    service: Service = Depends(get_service),
+    auth_user: UserRequest = Depends(get_user_from_headers),
+):
     """Get the history messages of a conversation"""
+    from gyra_serve.permissions import can_read_conversation
+
+    if not can_read_conversation(auth_user, con_uid):
+        return Result.failed(msg="无权访问该会话")
     return Result.succ(service.get_history_messages(ServeRequest(conv_uid=con_uid)))
 
 

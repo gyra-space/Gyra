@@ -64,6 +64,10 @@ interface ChatContentProps {
   dockWidgets?: Record<string, DockWidget>;
   /** Start a brand-new conversation session (create backend conv + navigate). */
   onNewChat?: () => Promise<void>;
+  /** 切换左侧历史会话面板(仅独立 Agent 对话页提供,未提供时头部不渲染入口) */
+  onToggleHistoryPanel?: () => void;
+  /** 历史会话面板当前是否展开(配合 onToggleHistoryPanel 做高亮) */
+  historyPanelOpen?: boolean;
 }
 
 export const ChatContentContext = createContext<ChatContentProps>({

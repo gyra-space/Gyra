@@ -4,7 +4,7 @@
 1. 有 member.is_home=True 的成员空间 -> 返回
 2. 兼容存量:有 settings.is_home 标记(空间级)的 -> 一次性提升为用户级主空间
 3. 无标记 -> 最早创建(id 最小)补用户级标记(存量用户零迁移)
-4. 无空间 -> 新建"我的工作台"(create 派生钩子生效)
+4. 无空间 -> 返回系统内置默认空间(全局唯一,懒创建),自动加入为 contributor
 归档空间不参与选择。
 """
 import pytest
@@ -18,7 +18,11 @@ from gyra_serve.workspace.models.models import (
     WorkspaceMemberDao,
     WorkspaceResourceDao,
 )
-from gyra_serve.workspace.service.service import WorkspaceService
+from gyra_serve.workspace.service.service import (
+    DEFAULT_WORKSPACE_CODE,
+    DEFAULT_WORKSPACE_NAME,
+    WorkspaceService,
+)
 
 
 @pytest.fixture
@@ -49,13 +53,28 @@ def _member_is_home(svc, workspace_id, user_id=1):
 
 
 def test_create_when_no_workspace(service):
+    """无任何空间的用户:进入系统内置默认空间,不再自动新建个人空间。"""
     home = service.get_or_create_home(user_id=1)
-    assert home.name == "我的工作台"
-    assert home.settings.get("is_home") is True
-    # 幂等:再次调用返回同一空间,不新建
+    assert home.name == DEFAULT_WORKSPACE_NAME
+    assert home.workspace_code == DEFAULT_WORKSPACE_CODE
+    assert home.owner_user_id == 0  # 系统虚拟 owner
+    # 用户被自动加入为 contributor
+    assert service.member_dao.get_role(home.id, 1) == "contributor"
+    # 幂等:再次调用返回同一空间,不新建个人空间
     again = service.get_or_create_home(user_id=1)
     assert again.id == home.id
     assert len(service.list_workspaces(1)) == 1
+
+
+def test_default_workspace_is_global_singleton(service):
+    """内置默认空间全局唯一:不同用户共享同一空间,成员各自自动加入。"""
+    home1 = service.get_or_create_home(user_id=1)
+    home2 = service.get_or_create_home(user_id=2)
+    assert home1.id == home2.id
+    assert service.member_dao.get_role(home1.id, 2) == "contributor"
+    # 两个用户看到的列表都包含该默认空间
+    assert [w.id for w in service.list_workspaces(1)] == [home1.id]
+    assert [w.id for w in service.list_workspaces(2)] == [home1.id]
 
 
 def test_member_home_wins(service):
@@ -128,5 +147,5 @@ def test_set_home_requires_membership(service):
 def test_other_users_workspaces_invisible(service):
     _create(service, "别人的空间", owner=2)
     home = service.get_or_create_home(user_id=1)
-    assert home.name == "我的工作台"
-    assert home.owner_user_id == 1
+    assert home.name == DEFAULT_WORKSPACE_NAME
+    assert home.workspace_code == DEFAULT_WORKSPACE_CODE

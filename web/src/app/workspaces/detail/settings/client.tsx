@@ -4,14 +4,25 @@ import { apiInterceptors, getOrCreateHomeWorkspace, getWorkspaceInfo, listMember
 import { addEcpConfirmer, listEcpConfirmers, removeEcpConfirmer, type EcpConfirmer } from '@/client/api/ecp';
 import { usersService, type User } from '@/services/users';
 import { getUserId } from '@/utils';
+import { useSpaceRole } from '@/hooks/use-space-role';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { App, Button, Card, Descriptions, Empty, Form, Input, Modal, Popconfirm, Select, Spin, Table, Tag, Alert } from 'antd';
 import { useRequest } from 'ahooks';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SpaceModelsTab } from './space-models-tab';
+
+// 空间角色展示名(与成员表格 Role 下拉选项一致)
+const ROLE_LABELS: Record<string, string> = {
+  owner: '管理',
+  contributor: '使用',
+  viewer: '查看',
+};
+
+/** 欢迎预设问题的默认值(与首页简洁模式兜底一致) */
+const DEFAULT_SUGGEST_QUESTIONS = ['帮我看看这周的数据情况'];
 
 export default function SettingsPage() {
   const searchParams = useSearchParams();
@@ -22,9 +33,11 @@ export default function SettingsPage() {
   const ecpWsId = workspaceCode ? `ecp_${workspaceCode}` : '';
   const [form] = Form.useForm();
   const [memberForm] = Form.useForm();
+  const [suggestForm] = Form.useForm();
   const [editOpen, setEditOpen] = useState(false);
   const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingSuggest, setSavingSuggest] = useState(false);
   const [userOptions, setUserOptions] = useState<User[]>([]);
   const [searching, setSearching] = useState(false);
   // 提案确认人(ECP confirmer)配置
@@ -49,15 +62,9 @@ export default function SettingsPage() {
     return err ? [] : res || [];
   }, { refreshDeps: [ws?.id] });
 
-  // 权限整合:空间管理员 owner(管理)才可维护空间模型,成员只读。
-  const { data: canManage } = useRequest(async () => {
-    if (!ws?.id) return false;
-    const [err, res] = await apiInterceptors(listMembers({ workspace_id: ws.id }));
-    if (err) return false;
-    const list = Array.isArray(res) ? res : ((res as any)?.data || []);
-    const me = list.find((m: any) => String(m.user_id) === String(getUserId()));
-    return me?.role === 'owner';
-  }, { refreshDeps: [ws?.id] });
+  // 权限整合:空间管理(space.workspace.manage,owner)才可维护成员/模型/确认人。
+  const { can } = useSpaceRole(ws?.id);
+  const canManage = can('space.workspace.manage');
 
   // 当前用户的默认(主)空间:用于标记"已是默认空间"。
   const { data: homeWs, refresh: refreshHome } = useRequest(async () => {
@@ -94,6 +101,38 @@ export default function SettingsPage() {
       if (err) { message.error(err.message); return; }
       message.success('Saved');
       setEditOpen(false);
+      refresh();
+    } catch (e) {}
+  };
+
+  // 欢迎预设问题表单初始化:读取 workspace.settings.suggest_questions
+  useEffect(() => {
+    if (!ws) return;
+    const list = (ws.settings as any)?.suggest_questions;
+    suggestForm.setFieldsValue({
+      suggest_questions: Array.isArray(list) && list.length ? list : DEFAULT_SUGGEST_QUESTIONS,
+    });
+  }, [ws, suggestForm]);
+
+  const handleSaveSuggest = async () => {
+    try {
+      const values = await suggestForm.validateFields();
+      const list = (values.suggest_questions || []).filter(
+        (q: unknown) => typeof q === 'string' && q.trim().length > 0,
+      );
+      setSavingSuggest(true);
+      const [err] = await apiInterceptors(updateWorkspace({
+        workspace_code: ws?.workspace_code,
+        // WorkspaceRequest.name 为必填校验字段;仅补 name 不改名,其余由后端按非 None 更新
+        name: ws?.name,
+        settings: {
+          ...((ws?.settings as any) || {}),
+          suggest_questions: list,
+        },
+      }));
+      setSavingSuggest(false);
+      if (err) { message.error(err.message); return; }
+      message.success('已保存预设问题');
       refresh();
     } catch (e) {}
   };
@@ -235,7 +274,7 @@ export default function SettingsPage() {
       </Card>
 
       <Card title={t('settings.members') || 'Members'}
-        extra={<Button onClick={handleOpenAddMember}>+ {t('settings.add_member') || 'Add Member'}</Button>}>
+        extra={canManage && <Button onClick={handleOpenAddMember}>+ {t('settings.add_member') || 'Add Member'}</Button>}>
         <Table
           rowKey="id"
           size="small"
@@ -247,7 +286,7 @@ export default function SettingsPage() {
             { title: 'Name', dataIndex: 'user_name' },
             {
               title: 'Role', dataIndex: 'role', width: 200,
-              render: (role: string, r: any) => (
+              render: (role: string, r: any) => canManage ? (
                 <Select
                   size="small"
                   value={role}
@@ -259,11 +298,13 @@ export default function SettingsPage() {
                   ]}
                   disabled={role === 'owner'}
                 />
+              ) : (
+                <span>{ROLE_LABELS[role] || role}</span>
               ),
             },
             {
               title: '', key: 'actions', width: 100,
-              render: (_: any, r: any) => r.role !== 'owner' ? (
+              render: (_: any, r: any) => canManage && r.role !== 'owner' ? (
                 <Button size="small" danger onClick={() => handleRemoveMember(r.user_id)}>Remove</Button>
               ) : null,
             },
@@ -344,9 +385,42 @@ export default function SettingsPage() {
         )}
       </Card>
 
-      <Card title="空间模型" className="mb-4">
-        <SpaceModelsTab workspaceId={ws.id} workspaceCode={ws.workspace_code} canManage={!!canManage} />
-      </Card>
+      <SpaceModelsTab workspaceId={ws.id} workspaceCode={ws.workspace_code} canManage={!!canManage} collapsible />
+
+      {canManage && (
+        <Card title="欢迎预设问题（简洁模式首页「试试这些」）" className="mb-4">
+          <p className="mb-3 text-xs text-gray-500">
+            配置场景空间简洁模式首页输入框下方的预设问题（每条占一个按钮，点按即发送）。
+            留空或删除全部则回退到默认问题「帮我看看这周的数据情况」。
+          </p>
+          <Form form={suggestForm} layout="vertical">
+            <Form.List name="suggest_questions">
+              {(fields, { add, remove }) => (
+                <>
+                  {fields.map((field) => (
+                    <div key={field.key} className="flex items-start gap-2 mb-2">
+                      <Form.Item
+                        {...field}
+                        className="flex-1 mb-0"
+                        rules={[{ required: true, message: '请输入问题' }]}
+                      >
+                        <Input placeholder="输入预设问题，如：帮我看看这周的数据情况" />
+                      </Form.Item>
+                      <Button icon={<DeleteOutlined />} onClick={() => remove(field.name)} />
+                    </div>
+                  ))}
+                  <Button type="dashed" icon={<PlusOutlined />} block onClick={() => add('')}>
+                    添加问题
+                  </Button>
+                </>
+              )}
+            </Form.List>
+          </Form>
+          <div className="mt-3">
+            <Button type="primary" loading={savingSuggest} onClick={handleSaveSuggest}>保存</Button>
+          </div>
+        </Card>
+      )}
 
       {canManage && (
         <Card

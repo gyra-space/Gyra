@@ -16,6 +16,7 @@ from ..service.service import TASK_SERVICE_COMPONENT_NAME, TaskService as Servic
 from gyra_serve.agent.agents.controller import multi_agents
 from gyra_serve.playbook import runtime as playbook_runtime
 from gyra_serve.workspace.rbac import Permission, require_permission
+from gyra_serve.permissions import require_space
 
 router = APIRouter()
 global_system_app: Optional[SystemApp] = None
@@ -44,7 +45,8 @@ async def check_api_key(
 
 
 @router.post("/tasks/create", response_model=Result[TaskResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.start"))])
 async def create_task(
     request: TaskRequest, service: Service = Depends(get_service),
 ) -> Result[TaskResponse]:
@@ -56,7 +58,8 @@ async def create_task(
 
 
 @router.post("/tasks/list", response_model=Result,
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.view"))])
 async def list_tasks(
     f: TaskListFilter, service: Service = Depends(get_service),
 ) -> Result:
@@ -68,7 +71,8 @@ async def list_tasks(
 
 
 @router.get("/tasks/info", response_model=Result[TaskResponse],
-            dependencies=[Depends(check_api_key)])
+            dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.view"))])
 async def get_task(
     task_id: int = Query(...), service: Service = Depends(get_service),
 ) -> Result[TaskResponse]:
@@ -83,7 +87,8 @@ async def get_task(
 
 
 @router.post("/tasks/update", response_model=Result[TaskResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.manage"))])
 async def update_task(
     request: TaskRequest, service: Service = Depends(get_service),
 ) -> Result[TaskResponse]:
@@ -119,7 +124,8 @@ async def start_task(
 
 
 @router.post("/tasks/{task_id}/terminate", response_model=Result[TaskResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.manage"))])
 async def terminate_task(
     task_id: int,
     service: Service = Depends(get_service),
@@ -164,7 +170,8 @@ async def delete_task(
 
 
 @router.post("/tasks/close", response_model=Result[TaskResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.manage"))])
 async def close_task(
     request: TaskCloseRequest, service: Service = Depends(get_service),
 ) -> Result[TaskResponse]:
@@ -179,7 +186,8 @@ async def close_task(
 
 
 @router.post("/tasks/{task_id}/archive", response_model=Result[TaskResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.manage"))])
 async def archive_task(
     task_id: int, service: Service = Depends(get_service),
 ) -> Result[TaskResponse]:
@@ -191,7 +199,8 @@ async def archive_task(
 
 
 @router.post("/tasks/{parent_task_id}/spawn", response_model=Result[TaskResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.start"))])
 async def spawn_task(
     parent_task_id: int,
     request: TaskRequest,
@@ -206,7 +215,8 @@ async def spawn_task(
 
 
 @router.post("/tasks/{task_id}/reassign", response_model=Result[TaskResponse],
-             dependencies=[Depends(check_api_key)])
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.task.manage"))])
 async def reassign_task(
     task_id: int,
     request: dict,

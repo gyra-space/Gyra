@@ -12,8 +12,15 @@ from gyra.agent.core.v2.step_state import (
     IllegalTransitionError,
 )
 from gyra.agent.core.v2.step_event import StepEvent
-from gyra.agent.core.v2.state_store import StateStore, DbStateStore
-from gyra.agent.core.v2.event_stream import EventStream, StepEventCallback
+from gyra.agent.core.v2.state_store import StateStore, DbStateStore, create_state_store
+from gyra.agent.core.v2.unified_state_store import SqlAlchemyStateStore
+from gyra.agent.core.v2.event_stream import (
+    EventStream, DispatchResult, StepEventCallback, EventBatchConfig,
+)
+from gyra.agent.core.v2.event_projection import (
+    project_tool_history,
+    ToolHistoryProjector,
+)
 from gyra.agent.core.v2.recovery import RecoveryCoordinatorV2
 from gyra.agent.core.v2.runtime import run_step, resume_step
 from gyra.agent.core.v2.permission_mode import PermissionMode
@@ -69,6 +76,28 @@ from gyra.agent.core.v2.llm_stream_adapter import make_gyra_llm_stream, make_gyr
 from gyra.agent.core.v2.run_loop import run_loop, trigger_conversation_complete
 from gyra.agent.core.v2.agent_runtime import V2AgentRuntime
 from gyra.agent.core.v2.compat_adapters import DoomLoopAdapter, TruncatorAdapter
+from gyra.agent.core.v2.harness import (
+    HarnessContext,
+    SubagentSeam,
+    JobRegistry,
+    SkillSeam,
+    VisBridge,
+)
+from gyra.agent.core.v2.skills import (
+    FilesystemSkillProvider,
+    SKILL_TOOL_NAME,
+    SkillCatalogConsumer,
+    SkillDefinition,
+    SkillInvocation,
+    SkillLookupOptions,
+    SkillProvider,
+    SkillRegistry,
+    SkillSummary,
+    SkillTool,
+    build_initial_reminder,
+    build_replacement_reminder,
+)
+from gyra.agent.core.v2.db_tool import DbTool, DB_TOOL_NAME
 
 __all__ = [
     "StepState",
@@ -79,7 +108,9 @@ __all__ = [
     "StateStore",
     "DbStateStore",
     "EventStream",
+    "DispatchResult",
     "StepEventCallback",
+    "EventBatchConfig",
     "RecoveryCoordinatorV2",
     "run_step",
     "resume_step",
@@ -138,4 +169,29 @@ __all__ = [
     "V2AgentRuntime",
     "DoomLoopAdapter",
     "TruncatorAdapter",
+    "create_state_store",
+    "SqlAlchemyStateStore",
+    "project_tool_history",
+    "ToolHistoryProjector",
+    "HarnessContext",
+    "SubagentSeam",
+    "JobRegistry",
+    "SkillSeam",
+    "VisBridge",
+    # V2 Skill 资源总线（对齐 DSH ctx.skills）
+    "FilesystemSkillProvider",
+    "SkillCatalogConsumer",
+    "SkillDefinition",
+    "SkillInvocation",
+    "SkillLookupOptions",
+    "SkillProvider",
+    "SkillRegistry",
+    "SkillSummary",
+    "SkillTool",
+    "SKILL_TOOL_NAME",
+    "build_initial_reminder",
+    "build_replacement_reminder",
+    # V2 DB 入口（对齐 DSH tool-db：单 db({action}) 入口 + 按需 schema）
+    "DbTool",
+    "DB_TOOL_NAME",
 ]

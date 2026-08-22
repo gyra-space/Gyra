@@ -24,6 +24,44 @@ def _engine(summarize=None, cfg=None, emitter=None, persistence=None):
 
 
 @pytest.mark.asyncio
+async def test_render_tool_calls_false_skips_tool_messages():
+    """V2 单源化：render_tool_calls=False → 保留区不渲染 tool_calls/tool 结果。
+
+    工具事实由事件日志投影（ProjectorRegistry）单源提供，ContextEngine 只保留
+    调用旁白（ai_text），避免同一工具调用「双重进入 LLM 上下文」。
+    """
+    msgs = [
+        FakeMsg("c1", "human", "m1", content="查天气", rounds=1, created_at=1.0),
+        FakeMsg("c1", "ai", "m2", content="查", tool_calls=[ai_tool_call("tc1", "wx")], rounds=1, created_at=2.0),
+        FakeMsg("c1", "ai", "m3", content="晴", rounds=1, created_at=4.0),
+    ]
+    wls = {"c1": [FakeWE("wx", "tc1", result="晴25度", message_id="m2")]}
+    cfg = EngineConfig(render_tool_calls=False)
+    out = await _engine(cfg=cfg).build_messages(msgs, wls, "c1", "s", 100000)
+    roles = [m["role"] for m in out.messages]
+    assert "tool" not in roles, f"V2 不应渲染 tool 结果, got {roles}"
+    assert not any(m.get("tool_calls") for m in out.messages)
+    # 调用旁白 ai_text 保留（避免丢失调用意图）
+    contents = [str(m.get("content", "")) for m in out.messages]
+    assert "查" in contents
+
+
+@pytest.mark.asyncio
+async def test_render_tool_calls_true_keeps_tool_messages():
+    """V1 默认：render_tool_calls=True → 保留区正常渲染 tool 结果。"""
+    msgs = [
+        FakeMsg("c1", "human", "m1", content="查天气", rounds=1, created_at=1.0),
+        FakeMsg("c1", "ai", "m2", content="查", tool_calls=[ai_tool_call("tc1", "wx")], rounds=1, created_at=2.0),
+        FakeMsg("c1", "ai", "m3", content="晴", rounds=1, created_at=4.0),
+    ]
+    wls = {"c1": [FakeWE("wx", "tc1", result="晴25度", message_id="m2")]}
+    out = await _engine().build_messages(msgs, wls, "c1", "s", 100000)
+    roles = [m["role"] for m in out.messages]
+    assert "tool" in roles
+    assert any(m.get("tool_calls") for m in out.messages)
+
+
+@pytest.mark.asyncio
 async def test_build_messages_end_to_end_no_orphans():
     msgs = [
         FakeMsg("c1", "human", "m1", content="查天气", rounds=1, created_at=1.0),

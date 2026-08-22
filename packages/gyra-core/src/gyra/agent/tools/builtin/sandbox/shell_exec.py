@@ -17,6 +17,7 @@ from gyra.sandbox.sandbox_utils import (
     validate_shell_command,
     collect_shell_output,
     is_high_risk_command,
+    get_sandbox_whitelist,
 )
 
 logger = logging.getLogger(__name__)
@@ -214,7 +215,17 @@ class ShellExecTool(SandboxToolBase):
 
         sandbox_type = _resolve_sandbox_type()
         try:
-            validate_shell_command(command, client.work_dir, sandbox_type)
+            # 与 LocalShellClient 保持一致:路径栅栏额外放行 skill_dir 与 /mnt,
+            # 避免把 skill 目录内的正常命令误判为越界。
+            allowed_roots = list(
+                get_sandbox_whitelist(getattr(client, "skill_dir", None))
+            )
+            validate_shell_command(
+                command,
+                client.work_dir,
+                sandbox_type,
+                allowed_roots=allowed_roots,
+            )
         except (ValueError, PermissionError) as e:
             return ToolResult.fail(error=str(e), tool_name=self.name)
 

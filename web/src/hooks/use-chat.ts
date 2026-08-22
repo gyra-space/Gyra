@@ -210,7 +210,11 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
     [chatV1],
   );
 
-  return { chat, ctrl, usageMetrics };
+  const resetUsageMetrics = useCallback(() => {
+    setUsageMetrics(null);
+  }, []);
+
+  return { chat, ctrl, usageMetrics, resetUsageMetrics };
 };
 
 export default useChat;

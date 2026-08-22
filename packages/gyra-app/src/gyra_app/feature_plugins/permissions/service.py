@@ -16,6 +16,7 @@ class UserPermissions:
     user_id: int
     role_names: List[str]
     permissions_map: Dict[str, List[str]]  # resource_type -> [action, ...]
+    grants: List[Dict] = field(default_factory=list)  # 实例级授权（未过期）
     loaded_at: float = field(default_factory=time.time)
 
 
@@ -61,6 +62,7 @@ class PermissionService:
             user_id=user_id_int,
             role_names=role_names,
             permissions_map=permissions_map,
+            grants=self._dao.get_user_grants(user_id_int),
         )
         self._cache[user_id_int] = result
         return result
@@ -107,12 +109,25 @@ class PermissionService:
         allowed = perms.permissions_map.get(resource_type, [])
         wildcard = perms.permissions_map.get("*", [])
 
-        return (
+        if (
             action in allowed
             or "admin" in allowed
             or action in wildcard
             or "admin" in wildcard
-        )
+        ):
+            return True
+
+        # 3. 资源实例级 grant（permission_key = resource_type.action）
+        permission_key = f"{resource_type}.{action}"
+        for grant in perms.grants:
+            if grant.get("permission_key") != permission_key:
+                continue
+            granted_rid = grant.get("resource_id")
+            if granted_rid == "*" or (
+                resource_id and resource_id != "*" and granted_rid == str(resource_id)
+            ):
+                return True
+        return False
 
 
 class PermissionDefinitionService:

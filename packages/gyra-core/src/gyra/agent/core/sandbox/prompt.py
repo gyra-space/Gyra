@@ -25,7 +25,7 @@ AGENT_SKILL_SYSTEM_PROMPT = """<agent_skill_system>
 - 严格单线程：禁止并发加载多个 Skill
 - 按需延迟加载：只加载解决当前步骤所需的最简知识库
 
-**脚本执行：** 使用 `skill_exec` 工具执行技能目录中的脚本。
+**脚本执行：** 使用 Bash/沙箱去执行技能目录中的脚本（`skill_exec` 已废弃）。
 </agent_skill_system>"""
 
 sandbox_prompt = """\

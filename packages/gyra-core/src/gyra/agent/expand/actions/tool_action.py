@@ -33,6 +33,24 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_OUTPUT_CHARS = 8000
 
 
+def _mcp_field(obj: Any, *names: str, default: Any = None) -> Any:
+    """跨 mcp SDK 版本安全读取字段：mcp>=1.9 起字段改为 snake_case（is_error/mime_type），
+    旧版本（1.8 及以下）使用 camelCase（isError/mimeType），此处按新→旧顺序回退。"""
+    for name in names:
+        value = getattr(obj, name, None)
+        if value is not None:
+            return value
+    return default
+
+
+def _mcp_mime_type(item: Any) -> Optional[str]:
+    return _mcp_field(item, "mime_type", "mimeType")
+
+
+def _is_mcp_error(result: Any) -> bool:
+    return bool(_mcp_field(result, "is_error", "isError", default=False))
+
+
 class UnifiedToolAdapter(BaseTool):
     """
     统一工具框架适配器
@@ -183,7 +201,7 @@ class ToolAction(Action[ToolInput]):
 
         processed_content = []
         for item in tool_result.content:
-            if isinstance(item, ImageContent) and item.mimeType == "oss_file":
+            if isinstance(item, ImageContent) and _mcp_mime_type(item) == "oss_file":
                 processed_content.append(
                     TextContent(
                         type="text", text=f"输出文件，文件信息如下: \n {item.data}"
@@ -199,7 +217,7 @@ class ToolAction(Action[ToolInput]):
         file_match_key = ["file", "oss_file"]
         if isinstance(tool_result, CallToolResult):
             for item in tool_result.content:
-                if isinstance(item, ImageContent) and item.mimeType == "oss_file":
+                if isinstance(item, ImageContent) and _mcp_mime_type(item) == "oss_file":
                     files.append(item.data)
 
         elif isinstance(tool_result, dict):
@@ -677,11 +695,11 @@ class ToolAction(Action[ToolInput]):
         truncation_result = None
 
         # 跳过特定工具的截断：
-        # - read/read_file/view/Skill/skill_list: 避免循环归档，这些工具已自行管理输出大小（分段读取）
-
+        # - read/read_file/view/Skill/skill/execute_sql/get_table_spec: 避免循环归档，
+        #   这些工具已自行管理输出大小（分段读取）
         should_truncate = (
             tool_output_chars > _MAX_TOOL_OUTPUT_CHARS
-            and tool_info.name not in ("read", "read_file", "view", "Skill", "skill_list", "execute_sql", "get_table_spec")
+            and tool_info.name not in ("read", "read_file", "view", "Skill", "skill", "execute_sql", "get_table_spec")
         )
 
         if should_truncate:
@@ -1039,13 +1057,13 @@ class ToolAction(Action[ToolInput]):
         if isinstance(content, CallToolResult):
             self.process_files(content)
 
-            if content.isError:
+            if _is_mcp_error(content):
                 error_texts = []
                 for item in content.content or []:
                     if isinstance(item, TextContent):
                         error_texts.append(item.text)
                     elif isinstance(item, ImageContent):
-                        error_texts.append(f"[Image: {item.mimeType}]")
+                        error_texts.append(f"[Image: {_mcp_mime_type(item)}]")
                 error_msg = (
                     "\n".join(error_texts)
                     if error_texts
@@ -1058,10 +1076,11 @@ class ToolAction(Action[ToolInput]):
                     if isinstance(item, TextContent):
                         text_contents.append(item.text)
                     elif isinstance(item, ImageContent):
-                        if item.mimeType and item.mimeType.startswith("image/"):
-                            text_contents.append(f"[Image: {item.mimeType}]")
+                        mime_type = _mcp_mime_type(item)
+                        if mime_type and mime_type.startswith("image/"):
+                            text_contents.append(f"[Image: {mime_type}]")
                         else:
-                            text_contents.append(f"[File: {item.mimeType}]")
+                            text_contents.append(f"[File: {mime_type}]")
                 return "\n".join(text_contents) if text_contents else "", True, None
 
         if isinstance(content, dict):

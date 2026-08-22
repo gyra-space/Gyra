@@ -8,6 +8,7 @@ import { apiInterceptors, createAsset, resolveAndExecuteIntervention, abortInter
 import { listInbox, updateInboxStatus, listMembers, type InboxItem } from '@/client/api/workspace';
 import { confirmEcpObject } from '@/client/api/ecp';
 import { getUserId } from '@/utils';
+import { useSpaceRole } from '@/hooks/use-space-role';
 
 export type TaskTabKey = 'all' | 'running' | 'awaiting' | 'done' | 'failed';
 
@@ -86,6 +87,7 @@ export function statusLabel(status: string | undefined): string {
     case 'awaiting_human': return '待你介入';
     case 'delivered': return '已交付';
     case 'closed': return '已关闭';
+    case 'done': return '已完成';
     case 'failed': return '失败';
     default: return status || '未知';
   }
@@ -188,7 +190,11 @@ export function SceneTaskRail({
   onOpenConversation,
 }: SceneTaskRailProps) {
   const { message, modal } = App.useApp();
-  const [view, setView] = useState<'inbox' | 'tasks'>('inbox');
+  // 权限门控:终止/删除/转交任务 = space.task.manage(无权限时隐藏"更多"菜单,
+  // 卡片内 terminate/delete 的状态驱动选择逻辑保持不变)
+  const { can } = useSpaceRole(workspaceId);
+  const canManageTask = can('space.task.manage');
+  const [view, setView] = useState<'inbox' | 'tasks'>('tasks');
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [inboxLoading, setInboxLoading] = useState(false);
   const [inboxSource, setInboxSource] = useState<string>('all');
@@ -708,22 +714,24 @@ export function SceneTaskRail({
             >
               <CommentOutlined />
             </span>
-            <Dropdown
-              menu={{
-                items: moreItems,
-                onClick: ({ key, domEvent }) => {
-                  domEvent.stopPropagation();
-                  if (key === 'terminate') handleTerminate(t.id);
-                  else if (key === 'reassign') handleTransferOpen(t.id, t.workspace_id);
-                  else handleDelete(t.id);
-                },
-              }}
-              trigger={['click']}
-            >
-              <span className="ws-rail-card-act" title="更多" onClick={(e) => e.stopPropagation()}>
-                <MoreOutlined />
-              </span>
-            </Dropdown>
+            {canManageTask && (
+              <Dropdown
+                menu={{
+                  items: moreItems,
+                  onClick: ({ key, domEvent }) => {
+                    domEvent.stopPropagation();
+                    if (key === 'terminate') handleTerminate(t.id);
+                    else if (key === 'reassign') handleTransferOpen(t.id, t.workspace_id);
+                    else handleDelete(t.id);
+                  },
+                }}
+                trigger={['click']}
+              >
+                <span className="ws-rail-card-act" title="更多" onClick={(e) => e.stopPropagation()}>
+                  <MoreOutlined />
+                </span>
+              </Dropdown>
+            )}
           </div>
         </div>
         {it.interventions.length > 0 && (
@@ -783,9 +791,10 @@ export function SceneTaskRail({
             <div className="ws-rail-empty"><div className="ws-rail-empty-t">加载中...</div></div>
           )}
           {!inboxLoading && inboxItems.length === 0 && (
-            <div className="ws-rail-empty">
-              <div className="ws-rail-empty-t">暂无待办</div>
-              <div className="ws-rail-empty-h">没有需要你介入的事项。可在右侧对话框发起新任务。</div>
+            // 空态折叠为摘要行,释放纵向空间给任务列表
+            <div className="ws-rail-inbox-clear">
+              <CheckOutlined />
+              <span>待办已清空</span>
             </div>
           )}
           {inboxItems
@@ -841,19 +850,23 @@ export function SceneTaskRail({
           <span className="ws-rail-count">{`${counts.all}${activeCount ? ` · 运行中 ${activeCount}` : ''}`}</span>
         </div>
         <div className="ws-rail-tabs">
-          {(Object.keys(TAB_LABEL) as TaskTabKey[]).map((k) => (
-            <div
-              key={k}
-              className={`ws-rail-tab ${TAB_CLASS[k]}${tab === k ? ' ws-rail-tab--on' : ''}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => setTab(k)}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTab(k); } }}
-            >
-              {TAB_LABEL[k]}
-              <span className={`ws-rail-bd${counts[k] === 0 ? ' ws-rail-bd--zero' : ''}`}>{counts[k]}</span>
-            </div>
-          ))}
+          {(Object.keys(TAB_LABEL) as TaskTabKey[]).map((k) => {
+            // 智能 tab:只显示有数据的维度(「全部」常驻;当前选中 tab 保持可见)
+            if (k !== 'all' && k !== tab && counts[k] === 0) return null;
+            return (
+              <div
+                key={k}
+                className={`ws-rail-tab ${TAB_CLASS[k]}${tab === k ? ' ws-rail-tab--on' : ''}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => setTab(k)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTab(k); } }}
+              >
+                {TAB_LABEL[k]}
+                <span className={`ws-rail-bd${counts[k] === 0 ? ' ws-rail-bd--zero' : ''}`}>{counts[k]}</span>
+              </div>
+            );
+          })}
         </div>
       </div>
       <Input

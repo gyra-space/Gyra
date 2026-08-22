@@ -1523,6 +1523,9 @@ class MemoryIntegrationBundle:
     lifecycle_hooks: Any = field(default_factory=DefaultLifecycleHooks)
     snapshot_manager: FrozenSnapshotManager = field(default_factory=FrozenSnapshotManager)
     promotion_engine: MemoryPromotionEngine = field(default_factory=MemoryPromotionEngine)
+    # V2 读路径管线（prefetch 缓存 / 流式 scrub / 静态记忆块）。
+    # serve 层在 bundle 创建后按 conv_session_id 装配（跨轮共享，prefetch 才能跨轮命中）。
+    pipeline: Any = None
 
     def get_search_config(self) -> HybridSearchConfig:
         """Get hybrid search config from bundle."""

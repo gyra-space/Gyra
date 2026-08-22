@@ -17,7 +17,6 @@ import TabTools from './components/tab-tools';
 import TabAgents from './components/tab-agents';
 import TabMemory from './components/tab-memory';
 import TabAssets from './components/tab-assets';
-import TabScenes from './components/tab-scenes';
 import TabRuntime from './components/tab-runtime';
 import TabHooks from './components/tab-hooks';
 import ChatContent from './components/chat-content';
@@ -172,8 +171,6 @@ export default function AgentBuilder() {
         return <TabMemory />;
       case 'assets':
         return <TabAssets />;
-      case 'scenes':
-        return <TabScenes />;
       case 'runtime':
         return <TabRuntime />;
       case 'hooks':

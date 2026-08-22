@@ -64,17 +64,25 @@ class SandboxToolBase(ToolBase):
             return None
 
         # V2 path: 优先从 get_resource 获取（ToolContextFactory.build() 注入）
-        client = context.get_resource("sandbox_client")
-        if client is not None:
-            return client
+        # context 在 V1 可能是主 agent 本身(无 get_resource)，需防御性取用
+        _get_resource = getattr(context, "get_resource", None)
+        if callable(_get_resource):
+            client = _get_resource("sandbox_client")
+            if client is not None:
+                return client
+
+        # context 可能是主 agent 本身(无 config)，安全取 dict
+        context_config = getattr(context, "config", None)
+        if not isinstance(context_config, dict):
+            context_config = {}
 
         # BAIZE 兼容路径: 从 context.config 获取
-        client = context.config.get("sandbox_client")
+        client = context_config.get("sandbox_client")
         if client is not None:
             return client
 
         # BAIZE 兼容路径: 从 sandbox_manager 获取
-        sandbox_manager = context.config.get("sandbox_manager")
+        sandbox_manager = context_config.get("sandbox_manager")
         if sandbox_manager is not None:
             if hasattr(sandbox_manager, "client"):
                 return sandbox_manager.client

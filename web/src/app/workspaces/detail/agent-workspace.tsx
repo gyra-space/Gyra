@@ -21,6 +21,8 @@ export interface AgentWorkspaceProps {
   taskId?: number | string;
   focus?: { id: number; title: string } | null;
   onClearFocus?: () => void;
+  /** 只读模式(无 space.chat.use 权限):输入区禁用并提示,不可发起对话 */
+  chatReadOnly?: boolean;
   onClearContext?: () => void;
   /** header「新会话」入口:任务对话模式下不传(任务会话与任务绑定,不可另开) */
   onNewSession?: () => void;
@@ -52,6 +54,7 @@ export function AgentWorkspace({
   taskId,
   focus,
   onClearFocus,
+  chatReadOnly,
   onClearContext,
   onNewSession,
   onStepClick,
@@ -203,6 +206,7 @@ export function AgentWorkspace({
           <AgentWorkspaceInput
             ref={inputRef}
             convUid={convUid}
+            appInfo={appInfo}
             onSend={(p) => {
               if (running) {
                 // 运行中追问:乐观上屏用户气泡 + 投递补充输入队列
@@ -215,6 +219,7 @@ export function AgentWorkspace({
             loading={loading}
             onStop={abort}
             disabled={!convUid || switchingTask}
+            readOnly={chatReadOnly}
             lastInput={lastInput ? { text: typeof lastInput.text === 'string' ? lastInput.text : '' } : null}
             onRetry={lastInput ? () => send(lastInput) : undefined}
             playbooks={playbooks}

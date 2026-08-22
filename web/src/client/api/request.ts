@@ -286,12 +286,14 @@ export const previewMasking = (data: MaskingPreviewRequest) => {
 
 /** Chat Page */
 export const getDialogueList = (userId?: string) => {
-  const params = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
-  return GET<null, DialogueListResponse>(`/api/v1/chat/dialogue/list${params}`);
+  // page_size 提升到 100:全局历史会话作为"会话档案",仅 10 条不足以按周分组浏览
+  const query = new URLSearchParams({ page_size: '100' });
+  if (userId) query.set('user_id', userId);
+  return GET<null, DialogueListResponse>(`/api/v1/chat/dialogue/list?${query.toString()}`);
 };
 
 export const getDialogueListBByFilter = (name: string, userId?: string) => {
-  const query = new URLSearchParams({ filter: name });
+  const query = new URLSearchParams({ filter: name, page_size: '100' });
   if (userId) query.set('user_id', userId);
   return GET<null, DialogueListResponse>(`/api/v1/chat/dialogue/list?${query.toString()}`);
 };
@@ -353,6 +355,13 @@ export const postChatModeParamsFileLoad = ({
 
 export const clearChatHistory = (conUid: string) => {
   return POST<null, Record<string, string>>(`/api/v1/chat/dialogue/clear?con_uid=${conUid}`);
+};
+
+export const postVoiceTranscribe = (file: Blob, lang?: string) => {
+  const formData = new FormData();
+  formData.append('file', file, `audio-${Date.now()}.webm`);
+  if (lang) formData.append('lang', lang);
+  return POST<FormData, { text: string }>('/api/v2/serve/asr/transcribe', formData);
 };
 
 /** Menu */

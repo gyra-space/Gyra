@@ -67,7 +67,11 @@ def register_enabled_feature_plugin_routers(app: FastAPI) -> None:
     logger.info("Feature plugin mounted: permissions at /api/v1/permissions")
 
     if permissions_enabled:
-        from gyra_app.feature_plugins.permissions.seed import ensure_default_roles
+        from gyra_app.feature_plugins.permissions.seed import (
+            ensure_default_roles,
+            ensure_schema_upgrades,
+            sync_permission_definitions,
+        )
         from gyra.storage.metadata.db_manager import db
 
         # Ensure permission tables exist before seeding data
@@ -76,7 +80,17 @@ def register_enabled_feature_plugin_routers(app: FastAPI) -> None:
         except Exception as e:
             logger.warning(f"Failed to create all tables: {e}")
 
+        # 存量库补齐新列（role.scope_type / permission_definition.scope_type、grantable）
+        ensure_schema_upgrades()
+        # 代码注册的权限协议 -> permission_definition 表（幂等 upsert）
+        sync_permission_definitions()
         ensure_default_roles()
+
+        # workspace_member.role -> user_role 空间级绑定（幂等，兜底双写遗漏）
+        from gyra_app.feature_plugins.permissions.seed import (
+            migrate_space_role_bindings,
+        )
+        migrate_space_role_bindings()
 
         # Migrate old conversation user_name from mock IDs to real usernames
         from gyra_app.feature_plugins.permissions.seed import migrate_conversation_user_names

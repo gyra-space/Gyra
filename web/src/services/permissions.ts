@@ -119,6 +119,8 @@ export interface MyPermissions {
   roles: string[];
   /** permissions map: { resource_type: [action, ...] } or null when RBAC plugin is off */
   permissions: Record<string, string[]> | null;
+  /** 资源实例级授权([{permission_key, resource_type, resource_id, ...}]),RBAC 插件关闭时为空 */
+  grants?: Record<string, unknown>[];
 }
 
 export interface UserDetail extends UserInfo {
@@ -157,6 +159,7 @@ class PermissionsService {
         user_id: data.user_id,
         roles: data.roles ?? [],
         permissions: data.permissions ?? null,
+        grants: data.grants ?? [],
       };
     } catch {
       return null;

@@ -170,8 +170,14 @@ class TodowriteTool(ToolBase):
             # 写入存储
             await storage.write_todos(conv_id, new_todos)
 
-            # 推送可视化
+            # 推送可视化（dock widget；与 todo/write 事件互为冗余，
+            # 任何一边丢了另一边都能恢复）
             await self._push_todolist_vis(context, new_todos)
+
+            # 事件溯源：V2 上下文存在时 emit todo/write 事件（last-write-wins，
+            # UI / 回放单一事实源；与 DSH tool-todo 的 session.append('todo/write', ...)
+            # 等价）
+            await self._emit_todo_write_event(context, new_todos)
 
             # 统计
             pending_count = sum(
@@ -184,22 +190,34 @@ class TodowriteTool(ToolBase):
                 1 for t in new_todos if t.status == TodoStatus.COMPLETED.value
             )
 
-            result = {
-                "success": True,
-                "message": "已更新任务列表",
-                "stats": {
-                    "total": len(new_todos),
-                    "pending": pending_count,
-                    "in_progress": in_progress_count,
-                    "completed": completed_count,
-                },
-                "todos": [t.to_dict() for t in new_todos],
+            # 工具结果格式：对齐 DSH tool-todo 的"简洁回显"。
+            # - LLM 不需要再看到全部 todos（它的上一轮 tool_call 参数里已经有）
+            # - 只回显 counts + 紧凑列表提示，让 LLM 验证自己的写入并规划下一步
+            # - 完整 todos 通过 metadata 字段携带（不进 LLM 上下文，仅供 UI/审计）
+            todos_payload = [t.to_dict() for t in new_todos]
+            counts = {
+                "pending": pending_count,
+                "in_progress": in_progress_count,
+                "completed": completed_count,
             }
+            # 人类/LLM 双友好的回显文本
+            overview = (
+                f"已更新任务列表：{len(new_todos)} 项 "
+                f"({pending_count} pending / {in_progress_count} in_progress / {completed_count} completed)"
+            )
+            items_line = "\n".join(
+                f"  - [{t.status}] {t.content}" for t in new_todos
+            )
+            output_text = f"{overview}\n{items_line}"
 
             return ToolResult.ok(
-                output=json.dumps(result, ensure_ascii=False, indent=2),
+                output=output_text,
                 tool_name=self.name,
-                metadata={"total": len(new_todos)},
+                metadata={
+                    "total": len(new_todos),
+                    "todos": todos_payload,
+                    "counts": counts,
+                },
             )
 
         except Exception as e:
@@ -208,6 +226,68 @@ class TodowriteTool(ToolBase):
                 error=f"更新任务列表失败: {str(e)}",
                 tool_name=self.name,
             )
+
+    async def _emit_todo_write_event(
+        self,
+        context: Optional[Any],
+        todos: List[Any],
+    ) -> None:
+        """向 V2 事件流 emit ``todo/write`` 事件（last-write-wins）。
+
+        与 DSH tool-todo 的 ``exec.agent.session.append('todo/write', { todos })``
+        语义等价：事件流是 UI / 回放的单一事实源，**不**进 LLM 上下文。
+
+        - 失败吞掉（事件流是辅助通道，写入失败不能阻塞 todo 写入主流程）
+        - 探测 context 上是否有 v2_event_stream / state_store 暴露点
+        """
+        if not context or not todos:
+            return
+        try:
+            agent = getattr(context, "agent", None) or context
+            # 优先级 1：直接挂在 context 上的 V2 event stream
+            event_stream = (
+                getattr(context, "v2_event_stream", None)
+                or getattr(agent, "v2_event_stream", None)
+            )
+            # 优先级 2：通过 V2Agent._ensure_v2_state_store 获取 state store
+            # （事件持久化走 StateStore；EventStream 是订阅层）
+            state_store = (
+                getattr(agent, "_ensure_v2_state_store", None)
+                and agent._ensure_v2_state_store()
+                if hasattr(agent, "_ensure_v2_state_store")
+                else None
+            )
+            if state_store is None:
+                return
+
+            from gyra.agent.core.v2.step_event import StepEvent
+            from gyra.agent.core.v2.step_state import StepState
+            import time as _time
+            import uuid as _uuid
+
+            conv_id = "default"
+            step_id = getattr(agent, "_v2_current_step_id", None) or "todo-write"
+            agent_id = getattr(agent, "name", None) or "todowrite"
+            if hasattr(agent, "not_null_agent_context"):
+                ctx = agent.not_null_agent_context
+                if ctx:
+                    conv_id = ctx.conv_id or conv_id
+
+            ev = StepEvent(
+                event_id=f"todo-write-{_uuid.uuid4().hex[:8]}",
+                step_id=step_id,
+                conv_id=conv_id,
+                agent_id=agent_id,
+                state=StepState.OBSERVING,
+                event_type="todo/write",
+                input={"tool": "todowrite"},
+                output={"todos": [t.to_dict() for t in todos]},
+                seq=0,  # 由 StateStore.append_event 重新分配全局 seq
+                timestamp=_time.time(),
+            )
+            await state_store.append_event(ev)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[todowrite] emit todo/write event skipped: {e}")
 
     def _get_storage_and_conv_id(self, context: Optional[Any]):
         """获取 TodoStorage 和 conv_id"""

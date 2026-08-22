@@ -1,23 +1,24 @@
 """RBAC 强校验 —— 角色 / 权限 / FastAPI 依赖。
 
-P2 任务9: 收紧 25 个写端点的角色校验,viewer 理论上不能再 start_task 等。
+空间域权限已统一到权限协议(gyra_serve.permissions):本模块的 Permission
+枚举映射到协议 key(PERMISSION_TO_KEY),判定走 has_scope()
+(全局管理员短路 -> user_role 空间绑定角色 -> 成员表兜底映射)。
 
 默认启用校验。环境变量 ``GYRA_RBAC_ENABLED`` (或 ``RBAC_ENABLED``) = false 可
 关闭(迁移/调试用);关闭时所有 ``require_permission`` 依赖直接放行,行为与无
 RBAC 完全一致。
 
-角色层次(与 workspace_member.role 字符串对齐):
-    OWNER > CONTRIBUTOR > VIEWER
-- OWNER:       管理 -- 全权限(空间所有者,创建者自动获得)
-- CONTRIBUTOR: 使用 -- 启动任务 / 发布资产 / 建剧本
-- VIEWER:      查看 -- 只读(无写权限)
+角色层次(与 workspace_member.role 字符串对齐,兜底映射用):
+    OWNER -> space.admin       管理 -- 全权限
+    CONTRIBUTOR -> space.member 使用(对话/任务/看产出)
+    VIEWER -> space.viewer     查看 -- 只读
 """
 import logging
 import os
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 from .models.models import WorkspaceDao, WorkspaceEntity, WorkspaceMemberDao
 
@@ -68,6 +69,23 @@ ROLE_PERMISSIONS: Dict[Role, set] = {
 }
 
 
+# 旧 Permission 枚举 -> 统一权限协议 key（判定走 has_scope）
+PERMISSION_TO_KEY: Dict[Permission, str] = {
+    Permission.START_TASK: "space.task.start",
+    Permission.RESOLVE_INTERVENTION: "space.task.manage",
+    Permission.PUBLISH_ASSET: "space.asset.manage",
+    Permission.UPDATE_WORKSPACE: "space.workspace.manage",
+    Permission.CREATE_PLAYBOOK: "space.playbook.manage",
+    Permission.DELETE_ASSET: "space.asset.manage",
+    Permission.DELETE_TASK: "space.task.manage",
+    Permission.ATTEST: "space.asset.manage",
+    Permission.COACH: "space.asset.manage",
+    Permission.ESCALATE: "space.task.manage",
+    Permission.MANAGE_RESOURCE: "space.capability.manage",
+    Permission.DELETE_WORKSPACE: "space.workspace.manage",
+}
+
+
 def _rbac_enabled() -> bool:
     """RBAC 是否启用。默认启用;环境变量 GYRA_RBAC_ENABLED / RBAC_ENABLED = false 时关闭。"""
     val = os.environ.get("GYRA_RBAC_ENABLED") or os.environ.get("RBAC_ENABLED")
@@ -112,9 +130,14 @@ def get_user_role(workspace_id: int, user_id: int) -> Role:
 def check_permission(
     workspace_id: int, user_id: int, permission: Permission
 ) -> bool:
-    """检查 user 是否在 workspace 中拥有指定权限。"""
-    role = get_user_role(workspace_id, user_id)
-    return permission in ROLE_PERMISSIONS.get(role, set())
+    """检查 user 是否在 workspace 中拥有指定权限（统一协议判定）。"""
+    from gyra_serve.permissions import has_scope
+    from gyra_serve.utils.auth import UserRequest
+
+    key = PERMISSION_TO_KEY[permission]
+    return has_scope(
+        UserRequest(user_id=str(user_id), user_no=str(user_id)), key, workspace_id
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -207,20 +230,41 @@ def _lookup_workspace_id_by_code(workspace_code: str) -> Optional[int]:
         session.close()
 
 
+def _lookup_workspace_id_by_playbook(playbook_id: int) -> Optional[int]:
+    """通过 playbook_id 反查 workspace_id。"""
+    from gyra_serve.playbook.models.models import PlaybookDao, PlaybookEntity
+
+    session = PlaybookDao().get_raw_session()
+    try:
+        row = (
+            session.query(PlaybookEntity)
+            .filter(PlaybookEntity.id == playbook_id)
+            .first()
+        )
+        return row.workspace_id if row else None
+    finally:
+        session.close()
+
+
 async def _resolve_workspace_id(request: Request) -> Optional[int]:
-    """从请求路径参数 / JSON body 中解析 workspace_id。
+    """从请求路径参数 / 查询参数 / JSON body 中解析 workspace_id。
 
     解析优先级:
       1. path_params.workspace_id (直接)
       2. body.workspace_id (直接)
-      3. path_params.task_id -> Task 反查
-      4. path_params.intervention_id -> Intervention 反查
-      5. body.asset_id -> Asset 反查
-      6. body.workspace_code -> Workspace 反查
+      3. query.workspace_id (直接)
+      4. path/query/body 中的 task_id -> Task 反查
+      5. path_params.parent_task_id -> Task 反查
+      6. path_params.intervention_id -> Intervention 反查
+      7. body/path/query 中的 asset_id -> Asset 反查
+      8. body/query 中的 workspace_code -> Workspace 反查
+      9. path/query 中的 playbook_id -> Playbook 反查
+      10. body.resource_id -> Resource 反查
 
     body 读取失败(非 JSON / 空 body / multipart)时静默降级为无可解析 body。
     """
     path_params = dict(request.path_params or {})
+    query_params = dict(request.query_params or {})
 
     # 1. path 中的 workspace_id
     ws_id = path_params.get("workspace_id")
@@ -246,17 +290,38 @@ async def _resolve_workspace_id(request: Request) -> Optional[int]:
         except (TypeError, ValueError):
             pass
 
-    # 3. path 中的 task_id
-    task_id = path_params.get("task_id")
-    if task_id is not None:
+    # 3. query 中的 workspace_id
+    if query_params.get("workspace_id") is not None:
         try:
-            ws_id = _lookup_workspace_id_by_task(int(task_id))
-            if ws_id is not None:
-                return ws_id
-        except Exception as e:
-            logger.warning(f"rbac resolve workspace by task failed: {e}")
+            return int(query_params["workspace_id"])
+        except (TypeError, ValueError):
+            pass
 
-    # 4. path 中的 intervention_id
+    def _task_lookup(raw) -> Optional[int]:
+        try:
+            return _lookup_workspace_id_by_task(int(raw))
+        except (TypeError, ValueError):
+            return None
+
+    # 4. task_id: path / query / body
+    task_id = path_params.get("task_id") or query_params.get("task_id")
+    if task_id is not None:
+        ws_id = _task_lookup(task_id)
+        if ws_id is not None:
+            return ws_id
+    if body.get("task_id") is not None:
+        ws_id = _task_lookup(body["task_id"])
+        if ws_id is not None:
+            return ws_id
+
+    # 5. path 中的 parent_task_id (spawn 端点)
+    parent_id = path_params.get("parent_task_id")
+    if parent_id is not None:
+        ws_id = _task_lookup(parent_id)
+        if ws_id is not None:
+            return ws_id
+
+    # 6. path 中的 intervention_id
     intervention_id = path_params.get("intervention_id")
     if intervention_id is not None:
         try:
@@ -266,17 +331,21 @@ async def _resolve_workspace_id(request: Request) -> Optional[int]:
         except Exception as e:
             logger.warning(f"rbac resolve workspace by intervention failed: {e}")
 
-    # 5. body 中的 asset_id
-    if body.get("asset_id") is not None:
+    # 7. asset_id: body / path / query
+    def _asset_lookup(raw) -> Optional[int]:
         try:
-            ws_id = _lookup_workspace_id_by_asset(int(body["asset_id"]))
+            return _lookup_workspace_id_by_asset(int(raw))
+        except (TypeError, ValueError):
+            return None
+
+    for asset_raw in (body.get("asset_id"), path_params.get("asset_id"), query_params.get("asset_id")):
+        if asset_raw is not None:
+            ws_id = _asset_lookup(asset_raw)
             if ws_id is not None:
                 return ws_id
-        except Exception as e:
-            logger.warning(f"rbac resolve workspace by asset failed: {e}")
 
-    # 6. body 中的 workspace_code
-    ws_code = body.get("workspace_code")
+    # 8. workspace_code: body / query
+    ws_code = body.get("workspace_code") or query_params.get("workspace_code")
     if ws_code:
         try:
             ws_id = _lookup_workspace_id_by_code(str(ws_code))
@@ -285,7 +354,17 @@ async def _resolve_workspace_id(request: Request) -> Optional[int]:
         except Exception as e:
             logger.warning(f"rbac resolve workspace by code failed: {e}")
 
-    # 7. body 中的 resource_id (资源管理端点 remove/update 用)
+    # 9. playbook_id: path / query
+    playbook_id = path_params.get("playbook_id") or query_params.get("playbook_id")
+    if playbook_id is not None:
+        try:
+            ws_id = _lookup_workspace_id_by_playbook(int(playbook_id))
+            if ws_id is not None:
+                return ws_id
+        except (TypeError, ValueError):
+            pass
+
+    # 10. body 中的 resource_id (资源管理端点 remove/update 用)
     resource_id = body.get("resource_id")
     if resource_id is not None:
         try:
@@ -298,63 +377,34 @@ async def _resolve_workspace_id(request: Request) -> Optional[int]:
     return None
 
 
-def _resolve_user_id(header_user_id: Optional[int], body: Dict[str, Any]) -> Optional[int]:
-    """解析调用者 user_id:优先 X-User-ID 头,其次 body 中的常见字段。"""
-    if header_user_id is not None:
-        try:
-            return int(header_user_id)
-        except (TypeError, ValueError):
-            pass
-    for key in ("user_id", "resolved_by_user_id", "actor"):
-        val = body.get(key)
-        if val is None:
-            continue
-        try:
-            return int(val)
-        except (TypeError, ValueError):
-            continue
-    return None
-
-
 def require_permission(permission: Permission):
-    """返回 FastAPI 路由依赖,校验当前请求用户是否拥有指定权限。
+    """返回 FastAPI 路由依赖,校验当前请求用户是否拥有指定空间权限。
 
     用法: ``dependencies=[Depends(require_permission(Permission.START_TASK))]``
 
     行为:
-    - RBAC 未启用: 直接放行(向后兼容)。
-    - RBAC 启用但无法解析 workspace_id / user_id: 放行(不阻断无 header 的存量调用)。
-    - RBAC 启用且权限不足: 抛 403。
+    - RBAC 未启用(GYRA_RBAC_ENABLED=false): 直接放行(调试/迁移用)。
+    - 身份:permissions 插件开启时必须持有效 session(fail-closed,401);
+      插件关闭(开发模式)沿用 X-User-ID 自报身份 + 成员角色矩阵。
+    - 权限不足 / 解析不出 workspace_id: 403(fail-closed)。
     """
+
+    from gyra_serve.utils.auth import get_user_from_headers
+
+    key = PERMISSION_TO_KEY[permission]
 
     async def _dependency(
         request: Request,
-        user_id: Optional[int] = Header(None, alias="X-User-ID"),
+        user=Depends(get_user_from_headers),
     ):
         if not _rbac_enabled():
             return  # 未启用 RBAC,放行
 
         workspace_id = await _resolve_workspace_id(request)
-        if workspace_id is None:
-            # 无法解析上下文:向后兼容,不阻断
-            return
 
-        # body 已被 _resolve_workspace_id 读取并缓存(Starlette 缓存 _body),
-        # 这里复用缓存以提取 user_id 兜底字段
-        body: Dict[str, Any] = {}
-        try:
-            parsed = await request.json()
-            if isinstance(parsed, dict):
-                body = parsed
-        except Exception:
-            body = {}
+        from gyra_serve.permissions import has_scope
 
-        caller_uid = _resolve_user_id(user_id, body)
-        if caller_uid is None:
-            # 无法识别调用者:向后兼容,不阻断
-            return
-
-        if not check_permission(workspace_id, caller_uid, permission):
+        if not has_scope(user, key, workspace_id):
             raise HTTPException(
                 status_code=403,
                 detail={

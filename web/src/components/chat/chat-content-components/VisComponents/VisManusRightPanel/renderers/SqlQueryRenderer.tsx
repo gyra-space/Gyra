@@ -255,7 +255,6 @@ const SqlHeader: FC<{
 
     {/* SQL code area — syntax highlighted; className keeps VisCard's pre reset away */}
     <div className="overflow-hidden rounded-lg">
-      {/* @ts-expect-error react-syntax-highlighter 类型与 React 18 不完全匹配 */}
       <SyntaxHighlighter
         language="sql"
         style={oneDark}

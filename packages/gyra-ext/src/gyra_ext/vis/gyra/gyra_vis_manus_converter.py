@@ -136,6 +136,9 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         # consumed by _process_gpt_message matching by action_name (FIFO)
         self._pending_planning_uids: List[tuple] = []
         self._agent_name: Optional[str] = None
+        # 正文流式渲染：记录最近一次正文增量推送，用于计算下一帧增量
+        # key = message_id，value = 已渲染的累计正文文本
+        self._content_stream_accum: Dict[str, str] = {}
 
     @property
     def web_use(self) -> bool:
@@ -363,10 +366,11 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             message_id = stream_msg.get("message_id")
             is_streaming = stream_msg.get("type") == "incr" or stream_msg.get("is_streaming", False)
 
-        # 流式阶段且没有 action_report：不生成 step_thought，避免与 LLM 输出重复
-        # LLM 的纯文本输出已经通过 listen_thinking_stream 推送到前端
+        # 流式阶段且没有 action_report：不生成 step_thought，避免与 LLM 输出重复。
+        # 但正文(content 通道)仍需逐字流式渲染：由 _render_content_stream 把每帧
+        # content 增量渲染为固定 uid 的 drsk-content(incr 拼接)，否则正文只在终态一次性出现。
         if is_streaming and not action_outs:
-            return None
+            return self._render_content_stream(stream_msg)
 
         if action_outs:
             for act_out in (action_outs if isinstance(action_outs, list) else [action_outs]):
@@ -384,11 +388,14 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                 if not is_batch and (act_name == BlankAction.name or is_terminate):
                     if conclusion and isinstance(conclusion, str) and conclusion.strip():
                         # 用 type=ALL 完整替换，确保 markdown 表格等结构完整渲染
-                        # 使用与流式推送相同的 uid（{message_id}_'step_thought'），确保最终推送覆盖流式推送
+                        # uid 用正文流式固定 uid（manus_content_stream）：终态结论
+                        # 全量覆盖流式阶段累积的中间旁白，避免正文重复出现；
+                        # footer 的 _render_final_conclusion 检测到本分支已产出
+                        # 结论后会跳过，保证整轮只渲染一份最终文本。
                         text_content = DrskTextContent(
                             dynamic=False,
                             markdown=conclusion,
-                            uid=f"{message_id}_'step_thought'",
+                            uid=self._CONTENT_STREAM_UID,
                             type=UpdateType.ALL.value,
                         )
                         return DrskContent().sync_display(
@@ -1180,6 +1187,86 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             **data,
         }
         return f"```{tag}\n{json.dumps(payload, ensure_ascii=False)}\n```"
+
+    # 正文流式渲染固定 uid（终态 _render_final_conclusion 用同一 uid 以 all 覆盖）
+    _CONTENT_STREAM_UID = "manus_content_stream"
+
+    def _render_content_stream(
+        self, stream_msg: Optional[Union[Dict, str]]
+    ) -> Optional[str]:
+        """把 LLM 流式增量渲染为 planning_window 的可视组件。
+
+        manus 布局的左面板只渲染工具步骤/planning 卡片，正文/思考在流式阶段被
+        _gen_plan_items 的 `is_streaming and not action_outs` 分支丢弃，导致它们
+        只在终态一次性出现。这里把每帧增量渲染为独立组件：
+
+        - content 通道 → drsk-content，固定 uid（manus_content_stream）+
+          dynamic=true + type="incr"：前端 VisBaseParser 对同 uid 的 incr 纯文本
+          做拼接，正文可逐字/逐块累积显示；增量由「本帧累计正文 - 已渲染累计正文」
+          计算，避免把累计全文重复拼接；终态由 terminate 分支以 type="all" 全量
+          覆盖同一 uid，完成去重。
+        - thinking 通道 → d-thinking 思考卡片，uid（{message_id}_thinking）+
+          type="incr"：与 window3 gen_work_item 的思考块渲染语义一致；
+          攒批（_coalesce_stream_push）可能把 thinking 与 content 合进同一帧，
+          两个通道要在一帧内各自渲染。
+
+        Returns: VIS tag 字符串（可含多个 tag，换行连接）；无增量时返回 None。
+        """
+        if not stream_msg or not isinstance(stream_msg, dict):
+            return None
+        message_id = stream_msg.get("message_id")
+        if not message_id:
+            return None
+        # 只处理纯文本输出帧（无 action_report），工具步骤走 manus-right-panel
+        if stream_msg.get("action_report"):
+            return None
+
+        vis_parts: List[str] = []
+
+        # thinking 通道：推理文本渲染为思考卡片（d-thinking）
+        thinking = stream_msg.get("thinking")
+        if thinking and isinstance(thinking, str) and thinking.strip():
+            thinking_content = DrskThinkingContent(
+                markdown=thinking,
+                uid=f"{message_id}_thinking",
+                type=UpdateType.INCR.value,
+            )
+            vis_parts.append(
+                GyraThinking().sync_display(
+                    content=thinking_content.to_dict(exclude_none=True)
+                )
+            )
+
+        # content 通道：正文渲染为 drsk-content
+        content = stream_msg.get("content")
+        if content and isinstance(content, str) and content.strip():
+            prev = self._content_stream_accum.get(message_id, "")
+            if content.startswith(prev) and len(content) > len(prev):
+                # 正常增量：取差值部分
+                incr = content[len(prev) :]
+                self._content_stream_accum[message_id] = content
+            elif content == prev:
+                # 重复帧，无新内容
+                incr = ""
+            else:
+                # 帧跳变（新一轮 turn / 累计被重置）：直接用本帧正文作为增量
+                incr = content
+                self._content_stream_accum[message_id] = content
+
+            if incr:
+                text_content = DrskTextContent(
+                    dynamic=True,
+                    markdown=incr,
+                    uid=self._CONTENT_STREAM_UID,
+                    type=UpdateType.INCR.value,
+                )
+                vis_parts.append(
+                    DrskContent().sync_display(
+                        content=text_content.to_dict(exclude_none=True)
+                    )
+                )
+
+        return "\n".join(vis_parts) if vis_parts else None
 
     async def visualization(
         self,
@@ -2133,9 +2220,29 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                 plans_vis.append(ask_user_vis)
 
             if gpt_msg.receiver == HUMAN_ROLE:
-                conclusion_vis = await self._render_final_conclusion(gpt_msg)
-                if conclusion_vis:
-                    plans_vis.append(conclusion_vis)
+                # 终止/Blank action 带结论时，_gen_plan_items 的 terminate 分支已把
+                # 结论渲染到 manus_content_stream（并覆盖流式正文），footer 不再
+                # 追加"最终结论"块，避免同一文本在交付物上/下重复出现。
+                def _get(obj, key, default=None):
+                    if isinstance(obj, dict):
+                        return obj.get(key, default)
+                    return getattr(obj, key, default)
+
+                has_terminate_conclusion = False
+                for act_out in gpt_msg.action_report:
+                    act_name = _get(act_out, "name", "") or _get(act_out, "action", "") or ""
+                    if act_name.lower() in ("batchtasks", "batch_tasks"):
+                        continue
+                    is_term = act_name == BlankAction.name or bool(_get(act_out, "terminate", False))
+                    conclusion = _get(act_out, "observations") or _get(act_out, "content")
+                    if is_term and conclusion and isinstance(conclusion, str) and conclusion.strip():
+                        has_terminate_conclusion = True
+                        break
+
+                if not has_terminate_conclusion:
+                    conclusion_vis = await self._render_final_conclusion(gpt_msg)
+                    if conclusion_vis:
+                        plans_vis.append(conclusion_vis)
 
         return "\n".join(plans_vis) if plans_vis else None
 
@@ -2206,7 +2313,9 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         final_conclusion = DrskTextContent(
             dynamic=False,
             markdown=f"## 最终结论\n\n{conclusion_content}",
-            uid=f"{output_message.message_id}_final_conclusion",
+            # 用 _CONTENT_STREAM_UID 统一与流式文案的 uid，终态以 type="all" 全量覆盖
+            # 流式阶段累积的 manus_content_stream(incr) 正文，避免正文两次出现。
+            uid=self._CONTENT_STREAM_UID,
             type="all",
         )
         return DrskContent().sync_display(

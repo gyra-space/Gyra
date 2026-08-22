@@ -631,6 +631,8 @@ class WorkEntry:
 
             ask_type_value = AskUserType.CONCLUSION_INCOMPLETE.value
 
+        from gyra.agent.core.schema import Status
+
         return ActionOutput(
             action_id=self.tool_call_id or "",
             action_name=self.tool,
@@ -639,6 +641,8 @@ class WorkEntry:
             content=self.result or "",
             observations=self.result if not self.success else None,
             is_exe_success=self.success,
+            # 终态落定：vis 转换器用 state 渲染规划空间步骤状态图标
+            state=Status.COMPLETE.value if self.success else Status.FAILED.value,
             view=view_content,
             simple_view=simple_view_content,
             extra=extra_data,

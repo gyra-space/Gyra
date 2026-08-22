@@ -100,7 +100,7 @@ export default function CommandPalette() {
   );
 
   const chats: CommandItem[] = useMemo(() => {
-    const raw = (dialogueList?.[1] as unknown as Array<Record<string, string>>) || [];
+    const raw = (dialogueList?.[1] as unknown as Array<Record<string, any>>) || [];
     return raw.slice(0, 30).map((d) => {
       let name = d.user_input || d.select_param || 'Untitled';
       if (name.startsWith('{')) {
@@ -110,13 +110,25 @@ export default function CommandPalette() {
           if (typeof name !== 'string') name = JSON.stringify(name);
         } catch { /* keep raw */ }
       }
+      const sessionParam = d.conv_session_id || d.conv_uid;
       return {
         key: d.conv_uid,
         group: 'chat' as const,
         label: name,
         hint: d.app_code,
         icon: <MessageOutlined className={ICON_CLS} />,
-        action: () => go(`/chat/?conv_uid=${d.conv_session_id || d.conv_uid}&app_code=${d.app_code || ''}`),
+        action: () => {
+          // 空间/任务会话:跳回所属空间打开;Agent 会话:留在 /chat 对话页
+          if (d.workspace_id && d.workspace_code) {
+            const params = new URLSearchParams();
+            params.set('id', d.workspace_code);
+            params.set('conv_uid', sessionParam);
+            if (d.task_id) params.set('task_id', String(d.task_id));
+            go(`/workspaces/detail?${params.toString()}`);
+          } else {
+            go(`/chat/?conv_uid=${sessionParam}&app_code=${d.app_code || ''}`);
+          }
+        },
       };
     });
   }, [dialogueList, go]);
