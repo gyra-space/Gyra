@@ -132,6 +132,21 @@ class TodowriteTool(ToolBase):
             # 获取存储和会话信息
             storage, conv_id = self._get_storage_and_conv_id(context)
             if not storage:
+                # 诊断：定位 agent 注入 / memory 绑定断在哪一环
+                try:
+                    _agent = getattr(context, "agent", None) or context
+                    if not hasattr(_agent, "memory") and hasattr(context, "get_resource"):
+                        _agent = context.get_resource("agent") or _agent
+                    logger.warning(
+                        "[todowrite] storage unavailable: "
+                        f"ctx_type={type(context).__name__}, "
+                        f"agent_type={type(_agent).__name__}, "
+                        f"has_memory={hasattr(_agent, 'memory')}, "
+                        f"memory={type(getattr(_agent, 'memory', None)).__name__}, "
+                        f"gpts_memory={type(getattr(getattr(_agent, 'memory', None), 'gpts_memory', None)).__name__}"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
                 return ToolResult.fail(
                     error="Todo 存储不可用",
                     tool_name=self.name,

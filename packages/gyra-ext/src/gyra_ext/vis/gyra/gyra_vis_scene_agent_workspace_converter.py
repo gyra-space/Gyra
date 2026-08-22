@@ -360,6 +360,24 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                     step["exhibit"] = exhibit
                 self._upsert_lobby_exhibit(exhibit)
         ts = self._ts_str(self._report_get(report, "start_time")) or (existing[1] if existing else "")
+        # 工具旁白(V2 WorkEntry.assistant_content → ActionOutput.thoughts):历史恢复时
+        # msg.content/thinking 为空,旁白随 action_report 重建挂回,需登记为 thinking 步骤
+        # 与工具步骤交错渲染。先登记旁白(同 ts 下稳定排序在前),再登记工具步骤。
+        thoughts = self._report_get(report, "thoughts")
+        if isinstance(thoughts, str) and thoughts.strip():
+            narr_key = f"narr-{action_id}"
+            if narr_key not in self._scene_items:
+                self._scene_items[narr_key] = ({
+                    "id": narr_key,
+                    "type": "thinking",
+                    "title": "旁白",
+                    "status": "done",
+                    "action": None,
+                    "action_input": None,
+                    "output": thoughts.strip()[:_MAX_OUTPUT_CHARS],
+                    "artifact": None,
+                    "vis": None,
+                }, ts)
         self._scene_items[key] = (step, ts)
 
     def _ingest_assistant_text(

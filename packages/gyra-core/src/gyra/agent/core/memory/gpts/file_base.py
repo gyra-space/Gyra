@@ -659,6 +659,10 @@ class WorkEntry:
             observations=self.result if not self.success else None,
             is_exe_success=self.success,
             start_time=start_time,
+            # 旁白(触发该工具调用的 AI 正文)映射到 thoughts:V1 把旁白留在
+            # gpts_messages.content 供历史恢复渲染;V2 改存 WorkEntry.assistant_content,
+            # 需在此接回,否则历史恢复(scene workspace converter 等)读不到工具旁白。
+            thoughts=self.assistant_content or None,
             # 终态落定：vis 转换器用 state 渲染规划空间步骤状态图标
             state=Status.COMPLETE.value if self.success else Status.FAILED.value,
             view=view_content,
