@@ -171,6 +171,64 @@ async def test_non_vis_events_ignored(store, events):
     agent.reset_stream_vis.assert_not_called()
 
 
+async def test_tool_call_splits_narration_segments(store, events):
+    """tool_call 边界把旁白切成独立 message_id 段，支持与工具步骤时序交错。
+
+    修复：V2 整轮旁白原先全累积在一个 message_id 下，scene workspace 转换器
+    把它们聚合为一个 trailing answer 块，与工具步骤渲染割裂。现在每次工具调用
+    前 finalize 当前段并推进到新 message_id，使旁白能按各自时间戳就近交错。
+    """
+    agent = MagicMock()
+    agent.listen_thinking_stream = AsyncMock()
+    agent.reset_stream_vis = AsyncMock()
+    bridge = _make_bridge(agent, events)
+
+    # 段0：讲述旁白 → 随后工具调用
+    await events.emit(
+        _mk_event(1, "llm_token", StepState.THINKING,
+                  {"token": "让我先查看目录", "channel": "content"})
+    )
+    await events.emit(
+        _mk_event(2, "tool_call", StepState.ACTING,
+                  {"tool": "Bash", "input": {"cmd": "ls"}})
+    )
+    # 段0 终结：reset 当前段 + 切到新 message_id
+    agent.reset_stream_vis.assert_awaited_with(
+        "reply-1", thinking=None
+    )
+    assert bridge._reply_message_id == "reply-1-seg1"
+    assert bridge._final_text == ""
+    assert bridge._thinking_text == ""
+    assert bridge._seg_index == 1
+    # 段1：新 message_id 继续流式
+    await events.emit(
+        _mk_event(3, "llm_token", StepState.THINKING,
+                  {"token": "继续分析", "channel": "content"})
+    )
+    assert agent.listen_thinking_stream.await_count == 2
+    last_kwargs = agent.listen_thinking_stream.await_args_list[1].kwargs
+    assert last_kwargs["reply_message_id"] == "reply-1-seg1"
+    assert last_kwargs["is_first_content"] is True
+    assert bridge._final_text == "继续分析"
+
+
+async def test_tool_call_without_narration_does_not_reset(store, events):
+    """无前置旁白直接调工具：不清空段落，仅推进编号（不触发 reset=无副作用）。"""
+    agent = MagicMock()
+    agent.listen_thinking_stream = AsyncMock()
+    agent.reset_stream_vis = AsyncMock()
+    bridge = _make_bridge(agent, events)
+
+    await events.emit(
+        _mk_event(1, "tool_call", StepState.ACTING,
+                  {"tool": "Bash", "input": {"cmd": "ls"}})
+    )
+    agent.reset_stream_vis.assert_not_called()
+    assert bridge._reply_message_id == "reply-1-seg1"
+    assert bridge._seg_index == 1
+    assert bridge._final_text == ""
+
+
 async def test_detach_stops_rendering(store, events):
     """detach 后事件不再触发渲染。"""
     agent = MagicMock()

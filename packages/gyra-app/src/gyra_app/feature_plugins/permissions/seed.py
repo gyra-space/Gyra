@@ -423,22 +423,95 @@ _workspace_migration_done = False
 _ecp_confirmer_migration_done = False
 
 
-def _table_columns(s, table: str) -> set:
-    """SQLite/通用：列出表现有列名。"""
-    from sqlalchemy import text as _text
+def _dialect_name(s) -> str:
+    """当前会话绑定的数据库方言名（sqlite/mysql/postgresql...），小写。"""
+    return (s.get_bind().dialect.name or "").lower()
 
-    rows = s.execute(_text(f"PRAGMA table_info({table})")).fetchall()
-    return {r[1] for r in rows}
+
+def _table_columns(s, table: str) -> set:
+    """跨方言：列出表现有列名（SQLite/MySQL/PostgreSQL 通用）。"""
+    from sqlalchemy import inspect as _inspect
+
+    inspector = _inspect(s.get_bind())
+    try:
+        return {c["name"] for c in inspector.get_columns(table)}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _ensure_user_role_scope_index(s) -> bool:
+    """确保 user_role 唯一索引覆盖 scope_id（MySQL/PostgreSQL）。
+
+    存量库的 uk_user_role 可能是旧结构 (user_id, role_id)，不含 scope_id，
+    会阻止空间级绑定。重建为 (user_id, role_id, scope_id) 以对齐新模型。
+    返回 True 表示索引被重建/创建；无需改动或失败返回 False。
+    """
+    from sqlalchemy import inspect as _inspect
+
+    inspector = _inspect(s.get_bind())
+    try:
+        indexes = {
+            i.get("name"): list(i.get("column_names") or [])
+            for i in inspector.get_indexes("user_role")
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.debug("schema upgrade: inspect user_role indexes failed: %s", e)
+        return False
+
+    target = {"user_id", "role_id", "scope_id"}
+    current = indexes.get("uk_user_role")
+    if current and set(current) == target:
+        return False
+
+    try:
+        if current:
+            # MySQL 的 DROP INDEX 语法为 DROP INDEX name ON table
+            s.execute(sa_text("DROP INDEX uk_user_role ON user_role"))
+            s.commit()
+        s.execute(
+            sa_text(
+                "CREATE UNIQUE INDEX uk_user_role "
+                "ON user_role (user_id, role_id, scope_id)"
+            )
+        )
+        s.commit()
+        logger.info("Schema upgraded: user_role unique index covers scope_id")
+        return True
+    except Exception as e:  # noqa: BLE001
+        s.rollback()
+        logger.debug("schema upgrade user_role index skipped (may exist): %s", e)
+        return False
 
 
 def _rebuild_user_role_with_scope(s) -> bool:
-    """SQLite 无法直接改唯一约束：检测 user_role 缺 scope_id 列时重建表。
+    """检测 user_role 缺 scope_id 列并补齐（幂等，跨方言）。
 
-    返回 True 表示已重建（或新表本就含该列时返回 False）。
+    - SQLite：无法直接改唯一约束，重建表换唯一约束（IFNULL 兜底空 scope_id）。
+    - MySQL/PostgreSQL：ALTER ADD COLUMN + 重建唯一索引覆盖 scope_id。
+
+    返回 True 表示本函数对 schema 做了改动；无需改动时返回 False。
     """
     cols = _table_columns(s, "user_role")
     if not cols:
         return False  # 表还不存在，create_all 会按新结构建
+
+    if _dialect_name(s) != "sqlite":
+        changed = False
+        if "scope_id" not in cols:
+            try:
+                s.execute(sa_text("ALTER TABLE user_role ADD COLUMN scope_id INTEGER"))
+                s.commit()
+                logger.info("Schema upgraded: user_role.scope_id added")
+                changed = True
+            except Exception as e:  # noqa: BLE001
+                s.rollback()
+                logger.debug(
+                    "schema upgrade user_role.scope_id skipped (may exist): %s", e
+                )
+        if _ensure_user_role_scope_index(s):
+            changed = True
+        return changed
+
     if "scope_id" in cols:
         return False
     s.execute(sa_text(
@@ -477,7 +550,7 @@ def ensure_schema_upgrades() -> None:
 
     - role.scope_type
     - permission_definition.scope_type / grantable
-    - user_role.scope_id（SQLite 需重建表换唯一约束）
+    - user_role.scope_id（SQLite 重建表换唯一约束；MySQL/PG ALTER 加列+重建索引）
     """
     from gyra.storage.metadata.db_manager import db
 

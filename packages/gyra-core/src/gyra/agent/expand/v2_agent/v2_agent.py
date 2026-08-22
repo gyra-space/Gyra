@@ -585,6 +585,14 @@ class V2Agent(ReActMasterAgent):
                     "[V2Agent] db tool not wired",
                     exc_info=True,
                 )
+            # 持住工厂引用：供 run_step/resume_step 构造 ToolContext 时注入 agent
+            # （对齐 V1 tool_action 的 ``arguments["agent"] = agent``；否则 todowrite/
+            # todoread 等统一框架工具拿不到 agent，报 "Todo 存储不可用"）。
+            self._v2_tool_context_factory = ToolContextFactory(
+                agent_id=self.not_null_agent_context.agent_app_code,
+                conv_id=self._v2_conv_id,
+                agent=self,
+            )
             acting_fn = make_default_acting_fn(
                 tool_resolver=tool_resolver,
                 doom_loop_detector=DoomLoopAdapter(
@@ -592,10 +600,7 @@ class V2Agent(ReActMasterAgent):
                 ),
                 failure_tracker=ToolFailureTracker(max_failures=3),
                 truncator=TruncatorAdapter(getattr(self, "_truncator", None)),
-                tool_context_factory=ToolContextFactory(
-                    agent_id=self.not_null_agent_context.agent_app_code,
-                    conv_id=self._v2_conv_id,
-                ),
+                tool_context_factory=self._v2_tool_context_factory,
             )
 
             # 2.5 SubAgent seam（对齐 DSH ctx.subagents）：子 agent 复用主
@@ -697,6 +702,7 @@ class V2Agent(ReActMasterAgent):
                 skills=self._v2_skill_registry,  # SkillSeam（对齐 DSH ctx.skills）
                 thinking_fn=thinking_fn,
                 acting_fn=acting_fn,
+                tool_context_factory=self._v2_tool_context_factory,
             )
 
             # 5. vis 渲染桥：以 emit 订阅者身份消费 harness 事件流

@@ -49,6 +49,7 @@ def _resolve_harness_deps(
     thinking_fn=None,
     acting_fn=None,
     hook_manager=None,
+    tool_context_factory=None,
 ) -> dict:
     """从 HarnessContext 解包依赖；显式参数优先。
 
@@ -65,6 +66,7 @@ def _resolve_harness_deps(
             "thinking_fn": thinking_fn,
             "acting_fn": acting_fn,
             "hook_manager": hook_manager,
+            "tool_context_factory": tool_context_factory,
         }
     provided_store = state_store is not None
     state_store = state_store if state_store is not None else harness.storage
@@ -80,6 +82,8 @@ def _resolve_harness_deps(
     thinking_fn = thinking_fn if thinking_fn is not None else harness.thinking_fn
     acting_fn = acting_fn if acting_fn is not None else harness.acting_fn
     hook_manager = hook_manager if hook_manager is not None else harness.hooks
+    if tool_context_factory is None:
+        tool_context_factory = getattr(harness, "tool_context_factory", None)
     return {
         "state_store": state_store,
         "event_stream": event_stream,
@@ -88,6 +92,7 @@ def _resolve_harness_deps(
         "thinking_fn": thinking_fn,
         "acting_fn": acting_fn,
         "hook_manager": hook_manager,
+        "tool_context_factory": tool_context_factory,
     }
 
 
@@ -236,7 +241,7 @@ async def _run_acting_phase(
     emit, gate, tool_calls, acting_fn, state_store=None,
     subagent_runtime=None, parent_step_id=None, parent_conv_id=None,
     parent_agent_id=None, step_id=None, conv_id=None,
-    system_prompt=None, user_id=None,
+    system_prompt=None, user_id=None, tool_context_factory=None,
 ):
     """ACTING + OBSERVING 阶段。每个 tool_call 前 PermissionGate.check()。"""
     if step_id is None:
@@ -337,11 +342,17 @@ async def _run_acting_phase(
                 args=effective_tc.get("input", {}),
             )
             # Construct ToolContext
-            ctx = ToolContext(
-                agent_id=parent_agent_id or "unknown",
-                agent_name="v2_agent",
-                conversation_id=conv_id or "unknown",
-            )
+            if tool_context_factory is not None:
+                # 注入 agent（G4/G7）：todowrite/todoread 等统一框架工具需
+                # 从 context.get_resource("agent") 拿 agent.memory.gpts_memory，
+                # 否则报 "Todo 存储不可用"。
+                ctx = tool_context_factory.build(v2_call)
+            else:
+                ctx = ToolContext(
+                    agent_id=parent_agent_id or "unknown",
+                    agent_name="v2_agent",
+                    conversation_id=conv_id or "unknown",
+                )
             result = await acting_fn(v2_call, ctx)
             executed_count += 1
             # Convert V2ToolResult back to dict for event system
@@ -501,6 +512,7 @@ async def run_step(
     subagent_runtime = deps["subagent_runtime"]
     thinking_fn = deps["thinking_fn"]
     acting_fn = deps["acting_fn"]
+    tool_context_factory = deps["tool_context_factory"]
     if state_store is None:
         raise ValueError("state_store (or harness.storage) is required")
     if thinking_fn is None:
@@ -545,6 +557,7 @@ async def run_step(
             step_id=step_id, conv_id=conv_id,
             system_prompt=input_.get("system_prompt"),
             user_id=input_.get("user_id"),
+            tool_context_factory=tool_context_factory,
         ):
             yield e
         # P2 follow-up: if acting phase suspended for user input, don't emit DONE
@@ -591,6 +604,7 @@ async def resume_step(
     subagent_runtime = deps["subagent_runtime"]
     thinking_fn = deps["thinking_fn"]
     acting_fn = deps["acting_fn"]
+    tool_context_factory = deps["tool_context_factory"]
     if state_store is None:
         raise ValueError("state_store (or harness.storage) is required")
     if thinking_fn is None:
@@ -658,6 +672,7 @@ async def resume_step(
             step_id=step_id, conv_id=conv_id,
             system_prompt=input_.get("system_prompt"),
             user_id=input_.get("user_id"),
+            tool_context_factory=tool_context_factory,
         ):
             yield e
         # P2 follow-up: if acting phase suspended for user input, don't emit DONE

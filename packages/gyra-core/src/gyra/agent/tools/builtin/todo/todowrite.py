@@ -296,6 +296,11 @@ class TodowriteTool(ToolBase):
 
         # 尝试从 context 获取 agent
         agent = getattr(context, "agent", None) or context
+        # V2 路径：agent 经 ToolContextFactory 以 resource("agent") 注入，
+        # 而 ToolContext 是 pydantic 模型，其 ``agent`` 字段不存在，
+        # 需走 get_resource 探测。
+        if not hasattr(agent, "memory") and hasattr(context, "get_resource"):
+            agent = context.get_resource("agent") or agent
 
         # 获取存储
         storage = None

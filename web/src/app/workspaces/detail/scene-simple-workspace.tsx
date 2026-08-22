@@ -393,7 +393,7 @@ function StepDetail({ step }: { step: WorkspaceExecutionStep }) {
   }, [type, outputs, command, status, step.title]);
 
   return (
-    <div className="ws-simple-step">
+    <div className="ws-simple-step flex-1 min-h-0">
       <div className="ws-simple-step__head">
         <span className={`ws-simple-step__status ws-simple-step__status--${step.status}`}>
           {step.status === 'running' ? '运行中' : step.status === 'failed' ? '失败' : '完成'}

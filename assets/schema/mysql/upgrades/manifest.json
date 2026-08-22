@@ -360,6 +360,26 @@
       "seq": 7,
       "checksum": "e122072371a0d827de5f8013e4bda6e506cee73a73d60927c88f17a64390ec19",
       "version": 36
+    },
+    {
+      "name": "upgrade_0.3.0_20260822_to_0.3.0_20260822_0008.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260822",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260822",
+      "seq": 8,
+      "checksum": "d1432d31de903abde530294fbed4ddb344e7ad8b303564a010dd3ed856ed92f6",
+      "version": 37
+    },
+    {
+      "name": "upgrade_0.3.0_20260822_to_0.3.0_20260822_0009.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260822",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260822",
+      "seq": 9,
+      "checksum": "db6841a37aea3c090b0ed01ffdae6bc707c861245d37f34247dd09e1178c1a20",
+      "version": 38
     }
   ]
 }

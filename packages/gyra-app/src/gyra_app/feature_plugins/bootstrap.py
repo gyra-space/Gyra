@@ -43,6 +43,17 @@ def register_enabled_feature_plugin_routers(app: FastAPI) -> None:
             return bool(entry.get("enabled"))
         return False
 
+    def _permission_setting(key: str, default):
+        """从 permissions/access_control 插件的 settings 里读取配置（无则用默认）。"""
+        for plugin_id in ("permissions", "access_control"):
+            entry = raw.get(plugin_id)
+            if not isinstance(entry, dict):
+                continue
+            settings = entry.get("settings")
+            if isinstance(settings, dict) and key in settings:
+                return settings.get(key, default)
+        return default
+
     # Check if access_control (unified permission system) is enabled.
     # The permission/user-group management routers are ALWAYS mounted so the
     # endpoints exist out of the box -- toggling the plugin in the UI no longer
@@ -80,8 +91,11 @@ def register_enabled_feature_plugin_routers(app: FastAPI) -> None:
         except Exception as e:
             logger.warning(f"Failed to create all tables: {e}")
 
-        # 存量库补齐新列（role.scope_type / permission_definition.scope_type、grantable）
-        ensure_schema_upgrades()
+        # 存量库补齐新列（role / user_role / permission_definition 的新增列）。
+        # 可由 feature_plugins.<permissions|access_control>.settings.auto_schema_upgrade
+        # 关闭（默认开启）；表结构交由外部 DDL 管理时设为 false。
+        if _permission_setting("auto_schema_upgrade", True):
+            ensure_schema_upgrades()
         # 代码注册的权限协议 -> permission_definition 表（幂等 upsert）
         sync_permission_definitions()
         ensure_default_roles()

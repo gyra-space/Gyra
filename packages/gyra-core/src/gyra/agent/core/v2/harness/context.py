@@ -53,6 +53,8 @@ class HarnessContext:
     skills: Optional[Any] = None  # SkillSeam（默认实现 SkillRegistry）
     thinking_fn: Optional[Callable] = None
     acting_fn: Optional[Callable] = None
+    # ToolContextFactory：run_step/resume_step 构造 ToolContext 时注入 agent
+    tool_context_factory: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # 装配辅助
@@ -77,6 +79,7 @@ class HarnessContext:
         thinking_fn: Optional[Callable] = None,
         acting_fn: Optional[Callable] = None,
         event_batch: Any = None,
+        tool_context_factory: Optional[Any] = None,
     ) -> "HarnessContext":
         """便捷装配：默认创建真实持久化 StateStore + 共享 EventStream。
 
@@ -116,6 +119,7 @@ class HarnessContext:
             skills=skills,
             thinking_fn=thinking_fn,
             acting_fn=acting_fn,
+            tool_context_factory=tool_context_factory,
         )
 
     # ------------------------------------------------------------------

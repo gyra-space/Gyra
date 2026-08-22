@@ -54,7 +54,7 @@ const TerminalRenderer: FC<IProps> = ({
   const isError = status === 'error';
 
   return (
-    <div className="h-full flex flex-col rounded-lg overflow-hidden border border-slate-700/60 bg-[#1e1e1e] shadow-sm">
+    <div className="h-full flex-1 min-h-0 flex flex-col rounded-lg overflow-hidden border border-slate-700/60 bg-[#1e1e1e] shadow-sm">
       {/* macOS-style header */}
       <div className="flex items-center justify-between px-4 py-2 bg-[#2d2d2d] border-b border-slate-700/60 flex-shrink-0">
         <div className="flex items-center gap-2">

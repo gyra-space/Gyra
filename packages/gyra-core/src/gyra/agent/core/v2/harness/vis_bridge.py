@@ -29,8 +29,9 @@ from gyra.agent.util.llm.llm_client import AgentLLMOut
 
 logger = logging.getLogger(__name__)
 
-# 本桥订阅的事件类型：llm_token（增量渲染）与 step_done（终态重置）
-_VIS_EVENT_TYPES = ["llm_token", "step_done"]
+# 本桥订阅的事件类型：llm_token（增量渲染）、tool_call（旁白分段）、
+# step_done（终态重置）
+_VIS_EVENT_TYPES = ["llm_token", "tool_call", "step_done"]
 
 
 class VisBridge:
@@ -66,6 +67,12 @@ class VisBridge:
         self._thinking_text: str = ""
         # 本桥累积的正文文本（最终答案）
         self._final_text: str = ""
+        # 旁白分段计数：每遇 tool_call 边界推进一次，让每段旁白作为独立的
+        # message_id 落流（scene workspace 转换器据此按时序交错渲染，而非
+        # 把整轮旁白聚合为最后一个 trailing 文本块）。
+        self._seg_index: int = 0
+        # 本轮旁白的锚点 message_id（分段以此为前缀派生，避免多次分段叠加后缀）
+        self._anchor_message_id: str = ""
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -103,6 +110,7 @@ class VisBridge:
         self._reply_message_id = self._resolve_reply_message_id(
             reply_message_id, reply_message, received_message
         )
+        self._anchor_message_id = self._reply_message_id
         self._start_time = start_time or datetime.now()
         self._received_message = received_message
         self._reply_message = reply_message
@@ -110,6 +118,7 @@ class VisBridge:
         self._is_first_content = True
         self._thinking_text = ""
         self._final_text = ""
+        self._seg_index = 0
 
     def _resolve_reply_message_id(
         self,
@@ -145,8 +154,43 @@ class VisBridge:
     async def _on_event(self, event: StepEvent) -> None:
         if event.event_type == "llm_token":
             await self._render_token(event)
+        elif event.event_type == "tool_call":
+            await self._on_tool_call(event)
         elif event.event_type == "step_done" and event.state is StepState.DONE:
             await self._render_reset(event)
+
+    async def _on_tool_call(self, event: StepEvent) -> None:
+        """tool_call 边界：终结当前旁白段并推出新段。
+
+        每轮 turn 的旁白（content 通道）对流式渲染而言本应"讲一段话 → 调一个
+        工具 → 再讲一段话"。若全部累积在同一个 message_id 下，scene workspace
+        转换器会把整轮旁白聚合成一个 trailing answer 块，与工具步骤割裂。
+        这里在每次工具调用前把已累积的旁白/思考 reset 成一个**已终结**的段，
+        并把后续旁白切到新的 message_id，使转换器能按各自时间戳与工具步骤交错。
+        """
+        if self._thinking_text or self._final_text:
+            # 终结当前段（thinking 回填，正文已随增量推送）
+            try:
+                await self._agent.reset_stream_vis(
+                    self._reply_message_id,
+                    thinking=self._thinking_text or None,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[VisBridge] reset narration segment skipped: {e}")
+        # 推进新段锚点 + 时间戳，使后续旁白与当前工具调用就近交错
+        base = self._anchor_message_id or self._reply_message_id
+        self._seg_index += 1
+        self._reply_message_id = f"{base}-seg{self._seg_index}"
+        ts = getattr(event, "timestamp", None)
+        if ts:
+            try:
+                self._start_time = datetime.fromtimestamp(ts)
+            except Exception:  # noqa: BLE001
+                pass
+        self._thinking_text = ""
+        self._final_text = ""
+        self._is_first_chunk = True
+        self._is_first_content = True
 
     async def _render_token(self, event: StepEvent) -> None:
         """llm_token → BAIZE vis 增量渲染（复用 listen_thinking_stream）。

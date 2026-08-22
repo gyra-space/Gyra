@@ -350,6 +350,26 @@
       "seq": 7,
       "checksum": "29db70590f76decf9873ce98797fe142b445266f2b5e637a720c4066be4a3901",
       "version": 35
+    },
+    {
+      "name": "upgrade_0.3.0_20260822_to_0.3.0_20260822_0008.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260822",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260822",
+      "seq": 8,
+      "checksum": "0217139d002fb53a04abad2bdc579c383fbfa0039b13d37051ea7e3c3e73da1b",
+      "version": 36
+    },
+    {
+      "name": "upgrade_0.3.0_20260822_to_0.3.0_20260822_0009.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260822",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260822",
+      "seq": 9,
+      "checksum": "55dacd40ce887b3f46825fc3938f3c2feae65aaae116c038436703e0a0c8cca1",
+      "version": 37
     }
   ]
 }

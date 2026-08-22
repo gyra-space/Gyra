@@ -55,3 +55,13 @@ temperature = 0.5
 # 并非本 TOML 字段；需要时请设置环境变量后启动：
 #   export SERP_API_KEY="<your_key>"
 # 未配置时 websearch 自动兜底使用 DuckDuckGo 免费搜索，无需任何 key。
+
+# ---------------- 权限插件：表结构自动升级 ----------------
+# permissions / access_control 插件启用后，启动阶段会自动为存量库补齐
+# role / user_role / permission_definition 等表的新列
+# （role.scope_type / user_role.scope_id / permission_definition.scope_type、grantable）。
+# 若表结构由外部 DDL 脚本（如 MySQL 增量脚本 / alembic）统一管理，
+# 可将 auto_schema_upgrade 设为 false 关闭启动时的自动 ALTER 升级。
+[feature_plugins.permissions.settings]
+# 启动时自动执行表结构 DDL 升级（默认 true）
+auto_schema_upgrade = true

@@ -77,6 +77,24 @@ async def test_todowrite_result_is_human_readable_text():
     )
 
 
+async def test_todowrite_gets_agent_from_tool_context_resource():
+    """V2 路径：agent 经 ``ToolContext.set_resource("agent")`` 注入（pydantic 模型
+    无 ``agent`` 字段，getattr 取不到），需靠 ``get_resource`` 探测拿回 agent，
+    否则报 "Todo 存储不可用"。"""
+    from gyra.agent.tools.context import ToolContext
+
+    tool = _make_tool()
+    agent = _FakeAgent("c1")
+    ctx = ToolContext(agent_id="a", conversation_id="c1")
+    ctx.set_resource("agent", agent)
+    result = await tool.execute(
+        {"todos": [{"content": "x", "status": "pending"}]},
+        context=ctx,
+    )
+    assert result.success
+    assert "已更新任务列表" in result.output
+
+
 async def test_todowrite_result_metadata_carries_full_todos():
     """完整 todos 通过 metadata.todos 携带，LLM 上下文不接收（不进 V2 LLM 投影）。"""
     tool = _make_tool()
