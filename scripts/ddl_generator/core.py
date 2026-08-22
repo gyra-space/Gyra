@@ -274,11 +274,22 @@ class SchemaReflector:
             type=type_str,
             nullable=column.nullable,
             primary_key=column.primary_key,
-            autoincrement=column.autoincrement or False,
+            autoincrement=column.autoincrement is True or (
+                column.autoincrement == "auto"
+                and column.primary_key
+                and self._is_autoincrement_type(column.type)
+            ),
             unique=column.unique or False,
             default=default_value,
             comment=column.comment,
         )
+
+    @staticmethod
+    def _is_autoincrement_type(sqla_type: sqltypes.TypeEngine) -> bool:
+        """SQLAlchemy 的 'auto' 只对整数主键启用自增；此处判断是否为整型。"""
+        import sqlalchemy.types as sat
+
+        return isinstance(sqla_type, (sat.Integer, sat.SmallInteger, sat.BigInteger))
 
     def _get_type_string(self, sqla_type: sqltypes.TypeEngine) -> str:
         """
@@ -1195,25 +1206,302 @@ class DDLGenerator:
         if generated_match:
             generated_at = generated_match.group(1)
 
-        # Create a minimal schema with metadata only
-        # Note: For a full implementation, we would parse all table definitions
-        # This is a simplified version that works with the comparator
-        schema = UnifiedSchema(
-            version=version,
-            generated_at=generated_at
-        )
+        schema = UnifiedSchema(version=version, generated_at=generated_at)
 
-        # Parse table names (simplified)
-        # In a production system, we'd use a proper SQL parser
-        table_pattern = r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?\s*\('
-        for match in re.finditer(table_pattern, content, re.IGNORECASE):
-            table_name = match.group(1)
-            # Create empty table def (the comparator will handle the rest)
-            schema.tables[table_name] = TableDef(name=table_name)
+        # 真实解析列/索引/约束：此前只抓表名，导致 comparator 把所有列都判为“新增”
+        for tname, tbody in self._iter_create_table_blocks(content):
+            schema.tables[tname] = self._parse_table_body(tname, tbody, dialect)
+
+        # 独立 CREATE INDEX 语句（PostgreSQL 生成器不在 CREATE TABLE 内联索引）
+        if dialect != "mysql":
+            self._parse_standalone_indexes(content, schema)
 
         logger.info(f"Parsed {len(schema.tables)} tables from existing DDL: {ddl_file}")
 
         return schema
+
+    def _parse_standalone_indexes(self, content: str, schema: UnifiedSchema) -> None:
+        """解析 PostgreSQL 的独立 CREATE [UNIQUE] INDEX 语句，回填到对应表。"""
+        import re
+
+        pattern = re.compile(
+            r"CREATE\s+(?:(UNIQUE)\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+            r"[`\"]?(\w+)[`\"]?\s+ON\s+[`\"]?(\w+)[`\"]?\s*\((.+?)\)\s*;",
+            re.IGNORECASE,
+        )
+        for m in pattern.finditer(content):
+            unique = bool(m.group(1))
+            iname = m.group(2)
+            tname = m.group(3)
+            cols = self._parse_col_list("(" + m.group(4) + ")")
+            if tname not in schema.tables:
+                continue
+            schema.tables[tname].indexes[iname] = IndexDef(
+                name=iname, columns=cols, unique=unique
+            )
+
+    # ------------------------------------------------------------------
+    # DDL 解析：把 gyra.sql 反向解析为 UnifiedSchema（供增量 diff 比对）
+    # ------------------------------------------------------------------
+
+    def _iter_create_table_blocks(self, content: str):
+        """逐个产出 (表名, CREATE TABLE 主体文本)；按括号配平提取，兼容多行定义。"""
+        import re
+
+        pattern = re.compile(
+            r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?\s*\(',
+            re.IGNORECASE,
+        )
+        for match in pattern.finditer(content):
+            name = match.group(1)
+            # 从开括号起配平，找对应的闭括号
+            depth = 0
+            start = match.end() - 1  # 指向 '('
+            end = start
+            in_str = None  # 当前处于的引号（' 或 " 或 `）
+            i = start
+            n = len(content)
+            while i < n:
+                ch = content[i]
+                if in_str:
+                    if ch == in_str:
+                        if in_str == "'" and i + 1 < n and content[i + 1] == "'":
+                            i += 1  # 跳过第二个转义引号，保持字符串未闭合
+                        else:
+                            in_str = None
+                    i += 1
+                    continue
+                if ch in "'\"`":
+                    in_str = ch
+                elif ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+                i += 1
+            if end > start:
+                yield name, content[start + 1:end]
+
+    @staticmethod
+    def _split_top_level(body: str):
+        """按顶层逗号切分 CREATE TABLE 主体（忽略括号/引号内的逗号）。"""
+        parts, buf = [], []
+        depth, in_str = 0, None
+        i = 0
+        while i < len(body):
+            ch = body[i]
+            if in_str:
+                buf.append(ch)
+                if ch == in_str:
+                    if in_str == "'" and i + 1 < len(body) and body[i + 1] == "'":
+                        buf.append(body[i + 1])
+                        i += 1
+                    else:
+                        in_str = None
+            elif ch in "'\"`":
+                in_str = ch
+                buf.append(ch)
+            elif ch == "(":
+                depth += 1
+                buf.append(ch)
+            elif ch == ")":
+                depth -= 1
+                buf.append(ch)
+            elif ch == "," and depth == 0:
+                parts.append("".join(buf).strip())
+                buf = []
+            else:
+                buf.append(ch)
+            i += 1
+        if buf and "".join(buf).strip():
+            parts.append("".join(buf).strip())
+        return parts
+
+    def _parse_table_body(self, name: str, body: str, dialect: str) -> TableDef:
+        """解析单张表的列/主键/唯一约束/索引。"""
+        table = TableDef(name=name)
+        pk_cols = []
+        is_mysql = dialect == "mysql"
+
+        for entry in self._split_top_level(body):
+            if not entry:
+                continue
+            norm = re.sub(r"\s+", " ", entry).strip()
+            upper = norm.upper()
+
+            if upper.startswith("PRIMARY KEY"):
+                pk_cols = self._parse_col_list(norm)
+                continue
+            if upper.startswith(("UNIQUE KEY", "UNIQUE INDEX")):
+                m = re.match(
+                    r"(?i)UNIQUE\s+(?:KEY|INDEX)\s+[`\"]?(\w+)[`\"]?\s*\((.+)\)",
+                    norm,
+                )
+                if m:
+                    cname, cols = m.group(1), self._parse_col_list(norm)
+                    table.constraints[cname] = ConstraintDef(
+                        name=cname, type="unique", columns=cols
+                    )
+                continue
+            if upper.startswith(("KEY ", "INDEX ")):
+                m = re.match(r"(?i)(?:KEY|INDEX)\s+[`\"]?(\w+)[`\"]?\s*\((.+)\)", norm)
+                if m:
+                    iname, cols = m.group(1), self._parse_col_list(norm)
+                    table.indexes[iname] = IndexDef(name=iname, columns=cols)
+                continue
+            # PostgreSQL: 唯一约束以 CONSTRAINT x UNIQUE (...) 形式内联
+            if upper.startswith("CONSTRAINT"):
+                m = re.match(
+                    r"(?i)CONSTRAINT\s+[`\"]?(\w+)[`\"]?\s+UNIQUE\s*\((.+)\)", norm
+                )
+                if m:
+                    cname, cols = m.group(1), self._parse_col_list(norm)
+                    table.constraints[cname] = ConstraintDef(
+                        name=cname, type="unique", columns=cols
+                    )
+                continue
+            if upper.startswith(("CONSTRAINT", "FOREIGN KEY", "CHECK")):
+                continue
+
+            # 否则视为列定义
+            col = self._parse_column(norm, is_mysql)
+            if col is not None:
+                table.columns[col.name] = col
+
+        # 标记主键列
+        for c in pk_cols:
+            if c in table.columns:
+                table.columns[c].primary_key = True
+
+        # PostgreSQL 独立 CREATE INDEX 语句在外层另行处理（见 _parse_ddl_file）
+        return table
+
+    def _parse_column(self, norm: str, is_mysql: bool) -> Optional[ColumnDef]:
+        """解析单个列定义，反推为反射器统一格式（type/nullable/pk/autoincrement/unique/default）。"""
+        m = re.match(r'^[`"](\w+)[`"]\s+(.+)$', norm)
+        if not m:
+            return None
+        col_name, rest = m.group(1), m.group(2)
+
+        upper = rest.upper()
+        autoincrement = "AUTO_INCREMENT" in upper or "SERIAL" in upper
+        pk_inline = "PRIMARY KEY" in upper
+        nullable = "NOT NULL" not in upper and not pk_inline and not autoincrement
+        unique = bool(re.search(r"\bUNIQUE\b", upper)) and "UNIQUE KEY" not in upper
+        # 默认值
+        default = None
+        dm = re.search(r"\bDEFAULT\s+('((?:[^']|'')*)'|[^\s,]+)", rest, re.IGNORECASE)
+        if dm:
+            raw = dm.group(1).strip()
+            if raw.upper() in ("CURRENT_TIMESTAMP", "NOW()", "CURRENT_TIMESTAMP()"):
+                default = "now"
+            elif raw.startswith("'"):
+                default = raw[1:-1].replace("''", "'")
+            elif raw.upper() in ("NULL", "NONE"):
+                default = None
+            elif raw in ("True", "1"):
+                default = "True"
+            elif raw in ("False", "0"):
+                default = "False"
+            else:
+                default = raw
+
+        col_type = self._reverse_map_type(rest, is_mysql)
+        autoincrement_bool = bool(
+            ("AUTO_INCREMENT" in upper or "SERIAL" in upper)
+        )
+
+        return ColumnDef(
+            name=col_name,
+            type=col_type,
+            nullable=nullable,
+            primary_key=pk_inline,
+            autoincrement=autoincrement_bool,
+            unique=unique,
+            default=default,
+            comment=self._parse_comment(rest),
+        )
+
+    def _reverse_map_type(self, rest: str, is_mysql: bool) -> str:
+        """把 DDL 里的物理类型反推为反射器生成的统一类型字符串。"""
+        tm = re.match(r"\s*(\w+)\s*(?:\(\s*(\d+)\s*(?:,\s*\d+\s*)?\))?", rest)
+        if not tm:
+            return "TEXT"
+        base = tm.group(1).upper()
+        params = tm.group(2)
+
+        if is_mysql:
+            if base == "VARCHAR" and params:
+                return f"String({params})"
+            if base in ("INT", "INTEGER"):
+                return "Integer"
+            if base == "BIGINT":
+                return "BigInteger"
+            if base == "SMALLINT":
+                return "SmallInteger"
+            if base == "LONGTEXT":
+                return "Text(2147483647)"
+            if base == "TEXT":
+                return "Text"
+            if base == "TINYINT":
+                return "Boolean"
+            if base == "DATETIME":
+                return "DateTime"
+            if base == "JSON":
+                return "JSON"
+            if base == "FLOAT":
+                return "Float"
+            if base == "DOUBLE":
+                return "Float"
+            return base.capitalize()
+        else:  # postgresql
+            if base == "VARCHAR" and params:
+                return f"String({params})"
+            if base == "SERIAL":
+                return "Integer"
+            if base == "BIGSERIAL":
+                return "BigInteger"
+            if base in ("INTEGER", "INT"):
+                return "Integer"
+            if base == "BIGINT":
+                return "BigInteger"
+            if base == "SMALLINT":
+                return "SmallInteger"
+            if base == "TIMESTAMP":
+                return "DateTime"
+            if base == "BOOLEAN":
+                return "Boolean"
+            if base == "TEXT":
+                return "Text"
+            if base == "JSON":
+                return "JSON"
+            if base == "REAL":
+                return "Float"
+            return base.capitalize()
+
+    @staticmethod
+    def _parse_col_list(clause: str) -> List[str]:
+        """从 (... ) 里提取列名列表（去引号、忽略长度前缀/排序）。"""
+        m = re.search(r"\((.+)\)", clause)
+        if not m:
+            return []
+        cols = []
+        for raw in m.group(1).split(","):
+            tok = raw.strip().strip('`"')
+            tok = re.split(r"[\s(]", tok)[0]  # 去掉 (n) 或 ASC/DESC
+            tok = tok.strip('`"')
+            if tok:
+                cols.append(tok)
+        return cols
+
+    @staticmethod
+    def _parse_comment(rest: str) -> Optional[str]:
+        m = re.search(r"(?i)COMMENT\s+'((?:[^']|'')*)'", rest)
+        if m:
+            return m.group(1).replace("''", "'")
+        return None
 
 
 # ============================================================================

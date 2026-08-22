@@ -13,7 +13,7 @@
  * - 交付文件 / 回答由 feed 主视觉渲染,不在本组件职责内。
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   CodeOutlined,
   CompassOutlined,
@@ -92,14 +92,21 @@ function fmtDuration(ms: number): string {
   return `${Math.floor(s / 60)}m${s % 60}s`;
 }
 
-/** 相邻步骤时间戳差值 → 每步耗时(首步无前序,计 0) */
+/** 每步耗时:优先取与上一步的时间差;首步/上一步无 ts 时,用与下一步的差值兜底,
+ * 让未分组折叠的单个工具步骤也能显示耗时(数据层仅单 ts,为近似值)。 */
 function buildDurations(phases: ExecutionPhase[]): Map<string, number> {
   const flat = phases.flatMap((p) => p.steps);
   const map = new Map<string, number>();
-  for (let i = 1; i < flat.length; i++) {
+  for (let i = 0; i < flat.length; i++) {
     const cur = tsToMs(flat[i].ts);
-    const prev = tsToMs(flat[i - 1].ts);
-    if (cur !== null && prev !== null && cur > prev) map.set(flat[i].id, cur - prev);
+    if (cur === null) continue;
+    const prev = i > 0 ? tsToMs(flat[i - 1].ts) : null;
+    if (prev !== null && cur > prev) {
+      map.set(flat[i].id, cur - prev);
+      continue;
+    }
+    const next = i < flat.length - 1 ? tsToMs(flat[i + 1].ts) : null;
+    if (next !== null && next > cur) map.set(flat[i].id, next - cur);
   }
   return map;
 }
@@ -183,11 +190,11 @@ function ToolRunRow({
 }) {
   const running = steps.some((s) => s.status === 'running');
   const failed = steps.some((s) => s.status === 'failed');
-  const autoOpen = running || failed;
-  const [open, setOpen] = useState(autoOpen);
-  useEffect(() => {
-    if (autoOpen) setOpen(true);
-  }, [autoOpen]);
+  // 默认仅「最新执行中」的批次展开:批内末步仍在运行,或含失败需定位。
+  // 已完成批次默认折叠收敛;不用 useEffect 强制重开 —— 运行中用户手动折叠后
+  // 不应被下一帧弹开,交互状态以用户为准。
+  const lastRunning = steps.length > 0 && steps[steps.length - 1].status === 'running';
+  const [open, setOpen] = useState(lastRunning || failed);
 
   // 按工具名聚合计数,如“execute_raw_sql ×1 · run_terminal_cmd ×3”,每项带专属 icon
   const actionGroups = useMemo(() => {
@@ -285,11 +292,9 @@ function PhaseGroup({
 }) {
   const phaseFailed = phase.status === 'failed' || phase.steps.some((s) => s.status === 'failed');
   const autoOpen = phase.status === 'running' || phaseFailed;
+  // 默认仅运行中/失败组展开;不强制重开 —— 用户手动折叠后以用户交互为准,
+  // 避免运行中下一帧把已折叠的组重新弹开。
   const [open, setOpen] = useState(autoOpen);
-  // 状态翻转(完成 → 失败等)时回到自动态,避免手动折叠把失败组藏起来
-  useEffect(() => {
-    if (autoOpen) setOpen(true);
-  }, [autoOpen]);
 
   const toolStepCount = phase.steps.filter((s) => s.type !== 'thinking').length;
   const empty = phase.steps.length === 0;

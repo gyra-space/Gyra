@@ -201,14 +201,18 @@ def run_schema_migrations(
                     baseline_name = _resolve_baseline_name(
                         scripts, getattr(cfg, "assume_current_version", None)
                     )
-                    _record(conn, baseline_name, "baseline")
+                    # 存量库不应重跑历史脚本：把基线及之前的所有脚本在账本里
+                    # 一并记为已应用，否则重启后历史脚本会被当作增量重放，
+                    # 导致大量 Duplicate column/key。
+                    for sname in _scripts_up_to(scripts, baseline_name):
+                        _record(conn, sname, "baseline")
                     conn.commit()
                     logger.info(
-                        "[SchemaMigrator] existing DB baselined to %s (no historical "
-                        "scripts executed)",
+                        "[SchemaMigrator] existing DB baselined to %s "
+                        "(no historical scripts executed)",
                         baseline_name,
                     )
-                    applied = {baseline_name}
+                    applied = set(_scripts_up_to(scripts, baseline_name))
                     last_applied = baseline_name
 
             # ③ 统一执行基线/账本之后的增量差集
@@ -343,6 +347,19 @@ def _resolve_baseline_name(
             latest_name,
         )
     return latest_name
+
+
+def _scripts_up_to(scripts: List[UpgradeScript], baseline_name: str) -> List[str]:
+    """返回 baseline 及之前（按排序顺序）的所有脚本名。
+
+    存量库以 baseline 为锚点：baseline 之前的脚本都被视为已应用/不应重放。
+    """
+    names = [s.name for s in scripts]
+    if baseline_name in names:
+        idx = names.index(baseline_name)
+        return names[: idx + 1]
+    # 未命中（防御）：仅返回基线本身，避免把后续增量一并标为已应用
+    return [baseline_name]
 
 
 def _ensure_ledger(conn, dialect: str) -> None:

@@ -236,6 +236,49 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             "actions": ["preview", "download"],
         }
 
+    def _collect_report_output_files(self, report: Any, step_id: Optional[str] = None) -> None:
+        """从 action_report.output_files 收集交付文件并入驻大厅。
+
+        terminate 收尾动作的交付文件由 react_master_agent 通过
+        _attach_delivery_files 附加在 output_files;非终止工具的产出文件也走
+        同一通道。按 file_id 去重,避免增量推送重复追加。
+        """
+        output_files = self._report_get(report, "output_files")
+        if not isinstance(output_files, (list, tuple)):
+            return
+        existing_ids = {f.get("file_id") for f in self._deliverable_files}
+        for file_info in output_files:
+            if not isinstance(file_info, dict):
+                continue
+            file_id = file_info.get("file_id", "")
+            if not file_id:
+                continue
+            # 交付文件(file_type=deliverable)进 deliverable_files,供前端底部卡片渲染
+            if file_info.get("file_type") == "deliverable" and file_id not in existing_ids:
+                oss_url = file_info.get("oss_url")
+                preview_url = file_info.get("preview_url")
+                if oss_url and str(oss_url).startswith("gyra-fs://"):
+                    content_url = oss_url
+                else:
+                    content_url = preview_url or oss_url
+                file_name = file_info.get("file_name", "")
+                mime_type = file_info.get("mime_type")
+                self._deliverable_files.append({
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "mime_type": mime_type,
+                    "file_size": file_info.get("file_size", 0),
+                    "content_url": content_url,
+                    "download_url": file_info.get("download_url") or preview_url,
+                    "object_path": file_info.get("object_path"),
+                    "render_type": self._determine_render_type(file_name, mime_type),
+                })
+                existing_ids.add(file_id)
+            # 全部产出文件入驻大厅(与步骤产出共用 file_<id> 命名,天然去重)
+            exhibit = self._file_info_to_exhibit(file_info, step_id=step_id)
+            if exhibit is not None:
+                self._upsert_lobby_exhibit(exhibit)
+
     def _upsert_tool_step(self, report: Any) -> None:
         action_id = self._report_get(report, "action_id")
         if not action_id:
@@ -244,7 +287,9 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         # 已由 answer/summary 通道渲染;当作工具步骤会多出一条「Agent 名+对勾」
         # 伪步骤,且其 start_time 晚于最终文本,会把最终回复挤成前置「阶段回复」。
         # 与 manus 转换器对 terminate 的跳过逻辑对齐。
+        # 注意:terminate 携带的交付文件 output_files 仍需收集,否则最终交付文件丢失。
         if self._report_get(report, "terminate"):
+            self._collect_report_output_files(report)
             return
         key = f"tool-{action_id}"
 
@@ -564,7 +609,17 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                 logger.warning(f"[SceneWorkspace] message fallback collection failed: {e}")
 
         self._task_files = [self._task_file_to_dict(f) for f in task_files]
-        self._deliverable_files = [self._deliverable_file_to_dict(f) for f in deliverable_files]
+        # 合并而非覆盖:terminate 收尾已在 _upsert_tool_step 收集过交付文件,
+        # 此处按 file_id 并入 gpts_memory/messages 的全量结果(新值优先),
+        # 避免 messages/gpts_memory 路径为空时把 terminate 收集的交付文件清空。
+        collected = [self._deliverable_file_to_dict(f) for f in deliverable_files]
+        if collected:
+            seen = {f.get("file_id") for f in collected}
+            merged = list(collected)
+            for f in self._deliverable_files:
+                if f.get("file_id") not in seen:
+                    merged.append(f)
+            self._deliverable_files = merged
 
         # 交付文件入驻大厅(与步骤产出共用 file_<id>,幂等去重)
         for f in self._deliverable_files:

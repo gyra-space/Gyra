@@ -640,6 +640,16 @@ class WorkEntry:
 
         from gyra.agent.core.schema import Status
 
+        # start_time 映射:vis 转换器(scene_agent_workspace 等)按 action_report 的
+        # start_time 给工具步骤排时序;缺失时历史恢复路径会把工具步骤排到 answer
+        # 之后(V2 从 WorkEntry 动态构建 action_report 时曾丢失该字段)。
+        start_time = None
+        if self.timestamp:
+            try:
+                start_time = datetime.fromtimestamp(self.timestamp)
+            except (OverflowError, OSError, ValueError):
+                start_time = None
+
         return ActionOutput(
             action_id=self.tool_call_id or "",
             action_name=self.tool,
@@ -648,6 +658,7 @@ class WorkEntry:
             content=self.result or "",
             observations=self.result if not self.success else None,
             is_exe_success=self.success,
+            start_time=start_time,
             # 终态落定：vis 转换器用 state 渲染规划空间步骤状态图标
             state=Status.COMPLETE.value if self.success else Status.FAILED.value,
             view=view_content,

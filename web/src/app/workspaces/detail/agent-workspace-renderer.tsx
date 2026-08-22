@@ -553,7 +553,9 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
       )}
       {rounds.map((round, roundIdx) => {
         const isLastRound = roundIdx === rounds.length - 1;
-        // 轮内节点:连续过程步骤攒批 → StepFlow 顺序流;其余(answer/任务卡片/ask_user)直接渲染
+        // 轮内节点:严格按步骤真实时序(ts 交错)渲染 —— 连续过程步骤攒批成 StepFlow,
+        // 遇到 answer/阶段回复/特殊卡片就 flush 并原地渲染。运行中与完成后走同一套
+        // 顺序,不另做「过程全在前、结论全在后」的重排,避免完成后工具被挤到答案之后。
         const nodes: ReactNode[] = [];
         let batch: WorkspaceExecutionStep[] = [];
         let batchKey = '';

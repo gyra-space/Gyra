@@ -74,6 +74,50 @@ async def test_doom_loop_blocks():
 
 
 @pytest.mark.asyncio
+async def test_doom_loop_adapter_blocks_with_real_detector():
+    """回归：DoomLoopAdapter 误读 should_block 导致永不阻断。
+
+    BAIZE DoomLoopCheckResult 没有 should_block 字段，真实字段是 is_doom_loop。
+    用真实 DoomLoopDetector 连续相同调用 threshold 次后，adapter.check 必须返回
+    False（阻断），acting_fn 应返回 doom loop 失败而非继续执行工具。
+    """
+    from gyra.agent.core.v2.compat_adapters import DoomLoopAdapter
+    from gyra.agent.expand.react_master_agent.doom_loop_detector import DoomLoopDetector
+
+    detector = DoomLoopDetector(threshold=3)
+    adapter = DoomLoopAdapter(detector)
+    tool = FakeTool("bash", V2ToolResult.ok(output="ok", tool_name="bash"))
+    acting_fn = _make_acting_fn(tool, doom_loop=adapter)
+    ctx = ToolContext()
+    tc = V2ToolCall(name="bash", args={"command": "echo hi"})
+
+    # 前 threshold-1 次正常执行（未达阈值）
+    for _ in range(2):
+        r = await acting_fn(tc, ctx)
+        assert r.success
+
+    # 第 threshold 次起命中 doom loop，应被阻断
+    r = await acting_fn(tc, ctx)
+    assert not r.success
+    assert "doom loop" in r.error.lower()
+
+    # adapter.check 本身也应直接返回 False
+    assert await adapter.check("bash", {"command": "echo hi"}) is False
+
+
+@pytest.mark.asyncio
+async def test_doom_loop_adapter_allows_when_no_loop():
+    """真实检测器未达到阈值时，adapter.check 应放行。"""
+    from gyra.agent.core.v2.compat_adapters import DoomLoopAdapter
+    from gyra.agent.expand.react_master_agent.doom_loop_detector import DoomLoopDetector
+
+    detector = DoomLoopDetector(threshold=3)
+    adapter = DoomLoopAdapter(detector)
+    assert await adapter.check("bash", {"command": "echo a"}) is True
+    assert await adapter.check("bash", {"command": "echo b"}) is True
+
+
+@pytest.mark.asyncio
 async def test_failure_tracker_blocks_after_threshold():
     tool = FakeTool("bash", V2ToolResult.fail(error="boom", tool_name="bash"))
     acting_fn = _make_acting_fn(tool)

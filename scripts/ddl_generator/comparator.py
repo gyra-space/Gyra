@@ -191,13 +191,29 @@ class SchemaComparator:
         # Compare columns
         self._compare_columns(old_table, new_table, table_change)
 
-        # Compare indexes
+        # Compare indexes（唯一索引与唯一约束等价，统一到唯一键视图比较）
         self._compare_indexes(old_table, new_table, table_change)
 
-        # Compare constraints
+        # Compare constraints（跳过已被唯一索引计入的唯一约束）
         self._compare_constraints(old_table, new_table, table_change)
 
         return table_change
+
+    @staticmethod
+    def _unique_keys(table: TableDef) -> Dict[frozenset, str]:
+        """汇总表的唯一键（唯一索引 + 唯一约束）：按列集合映射到键名。
+
+        唯一约束在 ORM 层反映为 Index(unique=True)，而 DDL 层渲染为 UNIQUE KEY
+        （约束）。这里把两者归一到同一视图，避免互相误判 ADD/REMOVE。
+        """
+        keys: Dict[frozenset, str] = {}
+        for name, idx in table.indexes.items():
+            if idx.unique:
+                keys[frozenset(idx.columns)] = name
+        for name, con in table.constraints.items():
+            if con.type == "unique":
+                keys[frozenset(con.columns)] = name
+        return keys
 
     def _compare_columns(
         self, old_table: TableDef, new_table: TableDef, table_change: TableChange
@@ -243,65 +259,126 @@ class SchemaComparator:
 
     def _column_changed(self, old_col: ColumnDef, new_col: ColumnDef) -> bool:
         """Check if column definition changed."""
-        # Compare each attribute
+        # Compare each attribute；列级 unique 由表级 constraint/index 捕获，不单独比较
         return (
-            old_col.type != new_col.type
+            self._type_changed(old_col.type, new_col.type)
             or old_col.nullable != new_col.nullable
             or old_col.primary_key != new_col.primary_key
             or old_col.autoincrement != new_col.autoincrement
-            or old_col.unique != new_col.unique
-            or old_col.default != new_col.default
+            or self._default_changed(old_col.default, new_col.default)
             # Note: comment changes usually don't require ALTER TABLE
         )
+
+    @staticmethod
+    def _normalize_type(t) -> str:
+        """归一化类型字符串，抹平大小写/别名/等价写法带来的伪差异。"""
+        if t is None:
+            return ""
+        s = str(t).strip().lower().replace(" ", "")
+        # 等价类型别名
+        aliases = {
+            "smallint": "smallinteger",
+            "integer": "integer",
+            "tinyint(1)": "boolean",
+            "boolean": "boolean",
+            "longtext": "text",
+            "text(2147483647)": "text",
+        }
+        return aliases.get(s, s)
+
+    @classmethod
+    def _type_changed(cls, old_type, new_type) -> bool:
+        return cls._normalize_type(old_type) != cls._normalize_type(new_type)
+
+    @staticmethod
+    def _default_changed(old_default, new_default) -> bool:
+        """判断默认值是否语义等价（DDL 往返会有有损差异）。"""
+        if old_default == new_default:
+            return False
+
+        def _norm(v) -> str:
+            s = str(v).lower()
+            if s in ("now", "utcnow", "current_timestamp"):
+                return "now"
+            if s in ("true", "1"):
+                return "1"
+            if s in ("false", "0"):
+                return "0"
+            return s
+
+        return _norm(old_default) != _norm(new_default)
 
     def _compare_indexes(
         self, old_table: TableDef, new_table: TableDef, table_change: TableChange
     ):
-        """Compare indexes between two table versions."""
-        old_indexes = set(old_table.indexes.keys())
-        new_indexes = set(new_table.indexes.keys())
+        """Compare indexes (unique indexes handled via the unified unique-key view)."""
+        old_uniq = self._unique_keys(old_table)
+        new_uniq = self._unique_keys(new_table)
 
-        # Added indexes
-        for idx_name in new_indexes - old_indexes:
+        # 唯一键差异：按列集合比较
+        for cols in new_uniq.keys() - old_uniq.keys():
+            table_change.index_changes.append(
+                IndexChange(
+                    change_type=ChangeType.ADDED,
+                    index_name=new_uniq[cols],
+                    new_def=new_table.indexes.get(new_uniq[cols]),
+                )
+            )
+        for cols in old_uniq.keys() - new_uniq.keys():
+            table_change.index_changes.append(
+                IndexChange(
+                    change_type=ChangeType.REMOVED,
+                    index_name=old_uniq[cols],
+                    old_def=old_table.indexes.get(old_uniq[cols]),
+                )
+            )
+
+        # 非唯一索引按名称比较
+        old_nonuniq = {n for n, i in old_table.indexes.items() if not i.unique}
+        new_nonuniq = {n for n, i in new_table.indexes.items() if not i.unique}
+
+        for idx_name in new_nonuniq - old_nonuniq:
             table_change.index_changes.append(
                 IndexChange(
                     change_type=ChangeType.ADDED,
                     index_name=idx_name,
-                    new_def=new_table.indexes[idx_name]
+                    new_def=new_table.indexes[idx_name],
                 )
             )
-
-        # Removed indexes
-        for idx_name in old_indexes - new_indexes:
+        for idx_name in old_nonuniq - new_nonuniq:
             table_change.index_changes.append(
                 IndexChange(
                     change_type=ChangeType.REMOVED,
                     index_name=idx_name,
-                    old_def=old_table.indexes[idx_name]
+                    old_def=old_table.indexes[idx_name],
                 )
             )
-
-        # Modified indexes
-        for idx_name in old_indexes & new_indexes:
+        for idx_name in old_nonuniq & new_nonuniq:
             old_idx = old_table.indexes[idx_name]
             new_idx = new_table.indexes[idx_name]
-
             if old_idx.columns != new_idx.columns or old_idx.unique != new_idx.unique:
                 table_change.index_changes.append(
                     IndexChange(
                         change_type=ChangeType.MODIFIED,
                         index_name=idx_name,
                         old_def=old_idx,
-                        new_def=new_idx
+                        new_def=new_idx,
                     )
                 )
 
     def _compare_constraints(
         self, old_table: TableDef, new_table: TableDef, table_change: TableChange
     ):
-        """Compare constraints between two table versions."""
+        """Compare constraints（唯一约束由唯一键视图统一比较，这里跳过避免重复）。"""
         old_constraints = set(old_table.constraints.keys())
         new_constraints = set(new_table.constraints.keys())
+        # 唯一约束已在 _compare_indexes 的 unique-key 视图里比较
+        old_constraints = {
+            c for c in old_constraints if old_table.constraints[c].type != "unique"
+        }
+        new_constraints = {
+            c for c in new_constraints if new_table.constraints[c].type != "unique"
+        }
 
         # Added constraints
         for const_name in new_constraints - old_constraints:

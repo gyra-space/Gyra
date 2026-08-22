@@ -29,8 +29,13 @@ class DoomLoopAdapter:
             return True  # 无检测器，放行
         try:
             result = self._detector.check_doom_loop(tool_name, args)
-            # DoomLoopCheckResult 字段：should_block / is_doom_loop / message 等
-            return not bool(getattr(result, "should_block", False))
+            # BAIZE DoomLoopCheckResult 真实字段为 is_doom_loop / action / message，
+            # 不存在 should_block。此前误读 should_block 导致 getattr 恒为 False、
+            # not False=True 永远放行，DoomLoop 只告警不阻断（工具层死循环）。
+            # 这里以 is_doom_loop 为唯一判定依据：命中即阻断。
+            if getattr(result, "is_doom_loop", False):
+                return False
+            return True
         except Exception:
             return True  # 检测异常不阻塞主流程
 
