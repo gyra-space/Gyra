@@ -182,7 +182,12 @@ def run_schema_migrations(
             if not _has_gyra_tables(engine):
                 # ① 空库：全量初始化 + 基线到最新
                 if full_ddl_file.is_file():
-                    _run_sql_text(conn, full_ddl_file.read_text(encoding="utf-8"), cfg)
+                    _run_sql_text(
+                        conn,
+                        full_ddl_file.read_text(encoding="utf-8"),
+                        cfg,
+                        script_name="full_ddl",
+                    )
                     conn.commit()
                     logger.info(
                         "[SchemaMigrator] full DDL initialized from %s", full_ddl_file

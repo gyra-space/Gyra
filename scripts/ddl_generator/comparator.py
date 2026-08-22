@@ -284,7 +284,12 @@ class SchemaComparator:
             "longtext": "text",
             "text(2147483647)": "text",
         }
-        return aliases.get(s, s)
+        norm = aliases.get(s, s)
+        # 各类 TEXT（TINYTEXT/MEDIUMTEXT/LONGTEXT）与带长度的 Text(n) 语义等价，
+        # 统一收拢为 text，避免 DDL 往返出现 Text(65535) vs Text 的伪差异。
+        if norm.startswith("text(") and norm.endswith(")"):
+            norm = "text"
+        return norm
 
     @classmethod
     def _type_changed(cls, old_type, new_type) -> bool:

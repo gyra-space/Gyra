@@ -2938,6 +2938,11 @@
   border-bottom: 1px solid var(--ws-border-subtle);
   padding: 0 8px;
   overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.ws-simple-right__tabs::-webkit-scrollbar {
+  display: none;
 }
 .ws-rtab {
   position: relative;

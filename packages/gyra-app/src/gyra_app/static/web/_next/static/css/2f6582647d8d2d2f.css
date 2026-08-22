@@ -3350,11 +3350,17 @@
 
 .ws-simple-right__tabs {
   border-bottom: 1px solid var(--ws-border-subtle);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   flex-shrink: 0;
   align-items: stretch;
   padding: 0 8px;
   display: flex;
   overflow-x: auto;
+}
+
+.ws-simple-right__tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .ws-rtab {

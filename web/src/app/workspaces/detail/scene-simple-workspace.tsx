@@ -236,21 +236,55 @@ function toStructuredOutput(parsed: Record<string, unknown>): ManusExecutionOutp
 }
 
 /** 解析步骤原始输出:支持纯 JSON(对象/数组)与 ```lang\n{...}\n``` 围栏包裹的 JSON。
- *  execute_raw_sql / execute_sql 等工具以 d-sql-query VIS 围栏返回结果,须剥壳提取结构化数据。 */
+ *  execute_raw_sql / execute_sql 等工具以 d-sql-query VIS 围栏返回结果,须剥壳提取结构化数据。
+ *  兼容被 _MAX_OUTPUT_CHARS 等截断的围栏:缺闭合 ``` 时也尝试剥掉首行围栏标记,
+ *  并对截断的 JSON 提取最长的合法对象/数组前缀,避免整段降级为裸 JSON 渲染。 */
 function parseOutputJson(s: string): unknown {
-  const trimmed = s.trim();
-  let body = trimmed;
-  if (trimmed.startsWith('```') && trimmed.endsWith('```')) {
-    const m = trimmed.match(/^```[\w-]+\s*\n([\s\S]*?)\n```$/);
-    if (!m) return null;
-    body = m[1].trim();
+  let body = (s || '').trim();
+  // 剥掉 ```lang 围栏首行(闭合 ``` 可能因截断缺失,不能用 endsWith 判定)
+  if (body.startsWith('```')) {
+    const newlineIdx = body.indexOf('\n');
+    if (newlineIdx === -1) return null;
+    body = body.slice(newlineIdx + 1).replace(/\n```\s*$/, '');
   }
+  body = body.trim();
+  if (!body) return null;
   if (!(body.startsWith('{') || body.startsWith('['))) return null;
   try {
     return JSON.parse(body);
   } catch {
+    // 截断 JSON(缺尾 } / ]):提取最长的合法对象/数组前缀,尽量保留能恢复的字段
+    const open = body[0];
+    const close = open === '{' ? '}' : ']';
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = 0; i < body.length; i++) {
+      const ch = body[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === open) depth++;
+      else if (ch === close) {
+        depth--;
+        if (depth === 0) {
+          try { return JSON.parse(body.slice(0, i + 1)); } catch { return null; }
+        }
+      }
+    }
     return null;
   }
+}
+
+/** 剥离 ```lang\n...\n``` 围栏外壳,只保留正文,供 raw_result 可读展示。
+ *  兼容缺闭合 ``` 的截断围栏:去掉首行 lang 标记即可。 */
+function stripVisFence(s: string): string {
+  const body = (s || '').trim();
+  if (!body.startsWith('```')) return body;
+  const newlineIdx = body.indexOf('\n');
+  if (newlineIdx === -1) return body;
+  return body.slice(newlineIdx + 1).replace(/\n```\s*$/, '').trim();
 }
 
 /** 需要一律在内容区渲染执行入参的 ECP 语义工具(入参即查询/指标口径,不能折叠) */
@@ -329,11 +363,12 @@ function stepToOutputs(step: WorkspaceExecutionStep): ManusExecutionOutput[] {
     }
     if (!handled) {
       if (type === 'sql' && codeLike) {
-        // 执行成功但 output 非结构化 JSON(如「查询执行成功，无结果返回」):仍以 SQL 组件
-        // 渲染,头部展示 SQL(action_input.sql),结果区展示原始返回文本
+        // 执行成功但 output 非结构化 JSON(截断/「查询执行成功，无结果返回」等):
+        // 仍以 SQL 组件渲染,头部展示 SQL(action_input.sql),结果区展示可读的原始文本。
+        // raw_result 剥掉 ```d-sql-query 围栏外壳,避免把反引号/JSON 原文当正文裸展示。
         outputs.push({
           output_type: 'sql_query',
-          content: { sql: codeLike, columns: [], rows: [], db_name: '', db_type: '', raw_result: out },
+          content: { sql: codeLike, columns: [], rows: [], db_name: '', db_type: '', raw_result: stripVisFence(out) },
         });
       } else if (step.status === 'failed') {
         outputs.push({ output_type: 'error', content: out });

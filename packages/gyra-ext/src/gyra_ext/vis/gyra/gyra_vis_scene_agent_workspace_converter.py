@@ -318,7 +318,18 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         content = self._report_get(report, "content")
         output = None
         if isinstance(content, str) and content.strip() and content.strip() not in _RUNNING_PLACEHOLDERS:
-            output = content.strip()[:_MAX_OUTPUT_CHARS]
+            # SQL 工具(execute_sql/execute_raw_sql)的 content 是 ```d-sql-query{json}```
+            # 围栏。若直接按 _MAX_OUTPUT_CHARS 截断,会把 JSON 拦腰截断,前端解析失败后
+            # 降级成"原始 JSON 裸渲染"而不是结构化表格。这里优先提取完整结构化
+            # d-sql-query JSON 作为 output,前端据此渲染表格;非结构化工具照旧截断。
+            if "```d-sql-query" in content:
+                sql_dict = self._extract_sql_query_data(report)
+                if sql_dict is not None:
+                    output = json.dumps(sql_dict, ensure_ascii=False)
+                else:
+                    output = content.strip()[:_MAX_OUTPUT_CHARS]
+            else:
+                output = content.strip()[:_MAX_OUTPUT_CHARS]
 
         # 工具 VIS 结构化视图(如 ```d-sql-query / d-batch-tasks 围栏):写入步骤 vis 字段,
         # 前端 GPTVis 据此渲染真实工具组件(与 vis_manus 的 view/simple_view 语义一致)。

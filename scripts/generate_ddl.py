@@ -165,8 +165,28 @@ def main():
             dialect_dir = args.output_dir / dialect
             dialect_dir.mkdir(parents=True, exist_ok=True)
 
-            # Generate full DDL
             full_ddl_file = dialect_dir / "gyra.sql"
+            backup_file = dialect_dir / "gyra.sql.bak"
+
+            # 先备份旧全量 DDL 并读取真实旧版本/时间戳。
+            # 原逻辑在覆盖 gyra.sql 之后才读取它，导致“旧内容”其实是刚生成的新内容，
+            # 于是增量脚本永远是 0.3.0 -> 0.3.0，且同一天反复生成同名文件。
+            old_version = "unknown"
+            old_generated = ""
+            had_old = False
+            if full_ddl_file.exists():
+                try:
+                    old_content = full_ddl_file.read_text(encoding="utf-8")
+                    backup_file.write_text(old_content, encoding="utf-8")
+                    old_version_match = re.search(r'-- Version:\s*(\S+)', old_content)
+                    old_generated_match = re.search(r'-- Generated:\s*(\S+)', old_content)
+                    old_version = old_version_match.group(1) if old_version_match else "unknown"
+                    old_generated = old_generated_match.group(1) if old_generated_match else ""
+                    had_old = True
+                except Exception as e:
+                    logger.warning(f"Failed to back up existing {dialect} DDL: {e}")
+
+            # Generate full DDL（覆盖）
             try:
                 generator.generate_full_ddl(dialect, full_ddl_file)
                 logger.info(f"✓ Generated full {dialect} DDL: {full_ddl_file}")
@@ -174,61 +194,47 @@ def main():
                 logger.error(f"✗ Failed to generate {dialect} full DDL: {e}")
                 return 1
 
-            # Generate incremental DDL (if enabled and old DDL exists)
-            if not args.no_incremental:
-                # Check for existing full DDL (backup before overwrite)
-                backup_file = dialect_dir / "gyra.sql.bak"
+            # Generate incremental DDL (若启用且存在旧 DDL)
+            if not args.no_incremental and had_old:
+                try:
+                    current_timestamp = datetime.now().strftime('%Y%m%d')
+                    old_timestamp = old_generated.split('T')[0].replace('-', '') if old_generated else "unknown"
 
-                if full_ddl_file.exists():
-                    # Read old version from existing DDL
-                    try:
-                        # Extract old version and timestamp
-                        old_content = full_ddl_file.read_text(encoding="utf-8")
-                        old_version_match = re.search(r'-- Version:\s*(\S+)', old_content)
-                        old_generated_match = re.search(r'-- Generated:\s*(\S+)', old_content)
+                    upgrade_filename = f"upgrade_{old_version}_{old_timestamp}_to_{version}_{current_timestamp}.sql"
+                    upgrades_dir = dialect_dir / "upgrades"
+                    upgrade_file = _dedupe_upgrade_file(upgrades_dir, upgrade_filename)
 
-                        old_version = old_version_match.group(1) if old_version_match else "unknown"
-                        old_generated = old_generated_match.group(1) if old_generated_match else ""
+                    # 版本签名：追加式单调序号（现有脚本数 + 1）
+                    script_version = _next_script_version(upgrades_dir)
 
-                        # Generate incremental DDL filename
-                        current_timestamp = datetime.now().strftime('%Y%m%d')
-                        old_timestamp = old_generated.split('T')[0].replace('-', '') if old_generated else "unknown"
+                    # 用备份的真实旧 DDL 对比，而非刚覆盖的新 DDL
+                    incremental_ddl = generator.generate_incremental_ddl(
+                        dialect,
+                        backup_file,
+                        None,
+                    )
 
-                        upgrade_filename = f"upgrade_{old_version}_{old_timestamp}_to_{version}_{current_timestamp}.sql"
-                        upgrades_dir = dialect_dir / "upgrades"
-                        upgrade_file = _dedupe_upgrade_file(upgrades_dir, upgrade_filename)
-
-                        # 版本签名：追加式单调序号（现有脚本数 + 1）
-                        script_version = _next_script_version(upgrades_dir)
-
-                        # Generate incremental DDL（由 CLI 写入，便于前置版本签名头）
-                        incremental_ddl = generator.generate_incremental_ddl(
-                            dialect,
-                            full_ddl_file,
-                            None,
+                    if incremental_ddl:
+                        upgrade_file.parent.mkdir(parents=True, exist_ok=True)
+                        upgrade_file.write_text(
+                            f"-- Gyra-Schema-Version: {script_version}\n\n"
+                            + incremental_ddl,
+                            encoding="utf-8",
                         )
+                        logger.info(f"✓ Generated incremental {dialect} DDL: {upgrade_file}")
+                        _update_upgrade_manifest(
+                            upgrades_dir,
+                            upgrade_file.name,
+                            old_version,
+                            old_timestamp,
+                            version,
+                            current_timestamp,
+                        )
+                    else:
+                        logger.info(f"  No schema changes detected for {dialect}")
 
-                        if incremental_ddl:
-                            upgrade_file.parent.mkdir(parents=True, exist_ok=True)
-                            upgrade_file.write_text(
-                                f"-- Gyra-Schema-Version: {script_version}\n\n"
-                                + incremental_ddl,
-                                encoding="utf-8",
-                            )
-                            logger.info(f"✓ Generated incremental {dialect} DDL: {upgrade_file}")
-                            _update_upgrade_manifest(
-                                upgrades_dir,
-                                upgrade_file.name,
-                                old_version,
-                                old_timestamp,
-                                version,
-                                current_timestamp,
-                            )
-                        else:
-                            logger.info(f"  No schema changes detected for {dialect}")
-
-                    except Exception as e:
-                        logger.warning(f"Failed to generate incremental DDL for {dialect}: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to generate incremental DDL for {dialect}: {e}")
 
         logger.info("DDL generation complete!")
 

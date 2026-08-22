@@ -1242,7 +1242,7 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
     <div className="flex flex-col" style={{ height: 'calc(100vh - 56px)' }}>
       {/* ── Tab bar (underline style, matching DB-GPT original) ── */}
       <div className="flex items-center justify-between border-b border-[#eff1f6] px-1">
-        <div className="flex items-center overflow-x-auto">
+        <div className="flex items-center overflow-x-auto scrollbar-hide">
           {/* 1. 执行步骤 */}
           <TabItem
             active={activeTab === 'execution'}

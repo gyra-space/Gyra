@@ -263,11 +263,21 @@ class SchemaReflector:
         default_value = None
         if column.default:
             default_arg = column.default.arg
-            # Handle callable defaults (like datetime.now)
+            # 可调用默认值（如 dict/list/lambda）在 SQLAlchemy 里通常只是 Python 端赋值，
+            # 并不会写入 SQL DEFAULT，令其与 DDL 往返保持一致：仅保留可映射为
+            # CURRENT_TIMESTAMP 的 now/utcnow/now() 之类，其余归 None。
             if callable(default_arg):
-                default_value = default_arg.__name__
+                name = getattr(default_arg, "__name__", str(default_arg))
+                if name in ("now", "utcnow", "current_timestamp", "now()"):
+                    default_value = "now"
+                else:
+                    default_value = None
             else:
-                default_value = str(default_arg)
+                raw = str(default_arg)
+                if raw.lower() in ("now()", "current_timestamp", "datetime.now", "datetime.utcnow"):
+                    default_value = "now"
+                else:
+                    default_value = raw
 
         return ColumnDef(
             name=column.name,
@@ -493,7 +503,7 @@ class MySQLAdapter(DialectAdapter):
                 parts.append("AUTO_INCREMENT")
 
         # DEFAULT (not allowed for JSON/TEXT/BLOB in MySQL)
-        if col_def.default:
+        if col_def.default is not None:
             # MySQL doesn't allow DEFAULT for JSON, TEXT, BLOB, GEOMETRY
             mysql_type_upper = mysql_type.upper()
             if not any(t in mysql_type_upper for t in ['JSON', 'TEXT', 'BLOB', 'GEOMETRY']):
@@ -824,8 +834,14 @@ class PostgreSQLAdapter(DialectAdapter):
 
         # Handle SERIAL for auto-increment primary keys
         if col_def.primary_key and (col_def.autoincrement or "INTEGER" in col_def.type.upper()):
-            # Replace INTEGER with SERIAL
-            parts[1] = "SERIAL"
+            # 依据整数宽度选择对应 SERIAL 类型，避免 BIGINT 主键被折叠成 SERIAL 造成往返失真
+            t_upper = col_def.type.upper()
+            if "BIG" in t_upper:
+                parts[1] = "BIGSERIAL"
+            elif "SMALL" in t_upper:
+                parts[1] = "SMALLSERIAL"
+            else:
+                parts[1] = "SERIAL"
             # Remove NOT NULL (SERIAL implies NOT NULL)
             parts = parts[:2]  # Keep only name and type
         else:
@@ -834,7 +850,7 @@ class PostgreSQLAdapter(DialectAdapter):
                 parts.append("NOT NULL")
 
         # DEFAULT
-        if col_def.default and not (col_def.primary_key and col_def.autoincrement):
+        if col_def.default is not None and not (col_def.primary_key and col_def.autoincrement):
             default_val = self._process_default_value(col_def.default)
             parts.append(f"DEFAULT {default_val}")
 
@@ -886,6 +902,9 @@ class PostgreSQLAdapter(DialectAdapter):
 
     def _process_default_value(self, default: str) -> str:
         """Process default value for PostgreSQL."""
+        # 空字符串默认值需显式加引号，避免生成 DEFAULT （非法）
+        if default == "":
+            return "''"
         # Handle datetime defaults
         if 'now' in default.lower() or 'datetime' in default.lower():
             return "CURRENT_TIMESTAMP"
@@ -1226,7 +1245,7 @@ class DDLGenerator:
 
         pattern = re.compile(
             r"CREATE\s+(?:(UNIQUE)\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?"
-            r"[`\"]?(\w+)[`\"]?\s+ON\s+[`\"]?(\w+)[`\"]?\s*\((.+?)\)\s*;",
+            r"[`\"]?([^\s`\"]+)[`\"]?\s+ON\s+[`\"]?([^\s`\"]+)[`\"]?\s*\((.+?)\)\s*;",
             re.IGNORECASE,
         )
         for m in pattern.finditer(content):
@@ -1249,7 +1268,7 @@ class DDLGenerator:
         import re
 
         pattern = re.compile(
-            r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?\s*\(',
+            r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?([^\s`"]+)[`"]?\s*\(',
             re.IGNORECASE,
         )
         for match in pattern.finditer(content):
@@ -1385,14 +1404,16 @@ class DDLGenerator:
             return None
         col_name, rest = m.group(1), m.group(2)
 
-        upper = rest.upper()
+        # 先剥离末尾的 COMMENT 子句：注释文本里常出现 "serial/default ..." 等词，
+        # 若不去除会把 AUTO_INCREMENT / DEFAULT 误判出来，产生伪增量。
+        upper = self._strip_comment(rest).upper()
         autoincrement = "AUTO_INCREMENT" in upper or "SERIAL" in upper
         pk_inline = "PRIMARY KEY" in upper
         nullable = "NOT NULL" not in upper and not pk_inline and not autoincrement
         unique = bool(re.search(r"\bUNIQUE\b", upper)) and "UNIQUE KEY" not in upper
         # 默认值
         default = None
-        dm = re.search(r"\bDEFAULT\s+('((?:[^']|'')*)'|[^\s,]+)", rest, re.IGNORECASE)
+        dm = re.search(r"\bDEFAULT\s+('((?:[^']|'')*)'|[^\s,]+)", self._strip_comment(rest), re.IGNORECASE)
         if dm:
             raw = dm.group(1).strip()
             if raw.upper() in ("CURRENT_TIMESTAMP", "NOW()", "CURRENT_TIMESTAMP()"):
@@ -1408,7 +1429,7 @@ class DDLGenerator:
             else:
                 default = raw
 
-        col_type = self._reverse_map_type(rest, is_mysql)
+        col_type = self._reverse_map_type(self._strip_comment(rest), is_mysql)
         autoincrement_bool = bool(
             ("AUTO_INCREMENT" in upper or "SERIAL" in upper)
         )
@@ -1423,6 +1444,12 @@ class DDLGenerator:
             default=default,
             comment=self._parse_comment(rest),
         )
+
+    @staticmethod
+    def _strip_comment(norm: str) -> str:
+        """去除末尾的 COMMENT '...' 子句，避免注释文本干扰列属性判定。"""
+        import re
+        return re.sub(r"(?i)\s+COMMENT\s+'(?:[^']|'')*'\s*$", "", norm)
 
     def _reverse_map_type(self, rest: str, is_mysql: bool) -> str:
         """把 DDL 里的物理类型反推为反射器生成的统一类型字符串。"""
@@ -1463,6 +1490,8 @@ class DDLGenerator:
                 return "Integer"
             if base == "BIGSERIAL":
                 return "BigInteger"
+            if base == "SMALLSERIAL":
+                return "SmallInteger"
             if base in ("INTEGER", "INT"):
                 return "Integer"
             if base == "BIGINT":

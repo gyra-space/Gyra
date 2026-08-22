@@ -375,9 +375,28 @@ def _is_privileged(user: UserRequest) -> bool:
     )
 
 
+def _file_conv_owner(row) -> Optional[str]:
+    import json as _json
+
+    meta = {}
+    try:
+        meta = _json.loads(row.custom_metadata) if row.custom_metadata else {}
+    except Exception:
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    for key in ("conv_uid", "conv_id", "session_id"):
+        raw = meta.get(key)
+        if raw:
+            owner = _conv_owner_user_id(str(raw))
+            if owner:
+                return owner
+    return None
+
+
 def can_read_file(user: UserRequest, bucket: str, file_id: str) -> bool:
     """文件读取归属判定：开发模式/管理员放行；否则按
-    空间归属(space.file.read) -> 上传者本人 -> 拒绝。"""
+    空间归属(space.file.read) -> 上传者本人 -> 个人会话创建者 -> 拒绝。"""
     if user.permissions is None or _is_privileged(user):
         return True
     row = _load_file_row(bucket, file_id)
@@ -387,15 +406,21 @@ def can_read_file(user: UserRequest, bucket: str, file_id: str) -> bool:
     if ws_id is not None and has_scope(user, "space.file.read", ws_id):
         return True
     uploader = str(row.user_name or "")
-    return bool(uploader) and uploader in (
+    if uploader and uploader in (
         str(user.user_id or ""),
         str(user.user_no or ""),
-    )
+    ):
+        return True
+    if ws_id is None:
+        owner = _file_conv_owner(row)
+        if owner and owner in (str(user.user_id or ""), str(user.user_no or "")):
+            return True
+    return False
 
 
 def can_delete_file(user: UserRequest, bucket: str, file_id: str) -> bool:
     """文件删除判定：开发模式/管理员放行；否则按
-    空间归属(space.workspace.manage) -> 上传者本人 -> 拒绝。"""
+    空间归属(space.workspace.manage) -> 上传者本人 -> 个人会话创建者 -> 拒绝。"""
     if user.permissions is None or _is_privileged(user):
         return True
     row = _load_file_row(bucket, file_id)
@@ -405,7 +430,13 @@ def can_delete_file(user: UserRequest, bucket: str, file_id: str) -> bool:
     if ws_id is not None and has_scope(user, "space.workspace.manage", ws_id):
         return True
     uploader = str(row.user_name or "")
-    return bool(uploader) and uploader in (
+    if uploader and uploader in (
         str(user.user_id or ""),
         str(user.user_no or ""),
-    )
+    ):
+        return True
+    if ws_id is None:
+        owner = _file_conv_owner(row)
+        if owner and owner in (str(user.user_id or ""), str(user.user_no or "")):
+            return True
+    return False
