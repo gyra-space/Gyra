@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Optional
 
 from fastapi import APIRouter, File, Form, UploadFile
 from starlette.responses import JSONResponse
@@ -14,7 +14,7 @@ router = APIRouter()
 async def transcribe(
     file: UploadFile = File(...),
     lang: Optional[str] = Form(None),
-) -> Union[dict, JSONResponse]:
+):
     data = await file.read()
     if not data:
         return JSONResponse(

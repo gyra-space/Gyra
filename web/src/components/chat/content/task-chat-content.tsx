@@ -160,7 +160,6 @@ const TaskChatContent: React.FC<TaskChatContentProps> = ({ ctrl }) => {
             <DockPanel widgets={dockWidgets || {}} />
             <UnifiedChatInput
               ctrl={ctrl}
-              showFloatingActions={hasMessages}
             />
           </div>
         </div>

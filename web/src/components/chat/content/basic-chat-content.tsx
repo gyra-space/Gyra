@@ -135,7 +135,6 @@ const BasicChatContent: React.FC<BasicChatContentProps> = ({ ctrl, workspaceId }
           <DockPanel widgets={dockWidgets || {}} />
           <UnifiedChatInput
             ctrl={ctrl}
-            showFloatingActions={hasMessages}
           />
         </div>
       </div>

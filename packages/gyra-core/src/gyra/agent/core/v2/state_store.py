@@ -68,6 +68,9 @@ class StateStore(ABC):
     async def get_interaction_checkpoint(self, request_id: str) -> Optional[dict]: ...
 
     @abstractmethod
+    async def get_interaction_checkpoints_by_conv(self, conv_id: str) -> List[dict]: ...
+
+    @abstractmethod
     async def delete_interaction_checkpoint(self, request_id: str) -> None: ...
 
     @abstractmethod
@@ -387,6 +390,25 @@ class DbStateStore(StateStore):
                 d = dict(row)
                 d["request_payload"] = json.loads(d["request_payload"])
                 return d
+            finally:
+                pass  # 连接由 store 线程局部复用（见 _connect/close）
+        return await asyncio.to_thread(_do)
+
+    async def get_interaction_checkpoints_by_conv(self, conv_id: str) -> List[dict]:
+        def _do():
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT request_id, step_id, conv_id, request_payload, created_at "
+                    "FROM interaction_checkpoint WHERE conv_id = ? ORDER BY created_at ASC",
+                    (conv_id,),
+                ).fetchall()
+                result = []
+                for row in rows:
+                    d = dict(row)
+                    d["request_payload"] = json.loads(d["request_payload"])
+                    result.append(d)
+                return result
             finally:
                 pass  # 连接由 store 线程局部复用（见 _connect/close）
         return await asyncio.to_thread(_do)

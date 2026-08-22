@@ -161,6 +161,10 @@ export interface WorkspaceView {
   lobby_exhibits?: LobbyExhibit[];
   /** 异步子 agent 任务看板卡片项(无子任务时为空数组) */
   subagents?: WorkspaceSubagentItem[];
+  /** V1 manus 等无 planning 数据的视图:当前进行中的 todo 阶段标题(用于运行中文案「xx阶段 进行中…」) */
+  running_phase_title?: string | null;
+  /** V1 manus 等:模型正在思考(无进行中的工具/阶段,用于运行中文案「xx模型 思考中…」) */
+  running_thinking?: boolean;
 }
 
 export interface PlaybookCommand {

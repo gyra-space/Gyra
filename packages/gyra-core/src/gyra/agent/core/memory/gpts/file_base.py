@@ -554,6 +554,7 @@ class WorkEntry:
     conv_id: Optional[str] = None  # 对话 ID（用于隔离不同对话的工具调用记录）
     human_content: Optional[str] = None  # 用户消息内容（用于 __user_message__ 类型条目）
     message_id: Optional[str] = None  # 关联的 GptsMessage ID
+    view: Optional[str] = None  # 工具 view 通道（用户视角可视化数据，如 d-skill-meta VIS 标签；不进 LLM 上下文）
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典."""
@@ -576,6 +577,7 @@ class WorkEntry:
             "conv_id": self.conv_id,
             "human_content": self.human_content,
             "message_id": self.message_id,
+            "view": self.view,
         }
 
     @classmethod
@@ -630,6 +632,11 @@ class WorkEntry:
             from gyra.agent.core.action.base import AskUserType
 
             ask_type_value = AskUserType.CONCLUSION_INCOMPLETE.value
+
+        # 工具 view 通道（如 skill 的 d-skill-meta VIS 标签）追加到 view，
+        # 用户视角可视化数据，不影响 content/observations（LLM 视角）
+        if self.view:
+            view_content = f"{view_content}\n{self.view}" if view_content else self.view
 
         from gyra.agent.core.schema import Status
 

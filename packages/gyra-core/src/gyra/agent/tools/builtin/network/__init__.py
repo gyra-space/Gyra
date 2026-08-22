@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 import logging
 import asyncio
 import json
+import os
 import re
 from urllib.parse import urlparse
 
@@ -229,6 +230,17 @@ class WebFetchTool(ToolBase):
         return "\n\n".join(result)
 
     def _extract_json(self, content: str) -> str:
+        # 优先直接解析整段响应：多数 JSON API（如 open-meteo）返回裸 JSON，
+        # 不包在 <script>/<pre> 标签里，原正则永远匹配不到。
+        text = content.strip()
+        if text:
+            try:
+                data = json.loads(text)
+                return json.dumps(data, indent=2, ensure_ascii=False)
+            except json.JSONDecodeError:
+                pass
+
+        # 兜底：从 HTML 里的 <script type="application/json"> / <pre> 提取
         json_pattern = r'<(?:script[^>]*type=["\']application/json["\'][^>]*|pre)[^>]*>(.*?)</(?:script|pre)>'
         matches = re.findall(json_pattern, content, re.DOTALL | re.IGNORECASE)
 
@@ -352,42 +364,196 @@ class WebSearchTool(ToolBase):
         return []
 
     async def _search_with_serp(self, query: str, num: int, lang: str) -> List[Dict]:
-        """使用 SerpAPI 或类似服务"""
-        try:
-            import aiohttp
+        """使用 SerpAPI；未配置密钥或调用失败时依次兜底 DuckDuckGo / Bing / 百度"""
+        if self._api_key:
+            try:
+                import aiohttp
 
-            api_key = self._api_key
-            if not api_key:
-                return self._mock_search_results(query, num)
+                url = "https://serpapi.com/search"
+                params = {
+                    "q": query,
+                    "api_key": self._api_key,
+                    "engine": "google",
+                    "num": num,
+                    "hl": lang,
+                }
 
-            url = "https://serpapi.com/search"
-            params = {
-                "q": query,
-                "api_key": api_key,
-                "engine": "google",
-                "num": num,
-                "hl": lang,
-            }
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params) as response:
+                        data = await response.json()
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params) as response:
-                    data = await response.json()
+                        results = []
+                        for item in data.get("organic_results", [])[:num]:
+                            results.append(
+                                {
+                                    "title": item.get("title"),
+                                    "url": item.get("link"),
+                                    "snippet": item.get("snippet", ""),
+                                }
+                            )
+                        if results:
+                            return results
+            except Exception as e:
+                logger.warning(f"SerpAPI搜索调用失败，尝试兜底搜索: {e}")
 
-                    results = []
-                    for item in data.get("organic_results", [])[:num]:
-                        results.append(
-                            {
-                                "title": item.get("title"),
-                                "url": item.get("link"),
-                                "snippet": item.get("snippet", ""),
-                            }
-                        )
+        # 默认兜底链路（无需任何配置）：DuckDuckGo -> Bing -> 百度，逐一尝试
+        return await self._search_with_free_engines(query, num, lang)
+
+    async def _search_with_free_engines(
+        self, query: str, num: int, lang: str
+    ) -> List[Dict]:
+        """依次尝试 DuckDuckGo / Bing / 百度 免费搜索，任一成功即返回"""
+        for engine in ("duckduckgo", "bing", "baidu"):
+            try:
+                results = await self._search_with_engine_html(query, num, engine)
+                if results:
                     return results
-        except ImportError:
-            return self._mock_search_results(query, num)
-        except Exception as e:
-            logger.warning(f"搜索API调用失败，使用模拟结果: {e}")
-            return self._mock_search_results(query, num)
+            except Exception as e:
+                logger.warning(f"免费搜索[{engine}]失败: {e}")
+        return self._mock_search_results(query, num)
+
+    async def _search_with_engine_html(
+        self, query: str, num: int, engine: str
+    ) -> List[Dict]:
+        """爬取指定免费搜索引擎的 HTML 结果"""
+        import aiohttp
+        from urllib.parse import quote
+
+        if engine == "duckduckgo":
+            url = "https://html.duckduckgo.com/html/?q=" + quote(query)
+        elif engine == "bing":
+            url = "https://www.bing.com/search?q=" + quote(query)
+        elif engine == "baidu":
+            url = "https://www.baidu.com/s?wd=" + quote(query)
+        else:
+            return []
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as response:
+                if response.status >= 400:
+                    raise ValueError(f"{engine} HTTP错误: {response.status}")
+                html = await response.text()
+
+        if engine == "duckduckgo":
+            results = self._parse_duckduckgo_html(html)
+        elif engine == "bing":
+            results = self._parse_bing_html(html)
+        elif engine == "baidu":
+            results = self._parse_baidu_html(html)
+        else:
+            results = []
+        return results[:num]
+
+    def _parse_duckduckgo_html(self, html: str) -> List[Dict]:
+        """解析 DuckDuckGo HTML 搜索结果"""
+        import html as _html
+
+        title_re = re.compile(
+            r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        snippet_re = re.compile(
+            r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        titles = title_re.findall(html)
+        snippets = snippet_re.findall(html)
+
+        def _clean(value: str) -> str:
+            return _html.unescape(re.sub(r"<[^>]+>", "", value)).strip()
+
+        results = []
+        for i, (href, title) in enumerate(titles):
+            results.append(
+                {
+                    "title": _clean(title),
+                    "url": self._decode_ddg_url(href),
+                    "snippet": _clean(snippets[i]) if i < len(snippets) else "",
+                }
+            )
+        return results
+
+    def _decode_ddg_url(self, href: str) -> str:
+        """解码 DuckDuckGo 的重定向链接为真实 URL"""
+        from urllib.parse import urlparse, parse_qs
+
+        qs = parse_qs(urlparse(href).query)
+        uddg = qs.get("uddg")
+        return uddg[0] if uddg else href
+
+    def _parse_bing_html(self, html: str) -> List[Dict]:
+        """解析 Bing 搜索结果 HTML"""
+        import html as _html
+
+        item_re = re.compile(
+            r'<li class="b_algo".*?</li>', re.DOTALL | re.IGNORECASE
+        )
+        title_re = re.compile(r"<h2[^>]*>\s*<a[^>]*href=\"([^\"]*)\"[^>]*>(.*?)</a>", re.DOTALL | re.IGNORECASE)
+        snippet_re = re.compile(r"<p[^>]*>(.*?)</p>", re.DOTALL | re.IGNORECASE)
+
+        def _clean(value: str) -> str:
+            return _html.unescape(re.sub(r"<[^>]+>", "", value)).strip()
+
+        results = []
+        for item in item_re.findall(html):
+            title_m = title_re.search(item)
+            if not title_m:
+                continue
+            href, title = title_m.groups()
+            snippet_m = snippet_re.search(item)
+            results.append(
+                {
+                    "title": _clean(title),
+                    "url": href,
+                    "snippet": _clean(snippet_m.group(1)) if snippet_m else "",
+                }
+            )
+        return results
+
+    def _parse_baidu_html(self, html: str) -> List[Dict]:
+        """解析百度搜索结果 HTML"""
+        import html as _html
+
+        item_re = re.compile(
+            r'<div[^>]*class="[^"]*result[^"]*c-container[^"]*".*?</div>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        title_re = re.compile(r"<h3[^>]*>\s*<a[^>]*href=\"([^\"]*)\"[^>]*>(.*?)</a>", re.DOTALL | re.IGNORECASE)
+        snippet_re = re.compile(r'<span[^>]*class="[^"]*content-right_[^"]*"[^>]*>(.*?)</span>|<div[^>]*class="[^"]*c-abstract[^"]*"[^>]*>(.*?)</div>', re.DOTALL | re.IGNORECASE)
+
+        def _clean(value: str) -> str:
+            return _html.unescape(re.sub(r"<[^>]+>", "", value)).strip()
+
+        results = []
+        for item in item_re.findall(html):
+            title_m = title_re.search(item)
+            if not title_m:
+                continue
+            href, title = title_m.groups()
+            snippet_m = snippet_re.search(item)
+            snippet = ""
+            if snippet_m:
+                snippet = snippet_m.group(1) or snippet_m.group(2) or ""
+            results.append(
+                {
+                    "title": _clean(title),
+                    "url": href,
+                    "snippet": _clean(snippet),
+                }
+            )
+        return results
 
     def _mock_search_results(self, query: str, num: int) -> List[Dict]:
         """模拟搜索结果（用于测试）"""
@@ -408,5 +574,9 @@ def register_network_tools(
     from ...registry import ToolRegistry
 
     registry.register(WebFetchTool(http_client=http_client))
-    registry.register(WebSearchTool())
+
+    # 可选配置：设置 SERP_API_KEY 后优先使用 SerpAPI(Google) 搜索；
+    # 未配置时 WebSearchTool 默认兜底走 DuckDuckGo 免费搜索，无需任何配置
+    api_key = os.getenv("SERP_API_KEY")
+    registry.register(WebSearchTool(api_key=api_key or None))
     logger.info("[NetworkTools] 已注册网络工具: webfetch, websearch")

@@ -19,11 +19,6 @@ def store():
     os.unlink(path)
 
 
-@pytest.mark.xfail(
-    reason="Task 2 signature migration: the ask_user check in _run_acting_phase (line 186) "
-    "is dead code — result_dict is constructed from V2ToolResult fields and never includes "
-    "an \"ask_user\" key. Task 10 (default_acting_fn) should re-implement the ask_user path."
-)
 async def test_v2_ask_user_path_still_works_with_deprecation(store):
     """AskUserAdapter path still converts ask_user payloads even though
     ActionOutput.ask_user is now deprecated."""

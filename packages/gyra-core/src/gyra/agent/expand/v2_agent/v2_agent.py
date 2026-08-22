@@ -6,17 +6,17 @@ think/act 循环替换为 V2 run_loop（run_step 状态机 + V2AgentRuntime 门�
 
 与 ReActMasterAgent（V1 引擎）的关系：
   - 继承 ReActMasterAgent 以获得全部装配（bind 链 / ContextEngine / WorkLog /
-    工具注入 / AFS / 交付物），role 独立为 "BIXIU"（BAIZE 进化版）。
+    工具注入 / AFS / 交付物），role 独立为 "PIXIU"（貔貅）。
   - 覆盖 thinking()：内部用 V2 run_loop 驱动一轮 turn（thinking_fn + acting_fn +
     PermissionGate），消费 StepEvent 并把 token/工具事件桥回 BAIZE vis。
   - 配套覆盖 act() / verify()：run_loop 已执行工具与验证，V1 外层循环直接收尾。
 
 接入方式（无 serve 层改动）：
   1. 本类被 AgentManager.after_start 自动扫描注册（gyra.agent.expand 递归扫描
-     ConversableAgent 子类），role="BIXIU" 即注册键；
-  2. app.agent = "BIXIU" 时，_build_agent_by_gpts 的
-     resolve_agent_name → get_by_name("BIXIU") → cls().bind(...).build() 命中本类；
-     历史 app.agent = "V2"/"V2Agent"/"v2" 经别名解析到 "BIXIU" 同样命中；
+     ConversableAgent 子类），role="PIXIU" 即注册键；
+  2. app.agent = "PIXIU" 时，_build_agent_by_gpts 的
+     resolve_agent_name → get_by_name("PIXIU") → cls().bind(...).build() 命中本类；
+     历史 app.agent = "V2"/"V2Agent"/"v2"/"BIXIU" 经别名解析到 "PIXIU" 同样命中；
   3. 渲染复用现有 BAIZE vis（listen_thinking_stream / gpts_memory.push_message），
      前端无需任何改动。
 """
@@ -37,7 +37,7 @@ from gyra.agent.core.agent import Agent
 from gyra.agent.core.types import AgentMessage
 from gyra.agent.core.role import ProfileConfig
 from gyra.agent.core.schema import Status
-from gyra.agent.core.action.base import ActionOutput
+from gyra.agent.core.action.base import ActionOutput, AskUserType
 from gyra.agent.core.memory.gpts.base import GptsMessage
 from gyra.agent.core.memory.gpts.file_base import WorkEntry, WorkLogStatus
 from gyra.agent.core.memory.gpts.gpts_memory import AgentTaskContent, AgentTaskType
@@ -98,12 +98,12 @@ class V2Agent(ReActMasterAgent):
 
     profile: ProfileConfig = Field(
         default_factory=lambda: ProfileConfig(
-            name="BIXIU",
-            role="BIXIU",
-            goal="作为 BAIZE 的进化版本，使用 V2 事件驱动运行时（run_loop 状态机）高效解决复杂任务。",
-            desc="BIXIU（BAIZE 进化版）：标准主 Agent 模板（V2 引擎），复用现有资源/工具/渲染协议，内部由 V2 run_loop 驱动。",
-            # "V2"/"V2Agent"/"v2" 作为别名保留，兼容历史 app.agent=V2 的存量应用
-            aliases=["V2Agent", "V2", "v2"],
+            name="貔貅",
+            role="PIXIU",
+            goal="我是貔貅（PIXIU），使用事件驱动运行时（run_loop 状态机）高效解决复杂任务。",
+            desc="貔貅（PIXIU）：标准主 Agent 模板（V2 引擎），复用现有资源/工具/渲染协议，内部由 V2 run_loop 驱动。",
+            # "V2"/"V2Agent"/"v2"/"BIXIU" 作为别名保留，兼容历史存量应用
+            aliases=["V2Agent", "V2", "v2", "BIXIU"],
             # 与 ReActMasterAgent 对齐：显式置 None，避免命中 ProfileConfig
             # DynConfig 默认值（ConfigInfo 对象），导致 prompt 组装时 .strip() 崩溃。
             system_prompt_template=None,
@@ -133,6 +133,9 @@ class V2Agent(ReActMasterAgent):
     _v2_pending_tool_calls: List[dict] = PrivateAttr(default_factory=list)
     # tool_call 事件清空最终答案累积前的旁白快照（供 WorkEntry.assistant_content）
     _v2_pending_narration: str = PrivateAttr(default="")
+    # 本轮是否因 ask_user 交互工具挂起（run_loop 收到 AWAITING_USER interaction_request
+    # 时置 True，act() 据此返回 ask_user=True 的 ActionOutput，让 V1 外层把会话置 WAITING）
+    _v2_awaiting_user: bool = PrivateAttr(default=False)
 
     # ---- 渲染桥接（harness 事件总线：VisBridge 订阅 llm_token/step_done → BAIZE vis）----
     _v2_reply_message_id: str = PrivateAttr(default="")
@@ -763,6 +766,7 @@ class V2Agent(ReActMasterAgent):
         """用 V2 run_loop 驱动一轮 turn，产出 AgentLLMOut（V1 协议兼容）。"""
         self._v2_final_answer = ""
         self._v2_thinking_answer = ""
+        self._v2_awaiting_user = False
         self._v2_reply_message_id = reply_message_id
         self._v2_start_time = datetime.now()
         self._v2_pending_tool_calls = []
@@ -774,6 +778,11 @@ class V2Agent(ReActMasterAgent):
         # vis 渲染桥：每轮 turn 设置渲染上下文（llm_token/step_done 订阅者消费）
         bridge = self._v2_vis_bridge
         if bridge is not None:
+            logger.info(
+                f"[V2Agent][D][begin_turn] reply_message_id={reply_message_id!r}, "
+                f"has_reply_message={reply_message is not None}, "
+                f"goal_id={getattr(reply_message, 'goal_id', None)!r}"
+            )
             bridge.begin_turn(
                 reply_message_id=reply_message_id,
                 start_time=self._v2_start_time,
@@ -836,6 +845,12 @@ class V2Agent(ReActMasterAgent):
         await self._emit_v1_context_usage(runtime)
 
         model_name = getattr(runtime, "model_alias", None)
+        logger.info(
+            f"[V2Agent][D][final] _v2_final_answer_len={len(self._v2_final_answer)}, "
+            f"thinking_len={len(self._v2_thinking_answer)}, "
+            f"final_head={self._v2_final_answer[:60]!r}, "
+            f"final_tail={self._v2_final_answer[-60:]!r}"
+        )
         # 组装 V1 协议输出：content=最终正文（content 通道），
         # thinking_content=推理文本（thinking 通道），与 V1 渲染语义对齐，
         # 避免最终消息把推理与正文混在一起反复展示。
@@ -866,12 +881,23 @@ class V2Agent(ReActMasterAgent):
                     self._v2_thinking_answer += token
                 else:
                     self._v2_final_answer += token
+                if len(self._v2_final_answer + self._v2_thinking_answer) < 200 or True:
+                    logger.info(
+                        f"[V2Agent][D][accumulate] llm_token channel={channel!r} "
+                        f"token_len={len(token)}, final_len={len(self._v2_final_answer)}, "
+                        f"thinking_len={len(self._v2_thinking_answer)}, "
+                        f"final_head={self._v2_final_answer[:40]!r}"
+                    )
                 # 渲染由 VisBridge 订阅者处理（引擎只产事件）
         elif step_event.event_type == "tool_call":
             # 出现工具调用说明当前 step 之后还会续跑：其正文/思考只是中间旁白，
             # 清空累积——最终答案/思考只保留最后一个 step（无工具调用）的内容，
             # 否则所有 step 的旁白会拼接进最终消息，导致结论文本乱码式重复。
             # 旁白快照随 pending 工具调用保存，供 WorkEntry.assistant_content 记录。
+            logger.info(
+                f"[V2Agent][D][accumulate] tool_call CLEARS final_answer: "
+                f"prev_final_len={len(self._v2_final_answer)}, tool={step_event.input.get('tool') if step_event.input else None}"
+            )
             self._v2_pending_narration = self._v2_final_answer
             self._v2_final_answer = ""
             self._v2_thinking_answer = ""
@@ -882,6 +908,14 @@ class V2Agent(ReActMasterAgent):
             # 回填工具执行结果：写 WorkEntry（按 tool_call_id 关联），
             # 并收集 ActionOutput 供 act() 返回（V1 外层 action_report）。
             await self._persist_v2_tool_result(step_event)
+        elif (
+            step_event.event_type == "interaction_request"
+            and step_event.state == StepState.AWAITING_USER
+        ):
+            # ask_user 交互工具已把 run_loop 挂起为 AWAITING_USER：记录标记，
+            # act() 据此返回 ask_user=True 的 ActionOutput，V1 外层将会话置 WAITING，
+            # 前端提交回答时经 interaction_checkpoint 恢复同一会话（而非新建 _2）。
+            self._v2_awaiting_user = True
         # step_done 的 vis 终态重置由 VisBridge 订阅处理
 
     async def _persist_v2_tool_call(self, step_event: StepEvent) -> None:
@@ -1013,11 +1047,21 @@ class V2Agent(ReActMasterAgent):
 
         if gpts_memory is not None:
             try:
+                # 工具 view 通道：skill_meta 包装成 d-skill-meta VIS 标签，
+                # 经 WorkEntry.view → action_report 送前端渲染（不进 LLM 上下文）
+                skill_meta = output.get("skill_meta")
+                view_text = None
+                if skill_meta:
+                    from gyra.agent.core.v2.skills.skill_tool import (
+                        _skill_meta_view,
+                    )
+                    view_text = _skill_meta_view(str(skill_meta))
                 entry = WorkEntry(
                     timestamp=step_event.timestamp or time.time(),
                     tool=pending["tool_name"],
                     args=pending["args"],
                     result=result_text or None,
+                    view=view_text,
                     success=success,
                     status=WorkLogStatus.ACTIVE.value,
                     tool_call_id=pending["tool_call_id"],
@@ -1345,6 +1389,11 @@ class V2Agent(ReActMasterAgent):
             name=self.name,
             is_exe_success=True,
             terminate=True,
+            # ask_user 交互工具挂起：act() 返回 ask_user=True 的 ActionOutput，
+            # V1 外层（UserProxyAgent.receive）据此把会话状态置 WAITING，
+            # 前端提交回答时经 interaction_checkpoint 恢复原会话。
+            ask_user=self._v2_awaiting_user,
+            ask_type=AskUserType.CONCLUSION_INCOMPLETE.value if self._v2_awaiting_user else None,
             # 稳定 action_id + 显式终态 + 收尾时间戳：
             # 避免随机 uuid 被 vis 转换器当成新工具步骤重复渲染；
             # state/start_time 缺失时部分转换器会误判为 running 或参与时序排序。

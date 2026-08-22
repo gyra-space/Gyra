@@ -100,7 +100,9 @@ class VisBridge:
         reply_message: Optional[Any] = None,
     ) -> None:
         """每轮 turn 前设置渲染上下文并重置增量状态。"""
-        self._reply_message_id = reply_message_id
+        self._reply_message_id = self._resolve_reply_message_id(
+            reply_message_id, reply_message, received_message
+        )
         self._start_time = start_time or datetime.now()
         self._received_message = received_message
         self._reply_message = reply_message
@@ -108,6 +110,33 @@ class VisBridge:
         self._is_first_content = True
         self._thinking_text = ""
         self._final_text = ""
+
+    def _resolve_reply_message_id(
+        self,
+        reply_message_id: Optional[str],
+        reply_message: Optional[Any],
+        received_message: Optional[Any],
+    ) -> str:
+        """兜底解析本次 turn 的渲染 anchor message_id。
+
+        V2 run_loop 一轮内可能多次 begin/render（多步工具），若 reply_message_id
+        为空或 reply_message 缺失，流式帧的 temp_message 会因 ``goal_id``/``uid``
+        为空被 manus ``_render_content_stream`` 的 ``message_id`` 门控丢弃，
+        导致正文/思考不显示。此处从代理侧已知字段回填，保证渲染 anchor 非空。
+        """
+        if reply_message_id:
+            return reply_message_id
+        # 优先取代理 self._v2_reply_message_id（V2 thinking() 已设置）
+        for attr in ("_v2_reply_message_id", "_v2_root_node_id"):
+            val = getattr(self._agent, attr, None)
+            if val:
+                return val
+        # 次选 received_message message_id
+        msg = getattr(received_message, "message_id", None)
+        if msg:
+            return msg
+        # 兜底：生成一个稳定的 turn 锚点（不同 turn 不冲突）
+        return f"turn-{id(self):x}"
 
     # ------------------------------------------------------------------
     # 事件订阅处理
@@ -128,8 +157,25 @@ class VisBridge:
         output = event.output or {}
         token = output.get("token", "")
         channel = output.get("channel", "content")
+        # 每帧渲染前兜底解析渲染锚点：begin_turn 可能未被调用或传入空 id，
+        # 否则 temp_message.message_id/goal_id 为空 → manus 丢弃正文帧。
+        anchor_id = self._resolve_reply_message_id(
+            self._reply_message_id, self._reply_message, self._received_message
+        )
+        if anchor_id:
+            self._reply_message_id = anchor_id
         if not token:
+            logger.info(
+                f"[VisBridge][D][render_token] empty token skip: evt={event.event_id}, channel={channel!r}"
+            )
             return
+        logger.info(
+            f"[VisBridge][D][render_token] -> listen_thinking_stream: "
+            f"evt={event.event_id}, channel={channel!r}, token_len={len(token)}, "
+            f"reply_message_id={self._reply_message_id!r}, "
+            f"has_reply_message={self._reply_message is not None}, "
+            f"goal_id={getattr(self._reply_message, 'goal_id', None)!r}"
+        )
         if channel == "thinking":
             self._thinking_text += token
             cu_thinking_incr, cu_content_incr = token, None
@@ -141,6 +187,21 @@ class VisBridge:
             is_first_chunk = False
             is_first_content = self._is_first_content
         try:
+            # reply_message 缺失时兜底：manus `_process_stream_msg`/`_gen_plan_items`
+            # 依赖 goal_id 挂载聊天气泡，为空则整帧被丢弃（正文/思考不显示）。
+            reply_message = self._reply_message
+            if reply_message is None:
+                from types import SimpleNamespace
+
+                mid = self._reply_message_id or f"turn-{id(self):x}"
+                reply_message = SimpleNamespace(
+                    message_id=mid,
+                    goal_id=mid,
+                    current_goal=getattr(
+                        self._received_message, "current_goal", None
+                    )
+                    or "",
+                )
             await self._agent.listen_thinking_stream(
                 llm_out=AgentLLMOut(
                     llm_name=event.agent_id,
@@ -156,11 +217,11 @@ class VisBridge:
                 is_first_chunk=is_first_chunk,
                 is_first_content=is_first_content,
                 received_message=self._received_message,
-                reply_message=self._reply_message,
+                reply_message=reply_message,
                 sender=self._agent,
             )
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"[VisBridge] listen_thinking_stream skipped: {e}")
+            logger.info(f"[VisBridge][D][render_token] listen_thinking_stream EXCEPTION: {e!r}")
         if channel == "thinking":
             self._is_first_chunk = False
         else:

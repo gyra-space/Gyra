@@ -54,7 +54,7 @@ export function MobileAgentView({ convUid, workspaceId, appCode, taskId, onNewSe
   const [text, setText] = useState('');
   const [selectedStep, setSelectedStep] = useState<WorkspaceExecutionStep | null>(null);
 
-  const { workspaceView, loading, error, lastInput, convState, usageMetrics, send, abort } =
+  const { workspaceView, loading, error, lastInput, modelName, convState, usageMetrics, send, abort, appendOptimisticUser } =
     useSceneAgentChat({ convUid, appCode, workspaceId, taskId });
 
   const running = loading || convState === 'RUNNING';
@@ -73,6 +73,9 @@ export function MobileAgentView({ convUid, workspaceId, appCode, taskId, onNewSe
     if (!canSend) return;
     // 运行中发送 → 走用户输入(介入/补充);空闲发送 → 发起新任务
     if (running) {
+      // 乐观上屏:不等后端回显,先把用户消息插入视图(与桌面空间一致),
+      // 否则要等后端把该补充输入回显到 vis_final 才显示,用户会感觉消息没发出去
+      appendOptimisticUser(t);
       submitUserInput(t);
     } else {
       send({ text: t });
@@ -116,6 +119,8 @@ export function MobileAgentView({ convUid, workspaceId, appCode, taskId, onNewSe
         ) : (
           <AgentWorkspaceRenderer
             view={workspaceView}
+            running={running}
+            modelName={modelName}
             onStepClick={setSelectedStep}
             onDeliverableClick={handleOpenFile}
           />

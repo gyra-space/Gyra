@@ -54,6 +54,8 @@ export interface SceneSimpleWorkspaceProps {
   retryLoadConv?: () => void;
   agentIcon?: string | null;
   agentName?: string | null;
+  /** 本次对话选用的模型名(运行中文案「xx模型 思考中」使用) */
+  modelName?: string | null;
   onInteractionResume?: (userMessage: string) => void;
   /** 返回欢迎态(退出任务/会话详情) */
   onExit?: () => void;
@@ -267,7 +269,15 @@ function stepToOutputs(step: WorkspaceExecutionStep): ManusExecutionOutput[] {
     const out = (step.output || '').trim();
     if (step.status === 'failed' && out) outputs.push({ output_type: 'error', content: out });
     else if (out) outputs.push({ output_type: 'text', content: out });
-    if (!outputs.length && cmd) outputs.push({ output_type: 'text', content: '' });
+    if (!outputs.length) {
+      if (step.status === 'failed') {
+        // 失败但未捕获到输出:明确提示失败(而非空白「未返回可展示的输出」),
+        // 便于用户感知这是个失败步骤;命令由 Terminal 头部单独展示不重复。
+        outputs.push({ output_type: 'error', content: '工具执行失败，未返回输出' });
+      } else if (cmd) {
+        outputs.push({ output_type: 'text', content: '' });
+      }
+    }
     return outputs;
   }
 
@@ -413,7 +423,7 @@ function StepDetail({ step }: { step: WorkspaceExecutionStep }) {
       {!renderer && !hasVis && !hasOutput && !hasInput && (
         <div className="ws-simple-right__empty" style={{ minHeight: 120 }}>
           <InboxOutlined />
-          <div>该步骤暂无可展示内容</div>
+          <div>{step.status === 'failed' ? '该步骤执行失败，无返回输出' : '该步骤暂无可展示内容'}</div>
         </div>
       )}
     </div>
@@ -429,6 +439,7 @@ export function SceneSimpleWorkspace({
   retryLoadConv,
   agentIcon,
   agentName,
+  modelName,
   onInteractionResume,
   onExit,
   inputSlot,
@@ -655,10 +666,12 @@ export function SceneSimpleWorkspace({
               view={view}
               running={running}
               onStepClick={handleStepClick}
+              selectedStepId={selectedStep?.id ?? null}
               onDeliverableClick={handleOpenDeliverable}
               onInteractionResume={onInteractionResume}
               agentIcon={agentIcon}
               agentName={agentName}
+              modelName={modelName}
             />
           )}
         </div>

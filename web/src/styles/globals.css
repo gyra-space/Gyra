@@ -154,6 +154,41 @@ body {
   background-color: rgb(35, 38, 44);
 }
 
+/* Agent 对话框 发送/停止按钮:运行中脉冲动效(对齐场景空间 ws-stop-btn) */
+.ws-stop-btn--running {
+  position: relative;
+  animation: ws-stop-btn-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes ws-stop-btn-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--brand-rgb), 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(var(--brand-rgb), 0.06); }
+}
+
+.ws-stop-btn__square {
+  display: block;
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  border-radius: 2px;
+}
+
+.ws-stop-btn--running .ws-stop-btn__square {
+  animation: ws-stop-btn-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes ws-stop-btn-breathe {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.9); opacity: 0.85; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-stop-btn--running,
+  .ws-stop-btn--running .ws-stop-btn__square {
+    animation: none;
+  }
+}
+
 /* ============================================
    Motion & Material —— 运动感与材质层
    ============================================ */

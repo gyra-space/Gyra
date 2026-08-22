@@ -1265,17 +1265,63 @@ class AgentChat(BaseComponent, ABC):
         if last_conversation and Status.WAITING.value == last_conversation.state:
             agent_conv_id = last_conversation.conv_id
             logger.info("收到用户动作授权, 恢复会话: " + agent_conv_id)
+            await self._consume_v2_ask_user_checkpoints(conv_session_id)
+        elif last_conversation:
+            # V2 ask_user fallback：last_conversation 状态非 WAITING（状态更新未落库
+            # /竞态）但 V2 事件库仍存在 AWAITING_USER 的 ask_user checkpoint 时，
+            # 复用原会话——避免用户回答 ask_user 时新建 _2 会话与原会话并发写同一
+            # conv（页面乱闪乱跳、交付信息丢失的根因之一）。
+            if await self._has_v2_ask_user_checkpoint(conv_session_id):
+                agent_conv_id = last_conversation.conv_id
+                logger.info("检测到 V2 ask_user 未完成交互, 恢复会话: " + agent_conv_id)
+                await self._consume_v2_ask_user_checkpoints(conv_session_id)
+            else:
+                gpt_chat_order = str(len(gpts_conversations) + 1)
+                agent_conv_id = conv_session_id + "_" + gpt_chat_order
         else:
-            gpt_chat_order = (
-                "1" if not gpts_conversations else str(len(gpts_conversations) + 1)
-            )
-            agent_conv_id = conv_session_id + "_" + gpt_chat_order
+            agent_conv_id = conv_session_id + "_1"
         # 三层嵌套 trace:L1 会话两个 id 的映射(chunk 文件名/SSE 用 agent_conv_id,
         # 会话台账用 conv_session_id),便于 grep 串联主会话 -> 子会话 -> 轮询任务
         logger.info(
             f"[agent-conv] session={conv_session_id} -> agent_conv={agent_conv_id}"
         )
         return agent_conv_id, gpts_conversations
+
+    async def _has_v2_ask_user_checkpoint(self, conv_session_id: str) -> bool:
+        """V2 事件库是否存在 AWAITING_USER 的 ask_user checkpoint（按 conv 查询）。"""
+        try:
+            from gyra.agent.core.v2.state_store import create_state_store
+            state_store = create_state_store(conv_id=conv_session_id)
+            checkpoints = await state_store.get_interaction_checkpoints_by_conv(
+                conv_session_id
+            )
+            return any(
+                (c.get("request_payload") or {}).get("type") == "ASK_USER_LEGACY"
+                for c in checkpoints
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[AgentChat] v2 ask_user checkpoint check skipped: {e}")
+            return False
+
+    async def _consume_v2_ask_user_checkpoints(self, conv_session_id: str) -> None:
+        """消费（删除）本会话已响应的 ask_user checkpoint，避免残留导致后续
+        新消息被误判为对旧提问的回答而复用旧会话。"""
+        try:
+            from gyra.agent.core.v2.state_store import create_state_store
+            state_store = create_state_store(conv_id=conv_session_id)
+            checkpoints = await state_store.get_interaction_checkpoints_by_conv(
+                conv_session_id
+            )
+            for c in checkpoints:
+                if (c.get("request_payload") or {}).get("type") == "ASK_USER_LEGACY":
+                    await state_store.delete_interaction_checkpoint(c["request_id"])
+            if checkpoints:
+                logger.info(
+                    f"[AgentChat] consumed {len(checkpoints)} v2 ask_user checkpoint(s) "
+                    f"for session {conv_session_id}"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[AgentChat] v2 ask_user checkpoint consume skipped: {e}")
 
     @abstractmethod
     async def chat(
@@ -4100,6 +4146,142 @@ class AgentChat(BaseComponent, ABC):
         """
         pass
 
+    # ------------------------------------------------------------------
+    # 多轮会话(连续提问)聚合:同 session 下每个连续提问会新建一个 agent conv
+    # (_1/_2/…),query_chat 按 session 兜底时只取最后一轮,重开会话会丢前几轮内容。
+    # 这里把各轮的 scene_agent_workspace 终态视图按 id 合并成一份完整历史。
+    # ------------------------------------------------------------------
+    @classmethod
+    def _parse_scene_workspace_fence(cls, text: Optional[str]) -> Optional[Dict[str, Any]]:
+        """解析 scene_agent_workspace 围栏(```scene_agent_workspace\n{json}\n```)。"""
+        if not isinstance(text, str) or not text.strip():
+            return None
+        stripped = text.strip()
+        if stripped.startswith("```scene_agent_workspace") and "\n" in stripped:
+            body = stripped.split("\n", 1)[1].rsplit("```", 1)[0]
+        elif stripped.startswith("```"):
+            body = stripped.lstrip("`").split("\n", 1)[1].rsplit("```", 1)[0]
+        elif stripped.startswith("{"):
+            body = stripped
+        else:
+            return None
+        try:
+            parsed = json.loads(body)
+        except (ValueError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @classmethod
+    def _merge_session_workspace_view(
+        cls, acc: Dict[str, Any], view: Dict[str, Any]
+    ) -> None:
+        """把一轮的 scene_agent_workspace 视图并入累积视图(与前端 parseWorkspaceView 语义一致)。
+
+        - execution: 按 id 幂等合并(同 id 覆盖旧值),保留其它轮步骤
+        - planning/summary/panel_view/subagents: 后来者(后一轮)覆盖
+        - deliverable_files/task_files: 按 file_id 合并(同 id 取新值,旧文件保留)
+        - lobby_exhibits: 按 exhibit_id 幂等合并
+        """
+        if acc.get("render_name") != "scene_agent_workspace":
+            return
+        exec_by_id: Dict[str, Any] = {}
+        for step in acc.get("execution", []) or []:
+            if isinstance(step, dict) and step.get("id"):
+                exec_by_id[step["id"]] = step
+        for step in view.get("execution", []) or []:
+            if isinstance(step, dict) and step.get("id"):
+                exec_by_id[step["id"]] = step
+        acc["execution"] = list(exec_by_id.values())
+
+        if view.get("planning"):
+            acc["planning"] = view["planning"]
+        if view.get("summary"):
+            acc["summary"] = view["summary"]
+        if view.get("panel_view"):
+            acc["panel_view"] = view["panel_view"]
+        if view.get("subagents"):
+            acc["subagents"] = view["subagents"]
+
+        deliverable_files: Dict[str, Any] = {
+            f.get("file_id"): f for f in acc.get("deliverable_files", []) or [] if f.get("file_id")
+        }
+        for f in view.get("deliverable_files", []) or []:
+            if f.get("file_id"):
+                deliverable_files[f["file_id"]] = f
+        acc["deliverable_files"] = list(deliverable_files.values())
+
+        task_files: Dict[str, Any] = {
+            f.get("file_id"): f for f in acc.get("task_files", []) or [] if f.get("file_id")
+        }
+        for f in view.get("task_files", []) or []:
+            if f.get("file_id"):
+                task_files[f["file_id"]] = f
+        acc["task_files"] = list(task_files.values())
+
+        lobby_exhibits: Dict[str, Any] = {
+            e.get("exhibit_id"): e for e in acc.get("lobby_exhibits", []) or [] if e.get("exhibit_id")
+        }
+        for e in view.get("lobby_exhibits", []) or []:
+            if e.get("exhibit_id"):
+                lobby_exhibits[e["exhibit_id"]] = e
+        acc["lobby_exhibits"] = list(lobby_exhibits.values())
+
+    @staticmethod
+    def _sort_by_ts(execution: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """按 ts 时间戳升序排序(无 ts 排最后),跨轮次时按真实时序交错展示。"""
+        def k(step: Dict[str, Any]) -> str:
+            return step.get("ts") or "￿"
+        return sorted(execution, key=k)
+
+    async def _aggregate_session_final_view(
+        self,
+        gpts_memory: Any,
+        session_convs: List[Any],
+        vis_render: str,
+        web_config: Any,
+    ) -> Optional[str]:
+        """按 id 聚合同 session 下多次 agent conv 的终态视图。
+
+        仅当各轮都能解析为 scene_agent_workspace 结构化视图才聚合,否则返回 None,
+        由调用方回退到单轮(最后一轮)视图,避免破坏其它 vis 协议的既有行为。
+        """
+        try:
+            acc: Dict[str, Any] = {
+                "render_name": "scene_agent_workspace",
+                "planning": None,
+                "execution": [],
+                "summary": None,
+                "deliverable_files": [],
+                "task_files": [],
+                "panel_view": "execution",
+                "lobby_exhibits": [],
+                "subagents": [],
+            }
+            vis_manager = get_vis_manager()
+            for conv in session_convs:
+                conv_id = getattr(conv, "conv_id", None)
+                if not conv_id:
+                    continue
+                vis_convert = vis_manager.get_by_name(vis_render)(gyra_url=web_config.web_url)
+                await gpts_memory.init(conv_id=conv_id, vis_converter=vis_convert)
+                await gpts_memory.load_persistent_memory(conv_id)
+                fence = await gpts_memory.vis_final(conv_id)
+                if conv_id != getattr(session_convs[-1], "conv_id", None):
+                    # 保留最后一轮的 cache,供 query_chat 末尾 user_answer 使用;其余释放
+                    await gpts_memory.clear(conv_id)
+                view = self._parse_scene_workspace_fence(fence)
+                if view is None:
+                    # 非 scene_agent_workspace 视图(其它 vis 协议):回退单轮,不聚合
+                    return None
+                self._merge_session_workspace_view(acc, view)
+
+            acc["execution"] = self._sort_by_ts(acc["execution"])
+            body = json.dumps(acc, ensure_ascii=False)
+            return f"```scene_agent_workspace\n{body}\n```"
+        except Exception as e:  # noqa: BLE001 - 聚合失败回退单轮,不阻塞查询
+            logger.exception(f"[aggregate_session_final_view] failed: {e}")
+            return None
+
     async def query_chat(self, conv_id: str, vis_render: Optional[str] = None):
         """查询对话
 
@@ -4118,6 +4300,7 @@ class AgentChat(BaseComponent, ABC):
             gpts_conversation: GptsConversationsEntity = (
                 self.gpts_conversations.get_by_conv_id(conv_id)
             )
+            session_convs = None
             if not gpts_conversation:
                 # 兼容前端传入 conversation_session_id（非 agent conv_id）的场景：
                 # 历史会话轮询用的是 URL 上的 conv_uid（即 session_id），
@@ -4129,12 +4312,15 @@ class AgentChat(BaseComponent, ABC):
                     gpts_conversation = session_convs[-1]
             if not gpts_conversation:
                 return None
+            # 同一会话内连续提问会产出多轮 agent conv(_1/_2/…);
+            # 只取最后一轮会导致重开会话丢失前几轮内容,故需跨轮聚合。
+            multi_round_session = bool(session_convs and len(session_convs) > 1)
             conv_id = gpts_conversation.conv_id
             is_final = False
             if gpts_conversation.state in [Status.COMPLETE.value, Status.FAILED.value]:
                 is_final = True
             logger.info(
-                f"query_chat gpts_conversation vis render:{vis_render},{gpts_conversation.vis_render}"
+                f"query_chat gpts_conversation vis render:{vis_render},{gpts_conversation.vis_render}, multi_round={multi_round_session}"
             )
             current_vis_render = (
                 vis_render or gpts_conversation.vis_render or "nex_vis_window"
@@ -4167,8 +4353,21 @@ class AgentChat(BaseComponent, ABC):
             # 6th 返回值：dock 帧（Composer Dock 协议），从专用表回放 todo 等
             # 输入区 widget，重开会话时可恢复 todo 面板。
             dock = await self._build_dock_frame(gpts_memory, conv_id)
+
+            # 多轮会话聚合终态视图;聚合失败(非 scene_agent_workspace 协议等)回退单轮。
+            if multi_round_session:
+                aggregated = await self._aggregate_session_final_view(
+                    gpts_memory, session_convs, current_vis_render, web_config
+                )
+                final_view = (
+                    aggregated if aggregated is not None
+                    else await gpts_memory.vis_final(conv_id)
+                )
+            else:
+                final_view = await gpts_memory.vis_final(conv_id)
+
             return (
-                await gpts_memory.vis_final(conv_id),
+                final_view,
                 await gpts_memory.user_answer(conv_id),
                 current_vis_render,
                 is_final,

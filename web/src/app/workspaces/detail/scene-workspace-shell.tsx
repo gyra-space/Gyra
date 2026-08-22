@@ -668,6 +668,7 @@ export function SceneWorkspaceShell({
                   retryLoadConv={retryLoadConv}
                   agentIcon={appInfo?.icon}
                   agentName={appInfo?.app_name}
+                  modelName={simpleChat.modelName}
                   onInteractionResume={(msg) => simpleChat.send({ text: msg })}
                   onExit={() => {
                     setSimpleShowWelcome(true);

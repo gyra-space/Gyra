@@ -1,0 +1,57 @@
+# =====================================================================
+# Gyra Minimal 配置 —— 系统启动初始化配置
+# 由 `gyra quickstart`（不带 -c）默认加载：configs/gyra-minimal.toml
+# 支持 ${env:VAR:-default} 环境变量占位：优先读取环境变量，未设置时用默认值
+# 模型 / Search key 等均可用环境变量覆盖，零配置也能直接启动。
+# =====================================================================
+
+# ---------------- 系统基础配置 ----------------
+[system]
+# 界面语言：zh / en / fr / ja / ko / ru
+language = "${env:GYRA_LANG:-zh}"
+# 日志级别：DEBUG / INFO / WARNING / ERROR / CRITICAL
+log_level = "INFO"
+# 命中即可访问服务的 API keys（留空则用 Web UI 管理）
+api_keys = []
+# 数据加密密钥
+encrypt_key = "${ENCRYPT_KEY:-your_secret_key}"
+
+# ---------------- Web 服务 ----------------
+[service.web]
+host = "0.0.0.0"
+port = 8888
+model_storage = "database"
+web_url = "http://localhost:8888"
+
+[service.web.database]
+type = "sqlite"
+path = "pilot/meta_data/gyra.db"
+check_same_thread = false
+
+[service.web.trace]
+file = "${env:TRACE_FILE_DIR:-logs}/gyra_webserver_tracer.jsonl"
+
+# ---------------- 模型 worker ----------------
+[service.model.worker]
+host = "127.0.0.1"
+
+# ---------------- Agent LLM ----------------
+# 模型可在 Web UI 中配置（零配置模式推荐）。
+# 如需启动即内置默认模型，取消下方注释并提供 api_key：
+[agent.llm]
+temperature = 0.5
+
+# [[agent.llm.provider]]
+# provider = "openai"
+# api_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# api_key = "${DASHSCOPE_API_KEY:-sk-...}"
+# [[agent.llm.provider.model]]
+# name = "qwen-plus"
+# [[agent.llm.provider.model]]
+# name = "deepseek-v3"
+
+# ---------------- 记录工具 key（仅供备忘） ----------------
+# websearch 工具的可选 Google 搜索 key（SerpAPI）是从环境变量读取的，
+# 并非本 TOML 字段；需要时请设置环境变量后启动：
+#   export SERP_API_KEY="<your_key>"
+# 未配置时 websearch 自动兜底使用 DuckDuckGo 免费搜索，无需任何 key。

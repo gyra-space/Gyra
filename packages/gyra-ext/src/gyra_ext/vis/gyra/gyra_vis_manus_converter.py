@@ -369,7 +369,17 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         # 流式阶段且没有 action_report：不生成 step_thought，避免与 LLM 输出重复。
         # 但正文(content 通道)仍需逐字流式渲染：由 _render_content_stream 把每帧
         # content 增量渲染为固定 uid 的 drsk-content(incr 拼接)，否则正文只在终态一次性出现。
+        logger.info(
+            f"[ManusConverter][D][gen_plan_items] dispatch: "
+            f"has_gpt_msg={gpt_msg is not None}, is_streaming={is_streaming!r}, "
+            f"has_action_outs={bool(action_outs)}, msg_id={message_id!r}, "
+            f"content_len={len((stream_msg or {}).get('content') or '') if isinstance(stream_msg, dict) else 0}, "
+            f"thinking_len={len((stream_msg or {}).get('thinking') or '') if isinstance(stream_msg, dict) else 0}"
+        )
         if is_streaming and not action_outs:
+            logger.info(
+                f"[ManusConverter][D][gen_plan_items] -> _render_content_stream (pure text frame)"
+            )
             return self._render_content_stream(stream_msg)
 
         if action_outs:
@@ -384,8 +394,21 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                     is_terminate = getattr(act_out, 'terminate', False)
                     conclusion = getattr(act_out, 'observations', None) or getattr(act_out, 'content', None)
 
+                logger.info(
+                    f"[ManusConverter][D][gen_plan_items][tool] act={act_name!r} "
+                    f"is_terminate={is_terminate!r} is_streaming={is_streaming!r} "
+                    f"content_len={len(conclusion) if isinstance(conclusion, str) else 0} "
+                    f"content_head={(conclusion[:60] if isinstance(conclusion, str) else '')!r} "
+                    f"msg_id={message_id!r}"
+                )
+
                 is_batch = act_name.lower() in ("batchtasks", "batch_tasks")
                 if not is_batch and (act_name == BlankAction.name or is_terminate):
+                    logger.info(
+                        f"[ManusConverter][D][gen_plan_items] -> terminate/blank branch: "
+                        f"act_name={act_name!r}, is_terminate={is_terminate!r}, "
+                        f"has_conclusion={bool(conclusion)}, conclusion_len={len(conclusion) if isinstance(conclusion, str) else 0}"
+                    )
                     if conclusion and isinstance(conclusion, str) and conclusion.strip():
                         # 用 type=ALL 完整替换，确保 markdown 表格等结构完整渲染
                         # uid 用正文流式固定 uid（manus_content_stream）：终态结论
@@ -633,6 +656,12 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                         content=content,
                     ))
 
+        # 工具 view 通道：skill 步骤的 d-skill-meta（用户视角 frontmatter，
+        # 不进 LLM content）从 act_out.view 提取，作为独立 output 下发前端
+        meta_out = self._extract_skill_meta_output(act_out, step_type)
+        if meta_out:
+            outputs.append(meta_out)
+
         if outputs:
             self._outputs[step_id] = outputs
 
@@ -671,6 +700,36 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
     _VIS_SQL_QUERY_RE = re.compile(
         r'```d-sql-query\s*\n(.*?)\n```', re.DOTALL
     )
+
+    # skill 工具 view 通道标签（用户视角 frontmatter 元数据）
+    _VIS_SKILL_META_RE = re.compile(
+        r'<d-skill-meta>[\s\S]*?</d-skill-meta>'
+    )
+
+    def _extract_skill_meta_output(
+        self, act_out, step_type: str
+    ) -> Optional["ManusExecutionOutput"]:
+        """从 act_out.view 提取 skill 工具的 ``<d-skill-meta>`` 标签。
+
+        skill 工具的完整 frontmatter 走 view 通道（不进 content/observations，
+        即不进 LLM 上下文）；前端渲染头部组件需要它，故作为独立 output 下发。
+        """
+        if step_type != ManusStepType.SKILL.value or act_out is None:
+            return None
+        for attr in ('view', 'simple_view'):
+            val = (
+                act_out.get(attr)
+                if isinstance(act_out, dict)
+                else getattr(act_out, attr, None)
+            )
+            if isinstance(val, str):
+                m = self._VIS_SKILL_META_RE.search(val)
+                if m:
+                    return ManusExecutionOutput(
+                        output_type=ManusOutputType.TEXT.value,
+                        content=m.group(0),
+                    )
+        return None
 
     def _extract_sql_query_data(self, act_out) -> Optional[Dict[str, Any]]:
         """Extract structured SQL query data from ActionOutput.
@@ -948,6 +1007,10 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                 content=observation,
             ))
 
+        meta_out = self._extract_skill_meta_output(act_out, step_info.type)
+        if meta_out:
+            outputs.append(meta_out)
+
         return step_info, outputs
 
     def _extract_step_from_stream_msg(
@@ -1000,6 +1063,10 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                 output_type=ManusOutputType.TEXT.value,
                 content=observation,
             ))
+
+        meta_out = self._extract_skill_meta_output(act_out, step_info.type)
+        if meta_out:
+            outputs.append(meta_out)
 
         return step_info, outputs
 
@@ -1213,13 +1280,33 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         Returns: VIS tag 字符串（可含多个 tag，换行连接）；无增量时返回 None。
         """
         if not stream_msg or not isinstance(stream_msg, dict):
+            logger.info(
+                f"[ManusConverter][D][render_content_stream] non-dict/empty stream_msg drop: "
+                f"stream_msg={type(stream_msg).__name__}"
+            )
             return None
         message_id = stream_msg.get("message_id")
         if not message_id:
+            logger.info(
+                f"[ManusConverter][D][render_content_stream] missing message_id drop: "
+                f"keys={list(stream_msg.keys())}"
+            )
             return None
         # 只处理纯文本输出帧（无 action_report），工具步骤走 manus-right-panel
         if stream_msg.get("action_report"):
+            logger.info(
+                f"[ManusConverter][D][render_content_stream] has action_report -> tool step, skip text: "
+                f"msg_id={message_id}, action_report_len={len(stream_msg.get('action_report') or [])}"
+            )
             return None
+
+        logger.info(
+            f"[ManusConverter][D][render_content_stream] entering text render: "
+            f"msg_id={message_id}, type={stream_msg.get('type')!r}, "
+            f"is_streaming={stream_msg.get('is_streaming')!r}, "
+            f"content_len={len(stream_msg.get('content') or '')}, "
+            f"thinking_len={len(stream_msg.get('thinking') or '')}"
+        )
 
         vis_parts: List[str] = []
 
@@ -1264,6 +1351,11 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                     DrskContent().sync_display(
                         content=text_content.to_dict(exclude_none=True)
                     )
+                )
+            else:
+                logger.info(
+                    f"[ManusConverter][D][render_content_stream] content frame duplicate/no-incr: "
+                    f"msg_id={message_id}, content_len={len(content)}, prev_len={len(prev)}"
                 )
 
         return "\n".join(vis_parts) if vis_parts else None
@@ -2043,9 +2135,10 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                             content=observation,
                         )]
 
-        # 构建 steps_map（局部数据）— lazy mode: 只存步骤元信息，不带 outputs。
-        # 全量历史同样按需加载，避免把每个步骤的完整输出落盘，控制存储体积。
-        # 前端在点击步骤时通过 /vis/step_detail API 按需拉取该步骤的 outputs。
+        # 构建 steps_map（局部数据）— 终态视图非 lazy：每个步骤回填真实 outputs，
+        # 使重开对话时右面板/左栏步骤列表能直接看到工具执行结果，而非只有元信息空壳。
+        # 与流式非懒加载路径保持一致（不截断）；超大输出（整页 HTML/长通知）全量落库
+        # 会增加存储/响应体积，若后续有体积压力可在 /vis/step_detail 兜底拉取原文。
         steps_map: Dict[str, Dict[str, Any]] = {}
         def _step_to_info(step):
             return ManusActiveStepInfo(
@@ -2060,6 +2153,7 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             if step:
                 step_meta = {
                     "active_step": _step_to_info(step).to_dict(),
+                    "outputs": self._outputs_to_dict_list(local_outputs.get(sid, [])),
                 }
                 steps_map[uid] = step_meta
                 if sid not in steps_map:
@@ -2068,6 +2162,7 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             if sid not in steps_map:
                 steps_map[sid] = {
                     "active_step": _step_to_info(step).to_dict(),
+                    "outputs": self._outputs_to_dict_list(local_outputs.get(sid, [])),
                 }
 
         total_step_count = len(local_steps)
@@ -2093,7 +2188,7 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             is_running=False,
             steps_map=steps_map,
             agent_name=self._agent_name,
-            lazy_loading=True,
+            lazy_loading=False,
             meta={
                 "total_steps": total_step_count,
                 "visible_steps": len(steps_map),
@@ -2130,17 +2225,9 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         if messages:
             last_msg = messages[-1]
             if last_msg.role != HUMAN_ROLE:
-                summary = None
-                if last_msg.action_report:
-                    for act_out in last_msg.action_report:
-                        obs = getattr(act_out, 'observations', None)
-                        cnt = getattr(act_out, 'content', None)
-                        candidate = obs or cnt
-                        if candidate and isinstance(candidate, str) and candidate.strip():
-                            summary = candidate
-                            break
-                if not summary and last_msg.content:
-                    summary = last_msg.content
+                # 复用 _extract_msg_summary：只取模型结论（terminate content / 消息 content），
+                # 工具执行结果（HTML 等）不渲染到最终摘要位置
+                summary = self._extract_msg_summary(last_msg)
                 if summary:
                     right_panel.summary_content = summary
 
@@ -2248,17 +2335,32 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
 
     @staticmethod
     def _extract_msg_summary(msg: "GptsMessage") -> Optional[str]:
-        """从单条消息提取摘要/结论文本（优先 action_report 的 observations/content）。
+        """从单条消息提取摘要/结论文本。
 
-        供右面板 summary_content 使用；与 final_view 的摘要提取逻辑保持一致。
+        供右面板 summary_content / 左栏最终结论使用；与 final_view 的摘要提取逻辑保持一致。
+
+        只取模型真正产出的结论文本，工具执行结果（action_report 里非 terminate 的
+        observations/content，可能是超长网页 HTML）**不**作为最终摘要——工具结果
+        只在右面板工具渲染器按需展示，绝不能渲染到"最终结论"位置。
         """
+        # 优先 terminate 结论（V2/ReActMaster 的终止型 ActionOutput content=模型答案）
         if msg.action_report:
             for act_out in msg.action_report:
+                is_terminate = getattr(act_out, 'terminate', False)
+                if isinstance(act_out, dict):
+                    is_terminate = act_out.get('terminate', False)
+                if not is_terminate:
+                    continue
                 obs = getattr(act_out, 'observations', None)
+                if isinstance(act_out, dict):
+                    obs = act_out.get('observations')
                 cnt = getattr(act_out, 'content', None)
+                if isinstance(act_out, dict):
+                    cnt = act_out.get('content')
                 candidate = obs or cnt
                 if candidate and isinstance(candidate, str) and candidate.strip():
                     return candidate
+        # 其次用消息 content（模型/用户正文；V2 最终答案在 content）
         if msg.content:
             c = msg.content
             if isinstance(c, str) and c.strip():
@@ -2294,16 +2396,9 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                         break
 
         # fallback: 发给用户的消息
+        # 复用 _extract_msg_summary：只取模型结论，工具执行结果（HTML 等）不渲染到最终结论
         if not conclusion_content and output_message.receiver == HUMAN_ROLE:
-            if output_message.action_report:
-                for action_out in output_message.action_report:
-                    conclusion_content = (
-                        _get_val(action_out, "observations")
-                        or _get_val(action_out, "content")
-                        or _get_val(action_out, "view")
-                    )
-                    if conclusion_content:
-                        break
+            conclusion_content = self._extract_msg_summary(output_message)
             if not conclusion_content:
                 conclusion_content = output_message.content
 

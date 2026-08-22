@@ -788,6 +788,14 @@ class ToolAction(Action[ToolInput]):
         if truncation_result is not None:
             final_content = truncation_result.content
 
+        # 工具 view 通道：skill frontmatter（用户视角可视化，不进 LLM content）
+        skill_meta = tool_result.get("skill_meta")
+        if skill_meta:
+            from gyra.agent.core.v2.skills.skill_tool import _skill_meta_view
+
+            meta_view = _skill_meta_view(str(skill_meta))
+            view = f"{view}\n{meta_view}" if view else meta_view
+
         ask_user = tool_result.get("ask_user", False)
         extra = {"archive_file_key": archive_file_key} if archive_file_key else None
         ask_user_metadata = tool_result.get("ask_user_metadata")
@@ -1140,6 +1148,10 @@ class ToolAction(Action[ToolInput]):
             if md.get("wait_async"):
                 flags["wait_async"] = True
                 flags["state"] = Status.WAITING.value
+        if md.get("skill_meta"):
+            # 工具 view 通道：skill frontmatter 元数据（用户视角可视化，
+            # 不进 LLM 输出）——run() 里包装成 d-skill-meta VIS 标签进 view
+            flags["skill_meta"] = md["skill_meta"]
         return flags
 
     async def _execute_tool(self, tool_info: BaseTool, args: Any, **kwargs) -> Any:

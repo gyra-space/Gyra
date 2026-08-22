@@ -1811,6 +1811,10 @@ input[type="button"], [type="reset"], [type="submit"] {
     max-height: 200px !important;
   }
 
+.max-h-\[240px\] {
+    max-height: 240px !important;
+  }
+
 .max-h-\[300px\] {
     max-height: 300px !important;
   }
@@ -2195,6 +2199,10 @@ input[type="button"], [type="reset"], [type="submit"] {
 
 .max-w-7xl {
     max-width: var(--container-7xl) !important;
+  }
+
+.max-w-\[60\%\] {
+    max-width: 60% !important;
   }
 
 .max-w-\[60px\] {
@@ -4408,17 +4416,9 @@ input[type="button"], [type="reset"], [type="submit"] {
     border-top-color: #0000 !important;
   }
 
-.\!bg-\[\#4f46e5\] {
-    background-color: #4f46e5 !important;
-  }
-
 .\!bg-\[\#4f46e5\]\/\[0\.04\] {
     background-color: #4f46e50a !important;
     background-color: lab(39.3777% 41.5481 -80.9657 / .04) !important;
-  }
-
-.\!bg-\[\#e5e8ef\] {
-    background-color: #e5e8ef !important;
   }
 
 .\!bg-gray-50 {
@@ -6903,10 +6903,6 @@ input[type="button"], [type="reset"], [type="submit"] {
     white-space: pre-wrap !important;
   }
 
-.\!text-\[\#b4bac8\] {
-    color: #b4bac8 !important;
-  }
-
 .\!text-blue-500 {
     color: var(--color-blue-500) !important;
   }
@@ -7006,10 +7002,6 @@ input[type="button"], [type="reset"], [type="submit"] {
 
 .text-\[\#b4bac8\] {
     color: #b4bac8 !important;
-  }
-
-.text-\[\#d5d9e3\] {
-    color: #d5d9e3 !important;
   }
 
 .text-\[\#d97706\] {
@@ -8465,10 +8457,6 @@ input[type="button"], [type="reset"], [type="submit"] {
       border-color: var(--color-red-300) !important;
     }
 
-    .hover\:\!bg-\[\#6366f1\]:hover {
-      background-color: #6366f1 !important;
-    }
-
     .hover\:bg-\[\#4f46e5\]\/40:hover {
       background-color: #4f46e566 !important;
       background-color: lab(39.3777% 41.5481 -80.9657 / .4) !important;
@@ -8747,10 +8735,6 @@ input[type="button"], [type="reset"], [type="submit"] {
       color: #151622 !important;
     }
 
-    .hover\:text-\[\#ef4444\]:hover {
-      color: #ef4444 !important;
-    }
-
     .hover\:text-\[var\(--mcp-accent\)\]:hover {
       color: var(--mcp-accent) !important;
     }
@@ -8827,17 +8811,12 @@ input[type="button"], [type="reset"], [type="submit"] {
       --tw-shadow: 0 4px 12px var(--tw-shadow-color, #1018281f) !important;
     }
 
-    .hover\:shadow-\[0_4px_12px_rgba\(16\,24\,40\,0\.12\)\]:hover, .hover\:shadow-\[0_4px_12px_rgba\(79\,70\,229\,0\.4\)\]:hover {
+    .hover\:shadow-\[0_4px_12px_rgba\(16\,24\,40\,0\.12\)\]:hover, .hover\:shadow-\[0_4px_14px_rgba\(79\,70\,229\,0\.42\)\]:hover {
       box-shadow: var(--tw-inset-shadow),var(--tw-inset-ring-shadow),var(--tw-ring-offset-shadow),var(--tw-ring-shadow),var(--tw-shadow) !important;
-    }
-
-    .hover\:shadow-\[0_4px_12px_rgba\(79\,70\,229\,0\.4\)\]:hover {
-      --tw-shadow: 0 4px 12px var(--tw-shadow-color, #4f46e566) !important;
     }
 
     .hover\:shadow-\[0_4px_14px_rgba\(79\,70\,229\,0\.42\)\]:hover {
       --tw-shadow: 0 4px 14px var(--tw-shadow-color, #4f46e56b) !important;
-      box-shadow: var(--tw-inset-shadow),var(--tw-inset-ring-shadow),var(--tw-ring-offset-shadow),var(--tw-ring-shadow),var(--tw-shadow) !important;
     }
 
     .hover\:shadow-\[0_12px_40px_rgba\(0\,0\,0\,0\.12\)\,0_4px_12px_rgba\(0\,0\,0\,0\.06\)\]:hover {
@@ -10571,6 +10550,51 @@ body {
 
 .dark-sub-bg {
   background-color: #23262c;
+}
+
+.ws-stop-btn--running {
+  animation: 1.8s ease-in-out infinite ws-stop-btn-pulse;
+  position: relative;
+}
+
+@keyframes ws-stop-btn-pulse {
+  0%, to {
+    box-shadow: 0 0 0 0 rgba(var(--brand-rgb),.35);
+  }
+
+  50% {
+    box-shadow: 0 0 0 6px rgba(var(--brand-rgb),.06);
+  }
+}
+
+.ws-stop-btn__square {
+  background: currentColor;
+  border-radius: 2px;
+  width: 10px;
+  height: 10px;
+  display: block;
+}
+
+.ws-stop-btn--running .ws-stop-btn__square {
+  animation: 1.8s ease-in-out infinite ws-stop-btn-breathe;
+}
+
+@keyframes ws-stop-btn-breathe {
+  0%, to {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: .85;
+    transform: scale(.9);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-stop-btn--running, .ws-stop-btn--running .ws-stop-btn__square {
+    animation: none;
+  }
 }
 
 ::selection {

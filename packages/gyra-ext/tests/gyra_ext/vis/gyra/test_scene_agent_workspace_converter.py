@@ -87,6 +87,37 @@ async def test_tool_stream_msg_produces_execution_step():
 
 
 @pytest.mark.asyncio
+async def test_tool_step_carries_vis_from_view():
+    """工具报告的 view(VIS 围栏)→ 步骤 vis 字段,前端 GPTVis 据此渲染工具组件。
+
+    对齐 vis_manus:工具执行的 view/simple_view 包含结构化 VIS tag(如 d-sql-query),
+    场景空间此前只保留 output 文本导致右侧只能渲染原始 JSON;补上 vis 后恢复组件渲染。
+    """
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    view = "```d-batch-tasks\n{\"tasks\":[{\"id\":4,\"name\":\"Walmart 数据分析\"}]}\n```"
+    report = _make_action_output(
+        state="complete",
+        content="[{\"id\":4,\"workspace_id\":2,\"name\":\"Walmart 数据分析\"}]",
+        view=view,
+    )
+    payload = _extract_payload(
+        await conv.visualization(messages=[], stream_msg={"type": "all", "message_id": "m1", "action_report": [report]})
+    )
+    step = payload["execution"][0]
+    assert step["type"] == "tool_call"
+    assert step["output"] == '[{"id":4,"workspace_id":2,"name":"Walmart 数据分析"}]'
+    assert step["vis"] == view
+
+    # simple_view 兜底:view 缺失时取 simple_view
+    report2 = _make_action_output(state="complete", content="ok", view=None)
+    report2.simple_view = "```d-tool\n{\"tool_name\":\"list_playbooks\"}\n```"
+    payload2 = _extract_payload(
+        await conv.visualization(messages=[], stream_msg={"type": "all", "message_id": "m2", "action_report": [report2]})
+    )
+    assert payload2["execution"][0]["vis"] == report2.simple_view
+
+
+@pytest.mark.asyncio
 async def test_streaming_text_becomes_summary():
     """LLM 流式文本(stream_msg.content,增量 delta)→ summary 实时拼接更新。"""
     conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
@@ -442,7 +473,7 @@ async def test_subagents_collected_from_coordinator():
         _make_subagent_item(sub_conv_id="sub_2", status="done"),
     ]
     with patch(
-        "gyra_ext.vis.gyra.gyra_vis_scene_agent_workspace_converter.get_subagent_coordinator",
+        "gyra_serve.agent.subagent_coordinator.get_subagent_coordinator",
         return_value=AsyncMock(list_subagent_items=AsyncMock(return_value=items)),
     ):
         payload = _extract_payload(
@@ -458,7 +489,7 @@ async def test_subagents_final_view_rebuild():
     conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
     items = [_make_subagent_item(sub_conv_id="sub_x", status="awaiting_authorization", authorization="确认?")]
     with patch(
-        "gyra_ext.vis.gyra.gyra_vis_scene_agent_workspace_converter.get_subagent_coordinator",
+        "gyra_serve.agent.subagent_coordinator.get_subagent_coordinator",
         return_value=AsyncMock(list_subagent_items=AsyncMock(return_value=items)),
     ):
         payload = _extract_payload(
@@ -473,7 +504,7 @@ async def test_subagents_collect_failure_returns_empty():
     """coordinator 异常 → subagents 为空数组,不影响主视图。"""
     conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
     with patch(
-        "gyra_ext.vis.gyra.gyra_vis_scene_agent_workspace_converter.get_subagent_coordinator",
+        "gyra_serve.agent.subagent_coordinator.get_subagent_coordinator",
         side_effect=RuntimeError("db down"),
     ):
         payload = _extract_payload(

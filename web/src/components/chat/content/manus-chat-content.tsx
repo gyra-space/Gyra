@@ -133,7 +133,7 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
   const searchParams = useSearchParams();
   const shareMode = (searchParams?.get('share_mode') as ShareMode) || null;
   const isSharedView = !!shareMode;
-  const { history, compressionSegments, replyLoading, dockWidgets, appInfo, handleChat } = useContext(ChatContentContext);
+  const { history, compressionSegments, replyLoading, dockWidgets, appInfo, modelValue, handleChat } = useContext(ChatContentContext);
   const [userClosedPanel, setUserClosedPanel] = useState(false);
   const [overrideRunningWindow, setOverrideRunningWindow] = useState<string | null>(null);
   // 状态事件 badge 数据(由 SystemEventsBridge 从消息流中桥接出来)
@@ -337,6 +337,7 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
                     running={isProcessing}
                     agentIcon={appInfo?.icon}
                     agentName={appInfo?.app_name}
+                    modelName={modelValue}
                     onStepClick={(step) => {
                       if (step.type !== 'tool_call') return;
                       const convId = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('conv_uid') || '' : '';
@@ -416,7 +417,6 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
                 />
                 <UnifiedChatInput
                   ctrl={ctrl}
-                  showFloatingActions={hasMessages}
                 />
               </div>
             </div>

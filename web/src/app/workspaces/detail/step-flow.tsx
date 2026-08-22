@@ -33,6 +33,8 @@ export interface StepFlowProps {
   /** 会话是否仍在运行(决定流末态是实时还是收敛) */
   running: boolean;
   onStepClick?: (step: WorkspaceExecutionStep) => void;
+  /** 当前选中步骤 id:用于左侧步骤行的高亮选中态 */
+  selectedStepId?: string | null;
 }
 
 /* ── 与 execution-capsule 保持一致的视觉语言 ─────────────────────── */
@@ -127,16 +129,19 @@ function StepRow({
   step,
   duration,
   onStepClick,
+  selectedStepId,
 }: {
   step: WorkspaceExecutionStep;
   duration?: number;
   onStepClick?: (s: WorkspaceExecutionStep) => void;
+  selectedStepId?: string | null;
 }) {
   if (step.type === 'thinking') return <ThinkingRow step={step} />;
   const clickable = !!onStepClick && step.type !== 'artifact';
+  const active = selectedStepId != null && step.id === selectedStepId;
   return (
     <div
-      className={`ws-capsule-step${step.status === 'running' ? ' ws-capsule-step--running' : ''}${step.status === 'failed' ? ' ws-capsule-step--failed' : ''}`}
+      className={`ws-capsule-step${active ? ' ws-capsule-step--active' : ''}${step.status === 'running' ? ' ws-capsule-step--running' : ''}${step.status === 'failed' ? ' ws-capsule-step--failed' : ''}`}
       role={clickable ? 'button' : undefined}
       tabIndex={clickable ? 0 : undefined}
       onClick={clickable ? () => onStepClick!(step) : undefined}
@@ -169,10 +174,12 @@ function ToolRunRow({
   steps,
   durations,
   onStepClick,
+  selectedStepId,
 }: {
   steps: WorkspaceExecutionStep[];
   durations: Map<string, number>;
   onStepClick?: (s: WorkspaceExecutionStep) => void;
+  selectedStepId?: string | null;
 }) {
   const running = steps.some((s) => s.status === 'running');
   const failed = steps.some((s) => s.status === 'failed');
@@ -220,7 +227,7 @@ function ToolRunRow({
       {open && (
         <div className="ws-toolrun__steps">
           {steps.map((s) => (
-            <StepRow key={s.id} step={s} duration={durations.get(s.id)} onStepClick={onStepClick} />
+            <StepRow key={s.id} step={s} duration={durations.get(s.id)} onStepClick={onStepClick} selectedStepId={selectedStepId} />
           ))}
         </div>
       )}
@@ -233,10 +240,12 @@ function PhaseSteps({
   steps,
   durations,
   onStepClick,
+  selectedStepId,
 }: {
   steps: WorkspaceExecutionStep[];
   durations: Map<string, number>;
   onStepClick?: (s: WorkspaceExecutionStep) => void;
+  selectedStepId?: string | null;
 }) {
   const nodes: React.ReactNode[] = [];
   let run: WorkspaceExecutionStep[] = [];
@@ -245,9 +254,9 @@ function PhaseSteps({
     const group = run;
     run = [];
     if (group.length >= 2) {
-      nodes.push(<ToolRunRow key={`run-${group[0].id}`} steps={group} durations={durations} onStepClick={onStepClick} />);
+      nodes.push(<ToolRunRow key={`run-${group[0].id}`} steps={group} durations={durations} onStepClick={onStepClick} selectedStepId={selectedStepId} />);
     } else {
-      nodes.push(<StepRow key={group[0].id} step={group[0]} duration={durations.get(group[0].id)} onStepClick={onStepClick} />);
+      nodes.push(<StepRow key={group[0].id} step={group[0]} duration={durations.get(group[0].id)} onStepClick={onStepClick} selectedStepId={selectedStepId} />);
     }
   };
   for (const step of steps) {
@@ -267,10 +276,12 @@ function PhaseGroup({
   phase,
   durations,
   onStepClick,
+  selectedStepId,
 }: {
   phase: ExecutionPhase;
   durations: Map<string, number>;
   onStepClick?: (s: WorkspaceExecutionStep) => void;
+  selectedStepId?: string | null;
 }) {
   const phaseFailed = phase.status === 'failed' || phase.steps.some((s) => s.status === 'failed');
   const autoOpen = phase.status === 'running' || phaseFailed;
@@ -304,14 +315,14 @@ function PhaseGroup({
       </button>
       {open && !empty && (
         <div className="ws-flow-group__steps">
-          <PhaseSteps steps={phase.steps} durations={durations} onStepClick={onStepClick} />
+          <PhaseSteps steps={phase.steps} durations={durations} onStepClick={onStepClick} selectedStepId={selectedStepId} />
         </div>
       )}
     </div>
   );
 }
 
-export function StepFlow({ phases, running, onStepClick }: StepFlowProps) {
+export function StepFlow({ phases, running, onStepClick, selectedStepId }: StepFlowProps) {
   const durations = useMemo(() => buildDurations(phases), [phases]);
 
   // 无 planning 归组(单分组「执行步骤」):去掉组头,步骤顺序平铺直出
@@ -323,11 +334,11 @@ export function StepFlow({ phases, running, onStepClick }: StepFlowProps) {
     <div className={`ws-flow${running ? ' ws-flow--running' : ''}`}>
       {flatMode ? (
         <div className="ws-flow__flat">
-          <PhaseSteps steps={phases[0].steps} durations={durations} onStepClick={onStepClick} />
+          <PhaseSteps steps={phases[0].steps} durations={durations} onStepClick={onStepClick} selectedStepId={selectedStepId} />
         </div>
       ) : (
         phases.map((phase) => (
-          <PhaseGroup key={phase.id} phase={phase} durations={durations} onStepClick={onStepClick} />
+          <PhaseGroup key={phase.id} phase={phase} durations={durations} onStepClick={onStepClick} selectedStepId={selectedStepId} />
         ))
       )}
     </div>

@@ -6,9 +6,6 @@ import {
   ArrowUpOutlined,
   PaperClipOutlined,
   DownOutlined,
-  PauseCircleOutlined,
-  RedoOutlined,
-  ClearOutlined,
   CloseOutlined,
   SlidersOutlined,
   SearchOutlined,
@@ -26,10 +23,8 @@ import {
   RightOutlined,
 } from '@ant-design/icons';
 import {
-  Button,
   Input,
   Popover,
-  Tooltip,
   Upload,
   Modal,
   Slider,
@@ -42,12 +37,12 @@ import {
 } from 'antd';
 import { useRequest } from 'ahooks';
 import classNames from 'classnames';
-import { apiInterceptors, getModelList, clearChatHistory, stopChat, postChatModeParamsFileLoad, getResourceV2, getDbList, getSkillList, getMCPList } from '@/client/api';
+import { apiInterceptors, getModelList, stopChat, postChatModeParamsFileLoad, getResourceV2, getDbList, getSkillList, getMCPList } from '@/client/api';
 import { listSpaces } from '@/client/api/knowledge-vault';
 import { ChatContentContext, SelectedSkill } from '@/contexts';
 import ModelIcon from '@/components/icons/model-icon';
 import { IModelData } from '@/types/model';
-import { IChatDialogueMessageSchema, UserChatContent } from '@/types/chat';
+import { UserChatContent } from '@/types/chat';
 import { MEDIA_RESOURCE_TYPES } from '@/app/application/app/components/chat-layout-config';
 import { parseResourceValue, transformFileUrl } from '@/utils';
 import { useSearchParams } from 'next/navigation';
@@ -241,12 +236,10 @@ const ModelParamsModal: React.FC<ModelParamsModalProps> = ({
 // 主组件
 interface UnifiedChatInputProps {
   ctrl: AbortController;
-  showFloatingActions?: boolean;
 }
 
 const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   ctrl,
-  showFloatingActions = true,
 }) => {
   const { t } = useTranslation();
   const { message } = App.useApp();
@@ -261,7 +254,6 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     refreshDialogList,
     chatInParams,
     setChatInParams,
-    history,
     canAbort,
     setCanAbort,
     setReplyLoading,
@@ -269,7 +261,6 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     setTemperatureValue,
     maxNewTokensValue,
     setMaxNewTokensValue,
-    refreshHistory,
     modelValue,
     setModelValue,
     selectedSkills,
@@ -1877,7 +1868,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     }
   };
 
-  // 浮动操作按钮
+  // 发送按钮停止能力(Agent 运行中切换为停止,对齐场景空间)
   const handleStop = () => {
     if (!canAbort) return;
     const sessionId = context.currentConvSessionId || context.currentDialogue?.conv_uid || '';
@@ -1891,27 +1882,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     }, 100);
   };
 
-  const handleRetry = () => {
-    const lastHuman = history.filter((i: IChatDialogueMessageSchema) => i.role === 'human')?.slice(-1)?.[0];
-    if (lastHuman) {
-      handleChat(lastHuman.context || '', {
-        app_code: appInfo.app_code,
-        ...(chatInParams?.length && { chat_in_params: chatInParams }),
-      });
-      setTimeout(() => {
-        scrollRef.current?.scrollTo({
-          top: scrollRef.current?.scrollHeight,
-          behavior: 'smooth',
-        });
-      }, 0);
-    }
-  };
-
-  const handleClear = async () => {
-    await apiInterceptors(clearChatHistory(context.currentDialogue?.conv_uid || '')).finally(async () => {
-      await refreshHistory();
-    });
-  };
+  // 发送按钮是否有可发送内容(文本或已上传资源)
+  const hasSendContent = !!userInput.trim() || (!!resourceValue && (parseResourceValue(resourceValue)?.length || 0) > 0);
+  // Agent 运行中 → 发送按钮切换为停止按钮(对齐场景空间)
+  const showStop = !!replyLoading;
 
   return (
     <div className="w-full relative">
@@ -2043,74 +2017,26 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
             )}
           </div>
 
-          {/* 右侧：会话操作(暂停/重试/清空) + 发送按钮 */}
+          {/* 右侧：发送按钮(Agent 运行中切换为停止,对齐场景空间) */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            {showFloatingActions && history.length > 0 && (
-              <div className="flex items-center gap-0.5 mr-1">
-                <Tooltip title={t('stop_replying', '暂停生成')} placement="top">
-                  <button
-                    onClick={handleStop}
-                    disabled={!canAbort}
-                    className={classNames(
-                      'w-7 h-7 rounded-full flex items-center justify-center transition-all',
-                      canAbort
-                        ? 'hover:bg-[#f2f4f8] text-[#8a92a6] hover:text-[#ef4444] cursor-pointer'
-                        : 'text-[#d5d9e3] cursor-not-allowed'
-                    )}
-                  >
-                    <PauseCircleOutlined className="text-base" />
-                  </button>
-                </Tooltip>
-
-                <Tooltip title={t('answer_again', '重新生成')} placement="top">
-                  <button
-                    onClick={handleRetry}
-                    disabled={replyLoading || history.length === 0}
-                    className={classNames(
-                      'w-7 h-7 rounded-full flex items-center justify-center transition-all',
-                      !replyLoading && history.length > 0
-                        ? 'hover:bg-[#f2f4f8] text-[#8a92a6] hover:text-[#3b4154] cursor-pointer'
-                        : 'text-[#d5d9e3] cursor-not-allowed'
-                    )}
-                  >
-                    <RedoOutlined className="text-base" />
-                  </button>
-                </Tooltip>
-
-                <Tooltip title={t('erase_memory', '清空对话')} placement="top">
-                  <button
-                    onClick={handleClear}
-                    disabled={history.length === 0}
-                    className={classNames(
-                      'w-7 h-7 rounded-full flex items-center justify-center transition-all',
-                      history.length > 0
-                        ? 'hover:bg-[#f2f4f8] text-[#8a92a6] hover:text-[#3b4154] cursor-pointer'
-                        : 'text-[#d5d9e3] cursor-not-allowed'
-                    )}
-                  >
-                    <ClearOutlined className="text-base" />
-                  </button>
-                </Tooltip>
-              </div>
-            )}
-            <Button
-              type="primary"
-              shape="circle"
+            <button
               className={classNames(
-                'w-9 h-9 flex items-center justify-center transition-all !border-0 flex-shrink-0',
-                (userInput.trim() || (resourceValue && parseResourceValue(resourceValue)?.length > 0))
-                  ? '!bg-[#4f46e5] hover:!bg-[#6366f1] shadow-[0_2px_8px_rgba(79,70,229,0.35)] hover:shadow-[0_4px_12px_rgba(79,70,229,0.4)]'
-                  : '!bg-[#e5e8ef] !text-[#b4bac8] cursor-not-allowed !shadow-none'
+                'w-9 h-9 flex items-center justify-center transition-all !border-0 flex-shrink-0 rounded-full',
+                showStop || hasSendContent
+                  ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 shadow-md hover:shadow-lg text-white'
+                  : 'bg-gray-200 text-gray-400 cursor-not-allowed',
+                showStop && 'ws-stop-btn--running'
               )}
-              onClick={onSubmit}
-              disabled={(!userInput.trim() && !(resourceValue && parseResourceValue(resourceValue)?.length > 0)) || replyLoading}
+              onClick={showStop ? handleStop : onSubmit}
+              disabled={showStop ? !canAbort : !hasSendContent}
+              title={showStop ? t('stop_generation', '停止生成') : t('send', '发送')}
             >
-              {replyLoading ? (
-                <LoadingOutlined className="text-white text-base" spin />
+              {showStop ? (
+                <span className="ws-stop-btn__square" />
               ) : (
-                <ArrowUpOutlined className="text-white text-base" />
+                <ArrowUpOutlined className="text-base" />
               )}
-            </Button>
+            </button>
           </div>
         </div>
       </div>

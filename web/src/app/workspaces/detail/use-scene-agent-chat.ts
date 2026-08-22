@@ -44,6 +44,8 @@ interface UseSceneAgentChatResult {
   loading: boolean;
   error: string | null;
   lastInput: SceneAgentSendPayload | null;
+  /** 本次对话选用的模型名(与 lastInput.model 同源;运行中用于展示「xx模型 思考中」) */
+  modelName?: string;
   /** SSE 断线自愈探测中(服务重启/网络抖动后的恢复窗口) */
   recovering: boolean;
   /** 手动重试断线恢复(错误横幅"重试连接"入口) */
@@ -513,5 +515,5 @@ export function useSceneAgentChat({
     }
   }, [effectiveConvUid]);
 
-  return { steps, workspaceView, loading, error, lastInput, recovering, retryRecover, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
+  return { steps, workspaceView, loading, error, lastInput, modelName: lastInput?.model, recovering, retryRecover, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
 }

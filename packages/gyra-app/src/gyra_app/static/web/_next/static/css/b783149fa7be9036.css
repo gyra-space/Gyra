@@ -3893,6 +3893,20 @@
   background: var(--ws-bg);
 }
 
+.ws-capsule-step--active, .ws-capsule-step--active[role="button"]:hover {
+  background: var(--ws-accent-light);
+  box-shadow: inset 2px 0 0 var(--ws-accent);
+}
+
+.ws-capsule-step--active .ws-capsule-step__title {
+  color: var(--ws-accent);
+  font-weight: 600;
+}
+
+.ws-capsule-step--active .ws-capsule-step__icon {
+  color: var(--ws-accent);
+}
+
 .ws-capsule-step__icon {
   width: 14px;
   color: var(--ws-ink-3);

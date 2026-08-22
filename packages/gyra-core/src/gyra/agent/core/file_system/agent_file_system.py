@@ -1054,12 +1054,14 @@ class AgentFileSystem:
         """收集用于交付的文件列表.
 
         适用于terminate时收集所有相关文件进行交付。
-        默认收集所有对话过程中产生的文件，包括：
+        默认收集对话过程中真正需要交付给用户的内容文件：
         - CONCLUSION: 结论文件
         - DELIVERABLE: 交付物
-        - TRUNCATED_OUTPUT: 工具大结果归档
-        - TOOL_OUTPUT: 工具输出文件
         - WRITE_FILE: write工具创建的文件
+
+        注意：TRUNCATED_OUTPUT（工具大结果归档）/ TOOL_OUTPUT（工具输出临时文件）
+        不作为交付物——它们是执行过程的内部归档，若作为交付物会将其全文
+        （如超长网页 HTML）渲染进最终消息，导致用户看到"乱麻"文本。
 
         Returns:
             文件信息字典列表
@@ -1068,8 +1070,6 @@ class AgentFileSystem:
             file_types = [
                 FileType.CONCLUSION,
                 FileType.DELIVERABLE,
-                FileType.TRUNCATED_OUTPUT,
-                FileType.TOOL_OUTPUT,
                 FileType.WRITE_FILE,
             ]
 

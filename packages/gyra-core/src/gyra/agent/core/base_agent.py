@@ -151,6 +151,9 @@ class ConversableAgent(Role, Agent):
     stream_out: bool = True
     # 当前Agent是否对模型输出的内容区域进行流式输出(stream_out为True有效，不控制thinking区域)
     content_stream_out: bool = True
+    # 当前Agent是否为最终输出角色（对聊天入口/主 Agent 为 True）。用于
+    # listen_thinking_stream 的 push_message 门控；缺省 False。
+    is_final_role: bool = False
 
     # 消息队列管理 (初版，后续要管理整个运行时的内容)
     received_message_state: dict = defaultdict()
@@ -1497,11 +1500,19 @@ class ConversableAgent(Role, Agent):
         prev_content: Optional[str] = None,
     ):
         if not self.stream_out:
+            logger.info(
+                f"[VisBridge][D][listen_thinking_stream] stream_out=False drop: "
+                f"msg_id={reply_message_id}, content_len={len(cu_content_incr or '')}, thinking_len={len(cu_thinking_incr or '')}"
+            )
             return
         if len(llm_out.content) > 0 and not self.content_stream_out:
             if is_first_content:
                 cu_content_incr = "正在思考规划..."
             else:
+                logger.info(
+                    f"[VisBridge][D][listen_thinking_stream] content_stream_out=False + not first content drop: "
+                    f"msg_id={reply_message_id}"
+                )
                 return
         # Scrub <memory-context> fence from streaming content delta so the
         # memory block never leaks to the UI. The scrubber is stateful
@@ -1516,6 +1527,10 @@ class ConversableAgent(Role, Agent):
                         pipeline.reset_scrubber()
                     visible = pipeline.scrub_stream_delta(cu_content_incr)
                     if not visible:
+                        logger.info(
+                            f"[VisBridge][D][listen_thinking_stream] scrubber swallowed content delta: "
+                            f"msg_id={reply_message_id}"
+                        )
                         # Entirely inside a memory-context span — skip push.
                         return
                     cu_content_incr = visible
@@ -1546,6 +1561,12 @@ class ConversableAgent(Role, Agent):
             "prev_content": prev_content,
         }
         if self.not_null_agent_context.output_process_message or self.is_final_role:
+            logger.info(
+                f"[VisBridge][D][listen_thinking_stream] pushing temp_message: "
+                f"msg_id={reply_message_id}, output_process_message={self.not_null_agent_context.output_process_message}, "
+                f"is_final_role={self.is_final_role}, content_len={len(cu_content_incr or '')}, "
+                f"thinking_len={len(cu_thinking_incr or '')}"
+            )
             await self.memory.gpts_memory.push_message(
                 self.not_null_agent_context.conv_id,
                 stream_msg=temp_message,

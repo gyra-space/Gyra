@@ -3359,6 +3359,14 @@
 }
 .ws-capsule-step[role='button'] { cursor: pointer; }
 .ws-capsule-step[role='button']:hover { background: var(--ws-bg); }
+/* 选中态:点击左侧步骤后高亮,与右侧详情联动 */
+.ws-capsule-step--active,
+.ws-capsule-step--active[role='button']:hover {
+  background: var(--ws-accent-light);
+  box-shadow: inset 2px 0 0 var(--ws-accent);
+}
+.ws-capsule-step--active .ws-capsule-step__title { color: var(--ws-accent); font-weight: 600; }
+.ws-capsule-step--active .ws-capsule-step__icon { color: var(--ws-accent); }
 /* 工具行首 icon:按类型 logo(读/搜索/SQL/代码/写/浏览器),状态不在此展示 */
 .ws-capsule-step__icon {
   flex-shrink: 0;

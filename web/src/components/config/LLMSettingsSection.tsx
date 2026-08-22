@@ -117,13 +117,6 @@ function inferProtocol(provider?: string) {
   return name || "openai";
 }
 
-function formatTokens(value?: number) {
-  if (value === undefined || value === null) return "-";
-  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
-  if (value >= 1024) return `${Math.round(value / 1024)}K`;
-  return value.toString();
-}
-
 function getDefaultCapabilities(modelType: string, isMultimodal?: boolean) {
   const caps = new Set<string>(["text"]);
   if (modelType === "llm" || modelType === "speech" || modelType === "moderation") {
@@ -659,8 +652,8 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                               remove: removeModel,
                             }) => (
                               <div className="space-y-2">
-                                <div className="flex items-center justify-between">
-                                  <Text strong>模型列表</Text>
+                                <div className="flex items-center justify-between border-b border-gray-100 pb-2 mb-3">
+                                  <span className="text-sm font-semibold text-gray-800">模型列表</span>
                                   <Button
                                     type="link"
                                     size="small"
@@ -679,15 +672,15 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
 
                                 {modelFields.length > 0 && (
                                   <>
-                                    <div className="grid grid-cols-12 gap-3 px-3 pb-1 text-xs text-gray-400 font-medium">
+                                    <div className="grid grid-cols-12 gap-3 px-3 pb-2 text-xs font-medium tracking-wide text-gray-400">
                                       <div className="col-span-2">模型名称</div>
-                                      <div className="col-span-2">类型</div>
+                                      <div className="col-span-1">类型</div>
                                       <div className="col-span-1">Temp</div>
                                       <div className="col-span-1">Top P</div>
                                       <div className="col-span-2">上下文空间</div>
                                       <div className="col-span-1">Max Tokens</div>
-                                      <div className="col-span-1">深度</div>
-                                      <div className="col-span-1">能力标签</div>
+                                      <div className="col-span-1">思考深度</div>
+                                      <div className="col-span-2">能力标签</div>
                                       <div className="col-span-1 text-right">默认 / 操作</div>
                                     </div>
 
@@ -735,7 +728,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                               />
                                             </Form.Item>
                                           </div>
-                                          <div className="col-span-2">
+                                          <div className="col-span-1">
                                             <Form.Item
                                               name={[modelField.name, "model_type"]}
                                               rules={[
@@ -750,6 +743,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                                 size="small"
                                                 options={MODEL_TYPE_OPTIONS}
                                                 placeholder="类型"
+                                                popupMatchSelectWidth={false}
                                               />
                                             </Form.Item>
                                           </div>
@@ -760,7 +754,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                             >
                                               <InputNumber
                                                 size="small"
-                                                style={{ width: "100%" }}
+                                                style={{ width: 76 }}
                                                 min={0}
                                                 max={2}
                                                 step={0.1}
@@ -775,7 +769,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                             >
                                               <InputNumber
                                                 size="small"
-                                                style={{ width: "100%" }}
+                                                style={{ width: 76 }}
                                                 min={0}
                                                 max={1}
                                                 step={0.05}
@@ -784,21 +778,6 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                             </Form.Item>
                                           </div>
                                           <div className="col-span-2">
-                                            <div className="flex items-center justify-between mb-1">
-                                              <span className="text-xs text-gray-400">上下文空间</span>
-                                              <span className="text-xs font-semibold text-blue-600">
-                                                {formatTokens(
-                                                  form.getFieldValue([
-                                                    "agent_llm",
-                                                    "providers",
-                                                    field.name,
-                                                    "models",
-                                                    modelField.name,
-                                                    "context_window",
-                                                  ])
-                                                )}
-                                              </span>
-                                            </div>
                                             <Form.Item
                                               name={[
                                                 modelField.name,
@@ -830,9 +809,6 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                             </Form.Item>
                                           </div>
                                           <div className="col-span-1">
-                                            <div className="mb-1">
-                                              <span className="text-xs text-gray-400">Max Tokens</span>
-                                            </div>
                                             <Form.Item
                                               name={[
                                                 modelField.name,
@@ -867,7 +843,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                             <Form.Item
                                               name={[modelField.name, "reasoning_effort"]}
                                               className="!mb-0"
-                                              tooltip="思考深度 reasoning_effort: low/medium/high,留空使用默认"
+                                              tooltip="思考深度 reasoning_effort: low/medium/high/max,留空使用默认"
                                             >
                                               <Select
                                                 size="small"
@@ -877,11 +853,12 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                                   { value: "low", label: "low" },
                                                   { value: "medium", label: "medium" },
                                                   { value: "high", label: "high" },
+                                                  { value: "max", label: "max" },
                                                 ]}
                                               />
                                             </Form.Item>
                                           </div>
-                                          <div className="col-span-1">
+                                          <div className="col-span-2">
                                             <Form.Item
                                               name={[
                                                 modelField.name,
@@ -896,6 +873,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                                 placeholder="能力标签"
                                                 maxTagCount={1}
                                                 maxTagPlaceholder={(omitted) => `+${omitted.length}`}
+                                                popupMatchSelectWidth={false}
                                               />
                                             </Form.Item>
                                           </div>

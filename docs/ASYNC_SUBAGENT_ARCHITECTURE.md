@@ -275,7 +275,8 @@ SubagentCoordinator._emit_board_event (subagent_coordinator.py:352)
 
 ### 5.7 lazy 按需加载
 
-- 流式/final_view 的 `manus-right-panel` 在 lazy 模式下 `steps_map` 只含元信息(无 outputs),`lazy_loading=True`。
+- 流式阶段（`is_working=True`）的 `manus-right-panel` 在 lazy 模式下 `steps_map` 只含元信息(无 outputs),`lazy_loading=True`。
+- 终态 `final_view` 为**非 lazy**：`steps_map` 每项回填真实 outputs，`lazy_loading=False`，使重开对话时右面板直接可见工具结果。
 - 前端点击步骤 -> `/vis/step_detail?conv_id=&step_id=` -> `query_step_detail` -> `vis_convert.get_step_detail` 精确匹配。
 - **陷阱**:step_id(`step_{msg_id前8}_{计数}`)≠ action_id(`tool_call_id`),接口需优先按 step_id 解析(见 [[vis-manus-linkage-architecture]])。
 

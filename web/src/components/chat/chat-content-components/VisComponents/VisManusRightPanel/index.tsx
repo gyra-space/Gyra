@@ -50,6 +50,7 @@ import {
   CodeExecutionRenderer,
   HtmlTabbedRenderer,
   SkillCardRenderer,
+  SkillContentRenderer,
   SkillReadRenderer,
   SqlQueryRenderer,
 } from './renderers';
@@ -207,7 +208,9 @@ const StepRenderer: FC<{
     case 'skill':
       if (action === 'skill_read') return <SkillReadRenderer outputs={outputs} skillName={activeStep.title} />;
       if (action === 'get_skill_resource' || action === 'load_skill') return <SkillCardRenderer outputs={outputs} skillName={activeStep.title} />;
-      return <SkillReadRenderer outputs={outputs} skillName={activeStep.title} />;
+      // 统一 skill 工具（V1 fallback / V2 registry）输出标准 <skill_content> 格式，
+      // 走独立渲染器（内部对历史旧格式回退 SkillReadRenderer）
+      return <SkillContentRenderer outputs={outputs} skillName={activeStep.title} />;
     default:
       return <OutputRenderer outputs={outputs} />;
   }

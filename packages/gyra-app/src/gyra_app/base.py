@@ -445,7 +445,7 @@ def _enable_sqlite_wal_mode(db) -> None:
     try:
         from sqlalchemy import text
 
-        with engine.connect() as conn:
+        with db.connect() as conn:
             # 启用 WAL 模式 - 支持读写并发,并确认返回值
             result = conn.execute(text("PRAGMA journal_mode=WAL"))
             current_mode = result.scalar()

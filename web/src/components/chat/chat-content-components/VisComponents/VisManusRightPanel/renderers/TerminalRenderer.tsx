@@ -125,7 +125,7 @@ const TerminalRenderer: FC<IProps> = ({
         {/* 空输出兜底:命令执行失败或未返回输出时,给出明确提示而非空白终端 */}
         {!outputText && !errorText && !isRunning && (
           <div className="mt-2 text-slate-400 text-xs">
-            该步骤未返回可展示的输出
+            {isError ? '该步骤执行失败，未返回可展示的输出' : '该步骤未返回可展示的输出'}
           </div>
         )}
 

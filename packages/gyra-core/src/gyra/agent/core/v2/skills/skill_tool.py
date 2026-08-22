@@ -4,20 +4,39 @@
 合并为一个面向模型的入口：
 
   - 输入：``{ "name": "kebab-case-name" }``（``skill_name`` 为别名）
-  - V2（有 registry）：从 :class:`SkillRegistry` 加载完整定义；返回
-    ``<skill_content name="...">`` + ``<skill_resources>`` + ``<skill_instructions>``
-    的 XML 段。
+  - V2（有 registry）：从 :class:`SkillRegistry` 加载完整定义。
   - V1（无 registry）：委托 ``ReadSkillTool`` 走磁盘/沙箱读取，保留既有分页
     与沙箱能力。
   - 不存在 / 不可调用：返回明确错误（unknown or no longer available）。
   - 校验：name 必须 kebab-case（V2 模式）；调用前查 ``is_model_invocable``。
 
-设计依据：[DSH skills.zh.md:234]（"返回包含 <skill_content name="...">、
-<skill_resources>、<skill_instructions> 的工具结果"）。
+输出格式（官方 Agent Skills 范式）：
+
+    LLM 视角（ToolResult.output）：
+    <skill_content name="...">
+    {SKILL.md 正文（去掉 YAML frontmatter）}
+
+    <file_preview>
+    base_path: /abs/path/to/skill-dir
+      SKILL.md (16.7K)
+      references/db_analysis_guide.md (3.2K)
+      ...
+    </file_preview>
+    </skill_content>
+
+  - ``<skill_content>``：LLM 视角——SKILL.md 正文 + ``<file_preview>`` 文件
+    清单，name 以标签属性携带（发现阶段已有 name/description，激活阶段不再重复）；
+  - 完整 frontmatter 走 ``ToolResult.metadata["skill_meta"]``（工具 view 通道），
+    由 action/vis 链路转为 ``<d-skill-meta>`` VIS 标签送给前端，渲染为可视化
+    头部组件（name/description/author/version/扩展字段），**不进 LLM 上下文**；
+  - ``<file_preview>`` 列出 skill 目录下可用文件（相对路径 + 大小），
+    提示模型有哪些资源依赖可用，避免臆造不存在的文件名；
+  - 前端独立渲染器解析该 XML：头部组件 + 内容区 + 文件预览。
 
 V1 兼容：
   - 本工具是唯一注册的 ``skill`` 入口（``skill_list`` / ``skill_exec`` 已废弃删除）；
-  - 无 registry 时委托 V1 ``ReadSkillTool``（磁盘/沙箱读取），前端 / V1 行为不变。
+  - 无 registry 时委托 V1 ``ReadSkillTool``（磁盘/沙箱读取）；读取 SKILL.md 时
+    同样包裹为上述标准格式，读其它文件（file_path 指定）保持原文返回。
 """
 from __future__ import annotations
 
@@ -71,21 +90,108 @@ def _is_model_invocable(inv: SkillInvocation) -> bool:
     return inv in (SkillInvocation.MODEL_ONLY, SkillInvocation.BOTH)
 
 
-def _render_skill_content_xml(defn: SkillDefinition) -> str:
-    """构造 DSH 风格的 ``<skill_content>`` 段。"""
-    body = defn.content or ""
+# file_preview 文件列表条目上限（超出截断并注明）
+_MAX_PREVIEW_FILES = 100
+
+
+def _human_size(num_bytes: int) -> str:
+    """人类可读大小：B 取整、K/M/G 保留 1 位小数（如 4.2K）。"""
+    size = float(num_bytes)
+    for unit in ("B", "K", "M", "G"):
+        if size < 1024 or unit == "G":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}G"
+
+
+def _build_file_preview(skill_dir: Optional[str]) -> str:
+    """枚举 skill 目录文件，构造 ``<file_preview>`` 内容（不含标签本身）。
+
+    本地目录可访问时列相对路径 + 大小（跳过隐藏目录/文件与 ``__pycache__``）；
+    不可访问（沙箱等）时只含 base_path 一行。skill_dir 为空返回空串。
+    """
+    if not skill_dir:
+        return ""
+    import os
+    from pathlib import Path
+
+    lines = [f"base_path: {skill_dir}"]
+    root = Path(skill_dir)
+    if not root.is_dir():
+        return "\n".join(lines)
+    entries: List[str] = []
+    total = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                d for d in dirnames if not d.startswith(".") and d != "__pycache__"
+            ]
+            for fn in sorted(filenames):
+                if fn.startswith("."):
+                    continue
+                full = Path(dirpath) / fn
+                total += 1
+                if total > _MAX_PREVIEW_FILES:
+                    continue
+                rel = full.relative_to(root).as_posix()
+                try:
+                    size = _human_size(full.stat().st_size)
+                except OSError:
+                    size = ""
+                entries.append(f"  {rel} ({size})" if size else f"  {rel}")
+    except OSError:
+        return "\n".join(lines)
+    lines.extend(sorted(entries))
+    if total > _MAX_PREVIEW_FILES:
+        lines.append(f"  ... (truncated, {total} files total)")
+    return "\n".join(lines)
+
+
+def _render_skill_content_xml(
+    name: str,
+    body: str,
+    file_preview: str = "",
+) -> str:
+    """构造官方 Agent Skills 范式的 ``<skill_content>`` 段（纯 LLM 视角）。
+
+    只含 SKILL.md 正文（去 YAML 头）+ ``<file_preview>`` 文件清单（含
+    base_path 绝对路径，提示模型资源依赖）。完整 frontmatter 走
+    ``ToolResult.metadata["skill_meta"]``（工具 view 通道，用户视角可视化），
+    不进 LLM 输出。
+    """
+    body = body or ""
     # 防御：截断超大正文（与 V1 ReadSkillTool _MAX_SKILL_CHARS 对齐 100K）
     if len(body) > 100_000:
         body = body[:99_999] + "\n…[truncated]"
-    return (
-        f"<skill_content name=\"{_xml_escape(defn.name)}\">\n"
-        f"<skill_instructions>\n{body}\n</skill_instructions>\n"
-        f"<skill_resources>\n  base_path: {_xml_escape(defn.path or '')}\n"
-        f"  source: {_xml_escape(defn.source)}\n"
-        f"  provider: {_xml_escape(defn.provider)}\n"
-        f"</skill_resources>\n"
-        f"</skill_content>"
-    )
+    parts = [f'<skill_content name="{_xml_escape(name)}">', body]
+    if file_preview:
+        parts.append(f"<file_preview>\n{file_preview}\n</file_preview>")
+    parts.append("</skill_content>")
+    return "\n".join(parts)
+
+
+def _skill_meta_view(meta_block: str) -> str:
+    """把 frontmatter 原始块包装成 ``<d-skill-meta>`` VIS 标签（用户视角 view）。"""
+    if not meta_block:
+        return ""
+    return f"<d-skill-meta>\n{meta_block}\n</d-skill-meta>"
+
+
+def _skill_dir_of(defn: SkillDefinition) -> Optional[str]:
+    """从 SkillDefinition 推导出 skill 目录路径。
+
+    优先 metadata.skill_dir（本地 provider 会写入）；其次 path 为 SKILL.md
+    文件路径时取 dirname；否则按目录路径原样返回。
+    """
+    meta_dir = (defn.metadata or {}).get("skill_dir")
+    if meta_dir:
+        return str(meta_dir)
+    path = defn.path or ""
+    if not path:
+        return None
+    if path.rstrip("/").endswith("SKILL.md"):
+        return path.rsplit("/", 1)[0]
+    return path
 
 
 class SkillTool(ToolBase):
@@ -231,27 +337,23 @@ class SkillTool(ToolBase):
                 min(len(lines), start_idx + limit) if limit > 0 else len(lines)
             )
             body = "".join(lines[start_idx:end_idx])
-            # 重新构造 SkillDefinition 子集（content 已被截断）
-            defn = SkillDefinition(
-                name=defn.name,
-                description=defn.description,
-                when_to_use=defn.when_to_use,
-                invocation=defn.invocation,
-                source=defn.source,
-                provider=defn.provider,
-                path=defn.path,
-                rank=defn.rank,
-                content=body,
-                metadata=defn.metadata,
-            )
 
-        xml = _render_skill_content_xml(defn)
+        file_preview = _build_file_preview(_skill_dir_of(defn))
+        xml = _render_skill_content_xml(
+            name=defn.name,
+            body=body,
+            file_preview=file_preview,
+        )
         return ToolResult.ok(
             output=xml,
             tool_name=self.name,
             metadata={
                 "skill_name": defn.name,
+                "skill_description": defn.description or "",
                 "skill_path": defn.path or "",
+                "skill_dir": _skill_dir_of(defn) or "",
+                # 完整 frontmatter（工具 view 通道，用户视角；不进 LLM 输出）
+                "skill_meta": str((defn.metadata or {}).get("frontmatter_raw") or ""),
                 "source": defn.source,
                 "provider": defn.provider,
                 "invocation": defn.invocation.value,
@@ -280,7 +382,7 @@ class SkillTool(ToolBase):
                 tool_name=self.name,
             )
         reader = ReadSkillTool()
-        return await reader.execute(
+        result = await reader.execute(
             {
                 "skill_name": skill_name,
                 "file_path": file_path,
@@ -288,4 +390,58 @@ class SkillTool(ToolBase):
                 "limit": limit,
             },
             context,
+        )
+        # 仅 SKILL.md 正文包裹为官方标准 <skill_content> 格式；读其它文件
+        # （references/scripts/templates 等）保持原文返回。
+        if file_path != "SKILL.md" or not result.success:
+            return result
+        return self._wrap_v1_skill_md(skill_name, offset, result)
+
+    def _wrap_v1_skill_md(
+        self, skill_name: str, offset: int, result: ToolResult,
+    ) -> ToolResult:
+        """把 V1 读取的裸 SKILL.md 内容包裹为标准 ``<skill_content>`` XML。
+
+        - 第 1 页（offset==1）strip YAML frontmatter，正文为指令本体；
+        - name / description 从 frontmatter 解析，以标签属性携带；
+        - file_preview 列 skill 目录文件（base_path + 相对路径 + 大小）。
+        """
+        from gyra.agent.core.v2.skills.filesystem_provider import (
+            _parse_frontmatter,
+            _raw_frontmatter,
+            _strip_frontmatter,
+        )
+
+        raw = result.output if isinstance(result.output, str) else str(result.output or "")
+        meta_in = result.metadata or {}
+        abs_path = str(meta_in.get("file_path") or "")
+        skill_dir = abs_path.rsplit("/", 1)[0] if abs_path.endswith("SKILL.md") else ""
+
+        if offset > 1:
+            # 分页续读：正文已经是去头后的中间段，不再重复 strip
+            body = raw
+            fm = {}
+            meta_block = ""
+        else:
+            fm = _parse_frontmatter(raw)
+            meta_block = _raw_frontmatter(raw)
+            body = _strip_frontmatter(raw).strip("\n")
+
+        file_preview = _build_file_preview(skill_dir)
+        xml = _render_skill_content_xml(
+            name=fm.get("name") or skill_name,
+            body=body,
+            file_preview=file_preview,
+        )
+        return ToolResult.ok(
+            output=xml,
+            tool_name=self.name,
+            metadata={
+                **meta_in,
+                "skill_name": fm.get("name") or skill_name,
+                "skill_description": fm.get("description", ""),
+                "skill_dir": skill_dir,
+                # 完整 frontmatter（工具 view 通道，用户视角；不进 LLM 输出）
+                "skill_meta": meta_block,
+            },
         )

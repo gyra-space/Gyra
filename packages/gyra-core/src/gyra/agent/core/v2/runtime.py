@@ -354,6 +354,11 @@ async def _run_acting_phase(
                 result_dict["error"] = result.error
             if result.error_code:
                 result_dict["error_code"] = result.error_code
+            # 工具 view 通道：skill 等工具的 frontmatter 元数据（用户视角可视化，
+            # 不进 LLM 上下文）——写入 WorkEntry.view → action_report → 前端
+            _meta = getattr(result, "metadata", None) or {}
+            if _meta.get("skill_meta"):
+                result_dict["skill_meta"] = _meta["skill_meta"]
             # P0 阶段发射点：工具函数执行完毕（与 OBSERVING 态的 tool_result 区分，
             # 供插件观测原始执行事实——成功/失败/错误码，不含截断后的 content）
             yield await emit(
@@ -365,13 +370,32 @@ async def _run_acting_phase(
                     **({"error_code": result.error_code} if result.error_code else {}),
                 },
             )
-            # P2 follow-up: legacy ActionOutput.ask_user compat (§9.4)
+            # P2 follow-up: ask_user 挂起检测（AskUserTool metadata / legacy ActionOutput 双路径）。
+            # AskUserTool 把"要挂起"标记放在 ToolResult.metadata["ask_user"]；旧 Actions 经
+            # ActionOutput.ask_user 返回。任一路径命中 → AskUserAdapter 转成 AWAITING_USER
+            # interaction_request + 持久化 interaction_checkpoint，run_loop 据此挂起 turn。
+            ask_user_payload = None
             if isinstance(result_dict, dict) and "ask_user" in result_dict:
+                ask_user_payload = result_dict["ask_user"]
+            elif getattr(result, "metadata", None) and result.metadata.get("ask_user"):
+                # 两种形态：AskUserTool metadata["ask_user"]=True（payload 用整个
+                # metadata，含 questions/header）；legacy ActionOutput
+                # metadata["ask_user"]={message, options}（payload 用内层 dict）。
+                _ask = result.metadata.get("ask_user")
+                ask_user_payload = _ask if isinstance(_ask, dict) else result.metadata
+            # 先发 tool_result：drsk-confirm 内容写进 WorkEntry / 执行步骤 output，
+            # 前端确认卡片依赖该内容渲染；再发 AWAITING_USER 让 run_loop 挂起 turn。
+            # 注意：ask_user 挂起时 tool_result 以 ACTING 态发射——状态机合法转换表
+            # 中 OBSERVING → AWAITING_USER 非法（OBSERVING 只允许 THINKING/ACTING/
+            # AWAITING_SUB_AGENT/DONE/FAILED），ACTING → AWAITING_USER 才合法。
+            tool_result_state = StepState.ACTING if ask_user_payload else StepState.OBSERVING
+            yield await emit(tool_result_state, "tool_result", output_data=result_dict)
+            if ask_user_payload:
                 from gyra.agent.core.v2.ask_user_adapter import AskUserAdapter
                 adapter = AskUserAdapter(state_store=state_store) if state_store else None
                 if adapter is not None:
                     ask_event = await adapter.convert(
-                        result_dict["ask_user"],
+                        ask_user_payload,
                         step_id=step_id,
                         conv_id=conv_id,
                     )
@@ -382,7 +406,6 @@ async def _run_acting_phase(
                     )
                     suspended = True
                     return  # step suspended
-            yield await emit(StepState.OBSERVING, "tool_result", output_data=result_dict)
 
     # P0 阶段发射点：OBSERVING 阶段收尾（全部工具结果已记录；挂起时不发）
     if not suspended:

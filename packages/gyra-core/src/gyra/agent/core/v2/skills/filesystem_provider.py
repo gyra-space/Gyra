@@ -64,25 +64,49 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
 
 
 def _parse_frontmatter(content: str) -> Dict[str, str]:
-    """简单 YAML frontmatter 解析——只取 name / description / invocation，避开 yaml 依赖。"""
+    """简单 YAML frontmatter 解析——只取 name / description / invocation，避开 yaml 依赖。
+
+    支持 block scalar（``|`` / ``>``）多行值（如 ``description: |``）。
+    """
     match = _FRONTMATTER_RE.match(content)
     if not match:
         return {}
     out: Dict[str, str] = {}
-    for line in match.group(1).splitlines():
-        if ":" not in line:
+    lines = match.group(1).splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
             continue
-        key, _, value = line.partition(":")
+        key, _, value = stripped.partition(":")
         key = key.strip()
         value = value.strip()
-        if not value or value in ("|", ">"):
+        if not value:
             continue
         # 去掉行内注释与多余引号
         if value.startswith('"') and value.endswith('"'):
             value = value[1:-1]
         if value.startswith("'") and value.endswith("'"):
             value = value[1:-1]
-        if key in ("name", "description", "invocation"):
+        if key not in ("name", "description", "invocation"):
+            continue
+        if value in ("|", ">"):
+            # block scalar：收集后续缩进行
+            block: List[str] = []
+            while i < len(lines):
+                nxt = lines[i]
+                if nxt.strip() == "" or nxt[:1] in (" ", "\t"):
+                    block.append(nxt)
+                    i += 1
+                else:
+                    break
+            text = "\n".join(b.strip() for b in block).strip()
+            if not text:
+                continue
+            out[key] = " ".join(text.split()) if value == ">" else text
+        else:
             out[key] = value
     return out
 
@@ -92,6 +116,18 @@ def _strip_frontmatter(content: str) -> str:
     if not match:
         return content
     return content[match.end():]
+
+
+def _raw_frontmatter(content: str) -> str:
+    """返回原始 YAML frontmatter 块（不含 --- 分隔线）；无 frontmatter 返回空串。
+
+    供 skill 工具输出 ``<skill_meta>`` 段：前端头部组件需要 author / version /
+    其它扩展字段，而 _parse_frontmatter 只抽取 name / description / invocation。
+    """
+    match = _FRONTMATTER_RE.match(content)
+    if not match:
+        return ""
+    return match.group(1)
 
 
 def _is_invocation(value: Optional[str]) -> SkillInvocation:
@@ -241,7 +277,11 @@ class FilesystemSkillProvider(SkillProvider):
             provider=self.name,
             path=str(skill_md),
             content=_strip_frontmatter(text),
-            metadata={"skill_dir": resolved, "skill_md": str(skill_md)},
+            metadata={
+                "skill_dir": resolved,
+                "skill_md": str(skill_md),
+                "frontmatter_raw": _raw_frontmatter(text),
+            },
         )
 
     # ------------------------------------------------------------------ #
@@ -305,5 +345,9 @@ class FilesystemSkillProvider(SkillProvider):
             provider=self.name,
             path=skill_md,
             content=_strip_frontmatter(content),
-            metadata={"skill_dir": f"{self._base.rstrip('/')}/{canonical}", "skill_md": skill_md},
+            metadata={
+                "skill_dir": f"{self._base.rstrip('/')}/{canonical}",
+                "skill_md": skill_md,
+                "frontmatter_raw": _raw_frontmatter(content),
+            },
         )

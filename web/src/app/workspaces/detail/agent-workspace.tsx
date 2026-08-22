@@ -73,7 +73,7 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps) {
   const inputRefInner = useRef<AgentWorkspaceInputHandle>(null);
   const inputRef = inputRefProp ?? inputRefInner;
-  const { steps, workspaceView, loading, error, lastInput, recovering, retryRecover, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView } = useSceneAgentChat({
+  const { steps, workspaceView, loading, error, lastInput, modelName, recovering, retryRecover, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView } = useSceneAgentChat({
     convUid,
     appCode,
     workspaceId,
@@ -177,6 +177,7 @@ export function AgentWorkspace({
           ) : (
             <AgentWorkspaceRenderer
               view={workspaceView}
+              running={running}
               onStepClick={onStepClick ? (s) => onStepClick({
                 id: s.id,
                 type: s.type === 'thinking' ? 'llm' : 'tool_call',
@@ -197,6 +198,7 @@ export function AgentWorkspace({
               onInteractionResume={resumeInteraction}
               agentIcon={appInfo?.icon}
               agentName={appInfo?.app_name}
+              modelName={modelName}
             />
           )}
         </div>

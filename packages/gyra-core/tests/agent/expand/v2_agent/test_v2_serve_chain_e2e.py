@@ -121,19 +121,21 @@ def _default_rounds():
 
 
 def test_agent_manager_registers_v2_agent():
-    """AgentManager 注册 V2Agent（对外主名 BIXIU），get_by_name 命中（serve 装配路径）。"""
+    """AgentManager 注册 V2Agent（对外主名 PIXIU/貔貅），get_by_name 命中（serve 装配路径）。"""
     from gyra.agent.core.agent_manage import AgentManager
 
     manager = AgentManager(system_app=MagicMock())
     profile = manager.register_agent(V2Agent)
-    assert profile == "BIXIU"
-    cls = manager.get_by_name("BIXIU")
+    assert profile == "PIXIU"
+    cls = manager.get_by_name("PIXIU")
     assert cls is V2Agent
     # 别名也命中（resolve_agent_name 兼容，历史 app.agent=V2 可无缝迁移）
     resolved = manager.get_by_name("V2")
     assert resolved is V2Agent
     resolved_alias2 = manager.get_by_name("V2Agent")
     assert resolved_alias2 is V2Agent
+    resolved_bixiu = manager.get_by_name("BIXIU")
+    assert resolved_bixiu is V2Agent
 
 
 # =============================================================================

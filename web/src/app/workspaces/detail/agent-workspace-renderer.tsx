@@ -98,14 +98,42 @@ const TRIGGER_LABEL: Record<string, string> = {
   alert: '告警',
 };
 
+/** 运行中文案:按当前产出推导具体动作 —— 工具执行 / 模型思考 / todo 阶段 */
+function deriveRunningLabel(
+  view: WorkspaceView,
+  agentName?: string | null,
+  modelName?: string | null,
+): string | null {
+  // 最近的 running 步骤:thinking 优先「模型思考中」,其余(工具/产物/自定义类型)
+  // 只要能取到标题或动作,统一「xx 执行中…」。避免非标准 type 被跳过落到兜底。
+  for (let i = view.execution.length - 1; i >= 0; i--) {
+    const step = view.execution[i];
+    if (step.status !== 'running') continue;
+    if (step.type === 'thinking') {
+      return `${modelName || agentName || 'Agent'} 思考中…`;
+    }
+    const tool = step.action || step.title;
+    if (tool) return `${tool} 执行中…`;
+  }
+  // planning 当前进行中的 todo 阶段
+  const activePlan = view.planning?.steps.find((s) => s.status === 'running');
+  if (activePlan?.title) return `${activePlan.title} 阶段进行中…`;
+  // V1 manus 等无 planning 数据的视图:由左面板阶段标题推导「阶段进行中」
+  if (view.running_phase_title) return `${view.running_phase_title} 阶段进行中…`;
+  // V1 manus 等:无进行中工具/阶段时的「模型思考中」(初始/工具间隙思考)
+  if (view.running_thinking) return `${modelName || agentName || 'Agent'} 思考中…`;
+  // 兜底:Agent 名称 + 运行中
+  return agentName ? `${agentName} 运行中…` : null;
+}
+
 /** 运行中指示器:Agent 流式产出时置底展示「正在运行」loading 效果,让人感知任务仍在推进 */
-function RunningIndicator({ label }: { label?: string }) {
+function RunningIndicator({ label }: { label?: string | null }) {
   return (
     <div className="ws-agent-running" role="status" aria-live="polite">
       <span className="ws-agent-running__dots" aria-hidden>
         <i /><i /><i />
       </span>
-      <span className="ws-agent-running__text">{label ? `${label} 运行中…` : 'Agent 运行中…'}</span>
+      <span className="ws-agent-running__text">{label || 'Agent 运行中…'}</span>
     </div>
   );
 }
@@ -341,6 +369,8 @@ export interface AgentWorkspaceRendererProps {
   /** 会话是否运行中(决定末轮胶囊处于实时态还是收敛态) */
   running?: boolean;
   onStepClick?: (step: WorkspaceExecutionStep) => void;
+  /** 当前选中步骤 id:用于左侧步骤行的高亮选中态 */
+  selectedStepId?: string | null;
   /** 点击交付文件卡片:在中间容器渲染文件内容 */
   onDeliverableClick?: (file: WorkspaceDeliverableFile) => void;
   /** 点击任务卡片:进入任务对话 */
@@ -353,6 +383,8 @@ export interface AgentWorkspaceRendererProps {
   agentIcon?: string | null;
   /** Agent 名称(头像回退首字母) */
   agentName?: string | null;
+  /** 本次对话选用的模型名(运行中文案「xx模型 思考中」使用) */
+  modelName?: string | null;
 }
 
 /** 一轮对话:user 步骤(可无,恢复场景) + 后续步骤序列 */
@@ -378,10 +410,15 @@ function splitRounds(execution: WorkspaceExecutionStep[]): ConversationRound[] {
   return rounds;
 }
 
-export function AgentWorkspaceRenderer({ view, running = false, onStepClick, onDeliverableClick, onTaskClick, onSubagentClick, onInteractionResume, agentIcon, agentName }: AgentWorkspaceRendererProps) {
+export function AgentWorkspaceRenderer({ view, running = false, onStepClick, selectedStepId, onDeliverableClick, onTaskClick, onSubagentClick, onInteractionResume, agentIcon, agentName, modelName }: AgentWorkspaceRendererProps) {
   const deliverable_files = view.deliverable_files ?? [];
   const task_files = view.task_files ?? [];
   const hasDeliverables = deliverable_files.length > 0;
+  // 运行中置底文案:按当前产出动态推导(工具执行 / 模型思考 / todo 阶段)
+  const runningLabel = useMemo(
+    () => deriveRunningLabel(view, agentName, modelName),
+    [view, agentName, modelName],
+  );
   // 用户头像数据:localStorage 一次性读取(全 feed 共享,避免每个 UserBubble 重复 parse)
   const userInfo = useMemo(() => {
     try {
@@ -538,6 +575,7 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, onD
               phases={phases}
               running={flowRunning}
               onStepClick={onStepClick}
+              selectedStepId={selectedStepId}
             />,
           );
         };
@@ -661,7 +699,7 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, onD
       )}
       {/* 运行中:底部 loading 指示 + 自动滚动哨兵 */}
       <div ref={endRef} className="ws-agent-renderer__end" aria-hidden />
-      {running && <RunningIndicator label={agentName || undefined} />}
+      {running && <RunningIndicator label={runningLabel} />}
     </div>
   );
 }

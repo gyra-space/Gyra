@@ -275,6 +275,11 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         if isinstance(content, str) and content.strip() and content.strip() not in _RUNNING_PLACEHOLDERS:
             output = content.strip()[:_MAX_OUTPUT_CHARS]
 
+        # 工具 VIS 结构化视图(如 ```d-sql-query / d-batch-tasks 围栏):写入步骤 vis 字段,
+        # 前端 GPTVis 据此渲染真实工具组件(与 vis_manus 的 view/simple_view 语义一致)。
+        view = self._report_get(report, "view") or self._report_get(report, "simple_view")
+        vis = view.strip() if isinstance(view, str) and view.strip() else None
+
         existing = self._scene_items.get(key)
         step = existing[0] if existing else {
             "id": str(action_id),
@@ -295,6 +300,8 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             step["action_input"] = action_input
         if output is not None:
             step["output"] = output
+        if vis is not None:
+            step["vis"] = vis
         # 工具产出文件 → 大厅 Exhibit:首个挂到步骤上(点击步骤大厅打开),全部入驻大厅
         output_files = self._report_get(report, "output_files")
         if isinstance(output_files, (list, tuple)):

@@ -15,7 +15,7 @@
  * 纯函数、无 React 依赖,便于对拍测试。
  */
 
-import type { ManusRightPanelData } from '@/types/manus';
+import type { ManusLeftPanelData, ManusRightPanelData, ManusThinkingSection } from '@/types/manus';
 import type {
   WorkspaceDeliverableFile,
   WorkspaceExecutionStep,
@@ -33,6 +33,7 @@ export interface ManusViewMessage {
 }
 
 const RIGHT_PANEL_FENCE = /```manus-right-panel\s*\n([\s\S]*?)\n```/;
+const LEFT_PANEL_FENCE = /```manus-left-panel\s*\n([\s\S]*?)\n```/;
 
 /** 解析围栏 JSON;非 JSON 或结构不符返回 null */
 function parseFenceJson(body: string): Record<string, unknown> | null {
@@ -132,6 +133,46 @@ function stepsMapToExecution(stepsMap: Record<string, any> | undefined): Workspa
 }
 
 /**
+ * 从视图消息里提取最新的 manus 左面板数据(manus-left-panel 围栏,
+ * 落在 planning_window 内)。倒序扫描取最新一份含 sections 的帧。
+ */
+function extractManusLeftPanel(messages: ManusViewMessage[]): ManusLeftPanelData | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== 'view' || typeof msg.context !== 'string') continue;
+    try {
+      const ctx = JSON.parse(msg.context);
+      const pw = typeof ctx.planning_window === 'string' ? ctx.planning_window : '';
+      const fm = LEFT_PANEL_FENCE.exec(pw);
+      if (!fm) continue;
+      const parsed = parseFenceJson(fm[1]);
+      if (parsed && Array.isArray(parsed.sections)) {
+        return parsed as unknown as ManusLeftPanelData;
+      }
+    } catch {
+      // 非 JSON 视图忽略
+    }
+  }
+  return null;
+}
+
+/** 当前进行中的 todo 阶段标题(仅工作中):含 running 步骤的段 → 含 active_step 的段 → 首个未完成段 */
+function runningSectionTitle(left: ManusLeftPanelData | null): string | null {
+  if (!left || !left.is_working) return null;
+  if (!Array.isArray(left.sections) || left.sections.length === 0) return null;
+  const sections = left.sections as ManusThinkingSection[];
+  const byRunning = sections.find((sec) => sec.steps.some((s) => s.status === 'running'));
+  if (byRunning?.title) return byRunning.title;
+  if (left.active_step_id) {
+    const byActive = sections.find((sec) => sec.steps.some((s) => s.id === left.active_step_id));
+    if (byActive?.title) return byActive.title;
+  }
+  const first = sections.find((sec) => !sec.is_completed);
+  if (first?.title) return first.title;
+  return null;
+}
+
+/**
  * 由 manus 视图消息 + 最新 right panel 汇总 WorkspaceView。
  * @param messages view/human 消息(按 order 排列)
  * @param latestRight 最新的 manus-right-panel 数据(提供文件/摘要/panel_view)
@@ -185,6 +226,14 @@ export function buildManusWorkspaceView(
   }
 
   const source = latestRight;
+  // 运行中文案信号:由左面板阶段数据推导「阶段进行中」/「模型思考中」。
+  // 注意不注入 view.planning —— manus 步骤无时间戳,若走 planning 时间线归组
+  // 会被误归入「先前执行」;阶段标题用独立字段透传,仅由运行中文案消费。
+  const leftPanel = extractManusLeftPanel(messages);
+  const runningPhaseTitle = runningSectionTitle(leftPanel);
+  const isWorking = !!latestRight?.is_running || !!leftPanel?.is_working;
+  const hasRunningTool = execution.some((s) => s.type === 'tool_call' && s.status === 'running');
+  const runningThinking = !!isWorking && !hasRunningTool && !runningPhaseTitle;
   return {
     planning: null,
     execution,
@@ -194,5 +243,7 @@ export function buildManusWorkspaceView(
     panel_view: source ? toPanelView(source.panel_view) : 'execution',
     lobby_exhibits: [],
     subagents: [],
+    running_phase_title: runningPhaseTitle,
+    running_thinking: runningThinking,
   };
 }

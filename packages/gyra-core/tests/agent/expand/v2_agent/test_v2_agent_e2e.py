@@ -245,20 +245,20 @@ async def test_v2_agent_tool_denied_by_ruleset():
 
 @pytest.mark.asyncio
 async def test_v2_agent_registered_and_resolvable():
-    """模板注册：role="BIXIU"，gyra.agent.expand 自动扫描可解析（serve 启动路径）。"""
+    """模板注册：role="PIXIU"，gyra.agent.expand 自动扫描可解析（serve 启动路径）。"""
     from gyra.agent.core.agent_manage import get_agent_manager, scan_agents
     from gyra.agent.expand.v2_agent import V2Agent as V2AgentCls
 
-    assert V2AgentCls().role == "BIXIU"
+    assert V2AgentCls().role == "PIXIU"
 
     scanned = scan_agents("gyra.agent.expand")
     assert any(v is V2AgentCls for v in scanned.values())
 
     # get_by_name 解析（serve _build_agent_by_gpts 的 resolve_agent_name 路径）
     manager = get_agent_manager()
-    if "BIXIU" not in (manager.all_agents() or {}):
+    if "PIXIU" not in (manager.all_agents() or {}):
         manager.after_start()  # 模拟 serve 启动后的自动扫描注册
-    agent_cls = manager.get_by_name("BIXIU")
+    agent_cls = manager.get_by_name("PIXIU")
     assert agent_cls is V2AgentCls
     # 别名 "V2"/"V2Agent" 兼容历史存量配置
     assert manager.get_by_name("V2") is V2AgentCls

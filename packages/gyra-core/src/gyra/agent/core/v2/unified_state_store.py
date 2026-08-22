@@ -362,6 +362,27 @@ class SqlAlchemyStateStore(StateStore):
 
         return await self._do(self._run_sync, _get)
 
+    async def get_interaction_checkpoints_by_conv(self, conv_id: str) -> List[dict]:
+        def _get(session):
+            rows = (
+                session.query(_InteractionCheckpointRow)
+                .filter(_InteractionCheckpointRow.conv_id == conv_id)
+                .order_by(_InteractionCheckpointRow.created_at.asc())
+                .all()
+            )
+            return [
+                {
+                    "request_id": row.request_id,
+                    "step_id": row.step_id,
+                    "conv_id": row.conv_id,
+                    "request_payload": json.loads(row.request_payload),
+                    "created_at": row.created_at,
+                }
+                for row in rows
+            ]
+
+        return await self._do(self._run_sync, _get)
+
     async def delete_interaction_checkpoint(self, request_id: str) -> None:
         def _delete(session):
             row = session.get(_InteractionCheckpointRow, request_id)

@@ -200,4 +200,23 @@ describe('dedupOptimisticUser', () => {
     ];
     expect(dedupOptimisticUser(exec).map(e => e.id).sort()).toEqual(['user-msg-1', 'user-optimistic-1']);
   });
+
+  test('历史轮次用户消息(时间戳早于乐观步骤且为其前缀)不得误删当前乐观气泡', () => {
+    // 追问「帮我看看这周的数据情况」,后端尚未回显;历史「帮我看看这周」只是前缀,
+    // 不应据此提前删除乐观气泡(否则用户消息要等 AI 输出才显示)
+    const exec: WorkspaceExecutionStep[] = [
+      { id: 'user-msg-1', type: 'user', title: '我', status: 'done', output: '帮我看看这周', ts: '2026-08-22T09:00:00' },
+      { id: 'user-optimistic-2', type: 'user', title: '我', status: 'done', output: '帮我看看这周的数据情况', ts: '2026-08-22T09:05:00' },
+    ];
+    expect(dedupOptimisticUser(exec).map(e => e.id)).toEqual(['user-msg-1', 'user-optimistic-2']);
+  });
+
+  test('当前追问已被后端回显(时间戳不早于乐观步骤)时,才移除乐观气泡', () => {
+    const exec: WorkspaceExecutionStep[] = [
+      { id: 'user-msg-1', type: 'user', title: '我', status: 'done', output: '帮我看看这周', ts: '2026-08-22T09:00:00' },
+      { id: 'user-optimistic-2', type: 'user', title: '我', status: 'done', output: '帮我看看这周的数据情况', ts: '2026-08-22T09:05:00' },
+      { id: 'user-msg-2', type: 'user', title: '我', status: 'done', output: '帮我看看这周的数据情况', ts: '2026-08-22T09:05:10' },
+    ];
+    expect(dedupOptimisticUser(exec).map(e => e.id)).toEqual(['user-msg-1', 'user-msg-2']);
+  });
 });

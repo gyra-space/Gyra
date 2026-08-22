@@ -133,7 +133,6 @@ def _initialize_resource_manager(system_app: SystemApp):
     KnowledgeSpaceRetrieverResource = None  # type: ignore[assignment]
 
     from gyra.agent.resource.memory import MemoryResource
-    from gyra.agent.expand.resources.fetch_tool import fetch
 
     logger.info(
         f"[ResourceInit] _initialize_resource_manager called, "
@@ -157,7 +156,6 @@ def _initialize_resource_manager(system_app: SystemApp):
     # TODO: rewire to new knowledge module (Task #9)
     # rm.register_resource(KnowledgeSpaceRetrieverResource)
     rm.register_resource(GptAppResource)
-    rm.register_resource(resource_instance=fetch)
     rm.register_resource(resource_instance=list_gyra_support_models)
     # Register mcp tool
     rm.register_resource(MCPSSEToolPack, resource_type=ResourceType.Tool)
