@@ -175,6 +175,9 @@ def run_schema_migrations(
 
             applied = _applied_script_names(conn)
             latest_name = scripts[-1].name
+            # 账本屏障：存量库因多次失败运行可能已有 partial 记录，
+            # 以账本中 baseline/full_init 的最高版本为界，之前脚本不再重放。
+            barrier = _ledger_barrier_version(conn, scripts)
 
             if not _has_gyra_tables(engine):
                 # ① 空库：全量初始化 + 基线到最新
@@ -219,15 +222,31 @@ def run_schema_migrations(
             for script in scripts:
                 if script.name in applied:
                     continue
+                # 屏障之前的脚本（含部分失败运行已记录 baseline 的场景）不再重放，
+                # 避免把历史脚本当增量执行而产生大量 Duplicate/语法错误。
+                if (
+                    barrier is not None
+                    and script.version is not None
+                    and script.version <= barrier
+                ):
+                    logger.info(
+                        "[SchemaMigrator] skip %s (<= ledger barrier %s)",
+                        script.name,
+                        barrier,
+                    )
+                    continue
                 if not script.path:
                     continue
                 logger.info(
-                    "[SchemaMigrator] applying %s (from %s to %s)",
+                    "[SchemaMigrator] applying %s (from %s to %s) @ %s",
                     script.name,
                     script.from_ts,
                     script.to_ts,
+                    script.path,
                 )
-                _run_sql_text(conn, script.path.read_text(encoding="utf-8"), cfg)
+                _run_sql_text(
+                    conn, script.path.read_text(encoding="utf-8"), cfg, script.name
+                )
                 conn.commit()
                 _record(conn, script.name, "upgrade", script.checksum)
                 conn.commit()
@@ -362,6 +381,27 @@ def _scripts_up_to(scripts: List[UpgradeScript], baseline_name: str) -> List[str
     return [baseline_name]
 
 
+def _ledger_barrier_version(conn, scripts: List[UpgradeScript]) -> Optional[int]:
+    """返回账本中 baseline/full_init 记录对应的最高脚本版本。
+
+    存量库可能因多次失败运行在账本里留有部分记录，导致 ``applied`` 非空、
+    无法再次走首次 baseline 分支。此时以账本中的 baseline/full_init 版本为
+    屏障：屏障之前的脚本一律视为已应用、不再重放，避免把历史脚本再当增量跑。
+    """
+    try:
+        rows = conn.execute(
+            text("SELECT script_name, kind FROM gyra_schema_version")
+        ).fetchall()
+    except Exception:
+        return None
+    by_name = {s.name: s.version for s in scripts if s.version is not None}
+    versions = []
+    for name, kind in rows:
+        if kind in ("baseline", "full_init") and name in by_name:
+            versions.append(by_name[name])
+    return max(versions) if versions else None
+
+
 def _ensure_ledger(conn, dialect: str) -> None:
     ddl_list = _MYSQL_LEDGER_DDL if dialect == "mysql" else _SQLITE_LEDGER_DDL
     for ddl in ddl_list:
@@ -460,11 +500,18 @@ def _is_tolerable_error(exc: Exception) -> bool:
     return any(code in msg for code in ("(1050", "(1060", "(1061", "(1091"))
 
 
-def _run_sql_text(conn, sql_text: str, cfg: object) -> None:
-    """逐条执行 SQL；'已存在'类错误按配置容忍，其余错误按 on_error 策略处理。"""
+def _run_sql_text(
+    conn, sql_text: str, cfg: object, script_name: str = ""
+) -> None:
+    """逐条执行 SQL；'已存在'类错误按配置容忍，其余错误按 on_error 策略处理。
+
+    执行每条语句前打印日志（含来源脚本名），便于报错时定位是哪条 SQL。
+    """
     tolerate = bool(getattr(cfg, "tolerate_duplicate", True))
     on_error = getattr(cfg, "on_error", "abort")
+    context = f"[{script_name}] " if script_name else ""
     for statement in _split_sql(sql_text):
+        logger.info("[SchemaMigrator] %sexec: %s", context, statement)
         try:
             conn.execute(text(statement))
             conn.commit()
@@ -476,7 +523,10 @@ def _run_sql_text(conn, sql_text: str, cfg: object) -> None:
                 conn.rollback()
                 continue
             logger.error(
-                "[SchemaMigrator] statement failed: %s\n%s", statement, e
+                "[SchemaMigrator] %sstatement failed: %s\n%s",
+                context,
+                statement,
+                e,
             )
             conn.rollback()
             if on_error != "warn":

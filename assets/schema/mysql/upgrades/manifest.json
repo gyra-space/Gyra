@@ -380,6 +380,16 @@
       "seq": 9,
       "checksum": "db6841a37aea3c090b0ed01ffdae6bc707c861245d37f34247dd09e1178c1a20",
       "version": 38
+    },
+    {
+      "name": "upgrade_0.3.0_20260822_to_0.3.0_20260822_0010.sql",
+      "from_version": "0.3.0",
+      "from_timestamp": "20260822",
+      "to_version": "0.3.0",
+      "to_timestamp": "20260822",
+      "seq": 10,
+      "checksum": "148fb51e5362f062151859ba666efe88bc936bd6a284137b788c8a6f1ede2bb7",
+      "version": 39
     }
   ]
 }
