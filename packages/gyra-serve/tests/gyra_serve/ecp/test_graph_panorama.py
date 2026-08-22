@@ -1,9 +1,14 @@
-"""资产全景图测试:边投影纯函数 + 写时物化 + graph() 三类节点聚合。
+"""资产全景图测试:边投影纯函数 + 写时物化 + graph() 实时投影与三类节点。
 
-设计见 docs/ECP.md v1.2(图是投影)与"空间资产全景图"方案:
-- project_edges:幂等纯函数,对象→对象边无条件、对象→资产边需注册表命中
-- _refresh_edges:挂在 propose/confirm 写路径,replace_out_edges 删旧插新
-- graph():节点实时(对象+资产+kn)、边物化 + knowledge 查询时聚合
+设计要点:
+- project_edges:幂等纯函数,返回 (edges, asset_refs)——对象→对象边
+  无条件、对象→资产边一律产出(稳定 id asset:<kind>:<ref_id>,不依赖登记)
+- _refresh_edges:只物化对象→对象边进边表(资产 ref_id 可达 256 字符,
+  超边表 String(128))
+- graph():查询时实时投影全部边——存量数据冷启动即有连线;未登记的
+  被引用资产生成虚拟节点(status=unregistered)
+- _knowledge_subgraph:verbat 端点映射到稳定资产节点 id(与 claim 的
+  ref 边同节点,三层连通);空间来源不依赖登记(派生 docs-<code>)
 """
 
 from types import SimpleNamespace
@@ -16,55 +21,53 @@ from gyra_serve.ecp.service.service import Service
 # --------------------------------------------------------------- 纯函数投影
 class TestProjectEdges:
     def test_metric_belongs_to_entity(self):
-        edges = project_edges(
+        edges, refs = project_edges(
             "metric", {"entity": "ent.order", "expression": "SUM(F1)"}
         )
         assert edges == [{"edge_type": "belongs_to", "dst": "ent.order"}]
+        assert refs == []
 
-    def test_relation_jins_both_endpoints(self):
-        edges = project_edges(
+    def test_relation_joins_both_endpoints(self):
+        edges, _ = project_edges(
             "relation", {"from": "ent.order", "to": "ent.store"}
         )
         assert {e["dst"] for e in edges} == {"ent.order", "ent.store"}
         assert all(e["edge_type"] == "joins" for e in edges)
 
-    def test_entity_binding_edge_requires_registered_asset(self):
-        payload = {"binding": {"kind": "db", "table": "t1", "datasource_id": 3}}
-        # 未登记 → 无资产边
-        assert project_edges("entity", payload, lambda k, r: None) == []
-        # 已登记 → binding 边指向资产节点
-        edges = project_edges("entity", payload, lambda k, r: "asset:7" if k == "db" else None)
-        assert edges == [{"edge_type": "binding", "dst": "asset:7"}]
+    def test_entity_binding_edge_regardless_of_registration(self):
+        """资产边不依赖登记:datasource_id 引用一律出稳定 id 的边。"""
+        edges, refs = project_edges(
+            "entity",
+            {"binding": {"kind": "db", "table": "t1", "datasource_id": 3}},
+        )
+        assert edges == [{"edge_type": "binding", "dst": "asset:db:3"}]
+        assert refs == [("db", "3")]
 
     def test_claim_ref_edge_to_document_asset(self):
-        payload = {
-            "text": "退货率上限 5%",
-            "binding": {"kind": "doc", "space": "docs-ws1", "doc_id": "v_abc"},
-            "source_quote": "退货率上限 5%",
-        }
-        resolve = lambda k, r: "asset:9" if (k, r) == ("document", "docs-ws1:v_abc") else None  # noqa: E731
-        assert project_edges("claim", payload, resolve) == [
-            {"edge_type": "ref", "dst": "asset:9"}
-        ]
+        edges, refs = project_edges(
+            "claim",
+            {
+                "text": "退货率上限 5%",
+                "binding": {"kind": "doc", "space": "docs-ws1", "doc_id": "v_abc"},
+                "source_quote": "退货率上限 5%",
+            },
+        )
+        assert edges == [{"edge_type": "ref", "dst": "asset:document:docs-ws1:v_abc"}]
+        assert refs == [("document", "docs-ws1:v_abc")]
 
     def test_doc_id_with_verbat_prefix_normalized(self):
-        payload = {"binding": {"space": "s", "doc_id": "verbat:v_1"}}
-        resolve = lambda k, r: "asset:1" if r == "s:v_1" else None  # noqa: E731
-        assert project_edges("claim", payload, resolve) == [
-            {"edge_type": "ref", "dst": "asset:1"}
-        ]
-
-    def test_no_resolver_still_yields_object_edges(self):
-        """resolve 缺省时对象→对象边照常(资产边静默跳过)。"""
-        assert project_edges("metric", {"entity": "ent.a"}) == [
-            {"edge_type": "belongs_to", "dst": "ent.a"}
-        ]
+        edges, refs = project_edges(
+            "claim", {"binding": {"space": "s", "doc_id": "verbat:v_1"}}
+        )
+        assert edges == [{"edge_type": "ref", "dst": "asset:document:s:v_1"}]
+        assert refs == [("document", "s:v_1")]
 
     def test_dimension_entity_optional(self):
-        assert project_edges("dimension", {"column": "c"}) == []
-        assert project_edges("dimension", {"column": "c", "entity": "ent.a"}) == [
-            {"edge_type": "belongs_to", "dst": "ent.a"}
-        ]
+        assert project_edges("dimension", {"column": "c"}) == ([], [])
+        assert project_edges("dimension", {"column": "c", "entity": "ent.a"}) == (
+            [{"edge_type": "belongs_to", "dst": "ent.a"}],
+            [],
+        )
 
 
 # --------------------------------------------------------------- 写时物化
@@ -87,22 +90,32 @@ def _asset(pk, kind, ref_id, name=None):
 
 
 class TestRefreshEdges:
-    def test_propose_hook_recomputes_out_edges(self):
-        svc = _svc(
-            assets=[_asset(7, "db", "3", "销售库")],
-            objects=[],
-        )
+    def test_materializes_object_edges_only(self):
+        """物化只保留对象→对象边;资产边不进边表(ref_id 超长风险)。"""
+        svc = _svc(assets=[], objects=[])
         vo = SimpleNamespace(
             id="ent.order", obj_type="entity", version=1, status="proposed",
             payload={"binding": {"kind": "db", "table": "t1", "datasource_id": 3}},
         )
         svc._refresh_edges(vo, "default")
+        # entity 只有资产边 → 边表写空列表
         svc._edge_dao.replace_out_edges.assert_called_once_with(
-            "ent.order", "default", 1,
-            [{"edge_type": "binding", "dst": "asset:7"}],
+            "ent.order", "default", 1, []
         )
 
-    def test_rebuild_is_idempotent_full_projection(self):
+    def test_metric_object_edge_materialized(self):
+        svc = _svc(assets=[], objects=[])
+        vo = SimpleNamespace(
+            id="mtr.sales", obj_type="metric", version=1, status="proposed",
+            payload={"entity": "ent.order", "expression": "SUM(F1)"},
+        )
+        svc._refresh_edges(vo, "default")
+        svc._edge_dao.replace_out_edges.assert_called_once_with(
+            "mtr.sales", "default", 1,
+            [{"edge_type": "belongs_to", "dst": "ent.order"}],
+        )
+
+    def test_rebuild_counts_object_edges_only(self):
         objects = [
             SimpleNamespace(
                 id="mtr.sales", obj_type="metric", version=2,
@@ -113,16 +126,46 @@ class TestRefreshEdges:
                 payload={"binding": {"datasource_id": 3}},
             ),
         ]
-        svc = _svc(assets=[_asset(7, "db", "3")], objects=objects)
+        svc = _svc(assets=[], objects=objects)
         result = svc.rebuild_edges("default")
         assert result["objects"] == 2
-        assert result["edges"] == 2  # belongs_to + binding
-        assert svc._edge_dao.replace_out_edges.call_count == 2
+        assert result["edges"] == 1  # 只有 belongs_to;binding 是资产边不物化
 
 
 # --------------------------------------------------------------- graph 视图
 class TestGraphView:
-    def test_graph_merges_objects_assets_and_edges(self):
+    def test_graph_projects_edges_live_with_virtual_assets(self):
+        """存量对象零物化冷启动:graph() 实时投影,未登记资产出虚拟节点。"""
+        import asyncio
+
+        objects = [
+            SimpleNamespace(
+                id="ent.order", obj_type="entity", name="订单",
+                status="confirmed", version=1,
+                payload={"binding": {"datasource_id": 3}},
+            ),
+            SimpleNamespace(
+                id="mtr.sales", obj_type="metric", name="销售额",
+                status="confirmed", version=1,
+                payload={"entity": "ent.order", "expression": "SUM(F1)"},
+            ),
+        ]
+        # db 资产未登记 → 虚拟资产节点
+        svc = _svc(assets=[], objects=objects)
+
+        vo = asyncio.run(svc.graph("default"))
+        ids = {n.id for n in vo.nodes}
+        assert ids == {"ent.order", "mtr.sales", "asset:db:3"}
+        virtual = next(n for n in vo.nodes if n.id == "asset:db:3")
+        assert virtual.node_kind == "asset"
+        assert virtual.status == "unregistered"
+        assert virtual.obj_type == "db"
+        assert sorted((l.source, l.edge_type, l.target) for l in vo.links) == [
+            ("ent.order", "binding", "asset:db:3"),
+            ("mtr.sales", "belongs_to", "ent.order"),
+        ]
+
+    def test_graph_enriches_registered_assets(self):
         import asyncio
 
         objects = [
@@ -132,37 +175,27 @@ class TestGraphView:
                 payload={"binding": {"datasource_id": 3}},
             )
         ]
-        assets = [_asset(7, "db", "3", "销售库")]
-        svc = _svc(assets=assets, objects=objects)
-
-        # edge 表返回一条物化边
-        fake_row = SimpleNamespace(
-            src="ent.order", edge_type="binding", dst="asset:7", status=None
+        svc = _svc(
+            assets=[_asset(7, "db", "3", "销售库")], objects=objects
         )
-        session = MagicMock()
-        session.query.return_value.filter.return_value.all.return_value = [fake_row]
-        svc._edge_dao.session.return_value.__enter__.return_value = session
-
-        # knowledge 聚合不可用(无 _system_app) → 静默跳过
         vo = asyncio.run(svc.graph("default"))
-        ids = {n.id for n in vo.nodes}
-        assert ids == {"ent.order", "asset:7"}
-        asset_node = next(n for n in vo.nodes if n.id == "asset:7")
-        assert asset_node.node_kind == "asset"
-        assert asset_node.obj_type == "db"
+        asset_node = next(n for n in vo.nodes if n.id == "asset:db:3")
+        assert asset_node.status == "active"
         assert asset_node.name == "销售库"
-        assert [(l.source, l.edge_type, l.target) for l in vo.links] == [
-            ("ent.order", "binding", "asset:7")
+        assert ("ent.order", "binding", "asset:db:3") in [
+            (l.source, l.edge_type, l.target) for l in vo.links
         ]
 
     def test_knowledge_endpoint_mapping_prefers_document_asset(self):
-        """verbat 端点优先映射到已登记 document 资产节点(三层连通点)。"""
+        """verbat 端点映射到稳定资产节点 id——与 claim 的 ref 边同节点。"""
         import asyncio
 
         from gyra_serve.ecp.service.service import Service as S
 
         svc = S.__new__(S)
-        assets = [_asset(9, "document", "docs-ws1:v_abc")]
+        # document 既已登记又被 claim 引用,两种来源都应映射到同一节点
+        registered = {("document", "docs-ws1:v_abc"): _asset(9, "document", "docs-ws1:v_abc")}
+        referenced = {("document", "docs-ws1:v_abc"): None}
 
         edge = SimpleNamespace(subject="doc:wiki_1", predicate="derived-from",
                                object="verbat:v_abc")
@@ -181,12 +214,75 @@ class TestGraphView:
         svc._system_app.get_component.return_value = ks
 
         kn_nodes, links = asyncio.run(
-            svc._knowledge_subgraph("ws1", assets)
+            svc._knowledge_subgraph("ecp_ws1", registered, referenced)
         )
         assert len(kn_nodes) == 1  # doc:wiki_1(另一端映射到资产节点)
         assert [(l.source, l.target, l.edge_type) for l in links] == [
-            ("kn:docs-ws1:doc:wiki_1", "asset:9", "derived-from")
+            ("kn:docs-ws1:doc:wiki_1", "asset:document:docs-ws1:v_abc",
+             "derived-from")
         ]
+
+    def test_knowledge_slug_derived_from_workspace_id(self):
+        """workspace_id=ecp_<code> → 聚合 docs-<code>,不依赖资产登记。"""
+        import asyncio
+
+        from gyra_serve.ecp.service.service import Service as S
+
+        svc = S.__new__(S)
+        edge = SimpleNamespace(subject="doc:w1", predicate="about",
+                               object="doc:w2")
+        sub = SimpleNamespace(nodes=[], edges=[edge], root=None)
+        vault = MagicMock()
+        vault.graph_query = MagicMock(return_value=_async_ret(sub))
+
+        seen_slugs = []
+
+        async def get_vault(slug):
+            seen_slugs.append(slug)
+            if slug == "docs-demo":
+                return vault
+            raise KeyError(slug)
+
+        ks = MagicMock()
+        ks.get_vault = get_vault
+        svc._system_app = MagicMock()
+        svc._system_app.get_component.return_value = ks
+
+        kn_nodes, links = asyncio.run(
+            svc._knowledge_subgraph("ecp_demo", {}, {})
+        )
+        assert "docs-demo" in seen_slugs
+        assert len(kn_nodes) == 2
+        assert len(links) == 1
+
+    def test_unknown_verbat_endpoint_degrades_to_kn(self):
+        """未被引用/登记的 verbatim → kn 节点(知识层),不冒充资产。"""
+        import asyncio
+
+        from gyra_serve.ecp.service.service import Service as S
+
+        svc = S.__new__(S)
+        edge = SimpleNamespace(subject="doc:wiki_1", predicate="derived-from",
+                               object="verbat:v_x")
+        sub = SimpleNamespace(nodes=[], edges=[edge], root=None)
+        vault = MagicMock()
+        vault.graph_query = MagicMock(return_value=_async_ret(sub))
+
+        async def get_vault(slug):
+            if slug == "docs-ws1":
+                return vault
+            raise KeyError(slug)
+
+        ks = MagicMock()
+        ks.get_vault = get_vault
+        svc._system_app = MagicMock()
+        svc._system_app.get_component.return_value = ks
+
+        kn_nodes, links = asyncio.run(
+            svc._knowledge_subgraph("ecp_ws1", {}, {})
+        )
+        targets = {n.id for n in kn_nodes}
+        assert targets == {"kn:docs-ws1:doc:wiki_1", "kn:docs-ws1:verbat:v_x"}
 
 
 class _async_ret:

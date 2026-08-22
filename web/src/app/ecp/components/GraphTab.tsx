@@ -112,10 +112,14 @@ function GraphLoader({
     for (const n of visible) {
       const degree = degrees.get(n.id) || 0;
       const g = nodeGroup(n);
-      // 资产是图的锚点(最大),对象按度数缩放,知识层保持小节点
+      const unregistered = g === 'asset' && n.status === 'unregistered';
+      // 资产是图的锚点(最大);未登记的被引用资产小一号(引用未入治理);
+      // 对象按度数缩放;知识层保持小节点
       const size =
         g === 'asset'
-          ? 10 + Math.sqrt(degree / maxDegree) * 12
+          ? unregistered
+            ? 6
+            : 10 + Math.sqrt(degree / maxDegree) * 12
           : g === 'kn'
             ? 3.5
             : 4 + Math.sqrt(degree / maxDegree) * 14;
@@ -207,9 +211,21 @@ function AssetDetailContent({
       <div className="ecp-drawer__kv">
         <div className="ecp-drawer__kv-key">状态</div>
         <div className="ecp-drawer__kv-val">
-          <StatusTag status={node.status} />
+          {node.status === 'unregistered' ? (
+            <span style={{ color: 'var(--warning)' }}>未登记（仅被引用）</span>
+          ) : (
+            <StatusTag status={node.status} />
+          )}
         </div>
       </div>
+      {node.status === 'unregistered' && (
+        <div className="ecp-drawer__kv">
+          <div className="ecp-drawer__kv-key">说明</div>
+          <div className="ecp-drawer__kv-val">
+            该资源被语义对象引用但尚未在资产层登记；登记后可纳入治理（就绪检查 / 提案 / 门禁）
+          </div>
+        </div>
+      )}
       {!!related.length && (
         <div className="ecp-drawer__kv">
           <div className="ecp-drawer__kv-key">图上关联</div>
@@ -234,9 +250,11 @@ function AssetDetailContent({
  * 空间资产全景图:一个场景空间内「资源 → 语义 → 知识」三层同图。
  *
  * - 语义对象(硬层):entity/metric/... 七类,🟡 = proposed 未确认
- * - 资产(入驻资源):db/document/space/api,已登记即可见
+ * - 资产(入驻资源):db/document/space/api;被引用未登记的资源以
+ *   小一号节点显示(引用可见,治理未入)
  * - 知识层:wiki 文档与原文 verbat,来自知识空间 L2 图的实时聚合
  * 三层的连通点:claim ─ref─▶ 文档资产 ◀─derived-from─ wiki 页。
+ * 边为查询时实时投影——存量数据零物化冷启动即有连线。
  */
 export default function GraphTab({ workspaceId }: { workspaceId: string }) {
   const [hidden, setHidden] = useState<Set<NodeGroup>>(new Set());
@@ -343,7 +361,7 @@ export default function GraphTab({ workspaceId }: { workspaceId: string }) {
             </button>
           ))}
         </div>
-        <Tooltip title="全量重算对象→资产/对象→对象的边投影（资产后登记或规则升级后补齐）">
+        <Tooltip title="全量重算物化边表（对象→对象边，供 Agent 图遍历与影响分析用；全景图本身实时投影，无需重建）">
           <Button
             size="small"
             icon={<ReloadOutlined />}
@@ -380,7 +398,8 @@ export default function GraphTab({ workspaceId }: { workspaceId: string }) {
             </span>
           </div>
           <div className="ecp-graph__legend-hint">
-            点击节点看详情 · 🟡 = proposed 未确认 · 点击顶部统计可按层过滤
+            点击节点看详情 · 🟡 = proposed · 小资产 = 未登记引用 ·
+            点击顶部统计可按层过滤
           </div>
         </div>
         <SigmaContainer style={{ height: '100%', width: '100%' }}>

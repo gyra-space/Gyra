@@ -737,42 +737,36 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
 
     # -------------------------------------------------------------------- graph
     def _refresh_edges(self, vo: SemanticObjectVO, ws: str) -> None:
-        """写时物化:重算该对象全部出边(对象→对象 + 对象→资产)。
+        """写时物化:重算该对象的**对象→对象**出边进边表。
 
         挂在所有产生新版本的写路径上(propose / confirm / normalize_confirmed),
         replace_out_edges 删旧插新,天然增量;reject/deprecate 只改 status,
-        边不动(状态由节点渲染)。Best-effort:投影失败不阻塞业务写入
-        (边表是投影不是 source of truth,rebuild_edges 可全量重建)。
+        边不动(状态由节点渲染)。资产边不进物化表(ref_id 可达 256 字符,
+        超出边表 String(128);资产边只服务可视化,由 graph() 实时投影)。
+        Best-effort:投影失败不阻塞业务写入(边表不是 source of truth,
+        rebuild_edges 可全量重建)。
         """
         try:
             from .graph_projection import project_edges
 
-            assets = {
-                (a.kind, a.ref_id): a.id for a in self._asset_dao.list(ws)
-            }
-
-            def resolve(kind: str, ref_id: str) -> Optional[str]:
-                pk = assets.get((kind, ref_id))
-                return f"asset:{pk}" if pk else None
-
-            edges = project_edges(vo.obj_type, vo.payload or {}, resolve)
-            self._edge_dao.replace_out_edges(vo.id, ws, vo.version, edges)
+            edges, _refs = project_edges(vo.obj_type, vo.payload or {})
+            obj_edges = [
+                e for e in edges if not e["dst"].startswith("asset:")
+            ]
+            self._edge_dao.replace_out_edges(vo.id, ws, vo.version, obj_edges)
         except Exception:  # noqa: BLE001
             logger.exception("edge projection failed for %s@v%s", vo.id, vo.version)
 
     def rebuild_edges(self, workspace_id: Optional[str] = None) -> dict:
-        """幂等全量重建 workspace 的边投影(升级校准/资产后登记补边)。
+        """幂等全量重建 workspace 的物化边投影(对象→对象边)。
 
-        物化投影不是 source of truth:边永远可以从对象 payload + 资产
-        注册表重算,丢了大不了重建。投影规则升级(如新增 binding 边)后
-        一次调用即可对存量生效,无需数据迁移。
+        物化投影不是 source of truth:边永远可以从对象 payload 重算,
+        丢了大不了重建。投影规则升级后一次调用即可对存量生效。
+        (graph() 已改为查询时实时投影,本方法服务边表消费方——
+        Agent 图遍历 / lint 影响分析。)
         """
         ws = self._ws(workspace_id)
-        assets = {(a.kind, a.ref_id): a.id for a in self._asset_dao.list(ws)}
-
-        def resolve(kind: str, ref_id: str) -> Optional[str]:
-            pk = assets.get((kind, ref_id))
-            return f"asset:{pk}" if pk else None
+        from .graph_projection import project_edges
 
         total_edges = 0
         objects = 0
@@ -783,12 +777,13 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             )
             if not result.items:
                 break
-            from .graph_projection import project_edges
-
             for o in result.items:
-                edges = project_edges(o.obj_type, o.payload or {}, resolve)
-                self._edge_dao.replace_out_edges(o.id, ws, o.version, edges)
-                total_edges += len(edges)
+                edges, _refs = project_edges(o.obj_type, o.payload or {})
+                obj_edges = [
+                    e for e in edges if not e["dst"].startswith("asset:")
+                ]
+                self._edge_dao.replace_out_edges(o.id, ws, o.version, obj_edges)
+                total_edges += len(obj_edges)
                 objects += 1
             if len(result.items) < 500:
                 break
@@ -799,34 +794,45 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         return {"workspace_id": ws, "objects": objects, "edges": total_edges}
 
     async def _knowledge_subgraph(
-        self, ws: str, assets: List[AssetRefVO]
+        self,
+        ws: str,
+        registered: Dict[tuple, AssetRefVO],
+        referenced: Dict[tuple, None],
     ) -> tuple[List[GraphNodeVO], List[GraphLinkVO]]:
         """聚合知识空间 L2 图(wiki/doc/跨文档实体)为 kn 节点与边。
 
         查询时聚合路线:不落边表、零同步任务——vault 的边自带 valid_to
         时间有效性,文档重 ingest 旧边自动失效,聚合永远拿到当前有效图。
-        端点映射:``verbat:<id>`` → 已登记的 document 资产节点(ref_id =
-        ``{slug}:{verbat_id}``,claim 的 ref 边即指向它,三层在此连通);
-        ``doc:<id>`` / 其他端点 → kn 合成节点。
+
+        端点映射(三层连通的关键):
+
+        - ``verbat:<id>`` → 若 ``{slug}:{id}`` 是已知资产(已登记或被
+          claim 引用),映射到**稳定资产节点 id**(与 claim 的 ref 边
+          指向同一节点——资源层与知识层在此连通);否则降级为 kn 节点。
+        - ``doc:<id>`` → kn 节点(wiki 页)。
+
+        聚合空间来源(不依赖资产登记完整性):ECP 软层(ecp-<ws>) +
+        已登记 space/document 资产 + 被 claim 引用的空间 + 场景空间
+        派生的文档空间(workspace_id 形如 ecp_<code> → docs-<code>)。
         """
         from ..api.schemas import GraphLinkVO
+        from .graph_projection import asset_node_id
 
-        # 需要聚合的空间:ECP 软层(ecp-<ws>) + 已登记的 space 资产 +
-        # document 资产所属空间
         slugs = {f"ecp-{ws}"}
-        for a in assets:
-            if a.kind == "space":
-                slugs.add(a.ref_id)
-            elif a.kind == "document" and ":" in a.ref_id:
-                slugs.add(a.ref_id.split(":", 1)[0])
+        for kind, ref_id in list(registered) + list(referenced):
+            if kind == "space":
+                slugs.add(ref_id)
+            elif kind == "document" and ":" in ref_id:
+                slugs.add(ref_id.split(":", 1)[0])
+        # 场景空间派生:ECP workspace_id = ecp_<workspace_code>,
+        # 文档空间 slug 约定 docs-<workspace_code>(workspace 模块上传入口)
+        if ws.startswith("ecp_"):
+            slugs.add(f"docs-{ws[len('ecp_') :]}")
 
-        asset_by_ref = {(a.kind, a.ref_id): a for a in assets}
+        known_docs = set(registered) | set(referenced)
         nodes: Dict[str, GraphNodeVO] = {}
         links: List[GraphLinkVO] = []
         seen: set = set()
-
-        if not slugs:
-            return [], []
 
         try:
             from gyra_serve.knowledge.config import (
@@ -850,9 +856,8 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             def _map(endpoint: str) -> Optional[str]:
                 if endpoint.startswith("verbat:"):
                     vid = endpoint.split(":", 1)[1]
-                    ref = asset_by_ref.get(("document", f"{slug}:{vid}"))
-                    if ref:
-                        return f"asset:{ref.id}"
+                    if ("document", f"{slug}:{vid}") in known_docs:
+                        return asset_node_id("document", f"{slug}:{vid}")
                 if not (endpoint.startswith("doc:") or endpoint.startswith("verbat:")):
                     return None  # 非文档/原文端点(如实体名)暂不映射
                 kn_id = f"kn:{slug}:{endpoint}"
@@ -884,16 +889,44 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
     async def graph(self, workspace_id: Optional[str] = None) -> GraphVO:
         """Asset-panorama graph view for one workspace.
 
-        Nodes always reflect current state (queried live, never materialized):
-        hard-layer objects + registered asset refs + knowledge-layer nodes
-        aggregated on the fly. Links come from the materialized edge
-        projection (object→object / object→asset) plus the knowledge L2
-        edges (asset↔kn / kn↔kn).
+        边**查询时实时投影**(纯函数,单空间 ≤ 千对象成本可忽略)——图
+        永远反映当前对象/资产状态,不依赖物化边表是否跟上(存量数据
+        冷启动也有连线)。物化边表只服务 Agent 图遍历/lint。
+
+        节点三类(实时查询,零同步):硬层对象 + 资产节点(已登记 enrich
+        名称/状态,被引用未登记 → 虚拟节点 status=unregistered) +
+        知识层 kn 节点(L2 图聚合涌现)。
         """
+        from .graph_projection import asset_node_id, project_edges
+
         ws = self._ws(workspace_id)
         objects = self._object_dao.list_latest(
             workspace_id=ws, page=1, page_size=1000
         ).items
+
+        # ---- 实时投影:对象→对象边 + 对象→资产边(稳定资产节点 id)
+        links: List[GraphLinkVO] = []
+        seen: set = set()
+        referenced: Dict[tuple, None] = {}
+        for o in objects:
+            edges, refs = project_edges(o.obj_type, o.payload or {})
+            for key in refs:
+                referenced[key] = None
+            for e in edges:
+                key = (o.id, e["edge_type"], e["dst"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                links.append(
+                    GraphLinkVO(
+                        source=o.id, target=e["dst"], edge_type=e["edge_type"]
+                    )
+                )
+
+        # ---- 资产节点:已登记(enrich) ∪ 被引用(未登记 → 虚拟节点)
+        registered = {
+            (a.kind, a.ref_id): a for a in self._asset_dao.list(ws)
+        }
         nodes = [
             GraphNodeVO(
                 id=o.id, obj_type=o.obj_type, name=o.name,
@@ -901,39 +934,27 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             )
             for o in objects
         ]
-        assets = self._asset_dao.list(ws)
-        for a in assets:
-            name = (a.ref_meta or {}).get("name") or a.ref_id
+        for key in {**registered, **referenced}:
+            kind, ref_id = key
+            a = registered.get(key)
             nodes.append(
                 GraphNodeVO(
-                    id=f"asset:{a.id}", obj_type=a.kind, name=name,
-                    status=a.status or "active", version=0, node_kind="asset",
+                    id=asset_node_id(kind, ref_id),
+                    obj_type=kind,
+                    name=(
+                        (a.ref_meta or {}).get("name") or ref_id if a else ref_id
+                    ),
+                    status=(a.status or "active") if a else "unregistered",
+                    version=0,
+                    node_kind="asset",
                 )
             )
-        links: List[GraphLinkVO] = []
-        seen = set()
-        with self._edge_dao.session(commit=False) as session:
-            from ..models.models import EcpSemanticEdgeEntity
 
-            rows = (
-                session.query(EcpSemanticEdgeEntity)
-                .filter(EcpSemanticEdgeEntity.workspace_id == ws)
-                .all()
-            )
-            for r in rows:
-                key = (r.src, r.edge_type, r.dst)
-                if key in seen:
-                    continue
-                seen.add(key)
-                links.append(
-                    GraphLinkVO(
-                        source=r.src, target=r.dst,
-                        edge_type=r.edge_type, status=r.status,
-                    )
-                )
-        # knowledge 层聚合(kn 节点 + L2 边),best-effort 不阻塞
+        # ---- knowledge 层聚合(kn 节点 + L2 边),best-effort 不阻塞
         try:
-            kn_nodes, kn_links = await self._knowledge_subgraph(ws, assets)
+            kn_nodes, kn_links = await self._knowledge_subgraph(
+                ws, registered, referenced
+            )
             nodes.extend(kn_nodes)
             for lk in kn_links:
                 key = (lk.source, lk.edge_type, lk.target)
