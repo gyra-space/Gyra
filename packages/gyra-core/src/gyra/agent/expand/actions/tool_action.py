@@ -32,6 +32,35 @@ logger = logging.getLogger(__name__)
 
 _MAX_TOOL_OUTPUT_CHARS = 8000
 
+# 具备专用前端自定义渲染器的工具名集合：这类工具的执行结果由自定义渲染器呈现
+# （如 SkillContentRenderer 解析 <skill_content>），不再生成通用 d-tool
+# （tool_args/tool_result 输入与输出参数）兜底视图，避免同一执行结果被展示两次。
+_CUSTOM_RENDER_TOOL_NAMES = {
+    "skill",
+    "Skill",
+    "skill_read",
+    "read_skill",
+    "get_skill_resource",
+    "load_skill",
+}
+
+
+def _has_custom_tool_renderer(
+    tool_name: Optional[str],
+    tool_result: Optional[Any],
+    err_msg: Optional[str],
+) -> bool:
+    """工具是否由专用前端渲染器负责展示（而非通用 d-tool 兜底）。"""
+    if err_msg:
+        # 出错时仍走通用兜底，确保错误信息可见
+        return False
+    if (tool_name or "") in _CUSTOM_RENDER_TOOL_NAMES:
+        return True
+    # 按内容兜底：skill 工具输出 <skill_content> 时同样认为有自定义渲染器
+    if isinstance(tool_result, str) and "<skill_content" in tool_result:
+        return True
+    return False
+
 
 def _mcp_field(obj: Any, *names: str, default: Any = None) -> Any:
     """跨 mcp SDK 版本安全读取字段：mcp>=1.9 起字段改为 snake_case（is_error/mime_type），
@@ -347,6 +376,12 @@ class ToolAction(Action[ToolInput]):
         current_message: AgentMessage = kwargs.get("current_message")
         require_approval = kwargs.get("require_approval", False)
         action_id = kwargs.get("action_id", None)
+
+        # 透传用户上下文到工具执行层，供 RBAC 权限检查使用
+        if agent_context and hasattr(agent_context, "extra"):
+            user_req = (agent_context.extra or {}).get("user_request")
+            if user_req is not None:
+                kwargs["user_request"] = user_req
 
         # 诊断日志：检查 render_protocol 传入情况
         render_protocol_from_kwargs = kwargs.get("render_protocol")
@@ -1681,6 +1716,16 @@ class ToolAction(Action[ToolInput]):
             tool_name = tool_info.name
             tool_desc = tool_info.description
             need_ask_user = tool_info.ask_user
+
+        # 具备专用前端自定义渲染器的工具（如 skill）：其执行结果由自定义渲染器
+        # 负责展示，不再生成通用 d-tool（输入/输出参数）兜底视图，避免同一结果
+        # 在兜底渲染器与自定义渲染器中重复出现。
+        if _has_custom_tool_renderer(tool_name, tool_result, err_msg):
+            logger.info(
+                "Tool Action gen view skip generic d-tool: "
+                f"tool={tool_name} has dedicated renderer"
+            )
+            return ""
 
         # 设置进度
         progress = 100 if status == "completed" else (50 if status == "running" else 0)

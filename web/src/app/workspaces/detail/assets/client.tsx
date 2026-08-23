@@ -19,6 +19,7 @@ import { CapabilityTab } from './capability-tab';
 import { DeliveryPanel } from './delivery-panel';
 import { EcpConsole } from '@/app/ecp/components/ecp-console';
 import { listEcpAssets } from '@/client/api/ecp';
+import '../../workspaces.css';
 
 const TAB_KEYS = ['semantic', 'support', 'delivery'] as const;
 type TabKey = typeof TAB_KEYS[number];

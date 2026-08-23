@@ -74,7 +74,7 @@ export interface LobbyExhibit {
 
 export interface WorkspaceExecutionStep {
   id: string;
-  type: 'tool_call' | 'thinking' | 'artifact' | 'delivery' | 'user' | 'task_created' | 'answer';
+  type: 'tool_call' | 'thinking' | 'artifact' | 'delivery' | 'user' | 'task_created' | 'skill_loaded' | 'answer';
   title: string;
   status: 'running' | 'done' | 'failed';
   /** 时间戳(ISO 字符串),跨轮次合并时按此交错排序 */
@@ -86,6 +86,8 @@ export interface WorkspaceExecutionStep {
   vis?: unknown;
   /** 步骤关联的大厅入驻内容:点击步骤时大厅打开对应 Exhibit */
   exhibit?: LobbyExhibit | null;
+  /** skill_loaded 步骤:预加载技能的 <skill_content> XML(右侧渲染用) */
+  skill_xml?: string | null;
   /** task_created 步骤:关联的任务信息 */
   task_id?: number;
   task_title?: string;

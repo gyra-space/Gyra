@@ -38,6 +38,7 @@ class ToolContextFactory:
         agent_id: str,
         conv_id: str,
         user_id: Optional[str] = None,
+        user_request: Optional[Any] = None,
         scene: Optional[str] = None,
         scenario_id: Optional[str] = None,
         language: str = "zh",
@@ -52,6 +53,7 @@ class ToolContextFactory:
         self._agent_id = agent_id
         self._conv_id = conv_id
         self._user_id = user_id
+        self._user_request = user_request
         self._scene = scene
         self._scenario_id = scenario_id
         self._language = language
@@ -124,6 +126,12 @@ class ToolContextFactory:
         # 注入 agent 引用（G4）
         if self._agent is not None:
             ctx.set_resource("agent", self._agent)
+
+        # 注入用户上下文（RBAC 权限检查用）
+        if self._user_request is not None:
+            ctx.set_resource("user_request", self._user_request)
+            # 同时挂到 config dict，兼容直接读 config 的路径
+            ctx.config["user_request"] = self._user_request
 
         # 注入 subagent_delegate_factory：让 spawn_agent_task 能解析多媒体 Agent
         # （统一走协议层 AgentManager，未命中普通子 agent 时回退）。

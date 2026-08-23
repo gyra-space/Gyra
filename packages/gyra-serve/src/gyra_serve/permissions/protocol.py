@@ -12,8 +12,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -165,3 +166,73 @@ class PermissionModule:
 
 # 触发内置模块注册（import 即注册）
 from . import modules  # noqa: E402,F401
+
+
+# --------------------------------------------------------------------------- #
+# 资源目录 Provider：向 RBAC 配置界面提供可选资源列表
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class ResourceCatalogItem:
+    """可选资源项。
+
+    id:          resource_id，如 "3"（数据源级）或 "3.orders"（表级）
+    name:        显示名称，如 "mysql-prod" 或 "orders"
+    parent_id:   父级 ID，用于级联选择（如表级项的 parent_id 为 ds_id）
+    description: 补充说明（如 db_type、表注释）
+    metadata:    额外信息（如 db_type、行数、分组等）
+    """
+
+    id: str
+    name: str
+    parent_id: Optional[str] = None
+    description: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class ResourceCatalogProvider(ABC):
+    """资源目录 Provider：各资源模块实现此接口，向 RBAC 提供可选资源列表。
+
+    实现示例::
+
+        class DatabaseCatalogProvider(ResourceCatalogProvider):
+            def resource_type(self) -> str:
+                return "database"
+
+            def supports_hierarchy(self) -> bool:
+                return True
+
+            def list_items(self, parent_id=None, keyword=None, limit=100):
+                if parent_id is None:
+                    return self._list_datasources(keyword, limit)
+                return self._list_tables(parent_id, keyword, limit)
+    """
+
+    @abstractmethod
+    def resource_type(self) -> str:
+        """返回资源类型标识，如 "database"、"agent"、"tool"。"""
+        ...
+
+    @abstractmethod
+    def list_items(
+        self,
+        parent_id: Optional[str] = None,
+        keyword: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[ResourceCatalogItem]:
+        """列出可选资源。
+
+        Args:
+            parent_id: 父级资源 ID。如 database 类型下，parent_id=ds_id 时列出该数据源下的表。
+            keyword:   搜索关键词（模糊匹配 name）。
+            limit:     返回数量上限。
+
+        Returns:
+            ResourceCatalogItem 列表。
+        """
+        ...
+
+    def supports_hierarchy(self) -> bool:
+        """是否支持级联选择（如 database 支持 库→表 两级）。"""
+        return False

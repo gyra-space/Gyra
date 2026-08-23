@@ -810,6 +810,11 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
           claim 引用),映射到**稳定资产节点 id**(与 claim 的 ref 边
           指向同一节点——资源层与知识层在此连通);否则降级为 kn 节点。
         - ``doc:<id>`` → kn 节点(wiki 页)。
+        - 其他端点(实体名等裸标识) → kn 实体节点(``kn:<slug>:entity:<name>``)。
+
+        节点来自 ``graph_query().nodes ∪ edges 端点``:孤立文档/实体
+        (没有任何 L2 边)也会成为 kn 节点——刚 ingest 完还没建边的
+        空间在全景图里立即可见。
 
         聚合空间来源(不依赖资产登记完整性):ECP 软层(ecp-<ws>) +
         已登记 space/document 资产 + 被 claim 引用的空间 + 场景空间
@@ -854,23 +859,39 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                 continue  # 空间不存在或暂不可达:跳过,不阻塞全景图
 
             def _map(endpoint: str) -> Optional[str]:
+                if not endpoint:
+                    return None
                 if endpoint.startswith("verbat:"):
                     vid = endpoint.split(":", 1)[1]
                     if ("document", f"{slug}:{vid}") in known_docs:
                         return asset_node_id("document", f"{slug}:{vid}")
-                if not (endpoint.startswith("doc:") or endpoint.startswith("verbat:")):
-                    return None  # 非文档/原文端点(如实体名)暂不映射
-                kn_id = f"kn:{slug}:{endpoint}"
+                if endpoint.startswith(("doc:", "verbat:")):
+                    ep_type, ep_id = endpoint.split(":", 1)
+                    kn_id = f"kn:{slug}:{endpoint}"
+                    if kn_id not in nodes:
+                        nodes[kn_id] = GraphNodeVO(
+                            id=kn_id,
+                            obj_type="wiki" if ep_type == "doc" else "verbat",
+                            name=ep_id,
+                            status="confirmed",
+                            node_kind="kn",
+                        )
+                    return kn_id
+                # 实体名等裸标识端点(如 curation 的实体名) → kn 实体节点
+                kn_id = f"kn:{slug}:entity:{endpoint}"
                 if kn_id not in nodes:
-                    ep_type = endpoint.split(":", 1)[0]
                     nodes[kn_id] = GraphNodeVO(
                         id=kn_id,
-                        obj_type="wiki" if ep_type == "doc" else "verbat",
-                        name=endpoint.split(":", 1)[1],
+                        obj_type="entity",
+                        name=endpoint,
                         status="confirmed",
                         node_kind="kn",
                     )
                 return kn_id
+
+            # 孤立节点(不在任何边上的 doc/verbat/实体)也纳入全景图
+            for n in sub.nodes or []:
+                _map(n)
 
             for e in sub.edges:
                 src = _map(e.subject)

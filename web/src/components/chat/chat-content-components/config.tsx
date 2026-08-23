@@ -11,7 +11,6 @@ import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import remarkMermaidPlugin from 'remark-mermaid-plugin';
 import { AutoChart, BackEndChartType, getChartType } from '../auto-chart';
 import AgentMessages from './agent-messages';
 import AgentPlans from './agent-plans';
@@ -26,6 +25,7 @@ import VisChatLink from './vis-chat-link';
 import VisCode from './vis-code';
 import VisConvertError from './vis-convert-error';
 import VisDashboard from './vis-dashboard';
+import VisMermaid from './vis-mermaid';
 import VisPlugin from './vis-plugin';
 import VisResponse from './vis-response';
 import { VisTabs, VisTabsData } from './vis-tabs';
@@ -144,7 +144,7 @@ function DefaultCodeRenderer({ node, className, children, style, ...props }: Def
           components={markdownComponents}
           rehypePlugins={[rehypeRaw, rehypeKatex]}
           // @ts-ignore
-          remarkPlugins={[remarkGfm, remarkMath, remarkMermaidPlugin]}
+          remarkPlugins={[remarkGfm, remarkMath]}
         >
           {matchValues.join('\n')}
         </GPTVis>
@@ -152,7 +152,8 @@ function DefaultCodeRenderer({ node, className, children, style, ...props }: Def
     );
   }
 
-  // 优化逻辑：代码块统一使用 CodePreview（mermaid 仍保持原样渲染给 remark-mermaid 处理）
+  // 优化逻辑：代码块统一使用 CodePreview（mermaid 已通过 languageRenderers 分发，走不到这里，
+  // 这里仅作为兜底防御，避免异常情况下 mermaid 源码被当成普通代码高亮）
   const shouldUseCodePreview = !match || match[1] !== 'mermaid';
 
   return (
@@ -160,15 +161,13 @@ function DefaultCodeRenderer({ node, className, children, style, ...props }: Def
       {shouldUseCodePreview ? (
         <CodePreview code={context} language={lang || 'text'} />
       ) : (
-        <code {...props} style={style} className='p-1 mx-1 rounded bg-theme-light dark:bg-theme-dark text-sm'>
-          {children}
-        </code>
+        <VisMermaid code={content} />
       )}
       <GPTVis
         components={markdownComponents}
         rehypePlugins={[rehypeRaw, rehypeKatex]}
         // @ts-ignore
-        remarkPlugins={[remarkGfm, remarkMath, remarkMermaidPlugin]}
+        remarkPlugins={[remarkGfm, remarkMath]}
       >
         {matchValues.join('\n')}
       </GPTVis>
@@ -279,6 +278,11 @@ export const codeComponents = {
         } catch {
           return <CodePreview language={lang} code={content} />;
         }
+      },
+      // mermaid 流程图/时序图/甘特图等：使用 mermaid v11 异步渲染（动态 import 按需加载）
+      mermaid: ({ children }) => {
+        const content = String(children);
+        return <VisMermaid code={content} />;
       },
       'vis-app-link': ({ className, children }) => {
         const content = String(children);
@@ -548,7 +552,7 @@ export const markdownComponents = {
 };
 
 export const markdownPlugins = {
-  remarkPlugins: [remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkMermaidPlugin] as any,
+  remarkPlugins: [remarkGfm, [remarkMath, { singleDollarTextMath: true }]] as any,
   rehypePlugins: [rehypeRaw, [rehypeKatex, { output: 'htmlAndMathml' }]] as any,
 };
 

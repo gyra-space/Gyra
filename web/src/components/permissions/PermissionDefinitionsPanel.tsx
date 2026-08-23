@@ -35,11 +35,32 @@ import {
 
 const { Text } = Typography;
 
-const RESOURCE_PICKER_TYPES = ['agent', 'tool', 'knowledge', 'model'] as const;
+const RESOURCE_PICKER_TYPES = ['agent', 'tool', 'knowledge', 'model', 'database'] as const;
+
+/** 支持级联选择的资源类型（如 database 支持 库→表 两级） */
+const HIERARCHICAL_RESOURCE_TYPES = ['database'] as const;
 
 async function loadOptionsForResourceType(
   resourceType: string,
+  parentId?: string,
 ): Promise<{ value: string; label: string }[]> {
+  // 统一资源目录 API（支持级联）
+  try {
+    const params: Record<string, string> = { resource_type: resourceType };
+    if (parentId) params.parent_id = parentId;
+    const res = await axios.get('/api/v1/permissions/resources/catalog', { params });
+    const items = res.data?.data?.items || [];
+    if (items.length > 0) {
+      return items.map((item: { id: string; name: string; description?: string }) => ({
+        value: item.id,
+        label: item.description ? `${item.name} (${item.description})` : item.name,
+      }));
+    }
+  } catch {
+    // 统一目录 API 不可用时回退到旧逻辑
+  }
+
+  // 旧逻辑：硬编码对接各业务模块 API（向后兼容）
   let resources: Array<{ name?: string; displayName?: string; id?: string | number }> = [];
   try {
     switch (resourceType) {
@@ -102,6 +123,15 @@ export default function PermissionDefinitionsPanel({ onDefinitionCreated }: Perm
   const [search, setSearch] = useState('');
   const [resourceIdOptions, setResourceIdOptions] = useState<{ value: string; label: string }[]>([]);
   const [resourceIdsLoading, setResourceIdsLoading] = useState(false);
+  // 级联选择状态（database 等支持层级的资源类型）
+  const [catalogParentOptions, setCatalogParentOptions] = useState<{ value: string; label: string }[]>([]);
+  const [selectedParentId, setSelectedParentId] = useState<string | undefined>(undefined);
+  const [catalogChildOptions, setCatalogChildOptions] = useState<{ value: string; label: string }[]>([]);
+  const [catalogChildLoading, setCatalogChildLoading] = useState(false);
+
+  const isHierarchical = HIERARCHICAL_RESOURCE_TYPES.includes(
+    selectedResourceType as (typeof HIERARCHICAL_RESOURCE_TYPES)[number],
+  );
 
   const resourceTypeOptions = useMemo(
     () => [
@@ -109,6 +139,9 @@ export default function PermissionDefinitionsPanel({ onDefinitionCreated }: Perm
       { value: 'tool', label: t('permissions_resource_tool') },
       { value: 'knowledge', label: t('permissions_resource_knowledge') },
       { value: 'model', label: t('permissions_resource_model') },
+      { value: 'database', label: t('permissions_resource_database') },
+      { value: 'cron', label: t('permissions_resource_cron') },
+      { value: 'channel', label: t('permissions_resource_channel') },
       { value: 'system', label: t('permissions_resource_system') },
       { value: '*', label: t('permissions_resource_wildcard') },
     ],
@@ -143,6 +176,21 @@ export default function PermissionDefinitionsPanel({ onDefinitionCreated }: Perm
         { value: 'chat', label: t('permissions_action_chat') },
         { value: 'manage', label: t('permissions_action_manage') },
         { value: 'admin', label: t('permissions_action_admin') },
+        { value: '*', label: t('permissions_action_all') },
+      ],
+      database: [
+        { value: 'read', label: t('permissions_action_read') },
+        { value: 'manage', label: t('permissions_action_manage') },
+        { value: '*', label: t('permissions_action_all') },
+      ],
+      cron: [
+        { value: 'read', label: t('permissions_action_read') },
+        { value: 'manage', label: t('permissions_action_manage') },
+        { value: '*', label: t('permissions_action_all') },
+      ],
+      channel: [
+        { value: 'read', label: t('permissions_action_read') },
+        { value: 'manage', label: t('permissions_action_manage') },
         { value: '*', label: t('permissions_action_all') },
       ],
       system: [
@@ -185,28 +233,75 @@ export default function PermissionDefinitionsPanel({ onDefinitionCreated }: Perm
     if (typeof window === 'undefined') return;
     if (!createOpen && !editOpen) {
       setResourceIdOptions([]);
+      setCatalogParentOptions([]);
+      setCatalogChildOptions([]);
+      setSelectedParentId(undefined);
       return;
     }
     const rt = selectedResourceType;
     if (!RESOURCE_PICKER_TYPES.includes(rt as (typeof RESOURCE_PICKER_TYPES)[number])) {
       setResourceIdOptions([]);
+      setCatalogParentOptions([]);
+      setCatalogChildOptions([]);
+      setSelectedParentId(undefined);
+      return;
+    }
+
+    let cancelled = false;
+
+    if (isHierarchical) {
+      // 级联模式：先加载第一级（如数据源列表）
+      (async () => {
+        setResourceIdsLoading(true);
+        const opts = await loadOptionsForResourceType(rt);
+        if (!cancelled) {
+          setCatalogParentOptions(opts);
+          // 级联模式下 resource_id 由第二级选择决定，初始为空
+          setResourceIdOptions([]);
+        }
+        if (!cancelled) {
+          setResourceIdsLoading(false);
+        }
+      })();
+    } else {
+      // 平铺模式：直接加载资源列表
+      (async () => {
+        setResourceIdsLoading(true);
+        const opts = await loadOptionsForResourceType(rt);
+        if (!cancelled) {
+          setResourceIdOptions(opts);
+        }
+        if (!cancelled) {
+          setResourceIdsLoading(false);
+        }
+      })();
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedResourceType, createOpen, editOpen, isHierarchical]);
+
+  // 级联模式：选择父级后加载子级（如选择数据源后加载表列表）
+  useEffect(() => {
+    if (!isHierarchical || !selectedParentId) {
+      setCatalogChildOptions([]);
       return;
     }
     let cancelled = false;
     (async () => {
-      setResourceIdsLoading(true);
-      const opts = await loadOptionsForResourceType(rt);
+      setCatalogChildLoading(true);
+      const opts = await loadOptionsForResourceType(selectedResourceType, selectedParentId);
       if (!cancelled) {
-        setResourceIdOptions(opts);
+        setCatalogChildOptions(opts);
       }
       if (!cancelled) {
-        setResourceIdsLoading(false);
+        setCatalogChildLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [selectedResourceType, createOpen, editOpen]);
+  }, [isHierarchical, selectedParentId, selectedResourceType]);
 
   const filteredDefinitions = useMemo(() => {
     if (!search.trim()) return definitions;
@@ -493,31 +588,83 @@ export default function PermissionDefinitionsPanel({ onDefinitionCreated }: Perm
               options={resourceTypeOptions}
               onChange={(value) => {
                 setSelectedResourceType(value);
+                setSelectedParentId(undefined);
                 createForm.setFieldsValue({ resource_id: ['*'], action: undefined });
               }}
             />
           </Form.Item>
-          <Form.Item
-            name="resource_id"
-            label={t('permissions_resource_id')}
-            initialValue={['*']}
-            extra={t('permissions_resource_multi_placeholder')}
-            tooltip={t('permissions_resource_multi_hint')}
-          >
-            <Select
-              mode="multiple"
-              showSearch
-              allowClear
-              loading={resourceIdsLoading}
-              placeholder={t('permissions_resource_pick_placeholder')}
-              options={[
-                { value: '*', label: t('permissions_all_resources_tag') },
-                ...resourceIdOptions,
-              ]}
-              optionFilterProp="label"
-              maxTagCount={3}
-            />
-          </Form.Item>
+          {/* 级联选择：支持层级的资源类型（如 database）先选父级再选子级 */}
+          {isHierarchical && (
+            <>
+              <Form.Item
+                label={t('permissions_resource_parent')}
+                tooltip={t('permissions_resource_parent_hint')}
+              >
+                <Select
+                  showSearch
+                  allowClear
+                  loading={resourceIdsLoading}
+                  placeholder={t('permissions_resource_parent_placeholder')}
+                  options={catalogParentOptions}
+                  optionFilterProp="label"
+                  value={selectedParentId}
+                  onChange={(value) => {
+                    setSelectedParentId(value);
+                    // 选择父级后，默认选中该父级（代表全部子级）
+                    createForm.setFieldsValue({ resource_id: value ? [value] : ['*'] });
+                  }}
+                />
+              </Form.Item>
+              {selectedParentId && (
+                <Form.Item
+                  name="resource_id"
+                  label={t('permissions_resource_id')}
+                  initialValue={['*']}
+                  extra={t('permissions_resource_multi_placeholder')}
+                  tooltip={t('permissions_resource_multi_hint')}
+                >
+                  <Select
+                    mode="multiple"
+                    showSearch
+                    allowClear
+                    loading={catalogChildLoading}
+                    placeholder={t('permissions_resource_pick_placeholder')}
+                    options={[
+                      { value: '*', label: t('permissions_all_resources_tag') },
+                      { value: selectedParentId, label: t('permissions_all_under_parent') },
+                      ...catalogChildOptions,
+                    ]}
+                    optionFilterProp="label"
+                    maxTagCount={3}
+                  />
+                </Form.Item>
+              )}
+            </>
+          )}
+          {/* 平铺选择：非层级资源类型 */}
+          {!isHierarchical && (
+            <Form.Item
+              name="resource_id"
+              label={t('permissions_resource_id')}
+              initialValue={['*']}
+              extra={t('permissions_resource_multi_placeholder')}
+              tooltip={t('permissions_resource_multi_hint')}
+            >
+              <Select
+                mode="multiple"
+                showSearch
+                allowClear
+                loading={resourceIdsLoading}
+                placeholder={t('permissions_resource_pick_placeholder')}
+                options={[
+                  { value: '*', label: t('permissions_all_resources_tag') },
+                  ...resourceIdOptions,
+                ]}
+                optionFilterProp="label"
+                maxTagCount={3}
+              />
+            </Form.Item>
+          )}
           <Form.Item
             name="action"
             label={t('permissions_action')}
@@ -578,30 +725,80 @@ export default function PermissionDefinitionsPanel({ onDefinitionCreated }: Perm
               options={resourceTypeOptions}
               onChange={(value) => {
                 setSelectedResourceType(value);
+                setSelectedParentId(undefined);
                 editForm.setFieldsValue({ action: undefined });
               }}
             />
           </Form.Item>
-          <Form.Item
-            name="resource_id"
-            label={t('permissions_resource_id')}
-            extra={t('permissions_resource_multi_placeholder')}
-            tooltip={t('permissions_resource_multi_hint')}
-          >
-            <Select
-              mode="multiple"
-              showSearch
-              allowClear
-              loading={resourceIdsLoading}
-              placeholder={t('permissions_resource_pick_placeholder')}
-              options={[
-                { value: '*', label: t('permissions_all_resources_tag') },
-                ...resourceIdOptions,
-              ]}
-              optionFilterProp="label"
-              maxTagCount={3}
-            />
-          </Form.Item>
+          {/* 级联选择：支持层级的资源类型（如 database）先选父级再选子级 */}
+          {isHierarchical && (
+            <>
+              <Form.Item
+                label={t('permissions_resource_parent')}
+                tooltip={t('permissions_resource_parent_hint')}
+              >
+                <Select
+                  showSearch
+                  allowClear
+                  loading={resourceIdsLoading}
+                  placeholder={t('permissions_resource_parent_placeholder')}
+                  options={catalogParentOptions}
+                  optionFilterProp="label"
+                  value={selectedParentId}
+                  onChange={(value) => {
+                    setSelectedParentId(value);
+                    editForm.setFieldsValue({ resource_id: value ? [value] : ['*'] });
+                  }}
+                />
+              </Form.Item>
+              {selectedParentId && (
+                <Form.Item
+                  name="resource_id"
+                  label={t('permissions_resource_id')}
+                  extra={t('permissions_resource_multi_placeholder')}
+                  tooltip={t('permissions_resource_multi_hint')}
+                >
+                  <Select
+                    mode="multiple"
+                    showSearch
+                    allowClear
+                    loading={catalogChildLoading}
+                    placeholder={t('permissions_resource_pick_placeholder')}
+                    options={[
+                      { value: '*', label: t('permissions_all_resources_tag') },
+                      { value: selectedParentId, label: t('permissions_all_under_parent') },
+                      ...catalogChildOptions,
+                    ]}
+                    optionFilterProp="label"
+                    maxTagCount={3}
+                  />
+                </Form.Item>
+              )}
+            </>
+          )}
+          {/* 平铺选择：非层级资源类型 */}
+          {!isHierarchical && (
+            <Form.Item
+              name="resource_id"
+              label={t('permissions_resource_id')}
+              extra={t('permissions_resource_multi_placeholder')}
+              tooltip={t('permissions_resource_multi_hint')}
+            >
+              <Select
+                mode="multiple"
+                showSearch
+                allowClear
+                loading={resourceIdsLoading}
+                placeholder={t('permissions_resource_pick_placeholder')}
+                options={[
+                  { value: '*', label: t('permissions_all_resources_tag') },
+                  ...resourceIdOptions,
+                ]}
+                optionFilterProp="label"
+                maxTagCount={3}
+              />
+            </Form.Item>
+          )}
           <Form.Item
             name="action"
             label={t('permissions_action')}

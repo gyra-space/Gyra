@@ -168,6 +168,7 @@ class SQLGuard:
         session_id: Optional[str] = None,
         agent_name: Optional[str] = None,
         context: Optional[Dict] = None,
+        permission_provider: Optional[PermissionProvider] = None,
     ) -> SQLCheckResult:
         """Check SQL against all registered rules.
 
@@ -180,6 +181,9 @@ class SQLGuard:
             session_id: The conversation session ID.
             agent_name: The agent executing the SQL.
             context: Additional context dict.
+            permission_provider: Optional per-call PermissionProvider override.
+                When provided, temporarily replaces the provider on all
+                permission-based rules for this check only.
 
         Returns:
             SQLCheckResult indicating whether the SQL is allowed.
@@ -207,6 +211,10 @@ class SQLGuard:
             agent_name=agent_name,
             extra=context or {},
         )
+
+        # Per-call permission provider override
+        if permission_provider is not None:
+            self.set_permission_provider(permission_provider)
 
         # Run all rules
         blocked_rules = []

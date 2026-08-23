@@ -167,6 +167,17 @@ class DbTool(ToolBase):
         agent = getattr(context, "agent", None) if context is not None else None
         if agent is not None:
             v1_kwargs["agent"] = agent
+        # 透传用户上下文，供 RBAC 表级权限检查使用
+        if context is not None:
+            # ToolContext.set_resource("user_request", ...) 存到 _user_request
+            # 同时 config dict 也有副本，两种路径都尝试
+            user_req = (
+                getattr(context, "_user_request", None)
+                or getattr(context, "user_request", None)
+                or (context.config.get("user_request") if hasattr(context, "config") else None)
+            )
+            if user_req is not None:
+                v1_kwargs["user_request"] = user_req
 
         try:
             if action == "list_tables":

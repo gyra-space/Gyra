@@ -2,6 +2,7 @@ import { buildSceneAgentSendData, type SceneAgentSendPayload } from '../scene-ag
 import { dedupOptimisticUser } from '../dedup-optimistic-user';
 import type { WorkspaceExecutionStep } from '../agent-workspace-types';
 import { parseSceneAgentWorkspaceString } from '../parse-scene-agent-workspace-string';
+import { buildSkillLoadedExecutionSteps } from '../use-scene-agent-chat';
 
 describe('buildSceneAgentSendData', () => {
   test('text + resources + model 构造多模态 user_input 与 chat_in_params', () => {
@@ -218,5 +219,38 @@ describe('dedupOptimisticUser', () => {
       { id: 'user-msg-2', type: 'user', title: '我', status: 'done', output: '帮我看看这周的数据情况', ts: '2026-08-22T09:05:10' },
     ];
     expect(dedupOptimisticUser(exec).map(e => e.id)).toEqual(['user-msg-1', 'user-msg-2']);
+  });
+});
+
+
+describe('buildSkillLoadedExecutionSteps', () => {
+  const xml = (name: string) =>
+    `<skill_content name="${name}">\n# 指令\n正文内容\n</skill_content>`;
+
+  test('XML 列表转 skill_loaded 步骤:name 从 XML 属性解析,透传完整 XML', () => {
+    const steps = buildSkillLoadedExecutionSteps([xml('data-analysis'), xml('docx')]);
+    expect(steps).toHaveLength(2);
+    expect(steps[0]).toMatchObject({
+      type: 'skill_loaded',
+      title: 'data-analysis',
+      status: 'done',
+      action: 'preload',
+    });
+    expect(steps[0].skill_xml).toContain('data-analysis');
+    expect(steps[0].id).toBe('skill-loaded-data-analysis');
+  });
+
+  test('同名技能去重(与已有标题比较)', () => {
+    const steps = buildSkillLoadedExecutionSteps(
+      [xml('data-analysis'), xml('data-analysis')],
+      ['data-analysis'],
+    );
+    expect(steps).toHaveLength(0);
+  });
+
+  test('非法输入跳过(空串/非字符串)', () => {
+    const steps = buildSkillLoadedExecutionSteps(['', 'x' as unknown as string]);
+    expect(steps).toHaveLength(1); // 仅 'x' 无 name 属性 -> 默认名 Skill
+    expect(steps[0].title).toBe('Skill');
   });
 });

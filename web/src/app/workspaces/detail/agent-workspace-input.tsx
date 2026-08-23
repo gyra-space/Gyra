@@ -10,9 +10,7 @@ import {
   DownOutlined,
   FileOutlined,
   LoadingOutlined,
-  PlusOutlined,
   ReloadOutlined,
-  RocketOutlined,
   SafetyOutlined,
 } from '@ant-design/icons';
 import classNames from 'classnames';
@@ -34,6 +32,7 @@ import {
   type PlusMenuMcpRef,
   type PlusMenuPermission,
 } from '@/components/chat/input/plus-menu';
+import { SlashMenu, type SlashMenuHandle, type SessionCommandItem, type SessionCommandAction } from '@/components/chat/input/slash-menu';
 import { VoiceInputButton } from '@/components/chat/input/voice-input-button';
 import {
   MediaParamsButton,
@@ -355,7 +354,7 @@ interface UploadingFile { id: string; file: File; status: 'uploading' | 'success
 
 interface AgentWorkspaceInputProps {
   convUid?: string;
-  onSend: (payload: { text: string; resources?: ResourceItem[]; model?: string; playbookCommand?: PlaybookCommand; skills?: SkillRef[]; mcps?: PlusMenuMcpRef[]; permission?: string; media?: MediaParams }) => void;
+  onSend: (payload: { text: string; resources?: ResourceItem[]; model?: string; playbookCommand?: PlaybookCommand; skills?: SkillRef[]; mcps?: PlusMenuMcpRef[]; permission?: string; media?: MediaParams; forceCompress?: boolean }) => void;
   loading?: boolean;
   /** 运行中且无新内容时,按钮转为"进行中·可停止"状态,点击终止当前生成 */
   onStop?: () => void;
@@ -372,12 +371,10 @@ interface AgentWorkspaceInputProps {
   usageMetrics?: UsageMetrics | null;
   /** 当前 app 信息（用于识别多媒体 Agent 的 capability/模型池；场景空间可 spawn 多媒体子 Agent） */
   appInfo?: any;
-  /** 简洁模式:隐藏剧本入口(+ 菜单项与 / 命令),保留技能/附件/模型 */
-  simple?: boolean;
 }
 
 export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWorkspaceInputProps>(
-  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, simple }, ref) {
+  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo }, ref) {
     const [text, setText] = useState('');
     const [resources, setResources] = useState<ResourceItem[]>([]);
     const [uploading, setUploading] = useState<UploadingFile[]>([]);
@@ -391,11 +388,16 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const [selectedMcps, setSelectedMcps] = useState<PlusMenuMcpRef[]>([]);
     // 权限等级(默认 plan):对齐后端 agent_context.extra["permission_mode"] 的 5 级权限链
     const [permission, setPermission] = useState<string>('plan');
+    // 规划模式(/规划模式 命令触发):开启后本回合按 plan 档发送,chip 展示在输入框上方
+    const [planMode, setPlanMode] = useState(false);
+    // 压缩模式(/压缩上下文 命令触发):下一条发送携带 forceCompress,本轮推理前强制压缩
+    const [compactMode, setCompactMode] = useState(false);
     const [isFocus, setIsFocus] = useState(false);
     // 上下文用量详情抽屉开关
     const [usageDrawerOpen, setUsageDrawerOpen] = useState(false);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const slashMenuRef = useRef<SlashMenuHandle>(null);
 
     useImperativeHandle(ref, () => ({
       focus: () => textareaRef.current?.focus(),
@@ -545,8 +547,11 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
         playbookCommand: playbookCommand ?? undefined,
         skills: selectedSkills.length ? selectedSkills : undefined,
         mcps: selectedMcps.length ? selectedMcps : undefined,
-        permission,
+        // 规划模式开启时强制 plan 档(消费侧写 ext_info.permission_mode)
+        permission: planMode ? 'plan' : permission,
         media: Object.keys(mediaParams).length ? mediaParams : undefined,
+        // 压缩模式开启时携带 forceCompress,本轮推理前强制压缩
+        forceCompress: compactMode || undefined,
       });
       setText('');
       setResources([]);
@@ -554,9 +559,13 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       setSelectedSkills([]);
       setSelectedMcps([]);
       setShowPlaybook(false);
+      setPlanMode(false);
+      setCompactMode(false);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // / 命令菜单打开时,方向键/回车/Esc 优先交给菜单消费
+      if (showPlaybook && slashMenuRef.current?.handleKey(e)) return;
       if (e.key === 'Enter' && !e.shiftKey) {
         // 输入法组词阶段的回车(选词/上屏)只作用于输入法,不触发提交,
         // 也不做 preventDefault,避免干扰候选词选择
@@ -569,32 +578,19 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const v = e.target.value;
       setText(v);
-      // 只有输入框"最开始"的 / 才有命令效果：文本中间的 / 不触发。
-      // 已选了剧本 chip 后不再触发（单选，要换剧本先移除 chip）。
-      // 简洁模式不提供剧本入口,/ 仅作为普通字符。
-      const isSlashCommand = !simple && v.startsWith('/') && !playbookCommand;
-      setShowPlaybook(isSlashCommand && (playbooks?.length ?? 0) > 0);
+      // 只有输入框"最开始"的 / 才唤起统一命令菜单:文本中间的 / 不触发。
+      // 已选了剧本 chip 后不再触发(单选,要换剧本先移除 chip)。
+      // 简洁/运维模式行为一致,/ 都是命令菜单入口。
+      setShowPlaybook(v.startsWith('/') && !playbookCommand);
     };
 
     const pickPlaybook = (pb: { playbook_id: number; playbook_name: string }) => {
       setPlaybookCommand({ playbook_id: pb.playbook_id, playbook_name: pb.playbook_name });
-      // 清掉触发用的 "/"（用户在开头打的那个），话题由用户随后输入。
-      setText(text.replace(/^\/\s*/, ''));
+      // 清掉触发用的 "/" 及过滤词(用户在开头打的),话题由用户随后输入。
+      setText(text.replace(/^\/\S*\s*/, ''));
       setShowPlaybook(false);
       textareaRef.current?.focus();
     };
-
-    // `/` at the very start of text pops the playbook list; the text the user
-    // types after picking a chip is the task topic (sent as `text`). Show all
-    // playbooks while the picker is open (no name filter).
-    const visiblePlaybooks = (playbooks ?? []);
-
-    // + 菜单「命令」面板:剧本以 / 命令形式快捷唤起
-    const commandItems = visiblePlaybooks.map((pb) => ({
-      command: pb.playbook_name,
-      name: pb.playbook_name,
-      description: '以该剧本发起任务',
-    }));
 
     const toggleSkill = (skill: SkillRef) => {
       setSelectedSkills((prev) =>
@@ -604,24 +600,62 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       );
     };
 
-    const playbookPopover = (
-      <div className="w-72 max-h-72 overflow-y-auto py-1">
-        {visiblePlaybooks.length === 0 && (
-          <div className="px-3 py-2 text-xs text-gray-400">暂无剧本</div>
-        )}
-        {visiblePlaybooks.map(pb => (
-          <div
-            key={pb.playbook_id}
-            className="flex items-center gap-2 px-3 py-2 cursor-pointer rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors group"
-            onClick={() => pickPlaybook(pb)}
-            role="button"
-          >
-            <PlusOutlined className="text-xs text-gray-400 group-hover:text-indigo-500" />
-            <span className="text-sm text-gray-700 dark:text-gray-300 group-hover:text-indigo-600">{pb.playbook_name}</span>
-          </div>
-        ))}
-      </div>
-    );
+    const toggleMcp = (mcp: PlusMenuMcpRef) => {
+      const key = String(mcp.id || mcp.uuid || mcp.name);
+      setSelectedMcps((prev) =>
+        prev.some((m) => String(m.id || m.uuid || m.name) === key)
+          ? prev.filter((m) => String(m.id || m.uuid || m.name) !== key)
+          : [...prev, mcp],
+      );
+    };
+
+    // 会话命令数据源:/ 菜单「命令」组。与剧本/技能/MCP 的"资源引用"不同,命令选中即执行或切换模式
+    const sessionCommands: SessionCommandItem[] = [
+      { command: '压缩上下文', name: '压缩上下文', description: '压缩当前会话上下文,释放上下文空间', action: 'compact' },
+      { command: '清理会话', name: '清理会话', description: '开启新会话,清空当前上下文', action: 'clear' },
+      { command: '规划模式', name: '规划模式', description: '本回合使用规划能力(plan 权限档)', action: 'plan' },
+    ];
+
+    // 统一 / 菜单选中:剧本 → 剧本 chip;技能/MCP → 对应 chip;命令 → 会话行为
+    const handleSlashSelect = (sel: import('@/components/chat/input/slash-menu').SlashMenuSelection) => {
+      if (sel.type === 'playbook' && sel.playbook) {
+        pickPlaybook(sel.playbook);
+        return;
+      }
+      if (sel.type === 'command' && sel.command) {
+        const action: SessionCommandAction = sel.command.action;
+        // 清掉触发用的 / 及过滤词
+        setText(text.replace(/^\/\S*\s*/, ''));
+        if (action === 'clear') {
+          // 即时执行:清理会话(复用新建干净会话逻辑)
+          onClearContext?.();
+        } else if (action === 'plan') {
+          // 模式 chip:规划模式开启,本回合按 plan 档发送
+          setPlanMode(true);
+          textareaRef.current?.focus();
+        } else if (action === 'compact') {
+          // 压缩模式:开启 chip,下一条发送携带 forceCompress,本轮推理前强制压缩
+          setCompactMode(true);
+          textareaRef.current?.focus();
+        }
+        return;
+      }
+      if (sel.type === 'skill' && sel.skill) {
+        toggleSkill(sel.skill);
+      } else if (sel.type === 'mcp' && sel.mcp) {
+        toggleMcp(sel.mcp);
+      }
+      // 技能/MCP 选中后清掉触发用的 / 及过滤词,保留焦点
+      setText(text.replace(/^\/\S*\s*/, ''));
+      textareaRef.current?.focus();
+    };
+
+    // `/` at the very start of text opens the unified slash menu; the text the user
+    // types after picking a chip is the task topic (sent as `text`).
+    const visiblePlaybooks = (playbooks ?? []);
+
+    // / 触发词:开头 / 后的文本作为菜单搜索词
+    const slashQuery = showPlaybook && text.startsWith('/') ? text.slice(1) : '';
 
     return (
       <div className="w-full relative">
@@ -738,7 +772,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
               </span>
             </div>
           )}
-          {/* SECTION 1.5 — selected playbook command chip (single, removable) */}
+          {/* SECTION 1.5 — selected playbook command chip (single, removable),前缀 / 标识剧本命令 */}
           {playbookCommand && (
             <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
               <SelectionChip
@@ -750,13 +784,14 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
               />
             </div>
           )}
-          {/* SECTION 1.6 — selected skill chips (multi, removable) */}
+          {/* SECTION 1.6 — selected skill chips (multi, removable),前缀 技能 标识 */}
           {selectedSkills.length > 0 && (
             <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
               {selectedSkills.map((skill) => (
                 <SelectionChip
                   key={skill.skill_code}
                   theme="violet"
+                  prefix="技能"
                   icon={skill.icon
                     ? <img src={skill.icon} alt="" className="h-3.5 w-3.5 rounded object-cover" />
                     : undefined}
@@ -767,7 +802,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
               ))}
             </div>
           )}
-          {/* SECTION 1.7 — selected MCP chips (multi, removable) */}
+          {/* SECTION 1.7 — selected MCP chips (multi, removable),前缀 MCP 标识 */}
           {selectedMcps.length > 0 && (
             <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
               {selectedMcps.map((mcp) => {
@@ -776,6 +811,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   <SelectionChip
                     key={key}
                     theme="emerald"
+                    prefix="MCP"
                     icon={mcp.icon
                       ? <img src={mcp.icon} alt="" className="h-3.5 w-3.5 rounded object-cover" />
                       : undefined}
@@ -788,14 +824,45 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
             </div>
           )}
 
+          {/* SECTION 1.8 — plan mode chip(/规划模式 命令触发,可移除) */}
+          {planMode && (
+            <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
+              <SelectionChip
+                theme="cyan"
+                prefix="规划"
+                label="本回合使用规划能力"
+                onRemove={() => setPlanMode(false)}
+                removeTitle="退出规划模式"
+              />
+            </div>
+          )}
+          {/* SECTION 1.9 — compact mode chip(/压缩上下文 命令触发,可移除) */}
+          {compactMode && (
+            <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
+              <SelectionChip
+                theme="amber"
+                prefix="压缩"
+                label="本回合发送前压缩上下文"
+                onRemove={() => setCompactMode(false)}
+                removeTitle="取消压缩"
+              />
+            </div>
+          )}
+
           {/* SECTION 2 — textarea (borderless, card is the only border) */}
           <div className="relative">
-            <Popover
+            <SlashMenu
+              ref={slashMenuRef}
               open={showPlaybook}
-              content={playbookPopover}
-              placement="topLeft"
-              trigger={[]}
-              overlayClassName={popoverOverlay}
+              query={slashQuery}
+              playbooks={visiblePlaybooks}
+              skills={allSkills}
+              mcps={allMcps}
+              mcpsLoading={mcpLoading}
+              commands={sessionCommands}
+              onSelect={handleSlashSelect}
+              onAddFile={() => fileInputRef.current?.click()}
+              onClose={() => setShowPlaybook(false)}
             >
               <div className={classNames('p-4', onClearContext && 'pr-12')}>
                 <Input.TextArea
@@ -815,13 +882,13 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                       }
                     }
                   }}
-                  placeholder={simple ? '输入指令给 Agent…(+ 添加文件/技能/MCP)' : '输入指令给 Agent…(+ 添加文件/剧本/技能/MCP,/ 快捷选剧本)'}
+                  placeholder="输入指令给 Agent…(/ 选择剧本/技能/MCP/命令,+ 添加文件)"
                   className="!text-sm !bg-transparent !border-0 !resize-none placeholder:!text-gray-400 !text-gray-800 dark:!text-gray-200 !shadow-none !p-0 !min-h-[60px]"
                   autoSize={{ minRows: 2, maxRows: 8 }}
                   disabled={inputDisabled}
                 />
               </div>
-            </Popover>
+            </SlashMenu>
 
             {/* 清理上下文:浮动在输入区右上角,半透明毛玻璃圆形按钮,hover 点亮 */}
             {onClearContext && (
@@ -840,10 +907,10 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
           {/* SECTION 3 — footer toolbar: left tools / right send */}
           <div className="flex items-center justify-between gap-2 px-3 pb-3 min-w-0">
             <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-visible">
-              {/* + 菜单:添加文件 / 剧本 / 技能 / MCP / 命令 */}
+              {/* + 菜单:添加文件 / 剧本 / 技能 / MCP / 命令(与 / 菜单同一套数据与选中结果) */}
               <PlusMenu
                 onAddFile={() => fileInputRef.current?.click()}
-                playbooks={simple ? undefined : visiblePlaybooks}
+                playbooks={visiblePlaybooks}
                 selectedPlaybook={playbookCommand}
                 onPlaybookChange={(pb) => { if (pb) pickPlaybook(pb); }}
                 skills={allSkills}
@@ -853,11 +920,6 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                 mcpsLoading={mcpLoading}
                 selectedMcps={selectedMcps}
                 onMcpsChange={setSelectedMcps}
-                commands={simple ? undefined : commandItems}
-                onCommandSelect={(cmd) => {
-                  const pb = visiblePlaybooks.find((p) => p.playbook_name === cmd.command);
-                  if (pb) pickPlaybook(pb);
-                }}
                 disabled={!convUid || inputDisabled || loading}
               />
               <input

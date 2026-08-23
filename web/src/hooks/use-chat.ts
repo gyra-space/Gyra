@@ -17,7 +17,8 @@ export type WorkspaceEventType =
   | 'delivery_sent'
   | 'asset_referenced'
   | 'inbox_created'
-  | 'inbox_resolved';
+  | 'inbox_resolved'
+  | 'loaded_skills';
 
 export interface WorkspaceEvent {
   type: WorkspaceEventType;
@@ -155,7 +156,8 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
                   vis.type === 'delivery_sent' ||
                   vis.type === 'asset_referenced' ||
                   vis.type === 'inbox_created' ||
-                  vis.type === 'inbox_resolved'
+                  vis.type === 'inbox_resolved' ||
+                  vis.type === 'loaded_skills'
                 ) {
                   onWorkspaceEvent?.(vis as WorkspaceEvent);
                   return;

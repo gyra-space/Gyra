@@ -1200,3 +1200,64 @@ async def delete_grant(
         raise HTTPException(status_code=404, detail="Grant not found")
     _svc.invalidate_cache(target["user_id"])
     return {"success": True}
+
+
+# ========== Resource Catalog（可选资源列表） ==========
+@router.get("/resources/types")
+async def list_resource_catalog_types(
+    _user: UserRequest = Depends(get_user_from_headers),
+):
+    """返回支持资源目录选择的资源类型列表。"""
+    from gyra_serve.permissions.catalog_registry import ResourceCatalogRegistry
+
+    return {
+        "success": True,
+        "data": {
+            "types": ResourceCatalogRegistry.list_types(),
+        },
+    }
+
+
+@router.get("/resources/catalog")
+async def list_resource_catalog(
+    resource_type: str = Query(..., description="资源类型，如 database/agent/tool"),
+    parent_id: Optional[str] = Query(None, description="父级资源 ID（级联选择用）"),
+    keyword: Optional[str] = Query(None, description="搜索关键词"),
+    limit: int = Query(100, ge=1, le=500, description="返回数量上限"),
+    _user: UserRequest = Depends(get_user_from_headers),
+):
+    """统一资源目录查询：按资源类型返回可选资源列表。
+
+    前端 RBAC 配置界面调用此接口获取可选资源，不再各自对接业务模块 API。
+    支持级联选择（如 database 类型先选数据源再选表）。
+    """
+    from gyra_serve.permissions.catalog_registry import ResourceCatalogRegistry
+
+    provider = ResourceCatalogRegistry.get(resource_type)
+    if not provider:
+        return {
+            "success": True,
+            "data": {
+                "items": [],
+                "supports_hierarchy": False,
+                "message": f"Resource type '{resource_type}' has no catalog provider",
+            },
+        }
+
+    items = provider.list_items(parent_id=parent_id, keyword=keyword, limit=limit)
+    return {
+        "success": True,
+        "data": {
+            "items": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "parent_id": item.parent_id,
+                    "description": item.description,
+                    "metadata": item.metadata,
+                }
+                for item in items
+            ],
+            "supports_hierarchy": provider.supports_hierarchy(),
+        },
+    }

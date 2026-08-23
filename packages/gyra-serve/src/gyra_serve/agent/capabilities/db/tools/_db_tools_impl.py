@@ -580,6 +580,44 @@ async def execute_sql(
             except Exception as e:
                 logger.debug(f"[execute_sql] resolve datasource_id failed: {e}")
 
+        # RBAC 表级权限检查（permissions 插件开启且用户上下文可用时生效）
+        user_request = kwargs.get("user_request")
+        if (
+            user_request is not None
+            and getattr(user_request, "permissions", None) is not None
+            and ds_id
+        ):
+            try:
+                from gyra_serve.sql_guard.guard import get_sql_guard
+                from gyra_serve.sql_guard.rbac_provider import RbacPermissionProvider
+
+                provider = RbacPermissionProvider(user=user_request)
+                guard = get_sql_guard()
+                check_result = guard.check(
+                    sql,
+                    user_id=user_request.user_id,
+                    datasource_id=ds_id,
+                    db_name=db_name,
+                    permission_provider=provider,
+                )
+                if not check_result.allowed:
+                    blocked = ", ".join(check_result.blocked_rules)
+                    logger.warning(
+                        f"[execute_sql] RBAC denied: user={user_request.user_id} "
+                        f"db={db_name} ds={ds_id} rules={blocked}"
+                    )
+                    return _format_error(
+                        f"权限不足，SQL 已被拦截。\n"
+                        f"触发规则: {blocked}\n"
+                        f"用户 '{user_request.user_id}' 对数据库 '{db_name}' "
+                        f"中的部分表没有 {sql_type} 权限。\n"
+                        f"请联系管理员在 RBAC 中配置 database.read/manage 权限。",
+                        db_type="unknown",
+                        sql_type=sql_type,
+                    )
+            except Exception as e:
+                logger.warning(f"[execute_sql] RBAC check skipped: {e}")
+
         # ECP 托管直连门禁(硬):agent 绑定 ECP 且目标库被其 workspace 托管时,
         # 拒绝直连并引导走 ECP 语义层工具(降级使用纪律的执行点;prompt 软约束
         # 已被实测证伪)。fail-open:异常/无 ECP 绑定/库未托管时放行。

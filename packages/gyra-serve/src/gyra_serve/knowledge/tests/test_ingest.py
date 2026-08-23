@@ -145,6 +145,88 @@ async def test_ingest_txt_creates_verbat_and_wiki_doc(vault, space, stub_llm, tm
     assert wiki.frontmatter.get("source_verbat") == finished.verbat_ids[0]
     assert "Test Source" in wiki.content or "Test Source" in wiki.title
 
+    # Step 4: index.md was rebuilt and includes the new page (llm-wiki catalog)
+    index_md = await vault.read_wiki_file("index.md")
+    stem = wiki_path[:-3] if wiki_path.endswith(".md") else wiki_path
+    assert f"[[{stem}]]" in index_md
+    assert "Test Source" in index_md
+
+    # Step 4: log.md got an ingest entry
+    log_md = await vault.read_wiki_file("log.md")
+    assert "ingest | Test Source" in log_md
+    assert f"path: {wiki_path}" in log_md
+
+    # index.md passes the index_drift lint rule (no missing entries)
+    issues = await vault.doc_lint()
+    drift = [i for i in issues if i.rule == "index_drift"]
+    assert drift == [], f"index drift: {[i.message for i in drift]}"
+
+
+@pytest.mark.asyncio
+async def test_ingest_registers_ecp_asset_for_ecp_space(space, tmp_path: Path, monkeypatch):
+    """ecp-<ws> / docs-<code> 空间 ingest 后自动登记 ECP document 资产。"""
+    from gyra_serve.knowledge.ingest import IngestOrchestrator
+
+    vault = LocalVaultFS(space_id=new_space_id(), root=tmp_path / "ks_ecp")
+    await vault.initialize()
+    try:
+        async def _stub(self, model, system_prompt, user_prompt, image_paths=None, **_kwargs):
+            return "---\ntype: source\ntitle: ECP Doc\n---\n\nbody\n"
+
+        monkeypatch.setattr(IngestOrchestrator, "_call_llm", _stub)
+
+        registered = []
+
+        class _FakeAssetRefDao:
+            def register(self, kind, ref_id, workspace_id, ref_meta=None):
+                registered.append((kind, ref_id, workspace_id, ref_meta))
+
+        monkeypatch.setattr(
+            "gyra_serve.ecp.models.models.AssetRefDao", _FakeAssetRefDao
+        )
+
+        orch = IngestOrchestrator(system_app=None)
+
+        f = tmp_path / "ecp_input.txt"
+        f.write_text("content for ecp asset registration", encoding="utf-8")
+
+        # docs-<code> 空间 → ECP workspace ecp_<code>
+        docs_space = Space(
+            id=vault.space_id, slug="docs-demo", name="docs",
+            default_agent_id=None, llm_model=None, multimodal_model=None,
+        )
+        job = await orch.ingest_file(
+            space=docs_space, vault=vault, file_path=f,
+            original_filename="ecp_input.txt",
+        )
+        finished = await _wait_for_job(orch, job.id)
+        assert finished.status == "done", f"job failed: {finished.error}"
+
+        assert len(registered) == 1
+        kind, ref_id, ws, meta = registered[0]
+        assert kind == "document"
+        assert ref_id.startswith("docs-demo:")
+        assert ws == "ecp_demo"
+        assert meta["name"] == "ECP Doc"
+
+        # 普通知识空间不登记(没有对应 ECP workspace)
+        registered.clear()
+        f2 = tmp_path / "plain_input.txt"
+        f2.write_text("content for plain space", encoding="utf-8")
+        plain_space = Space(
+            id=vault.space_id, slug="plain-space", name="plain",
+            default_agent_id=None, llm_model=None, multimodal_model=None,
+        )
+        job2 = await orch.ingest_file(
+            space=plain_space, vault=vault, file_path=f2,
+            original_filename="plain_input.txt",
+        )
+        finished2 = await _wait_for_job(orch, job2.id)
+        assert finished2.status == "done", f"job failed: {finished2.error}"
+        assert registered == []
+    finally:
+        await vault.close()
+
 
 @pytest.mark.asyncio
 async def test_ingest_deprecated_verbat_keeps_wiki_doc(vault, space, stub_llm, monkeypatch):

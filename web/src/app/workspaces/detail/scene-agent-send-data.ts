@@ -16,6 +16,9 @@ export interface SceneAgentSendPayload {
   /** 本次对话的 Agent 工具权限级别(plan/auto/manual),写入 ext_info.permission_mode,
    *  接入后端 5 级权限链(reader 只读 / 写工具按级别放行或 ASK) */
   permission?: string;
+  /** 主动触发上下文压缩(/压缩上下文 会话命令):写入 ext_info.force_compress,
+   *  后端在本轮推理前强制走历史摘要压缩(复用被动压缩逻辑) */
+  forceCompress?: boolean;
 }
 
 export interface SendDataOptions {
@@ -46,6 +49,12 @@ export interface SceneAgentSendData {
     task_id?: number;
     /** 显式命中的剧本:后端回合前路由据此预建会话内任务(in_session 同步执行) */
     playbook_id?: number;
+    /** 当前关注的产出物 id(隐式上下文) */
+    focus_artifact_id?: number;
+    /** 工具权限级别(plan/auto/manual),接入后端 5 级权限链 */
+    permission_mode?: string;
+    /** 主动触发上下文压缩:本轮推理前强制走历史摘要压缩 */
+    force_compress?: boolean;
   };
 }
 
@@ -58,7 +67,7 @@ export function buildSceneAgentSendData(
   options: SendDataOptions,
   convUid: string,
 ): SceneAgentSendData {
-  const { text, resources = [], model, playbookCommand, skills, mcps, media, permission } = payload;
+  const { text, resources = [], model, playbookCommand, skills, mcps, media, permission, forceCompress } = payload;
   const { workspaceId, taskId, focusArtifactId } = options;
   const trimmed = text.trim();
 
@@ -135,6 +144,8 @@ export function buildSceneAgentSendData(
       // 工具权限级别:写入 extra.permission_mode,接入 Agent 5 级权限链
       // (plan=只读放行/写 ASK, auto=全放行, manual=全部 ASK)
       ...(permission ? { permission_mode: permission } : {}),
+      // 主动触发上下文压缩:写入 extra.force_compress,后端本轮推理前强制摘要压缩
+      ...(forceCompress ? { force_compress: true } : {}),
     },
   };
 }

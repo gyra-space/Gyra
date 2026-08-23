@@ -32,6 +32,10 @@ from gyra.agent import (
 )
 from gyra.agent.core.agent_alias import AgentAliasManager, resolve_agent_name
 from gyra.agent.core.memory.gpts import GptsMessage
+from gyra_serve.agent.preload_skills import (
+    build_preloaded_skills_reminder,
+    collect_preloaded_skill_xmls,
+)
 from gyra.agent.core.plan.react.team_react_plan import AutoTeamContext
 from gyra.agent.core.sandbox_manager import SandboxManager
 from gyra.agent.core.step_state_guard import validate_session_transition
@@ -313,6 +317,7 @@ WORKSPACE_EVENT_TYPES = frozenset(
     {
         "task_created",
         "context_loaded",
+        "loaded_skills",
         "intervention_triggered",
         "artifact_produced",
         "delivery_sent",
@@ -1547,6 +1552,48 @@ class AgentChat(BaseComponent, ABC):
             _media_note = _build_media_chat_param_prompt(_media_param.param_value)
             if _media_note:
                 system_prompt_parts.append(_media_note)
+        # 预加载技能（场景空间）：剧本关联技能 / 手动选择技能（chat_in_params
+        # 中 sub_type='skill(gyra)'）的 SKILL.md 全文直接进上下文——等价于 LLM
+        # 已调用过 skill 工具，省掉那一轮工具调用。动态 skill 机制（目录 +
+        # skill() 工具）不受影响，大部分场景仍由 agent 自主选择加载。
+        # V1 引擎：append 进 system prompt（V1 system 本来就是动态组装）；
+        # V2 引擎（PIXIU）：system 是 KV-cache 静态前缀，改走 user-role
+        # <system-reminder> 注入——XML 放 ext_info["preloaded_skills"]，由
+        # _inner_chat 构建 agent 后 set 到 V2Agent。任何失败仅降级，不阻断对话。
+        try:
+            _preloaded_xmls = collect_preloaded_skill_xmls(
+                self.system_app, ext_info, chat_in_params,
+            )
+            if _preloaded_xmls:
+                system_prompt_parts.append(
+                    build_preloaded_skills_reminder(_preloaded_xmls)
+                )
+                ext_info["preloaded_skills"] = _preloaded_xmls
+                logger.info(
+                    f"[AgentChat] preloaded {len(_preloaded_xmls)} skill(s) "
+                    f"into conversation context (playbook/task/chat-in-params)"
+                )
+                # 通知前端:预加载的技能以 workspace 事件推送(<skill_content> XML 透传),
+                # 前端在 execution 区域渲染"已预加载技能"步骤,点开复用 SkillContentRenderer。
+                # 走 workspace_event_queue(stream 循环 drain 后 SSE yield),失败仅降级。
+                try:
+                    workspace_event_queue.put_nowait(
+                        (
+                            "loaded_skills",
+                            {
+                                "workspace_id": (
+                                    int(ext_info["workspace_id"])
+                                    if ext_info.get("workspace_id")
+                                    else None
+                                ),
+                                "skills": list(_preloaded_xmls),
+                            },
+                        )
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"[AgentChat] loaded_skills event push failed: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AgentChat] preload skills injection failed: {e}")
         if system_prompt_parts:
             ext_info["system_prompt"] = "\n\n".join(system_prompt_parts).strip()
 
@@ -3648,6 +3695,18 @@ class AgentChat(BaseComponent, ABC):
                 need_sandbox=True,
                 **ext_info,
             )
+
+            # V2 引擎（PIXIU）预加载技能接线：aggregation_chat 已把预加载
+            # 技能 XML 存入 ext_info["preloaded_skills"]（V1 引擎则已 append 进
+            # system_prompt）。V2 的 system 是 KV-cache 静态前缀，动态内容走
+            # user-role <system-reminder>，因此把清单 set 给 V2Agent，由其
+            # thinking() 透传进 input_ 由 default_thinking 注入。
+            try:
+                _pre_xmls = ext_info.get("preloaded_skills") or []
+                if _pre_xmls and hasattr(recipient, "set_preloaded_skills"):
+                    recipient.set_preloaded_skills(list(_pre_xmls))
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[AgentChat] v2 preloaded skills wiring failed: {e}")
 
             # 记忆检索入口预取：agent 构建完成到首次 LLM 调用之间还有
             # 引擎装配/prompt 组装一大段路，用 fire-and-forget 预取把

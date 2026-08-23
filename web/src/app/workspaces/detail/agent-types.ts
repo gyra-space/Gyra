@@ -2,6 +2,7 @@ export type AgentStepType =
   | 'task_created'
   | 'context_loaded'
   | 'tool_call'
+  | 'skill_loaded'
   | 'intervention_triggered'
   | 'artifact_produced'
   | 'delivery_sent'

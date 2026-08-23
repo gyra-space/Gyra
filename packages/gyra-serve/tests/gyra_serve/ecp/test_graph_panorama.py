@@ -284,6 +284,77 @@ class TestGraphView:
         targets = {n.id for n in kn_nodes}
         assert targets == {"kn:docs-ws1:doc:wiki_1", "kn:docs-ws1:verbat:v_x"}
 
+    def test_bare_entity_endpoint_maps_to_kn_entity_node(self):
+        """实体名等裸标识端点 → kn 实体节点(软知识语义层进全景图)。"""
+        import asyncio
+
+        from gyra_serve.ecp.service.service import Service as S
+
+        svc = S.__new__(S)
+        edge = SimpleNamespace(subject="doc:wiki_1", predicate="about",
+                               object="风控模型A")
+        sub = SimpleNamespace(nodes=[], edges=[edge], root=None)
+        vault = MagicMock()
+        vault.graph_query = MagicMock(return_value=_async_ret(sub))
+
+        async def get_vault(slug):
+            if slug == "docs-ws1":
+                return vault
+            raise KeyError(slug)
+
+        ks = MagicMock()
+        ks.get_vault = get_vault
+        svc._system_app = MagicMock()
+        svc._system_app.get_component.return_value = ks
+
+        kn_nodes, links = asyncio.run(
+            svc._knowledge_subgraph("ecp_ws1", {}, {})
+        )
+        by_id = {n.id: n for n in kn_nodes}
+        assert "kn:docs-ws1:entity:风控模型A" in by_id
+        ent = by_id["kn:docs-ws1:entity:风控模型A"]
+        assert ent.obj_type == "entity"
+        assert ent.node_kind == "kn"
+        assert [(l.source, l.target, l.edge_type) for l in links] == [
+            ("kn:docs-ws1:doc:wiki_1", "kn:docs-ws1:entity:风控模型A", "about")
+        ]
+
+    def test_isolated_nodes_included_in_panorama(self):
+        """孤立节点(不在任何边上的 doc/实体)也成为 kn 节点。"""
+        import asyncio
+
+        from gyra_serve.ecp.service.service import Service as S
+
+        svc = S.__new__(S)
+        # graph_query 返回孤立节点(无任何边)
+        sub = SimpleNamespace(
+            nodes=["doc:orphan_1", "verbat:v_lone", "孤立实体"],
+            edges=[], root=None,
+        )
+        vault = MagicMock()
+        vault.graph_query = MagicMock(return_value=_async_ret(sub))
+
+        async def get_vault(slug):
+            if slug == "docs-ws1":
+                return vault
+            raise KeyError(slug)
+
+        ks = MagicMock()
+        ks.get_vault = get_vault
+        svc._system_app = MagicMock()
+        svc._system_app.get_component.return_value = ks
+
+        kn_nodes, links = asyncio.run(
+            svc._knowledge_subgraph("ecp_ws1", {}, {})
+        )
+        ids = {n.id for n in kn_nodes}
+        assert ids == {
+            "kn:docs-ws1:doc:orphan_1",
+            "kn:docs-ws1:verbat:v_lone",
+            "kn:docs-ws1:entity:孤立实体",
+        }
+        assert links == []
+
 
 class _async_ret:
     """极简 awaitable,让 MagicMock 返回可 await 的值。"""

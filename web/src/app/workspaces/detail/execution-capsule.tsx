@@ -40,6 +40,7 @@ function tagCategory(step: WorkspaceExecutionStep): string {
   if (/(?:^|[^a-z0-9])(?:python|py)(?:[^a-z0-9]|$)/.test(key)) return 'python';
   if (/(?:^|[^a-z0-9])(?:write|edit|create|generate)(?:[^a-z0-9]|$)/.test(key)) return 'write';
   if (/(?:^|[^a-z0-9])(?:deliver|send)(?:[^a-z0-9]|$)/.test(key)) return 'deliver';
+  if (/(?:^|[^a-z0-9])(?:preload|loaded)(?:[^a-z0-9]|$)/.test(key)) return 'skill';
   if (/(?:^|[^a-z0-9])(?:skill|plugin)(?:[^a-z0-9]|$)/.test(key)) return 'skill';
   return 'default';
 }

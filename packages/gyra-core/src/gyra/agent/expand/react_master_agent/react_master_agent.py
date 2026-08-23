@@ -2305,11 +2305,17 @@ class ReActMasterAgent(ConversableAgent, Team):
         build_result = None  # BuildOutput（含 cleanup_hints）
 
         try:
+            # 主动触发压缩:前端 /压缩上下文 会话命令在发送时写 ext_info.force_compress,
+            # 经 AgentContext.extra 透传至此,本轮推理前强制走历史摘要压缩。消费后即清除,
+            # 避免同一 agent 实例后续轮次持续强制压缩。
+            _extra = getattr(self.agent_context, "extra", None) or {}
+            force_compress = bool(_extra.pop("force_compress", False))
             build_result = await self._compute_context_engine_messages(
                 conv_id=conv_id,
                 session_id=session_id,
                 context_window=context_window,
                 current_user_content=current_user_content,
+                force_compress=force_compress,
             )
             if build_result is not None:
                 all_conversation_messages = build_result.messages
@@ -4053,6 +4059,7 @@ class ReActMasterAgent(ConversableAgent, Team):
     async def _compute_context_engine_messages(
         self, conv_id: str, session_id: str, context_window: int,
         current_user_content: Optional[str] = None,
+        force_compress: bool = False,
     ):
         """统一上下文构建路径：从权威存储装配 → 分层 → 压缩 → 门禁。
 
@@ -4109,6 +4116,7 @@ class ReActMasterAgent(ConversableAgent, Team):
             context_window=context_window,
             subagent_goal_id=subagent_goal_id,
             current_user_content=current_user_content,
+            force_compress=force_compress,
         )
 
     async def _ensure_system_event_manager(self):

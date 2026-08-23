@@ -19,6 +19,7 @@ import { parseSceneAgentWorkspaceString } from './parse-scene-agent-workspace-st
 import { ExhibitHost, resolveAgentFilePreviewUrl } from './lobby-exhibit';
 import { statusLabel } from './scene-task-rail';
 import { EcpProposalDetail } from './ecp-proposal-detail';
+import SkillContentRenderer from '@/components/chat/chat-content-components/VisComponents/VisManusRightPanel/renderers/SkillContentRenderer';
 import { DataAssetsTab } from './assets/data-assets-tab';
 import TriggersTable from './tasks/triggers-table';
 import type { WorkspaceView } from './agent-workspace-types';
@@ -468,6 +469,24 @@ function DeliverableFilePreview({ file }: { file: WorkspaceDeliverableFile }) {
 function StepPreview({ step }: { step: any }) {
   const payload = step?.payload || {};
   const output = typeof payload.output === 'string' ? payload.output : null;
+  // 预加载技能步骤:复用 SkillContentRenderer 渲染 <skill_content>(技能头部 +
+  // SKILL.md 全文 + 文件预览),与 skill 工具调用结果的右侧展示体验一致。
+  if (step?.type === 'skill_loaded' && step?.skill_xml) {
+    return (
+      <div className="ws-preview">
+        <div className="ws-preview__head">
+          <span className="ws-preview__title">{step.title || '已预加载技能'}</span>
+          <Tag color="geekblue">已预加载</Tag>
+        </div>
+        <div className="ws-preview__skill">
+          <SkillContentRenderer
+            outputs={[{ output_type: 'text', content: step.skill_xml }]}
+            skillName={step.title}
+          />
+        </div>
+      </div>
+    );
+  }
   const actionInput = payload.action_input;
   // ask_user 交互:确认卡片已渲染在 Agent 空间 feed(可交互并能续跑对话),
   // 此处避免再渲染一个无 ChatContentContext 的失效 VisConfirmCard,改为只读提示。

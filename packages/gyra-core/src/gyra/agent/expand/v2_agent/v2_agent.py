@@ -284,6 +284,17 @@ class V2Agent(ReActMasterAgent):
         self._v2_db_catalog_consumer = DbCatalogConsumer(provider=_provider)
         return self._v2_db_catalog_consumer
 
+    def set_preloaded_skills(self, xmls: List[str]) -> None:
+        """设置预加载技能 XML 列表（装配层调用，场景空间剧本关联/手动选择技能）。
+
+        内容为 ``<skill_content name="...">正文</skill_content>`` 列表（与
+        ``SkillTool`` 输出同格式，由 serve 层 preload_skills helper 生成）。
+        V2 引擎以 user-role ``<system-reminder>`` 注入（对齐 DSH，不污染
+        KV-cache 静态前缀），由 default_thinking 消费。未设置时行为不变
+        （动态 skill 机制照旧）。
+        """
+        self._v2_preloaded_skills = list(xmls or [])
+
     def subscribe_step_event(
         self,
         callback,
@@ -546,6 +557,13 @@ class V2Agent(ReActMasterAgent):
                 context_manager=context_manager,
                 # think-time 注入：异步任务完成通知 + 用户补充输入（对齐 V1）
                 operational_reminders_provider=_operational_reminders,
+                # 预加载技能（场景空间剧本关联 / 手动选择）：装配层经
+                # set_preloaded_skills 注入 SKILL.md 全文 XML；default_thinking
+                # 以 user-role <system-reminder> 注入（对齐 DSH，不污染
+                # KV-cache 静态前缀）。未设置时 provider 返回 None，行为不变。
+                preloaded_skills_provider=(
+                    lambda: getattr(self, "_v2_preloaded_skills", None)
+                ),
             )
 
             # 2. acting_fn：复用现有工具注入（available_system_tools + resource）
@@ -588,10 +606,13 @@ class V2Agent(ReActMasterAgent):
             # 持住工厂引用：供 run_step/resume_step 构造 ToolContext 时注入 agent
             # （对齐 V1 tool_action 的 ``arguments["agent"] = agent``；否则 todowrite/
             # todoread 等统一框架工具拿不到 agent，报 "Todo 存储不可用"）。
+            agent_ctx = self.not_null_agent_context
+            user_req = (agent_ctx.extra or {}).get("user_request") if agent_ctx.extra else None
             self._v2_tool_context_factory = ToolContextFactory(
-                agent_id=self.not_null_agent_context.agent_app_code,
+                agent_id=agent_ctx.agent_app_code,
                 conv_id=self._v2_conv_id,
                 agent=self,
+                user_request=user_req,
             )
             acting_fn = make_default_acting_fn(
                 tool_resolver=tool_resolver,
@@ -817,6 +838,12 @@ class V2Agent(ReActMasterAgent):
         # 下轮 LLM 上下文经 ProjectorRegistry 全量投影恢复，不依赖 gpts_messages。
         await self._emit_dialog_message("user", user_prompt)
 
+        # 主动触发压缩:前端 /压缩上下文 会话命令经 ext_info.force_compress 透传至此,
+        # 在 turn 收尾时强制走一次历史摘要压缩(复用 Compactor 现有逻辑)。pop 消费一次,
+        # 避免同一 agent 实例后续轮次持续强制压缩。
+        _v2_extra = getattr(self.not_null_agent_context, "extra", None) or {}
+        _v2_force_compress = bool(_v2_extra.pop("force_compress", False))
+
         # 运行 run_loop，消费 StepEvent
         try:
             async for step_event in runtime.stream(
@@ -846,6 +873,23 @@ class V2Agent(ReActMasterAgent):
 
         # V2 单源：最终答案写入事件日志（assistant/message 事件）
         await self._emit_dialog_message("assistant", self._v2_final_answer)
+
+        # 主动触发压缩:turn 收尾时强制走一次历史摘要压缩(复用 Compactor)。
+        # 与被动压缩(post_step 压力/周期触发)走同一套 Compactor.run 逻辑。
+        if _v2_force_compress:
+            try:
+                _cm = getattr(runtime, "_context_manager", None)
+                if _cm is not None:
+                    _compactor = _cm._ensure_compactor(
+                        step_id=f"{self.not_null_agent_context.agent_app_code}-{conv_id}-manual",
+                        agent_id=self.not_null_agent_context.agent_app_code,
+                    )
+                    if _compactor is not None:
+                        await _compactor.run(force=True)
+                        logger.info("[V2Agent] force_compress: 手动压缩完成")
+            except Exception:  # noqa: BLE001
+                # 压缩失败不阻断主流程
+                logger.warning("[V2Agent] force_compress 执行失败", exc_info=True)
 
         # token 占用环形图桥接：turn 收尾用 V2 TokenMeter 快照驱动 V1 展示
         await self._emit_v1_context_usage(runtime)

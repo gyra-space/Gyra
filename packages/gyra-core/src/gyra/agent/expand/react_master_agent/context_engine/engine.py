@@ -186,6 +186,9 @@ class ContextEngine:
         context_window: int,
         subagent_goal_id: Optional[str] = None,
         current_user_content: Optional[str] = None,
+        # 主动触发压缩:本轮推理前强制走历史摘要压缩(跳过阈值/防抖判断),
+        # 由前端 /压缩上下文 会话命令经 ext_info.force_compress 透传至此
+        force_compress: bool = False,
     ) -> BuildOutput:
         history_window = int(context_window * self.config.history_budget_ratio)
 
@@ -214,7 +217,9 @@ class ContextEngine:
         turns_since = self._turns_since_last(session_id, len(units))
 
         new_segment: Optional[CompressionSegment] = None
-        if self.compression.should_compress(total_tokens, history_window, turns_since):
+        # force_compress(主动指令) 跳过阈值/防抖,直接在当轮推理前对保留区做摘要压缩;
+        # 与被动触发走同一套 determine_boundary/compress/persist 历史摘要逻辑
+        if force_compress or self.compression.should_compress(total_tokens, history_window, turns_since):
             # 3a) 在当前保留区内确定新边界 -> 新压缩区 + 新保留区
             retain_budget = int(history_window * self.config.compression.retain_ratio)
             new_compress, new_retained = self.compression.determine_boundary(

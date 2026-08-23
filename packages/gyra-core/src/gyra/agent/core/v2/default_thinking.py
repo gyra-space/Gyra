@@ -18,7 +18,7 @@
 - TODO 列表不进 system（由 todowrite 工具自见），避免污染静态前缀。
 """
 import logging
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import Any, AsyncGenerator, Callable, List, Optional
 
 from gyra.agent.core.v2.thinking_chunk import (
     ThinkingChunk, TokenChunk, ToolCallChunk, UsageChunk,
@@ -30,6 +30,30 @@ logger = logging.getLogger(__name__)
 
 
 STATIC_ROOMS = ["profile", "preference"]
+
+# 预加载技能注入说明（对齐 SkillTool 的 skill_content 语义）
+_PRELOADED_SKILLS_NOTE = (
+    "以下技能指令已预加载到当前对话上下文，直接按其执行，无需再次调用 skill "
+    "工具加载指令；如需读取技能目录下的其它文件（references/scripts 等），"
+    "可调用 skill 工具。"
+)
+
+
+def _render_preloaded_skills_reminder(xmls: List[str]) -> str:
+    """把预加载技能 XML 列表包装为 user-role ``<system-reminder>``。
+
+    与 ``SkillCatalogConsumer`` 的 user-role 注入同范式（不污染 KV-cache
+    静态前缀）；内容格式与 ``SkillTool`` 输出一致（``<skill_content>``）。
+    """
+    if not xmls:
+        return ""
+    return (
+        "<system-reminder>\n<loaded_skills>\n"
+        + "\n".join(xmls)
+        + "\n</loaded_skills>\n\n"
+        + _PRELOADED_SKILLS_NOTE
+        + "\n</system-reminder>"
+    )
 
 
 def make_default_thinking_fn(
@@ -45,6 +69,7 @@ def make_default_thinking_fn(
     db_catalog_consumer: Optional[Any] = None,  # DbCatalogConsumer 实例（对齐 DSH tool-db）
     context_manager: Optional[Any] = None,  # ContextManager 实例（pre_step spill 超大工具结果）
     operational_reminders_provider: Optional[Callable] = None,  # async/sync: () -> Optional[str]
+    preloaded_skills_provider: Optional[Callable] = None,  # async/sync: () -> Optional[List[str]]（skill_content XML）
 ) -> Callable:
     """构造 ThinkingFn（V2 单源：LLM 上下文完全来自事件日志投影）。
 
@@ -150,6 +175,22 @@ def make_default_thinking_fn(
                     llm_messages.append(catalog_msg)
             except Exception:
                 logger.exception("[default_thinking] skill catalog consumer failed, skipping")
+        # 预加载技能（场景空间剧本关联 / 手动选择）：完整 SKILL.md 以 user-role
+        # <system-reminder> 注入（对齐 catalog/db consumer 范式，不污染 KV-cache
+        # 静态前缀）。内容格式与 SkillTool 输出一致，由装配层生成后经 provider
+        # 提供；None / 空 / 异常均跳过，不影响主流程。
+        if preloaded_skills_provider is not None:
+            try:
+                _pre_xmls = await _maybe_await(preloaded_skills_provider())
+                _pre_block = _render_preloaded_skills_reminder(
+                    list(_pre_xmls) if _pre_xmls else []
+                )
+                if _pre_block:
+                    llm_messages.append({"role": "user", "content": _pre_block})
+            except Exception:
+                logger.exception(
+                    "[default_thinking] preloaded skills provider failed, skipping"
+                )
         # 可用 DB 列表 reminder（对齐 DSH tool-db）——与 catalog_consumer 同位
         # 注入：首次 / DB 列表 digest 变化才发，避免拼 schema 进 system prompt。
         if db_catalog_consumer is not None:

@@ -373,7 +373,7 @@ export function SceneWorkspaceShell({
       setMobilePane('space');
       return;
     }
-    if (step.type === 'tool_call' || step.type === 'llm') {
+    if (step.type === 'tool_call' || step.type === 'llm' || step.type === 'skill_loaded') {
       setPreviewItem(step);
       setDetailContext('tool-result');
       setMobilePane('space');
@@ -621,8 +621,7 @@ export function SceneWorkspaceShell({
                     onStop={simpleChat.abort}
                     disabled={switchingTask}
                     readOnly={chatReadOnly}
-                    simple
-                    playbooks={[]}
+                    playbooks={playbooks || []}
                     focus={focus}
                     onClearFocus={() => setFocusDismissed(true)}
                     usageMetrics={simpleChat.usageMetrics}
@@ -684,8 +683,7 @@ export function SceneWorkspaceShell({
                     onStop={simpleChat.abort}
                     disabled={switchingTask}
                     readOnly={chatReadOnly}
-                    simple
-                    playbooks={[]}
+                    playbooks={playbooks || []}
                     focus={focus}
                     onClearFocus={() => setFocusDismissed(true)}
                     onClearContext={() => handleNewConversation('已清空上下文')}

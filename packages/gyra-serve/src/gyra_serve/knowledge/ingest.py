@@ -821,6 +821,24 @@ class IngestOrchestrator:
 
         doc_id = await vault.doc_create(path=path, content=markdown)
 
+        # Step 4 (schema.md ingest workflow): 程序化维护 index.md / log.md,
+        # 并把文档登记到 ECP 资产——全部由 ingest 流水线收尾时统一调度。
+        try:
+            doc_meta = next(
+                (d for d in await vault.doc_list(limit=10000) if d.id == doc_id),
+                None,
+            )
+            if doc_meta is not None:
+                await self._post_doc_created(
+                    space, vault, doc_id, doc_meta,
+                    verbat_id=verbat_id, job_id=job_id,
+                )
+        except Exception:
+            logger.exception(
+                "post-ingest bookkeeping failed for doc %s in space %s",
+                doc_id, space.slug,
+            )
+
         # Add L2 edge: doc → derived-from → verbat
         try:
             await vault.edge_add(
@@ -1005,7 +1023,7 @@ class IngestOrchestrator:
                 elif action == "supersede":
                     await self._curate_supersede(vault, ent, name, doc_id)
                 else:  # default: new
-                    await self._curate_new(vault, ent, name, doc_id)
+                    await self._curate_new(space, vault, ent, name, doc_id)
             except Exception:
                 logger.exception(
                     "Entity curation action=%s failed for '%s' in space %s",
@@ -1095,7 +1113,7 @@ class IngestOrchestrator:
         return f"entities/{base_slug}-{uuid.uuid4().hex[:6]}.md"
 
     async def _curate_new(
-        self, vault: Any, ent: dict, name: str, source_doc_id: DocId
+        self, space: Space, vault: Any, ent: dict, name: str, source_doc_id: DocId
     ) -> None:
         body = str(ent.get("new_body") or "").strip()
         if not body:
@@ -1104,6 +1122,19 @@ class IngestOrchestrator:
         path = await self._free_entity_path(vault, self._slugify_unicode(name))
         entity_doc_id = await vault.doc_create(path=path, content=body)
         await self._add_about_edge(vault, entity_doc_id, source_doc_id)
+        try:
+            doc_meta = next(
+                (d for d in await vault.doc_list(limit=10000)
+                 if d.id == entity_doc_id),
+                None,
+            )
+            if doc_meta is not None:
+                await self._post_doc_created(space, vault, entity_doc_id, doc_meta)
+        except Exception:
+            logger.exception(
+                "post-ingest bookkeeping failed for entity doc %s in space %s",
+                entity_doc_id, space.slug,
+            )
 
     async def _curate_merge(
         self, vault: Any, ent: dict, source_doc_id: DocId
@@ -1324,6 +1355,115 @@ class IngestOrchestrator:
             except Exception as e:
                 logger.warning("llm_call_log_add failed (%s): %s", task_name, e)
         return result_text
+
+    # ------------------------------------------------------------------
+    # Step 4: index.md / log.md maintenance + ECP asset registration
+    # ------------------------------------------------------------------
+    # index.md 按 llm-wiki 设计是全空间页面目录（LLM 查询时的第一站）。
+    # 这里不走 LLM 总结（贵且易漂移），而是用 doc_list 元数据程序化全量
+    # 重写——确定性、幂等，天然通过 lint 的 index_drift 规则。
+    # 实体页（curation 创建）同样走这条路，保证目录完整。
+
+    async def _post_doc_created(
+        self,
+        space: Space,
+        vault: Any,
+        doc_id: DocId,
+        doc_meta: Any,
+        verbat_id: Optional[VerbatId] = None,
+        job_id: Optional[str] = None,
+    ) -> None:
+        """Per-doc bookkeeping after a wiki/entity page is created."""
+        await self._update_index_md(vault)
+        await self._append_log_md(
+            vault, doc_meta, verbat_id=verbat_id, job_id=job_id
+        )
+        await self._register_ecp_asset(space, vault, doc_id, doc_meta)
+
+    async def _update_index_md(self, vault: Any) -> None:
+        """Rebuild wiki/index.md from doc_list metadata (grouped by type)."""
+        docs = await vault.doc_list(limit=10000)
+        groups: Dict[str, List[Any]] = {}
+        for d in docs:
+            groups.setdefault(getattr(d, "type", None) or "misc", []).append(d)
+
+        lines: List[str] = [
+            "# Index",
+            "",
+            "<!-- auto-maintained by the ingest pipeline; do not hand-edit -->",
+            "",
+        ]
+        for type_name in sorted(groups):
+            lines.append(f"## {type_name}")
+            lines.append("")
+            for d in sorted(groups[type_name], key=lambda x: x.path):
+                stem = d.path[:-3] if d.path.endswith(".md") else d.path
+                lines.append(f"- [[{stem}]] — {d.title or stem}")
+            lines.append("")
+
+        content = "\n".join(lines).rstrip() + "\n"
+        async with vault.write_lock():
+            await vault._wiki_write("index.md", content)
+
+    async def _append_log_md(
+        self,
+        vault: Any,
+        doc_meta: Any,
+        verbat_id: Optional[VerbatId],
+        job_id: Optional[str],
+    ) -> None:
+        """Append one ingest entry to wiki/log.md (llm-wiki convention)."""
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        parts = [f"## [{ts}] ingest | {doc_meta.title or doc_meta.path}"]
+        parts.append(f"- path: {doc_meta.path}")
+        if verbat_id:
+            parts.append(f"- source_verbat: {verbat_id}")
+        if job_id:
+            parts.append(f"- job: {job_id}")
+        entry = "\n".join(parts) + "\n"
+        try:
+            await vault.doc_append_log(entry)
+        except Exception as e:
+            logger.warning("log.md append failed (%s): %s", doc_meta.path, e)
+
+    async def _register_ecp_asset(
+        self,
+        space: Space,
+        vault: Any,
+        doc_id: DocId,
+        doc_meta: Any,
+    ) -> None:
+        """Register the new doc as an ECP ``document`` asset.
+
+        目标 ECP workspace 推导（与 Service._knowledge_subgraph 的聚合
+        逻辑互逆）:
+        - ``ecp-<ws>``   → ws          (ECP 软层空间)
+        - ``docs-<code>`` → ecp_<code> (场景空间上传入口)
+        其他 slug（普通知识空间）不登记——它没有对应的 ECP workspace。
+        登记是幂等的（AssetRefDao.register 按 (ws, kind, ref_id) upsert）。
+        """
+        slug = space.slug
+        if slug.startswith("ecp-"):
+            ecp_ws = slug[len("ecp-"):]
+        elif slug.startswith("docs-"):
+            ecp_ws = f"ecp_{slug[len('docs-'):]}"
+        else:
+            return
+        try:
+            from gyra_serve.ecp.models.models import AssetRefDao
+
+            AssetRefDao().register(
+                kind="document",
+                ref_id=f"{slug}:{doc_id}",
+                workspace_id=ecp_ws,
+                ref_meta={"name": doc_meta.title or doc_meta.path,
+                          "path": doc_meta.path},
+            )
+        except Exception:
+            logger.warning(
+                "ECP asset register failed for %s:%s (ws=%s)",
+                slug, doc_id, ecp_ws, exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Helpers

@@ -19,6 +19,36 @@ import {
 import type { WorkspaceExecutionStep, WorkspaceView } from './agent-workspace-types';
 import { parseSceneAgentWorkspaceString } from './parse-scene-agent-workspace-string';
 
+/**
+ * 把 loaded_skills 事件的 <skill_content> XML 列表转换为 skill_loaded 执行步骤。
+ * 纯函数(可单测):按技能名去重、从 XML 属性解析 name、透传完整 XML 供右侧渲染。
+ */
+export function buildSkillLoadedExecutionSteps(
+  xmls: string[],
+  existingTitles: string[] = [],
+): WorkspaceExecutionStep[] {
+  const existing = new Set(existingTitles);
+  const now = new Date().toISOString();
+  const steps: WorkspaceExecutionStep[] = [];
+  for (const xml of xmls) {
+    if (!xml || typeof xml !== 'string') continue;
+    const nameMatch = xml.match(/<skill_content name="([^"]*)"/);
+    const name = nameMatch ? nameMatch[1] : 'Skill';
+    if (existing.has(name)) continue;
+    existing.add(name);
+    steps.push({
+      id: `skill-loaded-${name}`,
+      type: 'skill_loaded',
+      title: name,
+      status: 'done',
+      ts: now,
+      action: 'preload',
+      skill_xml: xml,
+    });
+  }
+  return steps;
+}
+
 interface UseSceneAgentChatOptions {
   convUid?: string;
   appCode?: string;
@@ -237,6 +267,26 @@ export function useSceneAgentChat({
             ],
           };
         });
+      }
+      // 预加载技能事件:把本次对话预加载的 SKILL.md 以"已预加载技能"步骤注入
+      // execution 区域(工具步骤区),点开由 StepPreview 渲染 SkillContentRenderer。
+      if (event.type === 'loaded_skills' && Array.isArray(event.payload?.skills)) {
+        const xmls = (event.payload.skills as string[]).filter(
+          (x): x is string => typeof x === 'string' && x.length > 0,
+        );
+        if (xmls.length > 0) {
+          setWorkspaceView((prev) => {
+            const existingTitles = prev.execution
+              .filter((s) => s.type === 'skill_loaded')
+              .map((s) => s.title);
+            const added = buildSkillLoadedExecutionSteps(xmls, existingTitles);
+            if (added.length === 0) return prev;
+            return {
+              ...prev,
+              execution: [...prev.execution, ...added],
+            };
+          });
+        }
       }
       onWorkspaceEvent?.(event);
     },

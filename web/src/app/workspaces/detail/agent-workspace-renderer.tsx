@@ -35,7 +35,7 @@ import type {
 } from './agent-workspace-types';
 
 /** 进入执行胶囊归组的步骤类型(user/answer/task_created 等由 feed 直接渲染) */
-const CAPSULE_STEP_TYPES = new Set(['tool_call', 'thinking', 'artifact', 'delivery']);
+const CAPSULE_STEP_TYPES = new Set(['tool_call', 'thinking', 'artifact', 'delivery', 'skill_loaded']);
 
 /** 用户消息气泡(manus left panel 风格):气泡 + 用户头像(右侧) */
 function UserBubble({ text, avatarUrl, name }: { text: string; avatarUrl?: string | null; name?: string | null }) {

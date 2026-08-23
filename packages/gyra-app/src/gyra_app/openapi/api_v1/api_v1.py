@@ -617,6 +617,8 @@ async def chat_completions(
         }
     )
     dialogue.ext_info.update({"rpc_id": "0.1"})
+    # 透传用户上下文到 agent_context.extra，供执行层 RBAC 权限检查使用
+    dialogue.ext_info["user_request"] = user_token
 
     headers = {
         "Content-Type": "text/event-stream",
