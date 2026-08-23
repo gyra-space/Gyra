@@ -1978,6 +1978,9 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                             download_url=file_info.get("download_url") or preview_url,
                             object_path=file_info.get("object_path"),
                             render_type=self._determine_render_type(file_name, mime_type),
+                            # 交付文件的时间归属:优先文件元数据 created_at,缺失时用
+                            # 产出该文件的消息 created_at 兜底(多轮会话据此归属轮次)。
+                            ts=file_info.get("created_at") or getattr(msg, "created_at", None),
                         ))
 
         return task_files, deliverable_files
@@ -2057,6 +2060,7 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                         download_url=file_meta.download_url or preview_url,
                         object_path=file_meta.metadata.get("object_path") if file_meta.metadata else None,
                         render_type=self._determine_render_type(file_name, mime_type),
+                        ts=file_meta.created_at.isoformat() if hasattr(file_meta.created_at, 'isoformat') else str(file_meta.created_at),
                     ))
 
         except Exception as e:

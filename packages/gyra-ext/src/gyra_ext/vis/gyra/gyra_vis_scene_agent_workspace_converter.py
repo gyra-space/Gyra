@@ -272,6 +272,9 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                     "download_url": file_info.get("download_url") or preview_url,
                     "object_path": file_info.get("object_path"),
                     "render_type": self._determine_render_type(file_name, mime_type),
+                    # 归属轮次的时间标记:取产出该文件的工具动作 start_time,
+                    # 多轮会话里前端据此把交付文件贴到对应那一轮,而非堆在 feed 底部。
+                    "ts": self._ts_str(self._report_get(report, "start_time")),
                 })
                 existing_ids.add(file_id)
             # 全部产出文件入驻大厅(与步骤产出共用 file_<id> 命名,天然去重)
@@ -703,6 +706,7 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             "download_url": getattr(f, "download_url", None),
             "object_path": getattr(f, "object_path", None),
             "render_type": getattr(f, "render_type", "iframe"),
+            "ts": getattr(f, "ts", None),
         }
 
     # ------------------------------------------------------------------

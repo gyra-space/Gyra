@@ -194,7 +194,7 @@ def run_schema_migrations(
                     )
                 _record(conn, latest_name, "full_init")
                 conn.commit()
-                applied = {latest_name}
+                applied = {latest_name: ("full_init", None)}
                 last_applied = latest_name
             elif not applied:
                 if not getattr(cfg, "baseline_existing_db", True):
@@ -220,13 +220,32 @@ def run_schema_migrations(
                         "(no historical scripts executed)",
                         baseline_name,
                     )
-                    applied = set(_scripts_up_to(scripts, baseline_name))
+                    applied = {
+                        sname: ("baseline", None)
+                        for sname in _scripts_up_to(scripts, baseline_name)
+                    }
                     last_applied = baseline_name
 
             # ③ 统一执行基线/账本之后的增量差集
             for script in scripts:
-                if script.name in applied:
-                    continue
+                record = applied.get(script.name)
+                if record is not None:
+                    kind, applied_checksum = record
+                    # 同名脚本内容更新重放：仅 upgrade 类型且账本 checksum 有值、
+                    # 与当前不一致时重新执行（覆盖生成场景：版本不变、同一文件内容演进）。
+                    # checksum 为 NULL 的历史记录视为已应用（兼容旧账本，避免全量重放）。
+                    if (
+                        kind == "upgrade"
+                        and script.checksum
+                        and applied_checksum is not None
+                        and applied_checksum != script.checksum
+                    ):
+                        logger.info(
+                            "[SchemaMigrator] %s checksum changed, re-applying",
+                            script.name,
+                        )
+                    else:
+                        continue
                 # 屏障之前的脚本（含部分失败运行已记录 baseline 的场景）不再重放，
                 # 避免把历史脚本当增量执行而产生大量 Duplicate/语法错误。
                 if (
@@ -325,6 +344,7 @@ def _load_scripts(upgrades_dir: Path) -> List[UpgradeScript]:
                     version=_parse_version(header_match.group(1))
                     if header_match
                     else None,
+                    checksum=checksum_of(path),
                     path=path,
                 )
             )
@@ -414,23 +434,33 @@ def _ensure_ledger(conn, dialect: str) -> None:
     conn.commit()
 
 
-def _applied_script_names(conn) -> Set[str]:
+def _applied_script_names(conn) -> Dict[str, Tuple[str, Optional[str]]]:
+    """返回账本中已记录的脚本: {script_name: (kind, checksum)}."""
     try:
         rows = conn.execute(
-            text("SELECT script_name FROM gyra_schema_version")
+            text("SELECT script_name, kind, checksum FROM gyra_schema_version")
         ).fetchall()
-        return {r[0] for r in rows}
+        return {r[0]: (r[1], r[2]) for r in rows}
     except Exception:
-        return set()
+        return {}
 
 
 def _record(conn, script_name: str, kind: str, checksum: Optional[str] = None) -> None:
-    """记录脚本执行状态（幂等：已存在则跳过）。"""
+    """记录脚本执行状态（幂等：已存在则跳过；checksum 变化则更新）。"""
     exists = conn.execute(
-        text("SELECT 1 FROM gyra_schema_version WHERE script_name = :n"),
+        text("SELECT kind, checksum FROM gyra_schema_version WHERE script_name = :n"),
         {"n": script_name},
     ).first()
     if exists:
+        old_kind, old_checksum = exists
+        if old_kind != kind or (checksum and old_checksum != checksum):
+            conn.execute(
+                text(
+                    "UPDATE gyra_schema_version SET kind = :k, checksum = :c "
+                    "WHERE script_name = :n"
+                ),
+                {"k": kind, "c": checksum, "n": script_name},
+            )
         return
     conn.execute(
         text(

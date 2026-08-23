@@ -111,6 +111,8 @@ export interface WorkspaceDeliverableFile {
   render_type:
     | 'iframe' | 'markdown' | 'code' | 'image' | 'pdf' | 'text' | 'video' | 'archive'
     | 'audio' | 'table' | 'slides' | 'chart';
+  /** 产出时间戳(ISO 字符串):多轮会话里据此把交付文件归属到对应轮次 */
+  ts?: string | null;
 }
 
 /** 任务文件(运行期间产生的所有文件,含交付文件) */

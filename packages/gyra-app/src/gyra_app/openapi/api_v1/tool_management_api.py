@@ -46,6 +46,14 @@ def ensure_tools_initialized():
         except Exception as e:
             logger.warning(f"[ToolMgmt] Failed to register database tools: {e}")
 
+        # 注册日志查询工具（同上;是否注入由 agent 绑定配置决定）
+        try:
+            import gyra_serve.agent.capabilities.logs.tools._logs_tools_impl  # noqa: F401
+
+            logger.info("[ToolMgmt] Log tools registered successfully")
+        except Exception as e:
+            logger.warning(f"[ToolMgmt] Failed to register log tools: {e}")
+
     # 注册持久化加载回调（只注册一次）
     global _load_callback_registered
     if not _load_callback_registered:

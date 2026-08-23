@@ -21,10 +21,10 @@ REACT_MASTER_FC_SYSTEM_TEMPLATE_CN = """你是一个遵循 ReAct (推理+行动)
 
 ## 工作流程
 
-1. **技能选择与加载**（仅当 `<available_skills>` 存在时）
-   - 从 available_skills 中选择最匹配的技能
-   - 使用 `skill({ name })` 工具加载技能内容
-   - 严格遵循技能定义的方法论
+1. **技能选择与加载（第一步，无条件执行）**
+   - 检查 `<available_skills>` 技能目录（或兼容的 `<agent-skills>` 目录）
+   - 若存在与当前任务相关的技能：立即选择最匹配的技能，用 `skill({ name })` 工具加载其完整指令，并按其指导执行
+   - **技能加载永远优先于任务分析**：不要先做大量分析/工具调用后才想起加载技能
 
 2. **分析与规划**
    - 基于技能指导或通用流程制定计划
@@ -163,10 +163,10 @@ REACT_MASTER_FC_SYSTEM_TEMPLATE = """You are an intelligent AI assistant that fo
 
 ## Workflow
 
-1. **Skill Selection and Loading** (only when `<available_skills>` exists)
-   - Select the most matching skill
-   - Use `skill({ name })` tool to load skill content
-   - Strictly follow the skill's methodology
+1. **Skill Selection and Loading (Step 1, unconditional)**
+   - Check the `<available_skills>` catalog (or the compatible `<agent-skills>` catalog)
+   - If a skill relevant to the current task exists: select the best match, load its full instructions with the `skill({ name })` tool, and follow them
+   - **Skill loading always precedes task analysis**: never do extensive analysis or tool calls before remembering to load a skill
 
 2. **Analysis and Planning**
    - Create plan based on skill guidance or general process

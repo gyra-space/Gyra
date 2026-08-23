@@ -128,6 +128,7 @@ function normalizeDeliverableFile(raw: unknown): WorkspaceDeliverableFile | null
     download_url: typeof r.download_url === 'string' ? r.download_url : undefined,
     object_path: typeof r.object_path === 'string' ? r.object_path : undefined,
     render_type: (r.render_type as WorkspaceDeliverableFile['render_type']) || 'iframe',
+    ts: typeof r.ts === 'string' ? r.ts : (typeof r.created_at === 'string' ? r.created_at : null),
   };
 }
 
@@ -196,6 +197,25 @@ function mergeFilesById<T extends { file_id: string }>(prev: T[], next: T[]): T[
   return merged;
 }
 
+/** 交付文件归属键:file_id+ts。同 id 同 ts 视为同一次交付(取新值);跨轮次
+ *  同名/同 id 但不同 ts 的文件分别保留 —— 多轮会话里每个对话展示自己的交付文件。 */
+function deliveryKey(f: WorkspaceDeliverableFile): string {
+  return `${f.file_id}|${f.ts || ''}`;
+}
+
+/** 交付文件合并:按 file_id+ts 去重,而非仅按 file_id(避免把多轮交付物折叠成一份)。 */
+function mergeDeliverableFiles(prev: WorkspaceDeliverableFile[], next: WorkspaceDeliverableFile[]): WorkspaceDeliverableFile[] {
+  const seen = new Set(next.map(deliveryKey));
+  const merged = [...next];
+  for (const f of prev) {
+    if (!seen.has(deliveryKey(f))) {
+      merged.push(f);
+      seen.add(deliveryKey(f));
+    }
+  }
+  return merged;
+}
+
 export function parseWorkspaceView(chunk: unknown, prev: WorkspaceView | null): WorkspaceView {
   if (!chunk || typeof chunk !== 'object') return prev ?? EMPTY_VIEW;
   const c = chunk as Record<string, unknown>;
@@ -236,10 +256,10 @@ export function parseWorkspaceView(chunk: unknown, prev: WorkspaceView | null): 
   if (lastAnswer?.output) summary = lastAnswer.output;
 
   // 交付文件 / 任务文件:后端按当前轮次(agent conv)全量推送,新轮追问(新建
-  // agent conv)只会带本轮文件。前端按 file_id 会话级合并:同 id 取新值、
-  // 前轮文件保留,保证追问后前面对话的交付文件不丢。
+  // agent conv)只会带本轮文件。交付文件按 file_id+ts 合并(跨轮各轮保留自己的文件);
+  // 任务文件按 file_id 合并(单个物理文件,同 id 取新值)。
   const deliverable_files = Array.isArray(c.deliverable_files)
-    ? mergeFilesById(prev?.deliverable_files ?? [], c.deliverable_files.map(normalizeDeliverableFile).filter((f): f is WorkspaceDeliverableFile => f !== null))
+    ? mergeDeliverableFiles(prev?.deliverable_files ?? [], c.deliverable_files.map(normalizeDeliverableFile).filter((f): f is WorkspaceDeliverableFile => f !== null))
     : (prev?.deliverable_files ?? []);
   const task_files = Array.isArray(c.task_files)
     ? mergeFilesById(prev?.task_files ?? [], c.task_files.map(normalizeTaskFile).filter((f): f is WorkspaceTaskFile => f !== null))

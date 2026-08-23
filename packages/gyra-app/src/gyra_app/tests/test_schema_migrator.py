@@ -417,3 +417,122 @@ def test_generate_ddl_dedupe_and_manifest(tmp_path):
     assert data["scripts"][1]["version"] == 2
     assert data["scripts"][0]["version"] == 1
     assert len(data["scripts"][1]["checksum"]) == 64
+
+
+
+
+def test_same_name_script_checksum_change_reapplies(tmp_path):
+    """同名增量脚本内容更新（版本不变覆盖生成）后，应重新执行并更新账本 checksum。
+
+    预置账本：脚本已以 upgrade 记录在案（旧 checksum），但磁盘上同名文件内容演进
+    （新增一列）。迁移器应因 checksum 不匹配而重放，而不是跳过。
+    """
+    engine = create_engine(f"sqlite:///{tmp_path}/test.db")
+    create_sqlite_ledger(engine)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE gpts_app (id INTEGER PRIMARY KEY)"))
+
+    upgrades_dir = tmp_path / "upgrades"
+    script_name = "upgrade_0.3.0_20260822_to_0.3.0_20260822.sql"
+    old_content = "ALTER TABLE gpts_app ADD COLUMN first_col TEXT;"
+    new_content = (
+        "ALTER TABLE gpts_app ADD COLUMN first_col TEXT;\n"
+        "ALTER TABLE gpts_app ADD COLUMN second_col TEXT;"
+    )
+    import hashlib
+
+    # 磁盘上是新版内容；账本里记录的是旧版 checksum
+    write_file(upgrades_dir / script_name, new_content)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO gyra_schema_version (script_name, kind, checksum) "
+                "VALUES (:n, 'upgrade', :c)"
+            ),
+            {"n": script_name, "c": hashlib.sha256(old_content.encode()).hexdigest()},
+        )
+
+    full_ddl = write_file(tmp_path / "gyra.sql", "")
+    cfg = make_cfg(upgrades_dir, full_ddl)
+
+    assert sm.run_schema_migrations(engine, cfg=cfg, allow_non_mysql=True) is True
+
+    # checksum 不匹配 → 重放：新增列应用成功
+    cols = column_names(engine, "gpts_app")
+    assert "first_col" in cols
+    assert "second_col" in cols
+
+    # 账本 checksum 已更新为新版
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT checksum FROM gyra_schema_version "
+                "WHERE script_name = :n"
+            ),
+            {"n": script_name},
+        ).first()
+        assert row[0] == hashlib.sha256(new_content.encode()).hexdigest()
+
+
+def test_same_name_script_same_checksum_skipped(tmp_path):
+    """同名脚本 checksum 未变时仍应跳过（不重复执行）。"""
+    engine = create_engine(f"sqlite:///{tmp_path}/test.db")
+    create_sqlite_ledger(engine)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE gpts_app (id INTEGER PRIMARY KEY)"))
+
+    upgrades_dir = tmp_path / "upgrades"
+    script_name = "upgrade_0.3.0_20260822_to_0.3.0_20260822.sql"
+    content = "ALTER TABLE gpts_app ADD COLUMN first_col TEXT;"
+    import hashlib
+
+    write_file(upgrades_dir / script_name, content)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO gyra_schema_version (script_name, kind, checksum) "
+                "VALUES (:n, 'upgrade', :c)"
+            ),
+            {"n": script_name, "c": hashlib.sha256(content.encode()).hexdigest()},
+        )
+
+    full_ddl = write_file(tmp_path / "gyra.sql", "")
+    cfg = make_cfg(upgrades_dir, full_ddl)
+
+    assert sm.run_schema_migrations(engine, cfg=cfg, allow_non_mysql=True) is True
+    assert "first_col" not in column_names(engine, "gpts_app")
+
+
+def test_merge_incremental_accumulates_same_version(tmp_path):
+    """版本不变时增量应累积合并（不覆盖丢中间变更）。
+
+    模拟 generate_ddl._merge_incremental_ddl：
+    第一次 diff = {v0→v1 变更}，第二次 diff = {v1→v2 变更}，
+    合并后应同时包含两者，且 MODIFY 取最新定义。
+    """
+    import importlib.util
+
+    # 加载 generate_ddl.py（脚本目录模块，不依赖 sqlalchemy 反射）
+    gen_path = REPO_ROOT / "scripts" / "generate_ddl.py"
+    spec = importlib.util.spec_from_file_location("gen_ddl_under_test", gen_path)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+
+    first = """SET NAMES utf8mb4;
+ALTER TABLE `gpts_work_log` ADD COLUMN `message_id` VARCHAR(128) NULL;
+ALTER TABLE `gpts_app` ADD COLUMN `a1` TEXT;"""
+    second = """SET NAMES utf8mb4;
+ALTER TABLE `gpts_app` ADD COLUMN `b2` TEXT;
+ALTER TABLE `gpts_work_log` MODIFY COLUMN `message_id` VARCHAR(255) NULL;"""
+    third = """SET NAMES utf8mb4;
+ALTER TABLE `gpts_app` ADD COLUMN `c3` TEXT;"""
+
+    merged = gen._merge_incremental_ddl(first, second)
+    merged = gen._merge_incremental_ddl(merged, third)
+
+    assert "`a1`" in merged
+    assert "`b2`" in merged
+    assert "`c3`" in merged
+    assert "message_id" in merged
+    # MODIFY 保留（取最新定义），不因去重而丢失
+    assert "MODIFY COLUMN `message_id`" in merged

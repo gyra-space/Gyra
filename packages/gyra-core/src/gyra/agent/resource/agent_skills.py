@@ -16,8 +16,8 @@ from gyra.util.i18n_utils import _
 logger = logging.getLogger(__name__)
 CFG = Config()
 
-agent_skill_prompt_template = """<agent-skills>
-这是你可使用的 agent-skill 元数据信息。想激活并使用某个 skill 时，请调用 `skill({ name })` 工具加载它的完整指令，再按指令执行。
+agent_skill_prompt_template = """<available_skills>
+这是你可使用的技能目录。开始任务前，必须先浏览此目录，选择最相关的技能，然后调用 `skill({ name })` 工具加载它的完整指令，再按指令执行。
 {% for item in skills %}\
 <{{loop.index }}>\
 <name>{{item.name }}</name>
@@ -30,7 +30,7 @@ agent_skill_prompt_template = """<agent-skills>
 {% endif %}\
 </{{loop.index }}>
 {% endfor %}\
-</agent-skills>"""
+</available_skills>"""
 
 
 @dataclasses.dataclass

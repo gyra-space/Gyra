@@ -200,12 +200,24 @@ def main():
                     current_timestamp = datetime.now().strftime('%Y%m%d')
                     old_timestamp = old_generated.split('T')[0].replace('-', '') if old_generated else "unknown"
 
-                    upgrade_filename = f"upgrade_{old_version}_{old_timestamp}_to_{version}_{current_timestamp}.sql"
-                    upgrades_dir = dialect_dir / "upgrades"
-                    upgrade_file = _dedupe_upgrade_file(upgrades_dir, upgrade_filename)
+                    # 文件名策略（版本驱动）：
+                    # - 版本不变（old_version == version）: 复用目录中已有同版本文件的
+                    #   to_ts 生成相同文件名（upgrade_{ver}_{ts}_to_{ver}_{ts}.sql），
+                    #   每次生成直接覆盖，内容即"从上一全量到本次全量"的最新增量。
+                    #   不再追加 _0001/_0002 序号，避免版本不变时反复生成重复文件。
+                    # - 版本变化: upgrade_{old_ver}_{old_ts}_to_{new_ver}_{new_ts}.sql 新文件。
+                    if old_version == version:
+                        upgrade_file = _same_version_upgrade_file(
+                            dialect_dir / "upgrades", version, current_timestamp
+                        )
+                        upgrades_dir = upgrade_file.parent
+                    else:
+                        upgrade_filename = f"upgrade_{old_version}_{old_timestamp}_to_{version}_{current_timestamp}.sql"
+                        upgrades_dir = dialect_dir / "upgrades"
+                        upgrade_file = _dedupe_upgrade_file(upgrades_dir, upgrade_filename)
 
-                    # 版本签名：追加式单调序号（现有脚本数 + 1）
-                    script_version = _next_script_version(upgrades_dir)
+                    # 版本签名：追加式单调序号（现有脚本数 + 1）；覆盖场景沿用原版本号
+                    script_version = _next_script_version(upgrades_dir, upgrade_file.name)
 
                     # 用备份的真实旧 DDL 对比，而非刚覆盖的新 DDL
                     incremental_ddl = generator.generate_incremental_ddl(
@@ -216,12 +228,26 @@ def main():
 
                     if incremental_ddl:
                         upgrade_file.parent.mkdir(parents=True, exist_ok=True)
-                        upgrade_file.write_text(
-                            f"-- Gyra-Schema-Version: {script_version}\n\n"
-                            + incremental_ddl,
-                            encoding="utf-8",
-                        )
-                        logger.info(f"✓ Generated incremental {dialect} DDL: {upgrade_file}")
+                        # 版本不变（同版本累积）：把新 diff 合并进已有文件，保证
+                        # 文件始终是"版本基线 → 当前"的完整增量，避免覆盖丢中间变更。
+                        if old_version == version and upgrade_file.exists():
+                            existing = upgrade_file.read_text(encoding="utf-8")
+                            merged = _merge_incremental_ddl(existing, incremental_ddl)
+                            upgrade_file.write_text(
+                                f"-- Gyra-Schema-Version: {script_version}\n\n"
+                                + merged,
+                                encoding="utf-8",
+                            )
+                            logger.info(
+                                f"✓ Merged incremental {dialect} DDL: {upgrade_file}"
+                            )
+                        else:
+                            upgrade_file.write_text(
+                                f"-- Gyra-Schema-Version: {script_version}\n\n"
+                                + incremental_ddl,
+                                encoding="utf-8",
+                            )
+                            logger.info(f"✓ Generated incremental {dialect} DDL: {upgrade_file}")
                         _update_upgrade_manifest(
                             upgrades_dir,
                             upgrade_file.name,
@@ -246,6 +272,80 @@ _UPGRADE_FILE_RE = re.compile(
 )
 
 
+_STMT_TYPES = ("ADD COLUMN", "ADD INDEX", "ADD UNIQUE", "MODIFY COLUMN",
+               "DROP COLUMN", "DROP INDEX", "DROP KEY", "CREATE TABLE")
+
+
+def _split_incremental_statements(content: str):
+    """解析增量 DDL 内容为结构化语句: (kind, table, key, full_stmt).
+
+    key 用于去重: ADD/MODIFY COLUMN 用列名, INDEX/KEY 用索引名, CREATE TABLE 用表名。
+    无法识别的 ALTER 语句以原文兜底（key 用语句本身），保证合并不丢语句。
+    """
+    stmts: list = []
+    lines = content.splitlines()
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("--") or line.startswith("SET"):
+            continue
+        if not line.endswith(";"):
+            continue
+        s = line.rstrip(";").strip()
+        kind = table = key = None
+        m = re.match(r"ALTER TABLE `?(\w+)`?\s+(ADD COLUMN|ADD INDEX|ADD UNIQUE(?: KEY)?|MODIFY COLUMN|DROP COLUMN|DROP INDEX|DROP KEY)\s+`?(\w+)`?", s, re.I)
+        if m:
+            kind = m.group(2).upper()
+            table = m.group(1)
+            key = m.group(3)
+        else:
+            m = re.match(r"CREATE TABLE (?:IF NOT EXISTS )?`?(\w+)`?", s, re.I)
+            if m:
+                kind = "CREATE TABLE"
+                table = m.group(1)
+                key = m.group(1)
+        if kind:
+            stmts.append((kind, table, key, s))
+        elif s.upper().startswith(("ALTER", "CREATE", "DROP")):
+            # 兜底：保留无法解析的 DDL（按原文去重）
+            stmts.append(("RAW", "", s, s))
+    return stmts
+
+
+def _merge_incremental_ddl(existing: str, new_diff: str) -> str:
+    """合并已有同版本增量文件与新生成的 diff（版本不变累积语义）。
+
+    合并规则：
+    - ADD COLUMN: 按 (表, 列) 去重，保留后出现者（定义可能更完整）
+    - ADD INDEX / ADD UNIQUE: 按 (表, 索引名) 去重
+    - MODIFY COLUMN: 按 (表, 列) 取后出现者（类型演进取最新）
+    - DROP COLUMN / DROP INDEX: 保留全部（去重按 (表, 名)）
+    - CREATE TABLE: 按表名去重
+    非 DDL 语句（SET NAMES / FOREIGN_KEY_CHECKS / 注释）保留一次。
+    """
+    combined = _split_incremental_statements(existing) + _split_incremental_statements(new_diff)
+
+    # 按 (kind, table, key) 去重，保留最后一条
+    seen: dict = {}
+    for stmt in combined:
+        kind, table, key, full = stmt
+        seen[(kind, table, key)] = full
+
+    # 保留头尾 SET 语句（来自任一源文件，取一次）
+    set_stmts: list = []
+    for content in (existing, new_diff):
+        for raw in content.splitlines():
+            line = raw.strip()
+            if line.startswith("SET") and line not in set_stmts:
+                set_stmts.append(line)
+
+    lines: list = []
+    lines.extend(set_stmts)
+    for (kind, table, key), full in seen.items():
+        lines.append(full + ";")
+
+    return "\n".join(lines) + "\n"
+
+
 def _dedupe_upgrade_file(upgrades_dir: Path, filename: str) -> Path:
     """避免同名增量脚本被覆盖：存在则追加 _0001/_0002 序号。"""
     candidate = upgrades_dir / filename
@@ -260,13 +360,47 @@ def _dedupe_upgrade_file(upgrades_dir: Path, filename: str) -> Path:
         seq += 1
 
 
-def _next_script_version(upgrades_dir: Path) -> int:
-    """计算下一个增量脚本的版本签名（追加式单调序号）。"""
+def _same_version_upgrade_file(
+    upgrades_dir: Path, version: str, current_timestamp: str
+) -> Path:
+    """版本不变时解析增量文件路径（覆盖语义）。
+
+    返回"主文件"（不带 _NNNN 序号后缀）：
+    - 目录中已有同版本文件时，取 to_ts 最大的主文件名，后续生成直接覆盖它，
+      不再追加 _0001/_0002 序号（解决版本不变反复生成重复文件的问题）。
+    - 无既有文件时，用当前日期生成新文件名。
+    """
+    pattern = re.compile(
+        rf"^upgrade_{re.escape(version)}_(\d{{8}})_to_{re.escape(version)}_(\d{{8}})\.sql$"
+    )
+    latest_ts: str | None = None
+    for p in upgrades_dir.glob(f"upgrade_{version}_*_to_{version}_*.sql"):
+        m = pattern.match(p.name)
+        if not m:
+            continue
+        if latest_ts is None or m.group(2) > latest_ts:
+            latest_ts = m.group(2)
+    ts = latest_ts or current_timestamp
+    filename = f"upgrade_{version}_{ts}_to_{version}_{ts}.sql"
+    return upgrades_dir / filename
+
+
+def _next_script_version(upgrades_dir: Path, for_filename: str = "") -> int:
+    """计算增量脚本的版本签名（追加式单调序号）。
+
+    若 for_filename 已在 manifest 中存在（版本不变覆盖场景），返回其原版本号，
+    避免文件头版本与 manifest 重排后的版本不一致。
+    """
     manifest = upgrades_dir / "manifest.json"
     if manifest.is_file():
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
-            return len(data.get("scripts", [])) + 1
+            scripts = data.get("scripts", [])
+            if for_filename:
+                for s in scripts:
+                    if s.get("name") == for_filename and s.get("version"):
+                        return int(s["version"])
+            return len(scripts) + 1
         except Exception:
             pass
     return len(list(upgrades_dir.glob("upgrade_*.sql"))) + 1

@@ -367,7 +367,7 @@ class V2Agent(ReActMasterAgent):
                     for c in cap_pack.get_all("db"):
                         if hasattr(c, "_inject_schema"):
                             c._inject_schema = False
-                    # Skill capability 切到 DSH 模式：跳过 <agent-skills> SYSTEM
+                    # Skill capability 切到 DSH 模式：跳过 <available_skills> SYSTEM
                     # 注入，避免与 SkillCatalogConsumer 目录重复；skill 事实源
                     # 统一归 V2 SkillRegistry（对齐 DSH tool-skill）。
                     for c in cap_pack.get_all("skill"):
@@ -1343,11 +1343,13 @@ class V2Agent(ReActMasterAgent):
             logger.debug(f"[V2Agent] v1 usage emit skipped: {e}")
 
     async def _emit_v1_context_usage(self, runtime: Any) -> None:
-        """桥接 V1 前端上下文占用环形图：用 V2 TokenMeter 快照驱动展示。
+        """桥接 V1 前端上下文占用环形图：用 V2 TokenMeter 当前占用快照驱动展示。
 
-        V2 TokenMeter 的事实源是 ``usage_metric`` StepEvent（会话累计），
-        快照携带 total/context_window/prompt/completion，映射到 V1
-        emit_context_usage 的当前占用语义（服务返回权威 token 前的最优近似）。
+        注意这里用 :meth:`TokenMeter.snapshot_current`（最近一次 LLM 调用的
+        ``this_call.prompt``）而非累计 ``snapshot()``：累计值随每次 LLM 调用
+        单调增长，压缩把历史折叠成摘要后累计值并不会回落，导致环形图
+        「只增不减、看不到压缩效果」。当前占用取最近一次调用的输入（prompt），
+        压缩后下一轮 prompt 明显变小，能正确反映压缩后的上下文空间。
         """
         if runtime is None:
             return
@@ -1355,7 +1357,9 @@ class V2Agent(ReActMasterAgent):
             cm = getattr(runtime, "_context_manager", None)
             if cm is None:
                 return
-            snap = await cm.token_meter.snapshot(model=self._v2_model_alias or None)
+            snap = await cm.token_meter.snapshot_current(
+                model=self._v2_model_alias or None
+            )
             if not snap or snap.total <= 0:
                 return
             from gyra.agent.core.usage_metric import (
@@ -1367,7 +1371,8 @@ class V2Agent(ReActMasterAgent):
                 total_tokens=snap.total,
                 context_window=snap.context_window,
                 prompt_tokens=snap.prompt,
-                completion_tokens=snap.completion,
+                # 当前占用口径不含本call输出；保证 prompt+completion=total
+                completion_tokens=0,
                 model_name=self._v2_model_alias or "",
             )
         except Exception as e:  # noqa: BLE001

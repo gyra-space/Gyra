@@ -176,6 +176,25 @@ class ConfigManager:
 
         cls._config_path = path
         cls._config = ConfigLoader.load(path)
+        # 版本统一治理：以 packages/__init__.py 的 __version__ 为唯一权威，
+        # 覆盖 gyra.json 中可能漂移的 version 字段（历史值如 0.1.0）。
+        try:
+            from packages import __version__ as _project_version
+
+            if cls._config.version != _project_version:
+                logger.info(
+                    f"配置版本 {cls._config.version} 与项目版本 {_project_version} "
+                    f"不一致，已统一为 {_project_version}"
+                )
+                cls._config.version = _project_version
+                if auto_save:
+                    try:
+                        ConfigLoader.save(cls._config, cls._config_path)
+                    except Exception as _se:
+                        logger.warning(f"配置版本回写失败（不影响运行）: {_se}")
+        except Exception:
+            # packages 包不可达（如纯库安装）时跳过，使用配置自身版本
+            pass
         logger.info(f"配置已加载: {path}")
         return cls._config
 

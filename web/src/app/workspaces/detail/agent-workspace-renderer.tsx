@@ -26,6 +26,7 @@ import { SceneAskUserCard, extractAskUserData } from './scene-ask-user-card';
 import { statusLabel } from './scene-task-rail';
 import { StepFlow } from './step-flow';
 import { buildExecutionPhases, usePlanningTimeline } from './use-execution-phases';
+import { groupDeliverablesByRound, splitRounds } from './deliverable-rounds';
 import type {
   WorkspaceDeliverableFile,
   WorkspaceExecutionStep,
@@ -387,33 +388,68 @@ export interface AgentWorkspaceRendererProps {
   modelName?: string | null;
 }
 
-/** 一轮对话:user 步骤(可无,恢复场景) + 后续步骤序列 */
-interface ConversationRound {
-  key: string;
-  user?: WorkspaceExecutionStep;
-  steps: WorkspaceExecutionStep[];
-}
-
-/** 按 user 步骤把执行记录切成对话轮次 */
-function splitRounds(execution: WorkspaceExecutionStep[]): ConversationRound[] {
-  const rounds: ConversationRound[] = [];
-  let current: ConversationRound = { key: 'round-0', steps: [] };
-  for (const step of execution) {
-    if (step.type === 'user') {
-      if (current.user || current.steps.length) rounds.push(current);
-      current = { key: `round-${rounds.length + 1}`, user: step, steps: [] };
-    } else {
-      current.steps.push(step);
-    }
-  }
-  if (current.user || current.steps.length) rounds.push(current);
-  return rounds;
+/** 交付文件分组块:标题 + 文件卡片列表(点击在中间容器渲染文件内容) */
+function DeliverablesBlock({ files, onDeliverableClick }: { files: WorkspaceDeliverableFile[]; onDeliverableClick: (file: WorkspaceDeliverableFile) => void }) {
+  return (
+    <div className="ws-agent-renderer__deliverables">
+      <div className="ws-agent-renderer__deliverables-head">
+        <span className="ws-agent-renderer__deliverables-badge">
+          <FileOutlined />
+        </span>
+        <span className="ws-agent-renderer__deliverables-title">交付文件</span>
+        <span className="ws-agent-renderer__deliverables-count">{files.length}</span>
+      </div>
+      {files.map((file) => {
+        const downloadUrl = file.download_url || file.content_url;
+        return (
+          <div
+            key={`${file.file_id}-${file.ts || ''}`}
+            className="ws-deliverable-card"
+            role="button"
+            tabIndex={0}
+            onClick={() => onDeliverableClick(file)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onDeliverableClick(file); } }}
+          >
+            <span className="ws-deliverable-card__icon">{getFileIcon(file.file_name)}</span>
+            <div className="ws-deliverable-card__info">
+              <div className="ws-deliverable-card__name">{file.file_name}</div>
+              <div className="ws-deliverable-card__meta">
+                {file.file_size > 0 && <span>{formatFileSize(file.file_size)}</span>}
+                <span className="ws-deliverable-card__type">{file.render_type}</span>
+              </div>
+            </div>
+            {downloadUrl && (
+              <Tooltip title="下载">
+                <button
+                  type="button"
+                  className="ws-deliverable-card__download"
+                  aria-label="下载"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const a = document.createElement('a');
+                    a.href = resolveFileDownloadUrl(downloadUrl);
+                    a.download = file.file_name || 'download';
+                    a.style.display = 'none';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                  }}
+                >
+                  <DownloadOutlined />
+                </button>
+              </Tooltip>
+            )}
+            <RightOutlined className="ws-deliverable-card__chevron" />
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export function AgentWorkspaceRenderer({ view, running = false, onStepClick, selectedStepId, onDeliverableClick, onTaskClick, onSubagentClick, onInteractionResume, agentIcon, agentName, modelName }: AgentWorkspaceRendererProps) {
-  const deliverable_files = view.deliverable_files ?? [];
-  const task_files = view.task_files ?? [];
-  const hasDeliverables = deliverable_files.length > 0;
+  const deliverable_files = useMemo(() => view.deliverable_files ?? [], [view.deliverable_files]);
+  const task_files = useMemo(() => view.task_files ?? [], [view.task_files]);
   // 运行中置底文案:按当前产出动态推导(工具执行 / 模型思考 / todo 阶段)
   const runningLabel = useMemo(
     () => deriveRunningLabel(view, agentName, modelName),
@@ -528,6 +564,12 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
     return splitRounds(execution);
   }, [view.execution, running]);
 
+  // 交付文件按轮次归属:每轮产出贴到该轮结尾,无时间戳/无法归属的文件进 leftover 兜底
+  const { byRound: deliverableByRound, leftover: leftoverDeliverables } = useMemo(
+    () => groupDeliverablesByRound(rounds, deliverable_files),
+    [rounds, deliverable_files],
+  );
+
   // 任务文件点击 → 适配为交付文件形状,在中间容器预览
   const handleTaskFileOpen = onDeliverableClick
     ? (file: WorkspaceTaskFile) => {
@@ -626,6 +668,13 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
               </div>
             )}
             {nodes}
+            {/* 本轮产出的交付文件,跟在轮次结尾(不是全塞在 feed 底部) */}
+            {onDeliverableClick && (deliverableByRound.get(round.key)?.length ?? 0) > 0 && (
+              <DeliverablesBlock
+                files={deliverableByRound.get(round.key)!}
+                onDeliverableClick={onDeliverableClick}
+              />
+            )}
           </Fragment>
         );
       })}
@@ -639,61 +688,9 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
           </div>
         </div>
       )}
-      {/* 执行记录结尾:交付文件卡片,点击在中间容器打开 */}
-      {hasDeliverables && onDeliverableClick && (
-        <div className="ws-agent-renderer__deliverables">
-          <div className="ws-agent-renderer__deliverables-head">
-            <span className="ws-agent-renderer__deliverables-badge">
-              <FileOutlined />
-            </span>
-            <span className="ws-agent-renderer__deliverables-title">交付文件</span>
-            <span className="ws-agent-renderer__deliverables-count">{deliverable_files.length}</span>
-          </div>
-          {deliverable_files.map((file) => {
-            const downloadUrl = file.download_url || file.content_url;
-            return (
-              <div
-                key={file.file_id}
-                className="ws-deliverable-card"
-                role="button"
-                tabIndex={0}
-                onClick={() => onDeliverableClick(file)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onDeliverableClick(file); } }}
-              >
-                <span className="ws-deliverable-card__icon">{getFileIcon(file.file_name)}</span>
-                <div className="ws-deliverable-card__info">
-                  <div className="ws-deliverable-card__name">{file.file_name}</div>
-                  <div className="ws-deliverable-card__meta">
-                    {file.file_size > 0 && <span>{formatFileSize(file.file_size)}</span>}
-                    <span className="ws-deliverable-card__type">{file.render_type}</span>
-                  </div>
-                </div>
-                {downloadUrl && (
-                  <Tooltip title="下载">
-                    <button
-                      type="button"
-                      className="ws-deliverable-card__download"
-                      aria-label="下载"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const a = document.createElement('a');
-                        a.href = resolveFileDownloadUrl(downloadUrl);
-                        a.download = file.file_name || 'download';
-                        a.style.display = 'none';
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                      }}
-                    >
-                      <DownloadOutlined />
-                    </button>
-                  </Tooltip>
-                )}
-                <RightOutlined className="ws-deliverable-card__chevron" />
-              </div>
-            );
-          })}
-        </div>
+      {/* 无法归属到具体轮次的交付文件(缺时间戳):feed 底部兜底展示 */}
+      {leftoverDeliverables.length > 0 && onDeliverableClick && (
+        <DeliverablesBlock files={leftoverDeliverables} onDeliverableClick={onDeliverableClick} />
       )}
       {/* 其余任务文件:一行折叠开关,零视觉噪音 */}
       {extraTaskFiles.length > 0 && (

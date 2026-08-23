@@ -93,8 +93,9 @@ def build_initial_reminder(
         "content": (
             "<system-reminder>\n"
             f"{xml}\n\n"
-            "Skills are optional capabilities. Use the `skill({ name })` tool to load "
-            "the full instructions for a skill before following them.\n"
+            "Before starting the task, check this skill catalog and load the full "
+            "instructions of the most relevant skill with the `skill({ name })` tool, "
+            "then follow them. Skill loading comes before task analysis.\n"
             "</system-reminder>"
         ),
     }
@@ -115,8 +116,9 @@ def build_replacement_reminder(
         "content": (
             "<system-reminder>\n"
             f"{xml}\n\n"
-            "Skills are optional capabilities. Use the `skill({ name })` tool to load "
-            "the full instructions for a skill before following them.\n"
+            "Before starting the task, check this skill catalog and load the full "
+            "instructions of the most relevant skill with the `skill({ name })` tool, "
+            "then follow them. Skill loading comes before task analysis.\n"
             "</system-reminder>"
         ),
     }

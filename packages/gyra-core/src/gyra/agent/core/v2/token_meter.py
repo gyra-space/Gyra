@@ -176,6 +176,67 @@ class TokenMeter:
             last_usage_event_seq=last_seq,
         )
 
+    async def snapshot_current(
+        self,
+        *,
+        model: Optional[str] = None,
+    ) -> Optional[TokenSnapshot]:
+        """最近一次 LLM 调用的单次用量（**当前上下文占用**，非累计）。
+
+        与 :meth:`snapshot` 不同：``snapshot`` 聚合会话全部 ``usage_metric``
+        事件，反映**累计** token 消耗（持续增长，成本/用量口径），
+        **不能**用来展示「当前上下文窗口占用」——压缩发生后上下文收缩，
+        但累计值不会回落。
+
+        这里取最近一次 ``usage_metric`` 事件 ``this_call.prompt``（LLM 实际
+        输入 = 当前上下文占用：system + 历史 + 用户消息 + 工具），可正确反映
+        压缩后的实际状态（下一轮 prompt 明显变小）。
+
+        Returns:
+            用 TokenSnapshot 承载的单次当前占用快照；尚未产生任何
+            ``usage_metric`` 事件时返回 None。
+        """
+        events = await self._store.get_events(self._conv_id)
+        for ev in reversed(events):
+            if ev.event_type != "usage_metric":
+                continue
+            this_call = (ev.output or {}).get("this_call", {}) or {}
+            prompt = int(this_call.get("prompt", 0) or 0)
+            completion = int(this_call.get("completion", 0) or 0)
+            used_model = model or self._model
+            window = int((ev.output or {}).get("context_window") or 0)
+            if window <= 0:
+                window = _get_context_window(
+                    used_model, self._config.context_window
+                )
+            # 当前上下文占用 = LLM 输入（prompt），不含本call输出
+            total = prompt
+            ratio = (total / window) if window > 0 else 0.0
+            headroom = max(window - total, 0) if window > 0 else 0
+
+            # 压力等级（基于当前占用，而非累计）
+            if ratio >= self._config.evict_ratio:
+                level = PressureLevel.CRITICAL
+            elif ratio >= self._config.compact_ratio:
+                level = PressureLevel.HIGH
+            elif ratio >= self._config.warn_ratio:
+                level = PressureLevel.WARN
+            else:
+                level = PressureLevel.OK
+
+            return TokenSnapshot(
+                prompt=prompt,
+                completion=completion,
+                total=total,
+                context_window=window,
+                ratio=ratio,
+                headroom=headroom,
+                pressure_level=level,
+                usage_event_count=1,
+                last_usage_event_seq=ev.seq,
+            )
+        return None
+
     async def incremental_snapshot(
         self,
         since_seq: int,

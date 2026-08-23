@@ -637,6 +637,22 @@ class ConversableAgent(Role, Agent):
         # 确保工具已注册
         if not tool_registry._initialized:
             register_builtin_tools()
+            # 注册 serve 层 capability 工具到 registry(如日志查询工具)。
+            # 注意:注册 ≠ 注入。是否注入由 agent 的绑定配置(resource_tool)
+            # 经 tool_manager.get_runtime_tools / is_tool_enabled 决定——
+            # 未在 agent 配置中显式绑定的工具默认禁用,不会出现在可用工具里。
+            try:
+                import gyra_serve.agent.capabilities.logs.tools._logs_tools_impl  # noqa: F401
+                from gyra_serve.agent.capabilities.logs.tools import (
+                    register_logs_tools_capability,
+                )
+
+                register_logs_tools_capability(tool_registry)
+            except ImportError:
+                logger.debug(
+                    "[system_tool_injection] serve capability tools not available, "
+                    "skip register"
+                )
             logger.info(
                 f"[system_tool_injection] Registered {len(tool_registry)} builtin tools"
             )

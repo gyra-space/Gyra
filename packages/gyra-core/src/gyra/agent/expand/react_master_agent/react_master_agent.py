@@ -200,8 +200,8 @@ def _render_project_context(eco: ProjectEcosystem) -> str:
         lines.append("")
         lines.append("### 项目技能（来自 .claude / .cursor 的 SKILL.md）")
         lines.append(
-            "使用 `view` 工具读取对应 `<path>` 的 SKILL.md 内容，按其指导执行；"
-            "技能文件与项目代码同目录，可自由读取。"
+            "开始任务前优先查看：使用 `Skill` 工具读取对应 `<path>` 的 SKILL.md 内容，"
+            "按其指导执行；技能文件与项目代码同目录，可自由读取。"
         )
         for sk in eco.skills:
             lines.append(

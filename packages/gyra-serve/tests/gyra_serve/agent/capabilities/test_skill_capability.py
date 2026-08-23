@@ -1,6 +1,7 @@
 """RFC-005 Step B / RFC-006 Stage 7: skill capability 迁移测试。
 
-技能纯声明:SkillCapability declare 渲染 skill 列表(<agent-skills>)进 SYSTEM。
+技能纯声明:SkillCapability declare 渲染 skill 列表(<available_skills>)进 SYSTEM。
+标签与 identity/workflow/catalog_consumer 统一,确保模型能找到技能目录。
 """
 
 from gyra.core.interface.resource.bundle import CacheScope, Slot
@@ -10,7 +11,7 @@ from gyra.core.interface.resource.bundle import CacheScope, Slot
 # RFC-006 Stage 7: SkillCapability 自管理(对象模型统一)
 # =========================================================================== #
 def test_skill_capability_declares_from_explicit_skills():
-    """原生路径:直接给 skills 列表,declare 渲染 <agent-skills>。"""
+    """原生路径:直接给 skills 列表,declare 渲染 <available_skills>。"""
     from gyra_serve.agent.capabilities.skill import SkillCapability
 
     skills = [{"name": "s1", "description": "d1", "path": "/p1", "owner": "o", "branch": "master"}]
@@ -21,7 +22,7 @@ def test_skill_capability_declares_from_explicit_skills():
     assert c.slot == Slot.SYSTEM
     assert c.capability_id == "skill"
     assert c.cache_scope == CacheScope.USER
-    assert "agent-skills" in c.content
+    assert "available_skills" in c.content
     assert "s1" in c.content
 
 
@@ -33,7 +34,7 @@ def test_skill_capability_empty_when_no_skills():
 
 
 def test_skill_capability_skips_system_when_dsh_mode():
-    """DSH 模式（inject_system_catalog=False）→ declare 跳过 <agent-skills> SYSTEM。
+    """DSH 模式（inject_system_catalog=False）→ declare 跳过 <available_skills> SYSTEM。
 
     V2 用 SkillRegistry/SkillCatalogConsumer 统一治理 skill 事实源，避免目录重复。
     """
@@ -79,6 +80,10 @@ def test_skill_capability_from_config_pure_config():
 # =========================================================================== #
 # RFC-006 Stage 8: SkillCapability prepare 自管 skill_code/path 解析
 # =========================================================================== #
+import pytest
+
+
+@pytest.mark.asyncio
 async def test_skill_capability_prepare_skips_when_path_present():
     """skills 已带 path → prepare 免 I/O,直接 ready。"""
     from gyra_serve.agent.capabilities.skill import SkillCapability
@@ -88,6 +93,7 @@ async def test_skill_capability_prepare_skips_when_path_present():
     assert cap._skills[0]["path"] == "/p"  # 未被覆盖
 
 
+@pytest.mark.asyncio
 async def test_skill_capability_prepare_no_skills_ready():
     from gyra_serve.agent.capabilities.skill import SkillCapability
     cap = SkillCapability(skills=None)
@@ -95,6 +101,7 @@ async def test_skill_capability_prepare_no_skills_ready():
     assert cap._status.value == "ready"
 
 
+@pytest.mark.asyncio
 async def test_skill_capability_prepare_degrades_without_system_app(monkeypatch):
     """缺 path 且无 _SYSTEM_APP → prepare 降级不崩(ready,path 仍空)。"""
     from gyra_serve.agent.capabilities.skill import SkillCapability

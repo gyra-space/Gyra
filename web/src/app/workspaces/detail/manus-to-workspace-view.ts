@@ -90,6 +90,7 @@ function toDeliverable(f: any): WorkspaceDeliverableFile | null {
     download_url: f.download_url,
     object_path: f.object_path,
     render_type: (f.render_type as WorkspaceDeliverableFile['render_type']) || 'iframe',
+    ts: f.ts || f.created_at || null,
   };
 }
 

@@ -180,6 +180,9 @@ class ManusDeliverableFile:
     content: Optional[str] = None
     object_path: Optional[str] = None
     render_type: str = "iframe"
+    # 产出的时间戳(创建/交付动作时间):多轮会话里据此把交付文件归属到对应轮次,
+    # 前端按轮次时间窗分桶,使每个对话各自展示自己的交付文件,而非全塞在 feed 底部。
+    ts: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

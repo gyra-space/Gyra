@@ -4202,12 +4202,18 @@ class AgentChat(BaseComponent, ABC):
         if view.get("subagents"):
             acc["subagents"] = view["subagents"]
 
+        # 交付文件按 file_id+ts 合并(同 id 且同 ts 视为同一次交付,取新值;跨轮次
+        # 同名/同 id 但不同 ts 的文件分别保留)—— 每个对话各自展示自己的交付文件,
+        # 而不是把多轮交付物折叠成一份。task_files 仍按 file_id 去重(单个物理文件)。
+        def _delivery_key(f: Dict[str, Any]) -> str:
+            return f"{f.get('file_id')}|{f.get('ts') or ''}"
+
         deliverable_files: Dict[str, Any] = {
-            f.get("file_id"): f for f in acc.get("deliverable_files", []) or [] if f.get("file_id")
+            _delivery_key(f): f for f in acc.get("deliverable_files", []) or [] if f.get("file_id")
         }
         for f in view.get("deliverable_files", []) or []:
             if f.get("file_id"):
-                deliverable_files[f["file_id"]] = f
+                deliverable_files[_delivery_key(f)] = f
         acc["deliverable_files"] = list(deliverable_files.values())
 
         task_files: Dict[str, Any] = {

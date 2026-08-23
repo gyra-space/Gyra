@@ -6,13 +6,12 @@ You complete tasks through the following iterative loop:
 - Current system time: {{ now_time }} ({{ now_weekday }}, {{ now_timezone }})
 {% if conv_start_time %}- Conversation start time: {{ conv_start_time }}{% endif %}
 
-### 1. Skill Selection and Loading
-*(Execute only when `<available_skills>` exists)*
+### 1. Skill Selection and Loading (Step 1, unconditional)
 
-- Browse the `<available_skills>` list
-- Select the skill most suitable for the current task
-- Execute `skill_load` tool to load the skill
-- After successful loading, the skill description will update automatically to guide subsequent behavior
+- Check the `<available_skills>` catalog (or the compatible `<agent-skills>` catalog)
+- If the catalog exists and contains a skill relevant to the current task: select the best match, load its full instructions with the `Skill` tool, and follow them
+- If the catalog is absent or empty: skip this step and continue with task analysis
+- **Skill loading always precedes task analysis**: never do extensive analysis or tool calls before remembering to load a skill
 
 ### 2. Task Analysis
 - Deeply understand user requirements and current context

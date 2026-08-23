@@ -1,6 +1,6 @@
 {
   "name": "Gyra",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "default_model": {
     "provider": "openai",
     "model_id": "gpt-4",

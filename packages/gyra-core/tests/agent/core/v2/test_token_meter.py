@@ -118,3 +118,49 @@ async def test_estimate_text_tokens(tmp_store):
     assert await meter.estimate_text_tokens("") == 0
     assert await meter.estimate_text_tokens("hi") == 1
     assert await meter.estimate_text_tokens("a" * 100) == 25
+
+
+@pytest.mark.asyncio
+async def test_snapshot_current_empty(tmp_store):
+    """无 usage 事件 → 当前占用快照返回 None。"""
+    meter = TokenMeter(tmp_store, "c1", model="gpt-4")
+    assert await meter.snapshot_current() is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_current_uses_latest_call(tmp_store):
+    """当前占用取最近一次 LLM 调用的 prompt（非累计，压缩后可回落）。"""
+    await tmp_store.append_event(_usage_event(1, 3000, 200))
+    await tmp_store.append_event(_usage_event(2, 2500, 100))
+    meter = TokenMeter(
+        tmp_store, "c1", model=None,
+        config=TokenMeterConfig(context_window=10000),
+    )
+    snap = await meter.snapshot_current()
+    assert snap is not None
+    # 累计 snapshot 仍是 5500+300，但当前占用只看最近一次调用（口径不含输出）
+    assert snap.prompt == 2500
+    assert snap.total == 2500
+    assert snap.completion == 100
+    assert snap.ratio == 0.25
+
+
+@pytest.mark.asyncio
+async def test_snapshot_current_reflects_compaction(tmp_store):
+    """压缩后下一轮 prompt 变小，当前占用应随之回落（累计值则不会）。"""
+    # 压缩前：历史很长，prompt 很大
+    await tmp_store.append_event(_usage_event(1, 4000, 200))
+    # 压缩后：历史被折叠成摘要，下一轮 prompt 明显变小
+    await tmp_store.append_event(_usage_event(2, 800, 80))
+    meter = TokenMeter(
+        tmp_store, "c1", model=None,
+        config=TokenMeterConfig(context_window=10000),
+    )
+    snap = await meter.snapshot_current()
+    assert snap is not None
+    # 当前占用反映压缩后（变小），而非累计 4800
+    assert snap.total == 800
+    assert snap.ratio == 0.08
+    # 对照：累计 snapshot 仍持续增长，无法体现压缩
+    cum = await meter.snapshot()
+    assert cum.total == 4000 + 800 + 200 + 80

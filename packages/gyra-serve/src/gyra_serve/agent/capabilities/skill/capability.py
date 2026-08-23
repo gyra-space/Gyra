@@ -1,6 +1,8 @@
 """SkillCapability —— 技能自管理资源能力(RFC-006 Stage 7/8)。
 
-技能纯声明:declare 渲染 <agent-skills> 列表进 SYSTEM。
+技能纯声明:declare 渲染 <available_skills> 列表进 SYSTEM
+(与 identity/workflow/catalog_consumer 模板统一使用同一标签,
+避免模型找不到技能目录而跳过技能加载)。
 
 prepare 自管 skill_code/path 解析(facade 时序已改 prepare 先于 declare,RFC-006 Stage 8):
 若 skills 已带 path(config 完整)则免 I/O;否则按 skill_name 查 Skill service
@@ -33,9 +35,9 @@ from gyra.core.interface.resource.executor import (
 
 logger = logging.getLogger(__name__)
 
-# 模板对齐 agent_skills.py:19-36(技能列表 XML)
-_SKILL_PROMPT_TEMPLATE = """<agent-skills>
-这是你可使用的 agent-skill 元数据信息。想激活并使用某个 skill 时，请调用 `skill({ name })` 工具加载它的完整指令，再按指令执行。
+# 模板对齐 identity/workflow/catalog_consumer(标签统一为 available_skills)
+_SKILL_PROMPT_TEMPLATE = """<available_skills>
+这是你可使用的技能目录。开始任务前，必须先浏览此目录，选择最相关的技能，然后调用 `skill({ name })` 工具加载它的完整指令，再按指令执行。
 {% for item in skills %}\
 <{{loop.index }}>\
 <name>{{item.name }}</name>
@@ -48,18 +50,18 @@ _SKILL_PROMPT_TEMPLATE = """<agent-skills>
 {% endif %}\
 </{{loop.index }}>
 {% endfor %}\
-</agent-skills>"""
+</available_skills>"""
 
 
 def _render_skills(skills: List[dict]) -> str:
-    """渲染技能列表为 <agent-skills> 文本(对齐旧模板)。"""
+    """渲染技能列表为 <available_skills> 文本(对齐 identity/workflow 模板)。"""
     from gyra.util.template_utils import render
 
     return render(_SKILL_PROMPT_TEMPLATE, {"skills": skills})
 
 
 class SkillCapability(Capability):
-    """技能自管理能力:declare <agent-skills> 列表进 SYSTEM。
+    """技能自管理能力:declare <available_skills> 列表进 SYSTEM。
 
     capability_id="skill";executor_id="skill"。
     """
@@ -108,7 +110,7 @@ class SkillCapability(Capability):
     # ----------------------------- 输入投影(declare 纯) ------------------ #
     def declare(self, config: Any = None) -> List[Contribution]:
         # V2 用 SkillRegistry/SkillCatalogConsumer 统一治理 skill 事实源；
-        #   此时跳过 <agent-skills> SYSTEM 注入，避免目录重复（DSH tool-skill）。
+        #   此时跳过 <available_skills> SYSTEM 注入，避免目录重复（DSH tool-skill）。
         if not self._inject_system_catalog:
             return []
         skills = self._resolve_skills()
