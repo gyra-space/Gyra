@@ -30,6 +30,12 @@ function isNonRoutableHost(host: string): boolean {
   }
   // IPv4 loopback
   if (h.startsWith('127.')) return true;
+  // Private (RFC1918) ranges: 10/8, 172.16/12, 192.168/16.
+  // Absolute URLs pointing at a private IP (e.g. http://172.22.14.250:8888)
+  // break behind HTTPS reverse proxies: the browser blocks them as mixed
+  // content. Treat them as non-routable so the URL is rewritten to a relative
+  // path and the browser uses whatever origin it is currently accessing.
+  if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h)) return true;
   try {
     // Very small IPv6 helpers; full parsing is overkill here.
     if (h.includes(':')) {

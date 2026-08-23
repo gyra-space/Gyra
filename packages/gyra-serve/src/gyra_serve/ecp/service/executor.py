@@ -11,6 +11,7 @@ metric expression — the LLM picks catalog IDs, code assembles the SQL.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -20,6 +21,16 @@ from sqlglot import exp
 from .contracts import validate_payload
 
 logger = logging.getLogger(__name__)
+
+# 时间类型列的确定性兜底(DB 列类型 → role=time),覆盖 LLM 漏标
+_TIME_TYPE_RE = re.compile(r"\b(date|datetime|timestamp|time|year)\b", re.IGNORECASE)
+
+
+def _is_time_type(col_type: Any) -> bool:
+    """判断 DB 列类型是否为时间类(date/datetime/timestamp/time/year)。"""
+    if not isinstance(col_type, str):
+        return False
+    return bool(_TIME_TYPE_RE.search(col_type))
 
 
 class GateError(Exception):
@@ -329,11 +340,62 @@ class DbBindingExecutor(BindingExecutor):
                     column = name
                     break
         if not column:
+            # 兜底:LLM 提案漏标 role=time 时,按 DB 列类型确定性找时间列
+            column = _resolve_time_column_by_type(ep)
+        if not column:
             raise GateError(
                 "需要时间筛选但实体未定义 role=time 的字段", code="TIME_COLUMN_MISSING"
             )
         start, end = [s.strip() for s in str(rng).split("~", 1)]
         return f"{column} BETWEEN '{start}' AND '{end}'"
+
+
+def _resolve_time_column_by_type(ep: Dict[str, Any]) -> Optional[str]:
+    """按 DB 列类型(date/datetime/timestamp/time/year)从 table spec 找时间列。
+
+    兜底 LLM 提案漏标 role=time 的实体:时间筛选时若无显式 column 也无
+    role=time 字段,用表结构的确定性类型判断,避免 TIME_COLUMN_MISSING。
+    best-effort:任何失败返回 None(由调用方决定是否降级/报错)。
+    """
+    try:
+        from gyra_serve.datasource.manages.table_spec_db import TableSpecDao
+
+        binding = ep.get("binding") or {}
+        table = binding.get("table")
+        ds_id = binding.get("datasource_id")
+        if not table or not ds_id:
+            return None
+        specs = TableSpecDao().get_all_by_datasource(ds_id) or []
+        for s in specs:
+            t = getattr(s, "table_name", None)
+            if isinstance(s, dict):
+                t = s.get("table_name")
+            if t != table:
+                continue
+            cols = None
+            if isinstance(s, dict):
+                cols = s.get("columns")
+            else:
+                raw = getattr(s, "columns_json", None)
+                if isinstance(raw, str):
+                    try:
+                        import json
+
+                        cols = json.loads(raw)
+                    except (ValueError, TypeError):  # noqa: S110
+                        cols = None
+                else:
+                    cols = raw
+            for c in cols or []:
+                if not isinstance(c, dict):
+                    continue
+                cname, ctype = c.get("name"), c.get("type")
+                if cname and _is_time_type(ctype):
+                    return cname
+            return None
+    except Exception:  # noqa: BLE001 基础设施不可用 → 交给调用方报错/降级
+        return None
+    return None
 
 
 class _ExecutorDaos:
@@ -637,9 +699,10 @@ def _preview_metric(daos, obj, mp: Dict[str, Any], ws: str,
         if not col:
             warnings.append(f"分组维度 {dim_id} 缺少 column,已忽略")
             continue
-        if grain and col not in grain and (dim.name or "").lower() not in [
-            g.lower() for g in grain
-        ]:
+        # 大小写不敏感比较:Oracle 等库列名大小写由存储决定,LLM 常混写大小写
+        if grain and col.upper() not in [g.upper() for g in grain] and (
+            dim.name or ""
+        ).lower() not in [g.lower() for g in grain]:
             warnings.append(f"分组维度 {dim_id} 不在指标粒度 {grain} 内(试跑仍执行)")
         group_cols.append(col)
 

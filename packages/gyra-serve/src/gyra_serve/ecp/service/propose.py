@@ -29,6 +29,8 @@ _SYSTEM_PROMPT = """你是企业语义资产分析师。根据数据库表结构
 3. 每个提案给出 confidence (0-1) 和 questions（需要人确认的口径疑点，中文）
 4. 拿不准的字段口径在 fields 里标 {"meaning": null, "status": "unknown"}
 5. 提案是给人确认的候选，宁可少提、不可编造
+6. 表名必须与提示中的表名**完全一致**：多 schema 库（Oracle 等）的表名带 owner 前缀（如 OPR.OPR_REGISTRATION），禁止省略为纯表名
+7. date/datetime/timestamp 等时间类型列必须在 entity 的 fields 里标注 role="time"（时间筛选依赖它）
 【输出格式】
 {
   "proposals": [
@@ -218,7 +220,9 @@ class DbSemanticsProposer(SemanticsProposer):
             raise RuntimeError(self._llm_last_error or "LLM unavailable or returned empty")
         proposals = self._parse_proposals(text)
         known_tables = {_spec_attr(s, "table_name") for s in batch}
-        return self._validate(proposals, known_tables, datasource_id=datasource_id)
+        return self._validate(
+            proposals, known_tables, datasource_id=datasource_id, specs=batch
+        )
 
     # -------------------------------------------------------------- validation
     @staticmethod
@@ -238,11 +242,14 @@ class DbSemanticsProposer(SemanticsProposer):
         proposals: List[Dict[str, Any]],
         known_tables: set,
         datasource_id: Optional[int] = None,
+        specs: Optional[List[Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Deterministic validation: drop proposals that violate hard rules.
 
         结构校验走 contracts 单一事实来源(proposal 级);entity 的 binding 在此
-        补齐 kind/datasource_id(proposer 上下文可知,LLM 易漏)。
+        补齐 kind/datasource_id(proposer 上下文可知,LLM 易漏)。``specs`` 提供
+        batch 表 spec 时,额外做 owner 前缀补全与时间列 role=time 兜底
+        (Oracle 多 schema 环境,见 normalize_entity_binding)。
         """
         from .contracts import validate_payload
 
@@ -259,11 +266,29 @@ class DbSemanticsProposer(SemanticsProposer):
                 binding = payload.get("binding") or {}
                 table = binding.get("table")
                 if table not in known_tables:
-                    continue
+                    # Oracle 多 schema:LLM 常省略 owner 前缀,先尝试补全而非丢弃
+                    if isinstance(table, str) and "." not in table:
+                        full = next(
+                            (
+                                t
+                                for t in known_tables
+                                if isinstance(t, str) and t.endswith("." + table)
+                            ),
+                            None,
+                        )
+                        if full:
+                            table = full
+                            binding["table"] = table
+                        else:
+                            continue
+                    else:
+                        continue
                 binding["kind"] = "db"
                 if datasource_id is not None:
                     binding.setdefault("datasource_id", datasource_id)
                 payload["binding"] = binding
+                # 确定性兜底:owner 补全 + 时间列 role=time(依赖 specs 列类型)
+                normalize_entity_binding(payload, specs)
             problems = validate_payload(obj_type, payload, level="proposal")
             if problems:
                 logger.info(
@@ -422,6 +447,70 @@ def _spec_attr(spec: Any, key: str) -> Any:
     if isinstance(spec, dict):
         return spec.get(key)
     return getattr(spec, key, None)
+
+
+# ------------------------------------------------------------------ 提案归一
+# Oracle 多 schema 环境下 LLM 提案的两个系统性缺陷,这里做确定性兜底(幂等):
+#   ① binding.table 丢 owner 前缀(OPR.OPR_REGISTRATION → OPR_REGISTRATION),
+#     执行时 ORA-00942 table or view does not exist
+#   ② 日期/时间类型列漏标 role=time,带时间筛选的查询报 TIME_COLUMN_MISSING
+
+_TIME_TYPE_RE = re.compile(r"\b(date|datetime|timestamp|time|year)\b", re.IGNORECASE)
+
+
+def _is_time_type(col_type: Any) -> bool:
+    """判断 DB 列类型是否为时间类(date/datetime/timestamp/time/year)。"""
+    if not isinstance(col_type, str):
+        return False
+    return bool(_TIME_TYPE_RE.search(col_type))
+
+
+def normalize_entity_binding(
+    payload: Dict[str, Any], specs: Optional[list] = None
+) -> None:
+    """entity 提案归一(就地修改,幂等):
+    - binding.table 缺 owner 时从 specs 反查补全(多 schema 库)
+    - fields 中时间类型列自动补 role=\"time\"
+    ``specs`` 为该实体所在数据源的表 spec 列表(batch 或 TableSpecDao 查询结果)。
+    """
+    if not isinstance(payload, dict):
+        return
+    binding = payload.get("binding") or {}
+    if not isinstance(binding, dict):
+        return
+    table = binding.get("table")
+    if not isinstance(table, str) or not table:
+        return
+    specs = specs or []
+
+    # ① owner 前缀补全(仅缺 owner 时,已有 OWNER.TABLE 不动)
+    if "." not in table:
+        for s in specs:
+            t = _spec_attr(s, "table_name")
+            if isinstance(t, str) and t.endswith("." + table):
+                binding["table"] = t
+                table = t
+                break
+
+    # ② 时间类型列 role=time 兜底
+    fields = payload.get("fields")
+    if not isinstance(fields, dict):
+        return
+    for s in specs:
+        if _spec_attr(s, "table_name") != table:
+            continue
+        for c in _spec_get(s, "columns", "columns_json") or []:
+            if not isinstance(c, dict):
+                continue
+            cname, ctype = c.get("name"), c.get("type")
+            if not cname or not _is_time_type(ctype):
+                continue
+            meta = fields.get(cname)
+            if isinstance(meta, dict):
+                meta.setdefault("role", "time")
+            else:
+                fields[cname] = {"role": "time"}
+        break
 
 
 _DOC_SYSTEM_PROMPT = """你是企业语义资产分析师。根据文档原文提炼可信知识口径提案。

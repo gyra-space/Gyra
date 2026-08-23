@@ -143,7 +143,16 @@ class Serve(BaseServe):
         """Replace the uri with the new uri"""
 
         def _is_public_host(host: str) -> bool:
-            """Return True if host looks like a public hostname/IP."""
+            """Return True if host looks like a public hostname/IP.
+
+            Only hosts that are routable AND reachable from the user's browser
+            count as public. Loopback, link-local and private (RFC1918) IPs all
+            fall back to a relative URL so the browser uses the host and
+            protocol it is currently accessing. This matters for HTTPS reverse
+            proxy deployments: an absolute ``http://<private-ip>:8888/...`` URL
+            embedded in an HTTPS page is treated as mixed content and blocked by
+            the browser, breaking file preview/download.
+            """
             if not host:
                 return False
             host = host.strip().lower()
@@ -151,10 +160,12 @@ class Serve(BaseServe):
                 return False
             try:
                 addr = ipaddress.ip_address(host)
-                # Any IP address (public or private) is usable as long as it is not
-                # loopback/link-local. Private RFC1918 IPs may be valid in intranet
-                # deployments, so we only reject clearly non-routable addresses.
-                return not (addr.is_loopback or addr.is_link_local or addr.is_unspecified)
+                return not (
+                    addr.is_loopback
+                    or addr.is_link_local
+                    or addr.is_unspecified
+                    or addr.is_private
+                )
             except ValueError:
                 # Not an IP address -> treat as a hostname/domain name (public enough)
                 return True

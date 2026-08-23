@@ -1190,7 +1190,14 @@ class SimpleDistributedStorage(StorageBackend):
 
     @staticmethod
     def _is_public_host(host: str) -> bool:
-        """Return True if host looks like a public hostname/IP."""
+        """Return True if host looks like a public hostname/IP.
+
+        Loopback, link-local and private (RFC1918) addresses all count as
+        non-public: they cannot be reached from a user's browser through a
+        reverse proxy, and embedding an absolute ``http://<private-ip>/...`` URL
+        in an HTTPS page is blocked as mixed content. Such hosts fall back to a
+        relative URL so the browser uses the origin it is currently accessing.
+        """
         if not host:
             return False
         host = host.strip().lower()
@@ -1198,10 +1205,12 @@ class SimpleDistributedStorage(StorageBackend):
             return False
         try:
             addr = ipaddress.ip_address(host)
-            # Any IP address (public or private) is usable as long as it is not
-            # loopback/link-local. Private RFC1918 IPs may be valid in intranet
-            # deployments, so we only reject clearly non-routable addresses.
-            return not (addr.is_loopback or addr.is_link_local or addr.is_unspecified)
+            return not (
+                addr.is_loopback
+                or addr.is_link_local
+                or addr.is_unspecified
+                or addr.is_private
+            )
         except ValueError:
             # Not an IP address -> treat as a hostname/domain name (public enough)
             return True

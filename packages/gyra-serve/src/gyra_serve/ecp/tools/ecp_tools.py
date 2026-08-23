@@ -684,6 +684,21 @@ async def propose_semantic(
     # 入库前归一 + 可执行级契约校验(与 confirm 晋升门禁同标准):不满足则拒绝入库,
     # 避免不可确认的"死提案"堆积进收件箱。agent 拿到 contract_gaps 后补全重提即可。
     normalized = normalize_payload(obj_type, payload)
+    # entity 确定性兜底:Oracle 多 schema 表名 owner 补全 + 时间列 role=time
+    # (LLM 提案系统性缺陷,见 propose.normalize_entity_binding)
+    if obj_type == "entity":
+        try:
+            from ..service.propose import normalize_entity_binding
+
+            ds_id = (normalized.get("binding") or {}).get("datasource_id")
+            specs = None
+            if ds_id:
+                from gyra_serve.datasource.manages.table_spec_db import TableSpecDao
+
+                specs = TableSpecDao().get_all_by_datasource(ds_id) or []
+            normalize_entity_binding(normalized, specs)
+        except Exception:  # noqa: BLE001 兜底失败不阻塞提案(契约校验仍生效)
+            pass
     problems = validate_payload(obj_type, normalized, level="executable")
     if problems:
         return json.dumps(

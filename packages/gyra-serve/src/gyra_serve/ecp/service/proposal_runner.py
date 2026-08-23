@@ -182,6 +182,9 @@ async def run_proposal_agent(
         f"对低基数文本列用 sample_distinct_values 采样，"
         f"用 propose_semantic(..., workspace_id={ws}) 逐个落地 "
         f"entity/metric/dimension/relation 提案。所有资产全部完成后结束。"
+        f"注意:表名必须与 get_table_spec 返回完全一致(多 schema 库如 Oracle 保留 "
+        f"owner 前缀,如 OPR.OPR_REGISTRATION,禁止省略);日期/时间类型列在 entity "
+        f"的 fields 中标注 role=time。"
     )
     if domain_hint:
         task = f"【领域背景】{domain_hint}\n\n{task}"
