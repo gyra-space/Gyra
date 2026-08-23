@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import SkillContentRenderer from '@/components/chat/chat-content-components/VisComponents/VisManusRightPanel/renderers/SkillContentRenderer';
 import { Button, Spin } from 'antd';
 import { GPTVis } from '@antv/gpt-vis';
 import {
@@ -405,6 +406,16 @@ function StepDetail({ step }: { step: WorkspaceExecutionStep }) {
 
   // 专用渲染器:仅当有可渲染输出时启用
   const renderer = useMemo(() => {
+    // 预加载技能步骤:复用 SkillContentRenderer 渲染 <skill_content>(技能头部 +
+    // SKILL.md 全文 + 文件预览),与 skill 工具调用结果的右侧展示体验一致。
+    if (step.type === 'skill_loaded' && step.skill_xml) {
+      return (
+        <SkillContentRenderer
+          outputs={[{ output_type: 'text', content: step.skill_xml }]}
+          skillName={step.title}
+        />
+      );
+    }
     if (!outputs.length) return null;
     switch (type) {
       case 'bash':
@@ -526,7 +537,7 @@ export function SceneSimpleWorkspace({
   // 自动跟随:流式期间右侧「执行过程」实时展示最新步骤的工具输出;
   // 用户点击某步骤后转为手动浏览,新步骤开跑时自动恢复跟随。
   const latestStep = useMemo(
-    () => [...view.execution].reverse().find((s) => s.type === 'tool_call' || s.type === 'thinking') ?? null,
+    () => [...view.execution].reverse().find((s) => s.type === 'tool_call' || s.type === 'thinking' || s.type === 'skill_loaded') ?? null,
     [view.execution],
   );
   useEffect(() => {
@@ -536,7 +547,7 @@ export function SceneSimpleWorkspace({
 
   // 步骤 prev/next 导航:按执行序列浏览历史步骤(问题溯源)
   const navSteps = useMemo(
-    () => view.execution.filter((s) => s.type === 'tool_call' || s.type === 'thinking'),
+    () => view.execution.filter((s) => s.type === 'tool_call' || s.type === 'thinking' || s.type === 'skill_loaded'),
     [view.execution],
   );
   const currentStepIndex = useMemo(
