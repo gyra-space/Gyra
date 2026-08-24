@@ -1054,14 +1054,19 @@ class AgentFileSystem:
         """收集用于交付的文件列表.
 
         适用于terminate时收集所有相关文件进行交付。
-        默认收集对话过程中真正需要交付给用户的内容文件：
+        默认只收集真正需要交付给用户的内容文件：
         - CONCLUSION: 结论文件
-        - DELIVERABLE: 交付物
-        - WRITE_FILE: write工具创建的文件
+        - DELIVERABLE: 交付物（create_file/edit_file 等工具需显式 is_deliverable=True，
+          或 deliver_file 显式交付，才会带此标记）
 
-        注意：TRUNCATED_OUTPUT（工具大结果归档）/ TOOL_OUTPUT（工具输出临时文件）
-        不作为交付物——它们是执行过程的内部归档，若作为交付物会将其全文
-        （如超长网页 HTML）渲染进最终消息，导致用户看到"乱麻"文本。
+        注意：
+        - WRITE_FILE（write/create 工具写的过程文件）不再默认收集——它们绝大多数
+          是中间产物,全部作为交付物会把过程文件混进最终交付列表。Agent 若想把
+          某个过程文件交付给用户,应显式调用 deliver_file 或在写文件时传
+          is_deliverable=True。
+        - TRUNCATED_OUTPUT（工具大结果归档）/ TOOL_OUTPUT（工具输出临时文件）
+          不作为交付物——它们是执行过程的内部归档，若作为交付物会将其全文
+          （如超长网页 HTML）渲染进最终消息，导致用户看到"乱麻"文本。
 
         Returns:
             文件信息字典列表
@@ -1070,7 +1075,6 @@ class AgentFileSystem:
             file_types = [
                 FileType.CONCLUSION,
                 FileType.DELIVERABLE,
-                FileType.WRITE_FILE,
             ]
 
         all_files = []
@@ -1189,7 +1193,7 @@ class AgentFileSystem:
         self,
         work_dir: Optional[str] = None,
         max_concurrency: int = 5,
-        file_type: Union[str, FileType] = FileType.DELIVERABLE,
+        file_type: Union[str, FileType] = FileType.WRITE_FILE,
     ) -> List[AgentFileMetadata]:
         """并发批量同步沙箱工作目录文件到 AFS 存储.
 
@@ -1199,7 +1203,9 @@ class AgentFileSystem:
         Args:
             work_dir: 沙箱工作目录，默认取 ``sandbox.work_dir``
             max_concurrency: 并发上限（默认 5）
-            file_type: 保存到 AFS 的文件类型（默认 ``DELIVERABLE``）
+            file_type: 保存到 AFS 的文件类型（默认 ``WRITE_FILE`` —— 沙箱释放前的
+                兜底同步绝大多数是过程文件,此前默认 ``DELIVERABLE`` 会把工作目录下
+                所有文件混进交付列表;需要交付的文件应由工具显式标记后另行保存）
 
         Returns:
             成功保存的文件元数据列表
@@ -1249,7 +1255,10 @@ class AgentFileSystem:
                         file_type=file_type,
                         extension=ext,
                         file_name=base_name,
-                        is_deliverable=True,
+                        # 兜底同步不视为显式交付:是否交付由 file_type 决定
+                        # (默认 WRITE_FILE 不交付;调用方显式传 DELIVERABLE 才交付)
+                        is_deliverable=file_type == FileType.DELIVERABLE
+                        or file_type == FileType.DELIVERABLE.value,
                         metadata={"sandbox_path": abs_path},
                     )
                     results.append(meta)
@@ -1849,18 +1858,22 @@ class AgentFileSystem:
             return existing
 
         # 5. 如果不存在，创建新记录
+        # 默认按过程文件(WRITE_FILE)入库,只有调用方显式 metadata.is_deliverable=True
+        # 才标记为交付物。此前默认 DELIVERABLE 导致 edit_file 等工具写的任何过程
+        # 文件都带上交付标记,混进最终交付文件列表。
         if file_content:
-            actual_file_type = FileType.DELIVERABLE.value
-            if metadata and metadata.get("is_deliverable") is False:
-                actual_file_type = FileType.WRITE_FILE.value
+            is_deliverable = bool(
+                metadata and metadata.get("is_deliverable") is True
+            )
+            actual_file_type = (
+                FileType.DELIVERABLE.value if is_deliverable else FileType.WRITE_FILE.value
+            )
 
             return await self.save_file_from_sandbox(
                 sandbox_path=sandbox_path,
                 file_type=actual_file_type,
                 file_content=file_content,
-                is_deliverable=metadata.get("is_deliverable", True)
-                if metadata
-                else True,
+                is_deliverable=is_deliverable,
                 description=metadata.get("description") if metadata else None,
             )
 

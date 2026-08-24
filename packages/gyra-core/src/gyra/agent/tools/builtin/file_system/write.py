@@ -103,7 +103,7 @@ class WriteTool(SandboxToolBase):
             "path": args["path"],
             "file_text": content,
             "description": args.get("description", ""),
-            "is_deliverable": args.get("is_deliverable", True),
+            "is_deliverable": args.get("is_deliverable", False),
         }
 
         return await create_tool.execute(sandbox_args, context)

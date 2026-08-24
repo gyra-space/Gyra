@@ -272,9 +272,15 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                     "download_url": file_info.get("download_url") or preview_url,
                     "object_path": file_info.get("object_path"),
                     "render_type": self._determine_render_type(file_name, mime_type),
-                    # 归属轮次的时间标记:取产出该文件的工具动作 start_time,
-                    # 多轮会话里前端据此把交付文件贴到对应那一轮,而非堆在 feed 底部。
-                    "ts": self._ts_str(self._report_get(report, "start_time")),
+                    # 归属轮次的时间标记:取文件元数据 created_at(与结束时
+                    # gpts_memory/messages 全量收集路径一致),缺失时回退产出该文件的
+                    # 工具动作 start_time。若直接用动作 start_time,同一文件在增量
+                    # 推送与全量收集两条路径下 ts 不同,前端按 file_id+ts 合并时
+                    # 会把同一次交付识别成两条,交付文件重复展示。
+                    "ts": self._ts_str(
+                        file_info.get("created_at")
+                        or self._report_get(report, "start_time")
+                    ),
                 })
                 existing_ids.add(file_id)
             # 全部产出文件入驻大厅(与步骤产出共用 file_<id> 命名,天然去重)
@@ -644,6 +650,9 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         # 合并而非覆盖:terminate 收尾已在 _upsert_tool_step 收集过交付文件,
         # 此处按 file_id 并入 gpts_memory/messages 的全量结果(新值优先),
         # 避免 messages/gpts_memory 路径为空时把 terminate 收集的交付文件清空。
+        # 注意:同 file_id 的重复条目必须整体替换(含 ts),否则增量路径的 ts
+        # (动作 start_time 兜底)与全量路径的 ts(文件 created_at)不一致,
+        # 前端按 file_id+ts 合并时会把同一次交付识别成两条,重复展示。
         collected = [self._deliverable_file_to_dict(f) for f in deliverable_files]
         if collected:
             seen = {f.get("file_id") for f in collected}
@@ -652,6 +661,19 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                 if f.get("file_id") not in seen:
                     merged.append(f)
             self._deliverable_files = merged
+        else:
+            # 全量路径为空时保留增量收集结果,并按 file_id 去重(保留首条),
+            # 防止同一文件在多次增量推送中 ts 兜底不同而重复。
+            deduped: List[Dict[str, Any]] = []
+            seen_ids = set()
+            for f in self._deliverable_files:
+                fid = f.get("file_id")
+                if fid and fid in seen_ids:
+                    continue
+                if fid:
+                    seen_ids.add(fid)
+                deduped.append(f)
+            self._deliverable_files = deduped
 
         # 交付文件入驻大厅(与步骤产出共用 file_<id>,幂等去重)
         for f in self._deliverable_files:

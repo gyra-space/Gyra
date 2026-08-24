@@ -98,11 +98,15 @@ def make_default_acting_fn(
             )
 
         # 8. 截断（L1）
+        # 排除已自行管理输出大小的工具（与 V1 tool_action.py 对齐）：
+        # skill/Skill 工具输出可能很大但需完整保留；read/read_file/view 等
+        # 已自行分页管理，避免循环截断。
         output_content = str(result.output) if result.output is not None else ""
-        trunc_result = await truncator.truncate(output_content, tool_name, tool_input)
-        if getattr(trunc_result, "truncated", False):
-            # 覆写 output 为截断后内容（含 dattach tag）
-            result.output = trunc_result.truncated_content
+        if tool_name not in ("read", "read_file", "view", "Skill", "skill", "execute_sql", "get_table_spec"):
+            trunc_result = await truncator.truncate(output_content, tool_name, tool_input)
+            if getattr(trunc_result, "truncated", False):
+                # 覆写 output 为截断后内容（含 dattach tag）
+                result.output = trunc_result.truncated_content
 
         return result
 

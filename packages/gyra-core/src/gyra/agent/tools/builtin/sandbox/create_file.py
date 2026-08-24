@@ -24,8 +24,8 @@ _CREATE_FILE_PROMPT = """在沙箱中创建文件并写入内容。
 - 大文件请分多次调用：先用 create_file 写入前 3000 字符，再用 edit_file(append=True) 追加剩余内容
 
 **交付物标记：**
-- is_deliverable=True（默认）时，文件会自动标记为交付物，无需再调用 deliver_file
-- 仅当文件是中间过程文件（不需要交付给用户）时，设置 is_deliverable=False
+- 默认（is_deliverable=False）按过程文件处理，不进入最终交付文件列表
+- 仅当文件是最终要交付给用户的成果时，显式设置 is_deliverable=True，无需再调用 deliver_file
 
 **安全约束：**
 - 写入完成后再读取/修改，禁止并发操作
@@ -104,7 +104,7 @@ class CreateFileTool(SandboxToolBase):
         description = args.get("description", "")
         path = args.get("path")
         file_text = args.get("file_text")
-        is_deliverable = args.get("is_deliverable", True)
+        is_deliverable = args.get("is_deliverable", False)
 
         # 校验参数
         error = _validate_string_param(description, "description", allow_empty=True)

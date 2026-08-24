@@ -109,7 +109,7 @@ class DownloadFileTool(SandboxToolBase):
                 afs = client.agent_file_system
                 file_metadata = await afs.save_file_from_sandbox(
                     sandbox_path=sandbox_path,
-                    file_type=FileType.DELIVERABLE,
+                    file_type=FileType.WRITE_FILE,
                     is_deliverable=False,
                     description=f"下载文件: {file_name}",
                     tool_name="download_file",

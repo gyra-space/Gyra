@@ -412,6 +412,56 @@ async def test_deliverable_files_move_into_lobby():
 
 
 @pytest.mark.asyncio
+async def test_deliverable_ts_prefers_file_created_at_over_action_start_time():
+    """增量收集交付文件的 ts 优先取文件元数据 created_at(与全量收集路径一致),
+    避免同一文件在增量/全量两条路径下 ts 不同、前端按 file_id+ts 合并时重复展示。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    report = {
+        "action_id": "tool-d",
+        "action": "deliver_file",
+        "state": "complete",
+        "is_exe_success": True,
+        "content": "已交付",
+        "start_time": "2026-08-05T10:00:05",
+        "output_files": [
+            _make_output_file(
+                file_id="f9",
+                file_name="deck.pptx",
+                file_type="deliverable",
+                created_at="2026-08-05T10:00:03",
+            ),
+        ],
+    }
+    msg = _make_gpt_msg(content="完成", action_report=[report], message_id="m9")
+    payload = _extract_payload(await conv.visualization(messages=[msg], gpt_msg=msg))
+
+    assert payload["deliverable_files"][0]["ts"] == "2026-08-05T10:00:03"
+
+
+@pytest.mark.asyncio
+async def test_deliverable_ts_falls_back_to_action_start_time():
+    """文件元数据无 created_at 时,ts 回退产出该文件的动作/消息时间
+    (与 messages 全量收集路径的兜底一致:消息 created_at)。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    report = {
+        "action_id": "tool-d",
+        "action": "deliver_file",
+        "state": "complete",
+        "is_exe_success": True,
+        "content": "已交付",
+        "start_time": "2026-08-05T10:00:05",
+        "output_files": [
+            _make_output_file(file_id="f9", file_name="deck.pptx", file_type="deliverable"),
+        ],
+    }
+    msg = _make_gpt_msg(content="完成", action_report=[report], message_id="m9")
+    msg.created_at = "2026-08-05T10:00:05"
+    payload = _extract_payload(await conv.visualization(messages=[msg], gpt_msg=msg))
+
+    assert payload["deliverable_files"][0]["ts"] == "2026-08-05T10:00:05"
+
+
+@pytest.mark.asyncio
 async def test_deliverable_render_type_to_kind_mapping():
     """deliverable render_type → exhibit kind 映射(与前端 RENDER_TYPE_TO_KIND 对齐)。"""
     conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")

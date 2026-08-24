@@ -32,7 +32,7 @@ _EDIT_FILE_PROMPT = """文件写入工具，用于在沙箱中写入或编辑文
 - 替换文件中的内容：append=False，提供 old_str 和 new_str
 
 **交付物标记：**
-- is_deliverable=True（默认）时，编辑后的文件会更新交付状态
+- 默认（is_deliverable=False）不改变文件的交付状态；仅当显式传 is_deliverable=True 时，编辑后的文件会标记为交付物
 """
 
 
@@ -112,8 +112,8 @@ class EditFileTool(SandboxToolBase):
                 },
                 "is_deliverable": {
                     "type": "boolean",
-                    "default": True,
-                    "description": "是否将文件标记为交付物（默认 True），标记后可在任务结束时自动交付给用户",
+                    "default": False,
+                    "description": "是否将文件标记为交付物（默认 False）。过程文件无需设置；仅当该文件是最终要交付给用户的成果时设为 True，标记后会在任务结束时自动交付给用户",
                 },
             },
             "required": ["description", "path"],

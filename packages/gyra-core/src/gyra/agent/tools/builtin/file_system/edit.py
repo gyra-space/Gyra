@@ -114,7 +114,7 @@ class EditTool(SandboxToolBase):
             "description": args.get("description", "edit file"),
             "new_str": new_str,
             "append": append or (old_str is None),
-            "is_deliverable": args.get("is_deliverable", True),
+            "is_deliverable": args.get("is_deliverable", False),
         }
         if old_str is not None:
             sandbox_args["old_str"] = old_str
