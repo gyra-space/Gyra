@@ -108,7 +108,12 @@ export const ConversationCallDetailDrawer: React.FC<ConversationCallDetailDrawer
     return calls[0];
   }, [calls, targetId]);
 
-  const llm = (activeCall?.metrics as any)?.llm_metrics || {};
+  const metricsAny = (activeCall?.metrics as any) || {};
+  const llm = metricsAny.llm_metrics || {};
+  // llm_metrics 为空(V2 部分消息持久化时未填充 ModelInferenceMetrics)时,
+  // 回退到消息级 metrics.start_time_ms / end_time_ms,保证「开始时间/耗时」仍可展示。
+  const startMs = llm.start_time_ms ?? metricsAny.start_time_ms;
+  const endMs = llm.end_time_ms ?? metricsAny.end_time_ms;
 
   const selectedItems = useMemo(() => {
     if (!activeCall) return [];
@@ -137,9 +142,9 @@ export const ConversationCallDetailDrawer: React.FC<ConversationCallDetailDrawer
           {llm.speed_per_second != null ? `${llm.speed_per_second.toFixed(2)} tok/s` : '-'}
         </Descriptions.Item>
         <Descriptions.Item label="耗时">
-          {formatDurationMs(llm.start_time_ms, llm.end_time_ms)}
+          {formatDurationMs(startMs, endMs)}
         </Descriptions.Item>
-        <Descriptions.Item label="开始时间">{formatTs(llm.start_time_ms)}</Descriptions.Item>
+        <Descriptions.Item label="开始时间">{formatTs(startMs)}</Descriptions.Item>
         <Descriptions.Item label="首 token 耗时">
           {llm.first_token_time_ms != null
             ? `${((llm.first_token_time_ms - llm.start_time_ms) / 1000).toFixed(2)}s`
@@ -185,7 +190,7 @@ export const ConversationCallDetailDrawer: React.FC<ConversationCallDetailDrawer
       sys: <>{jsonCell(activeCall.system_prompt)}</>,
       user: <>{jsonCell(activeCall.user_prompt)}</>,
     };
-  }, [activeCall, llm]);
+  }, [activeCall, llm, startMs, endMs]);
 
   return (
     <Drawer
@@ -224,11 +229,8 @@ export const ConversationCallDetailDrawer: React.FC<ConversationCallDetailDrawer
             {activeCall && (
               <Paragraph className="mt-2 rounded-md bg-gray-50 px-2 py-1 text-xs text-gray-500" type="secondary">
                 第 {activeCall.round ?? '-'} 轮 · 使用 {activeCall.model_name || '-'} · 开始{' '}
-                {formatTs((activeCall.metrics as any)?.llm_metrics?.start_time_ms)} · 耗时{' '}
-                {formatDurationMs(
-                  (activeCall.metrics as any)?.llm_metrics?.start_time_ms,
-                  (activeCall.metrics as any)?.llm_metrics?.end_time_ms,
-                )}
+                {formatTs(startMs)} · 耗时{' '}
+                {formatDurationMs(startMs, endMs)}
               </Paragraph>
             )}
             <Tabs

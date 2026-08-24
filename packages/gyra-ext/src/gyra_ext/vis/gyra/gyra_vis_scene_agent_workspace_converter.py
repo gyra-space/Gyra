@@ -481,15 +481,24 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         if role == "tool":
             return
         message_id = getattr(msg, "message_id", None)
-        ts = getattr(msg, "created_at", None)
+        # created_at 可能是 datetime 或 str,先归一化为字符串,才能与报告 start_time 比较
+        ts = self._ts_str(getattr(msg, "created_at", None))
 
         reports = getattr(msg, "action_report", None)
+        # 计算该消息 assistant 文本(最终回答)的时序锚点。
+        # V2 消息的 created_at 是轮次开始时间(早于工具执行),直接作为回答时序会把最终
+        # 回答排到工具步骤之前(先结果后工具)。取动作报告里最新的 start_time 作为回答时序,
+        # 使其落在该消息所有工具之后;无报告时回退 created_at。
+        answer_ts = ts
         if isinstance(reports, (list, tuple)):
             for report in reports:
+                report_ts = self._ts_str(self._report_get(report, "start_time"))
+                if report_ts:
+                    answer_ts = report_ts if (not answer_ts or report_ts > answer_ts) else answer_ts
                 self._upsert_tool_step(report)
 
         self._ingest_thinking(message_id, getattr(msg, "thinking", None), live=False, ts=ts)
-        self._ingest_assistant_text(message_id, getattr(msg, "content", None), ts=ts)
+        self._ingest_assistant_text(message_id, getattr(msg, "content", None), ts=answer_ts)
 
     def _ingest_stream_msg(self, stream_msg: Union[Dict, str]) -> None:
         if not isinstance(stream_msg, dict):

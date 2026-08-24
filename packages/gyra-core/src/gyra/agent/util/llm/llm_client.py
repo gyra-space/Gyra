@@ -731,6 +731,11 @@ class AIWrapper:
                 # 根据 provider 返回的 incremental 属性判断是否需要累积
                 need_accumulate = None  # 延迟判断，根据第一个 chunk 确定
                 logged_tc_ids: set = set()  # 记录已输出的 tool_call IDs，避免重复日志
+                # 最近一次「有内容/工具」帧的取值：流式末尾 usage-only 帧为空但携带 usage,
+                # 用它补发一个带 metrics 的收尾 AgentLLMOut,否则持久化的 llm_metrics 拿不到 token。
+                last_sent_thinking = ""
+                last_sent_content = ""
+                last_sent_tool_calls = None
 
                 async for output in client.generate_stream(request):  # type: ignore
                     model_output: ModelOutput = output
@@ -761,6 +766,23 @@ class AIWrapper:
                     think_blank = not thinking_text or len(thinking_text) <= 0
                     content_blank = not content_text or len(content_text) <= 0
                     if think_blank and content_blank and not model_output.tool_calls:
+                        # usage-only 尾帧：provider 把 usage 放在最后一个「空内容」帧里。
+                        # 若不在此补发,最后一个被采集的 agent_llm_out.metrics 为 None,
+                        # 导致 persist 到 gpts_messages.metrics.llm_metrics 的 token 计数为空。
+                        # 用「最近一次有内容/工具的帧」补发一个携带 metrics 的收尾 AgentLLMOut;
+                        # 仅增量模式才补发(该模式 content 为累积全量,上层再做一次 delta 得空串,
+                        # 不会重复输出正文;非增量模式补发会重复正文,维持原行为)。
+                        if need_accumulate and _usage_last and (last_sent_content or last_sent_thinking or last_sent_tool_calls):
+                            yield AgentLLMOut(
+                                thinking_content=last_sent_thinking,
+                                content=last_sent_content,
+                                metrics=_usage_to_metrics(_usage_last),
+                                llm_name=llm_model,
+                                llm_context=llm_context,
+                                tool_calls=last_sent_tool_calls,
+                                input_tools=input_tools_list,
+                                in_messages=params["messages"],
+                            )
                         continue
 
                     if _usage_first_token_ms is None:
@@ -787,6 +809,11 @@ class AIWrapper:
                             logger.info(
                                 f"Model Output Tool Calls: {json.dumps(tool_call_summary, ensure_ascii=False)}"
                             )
+
+                    # 记录本帧的 thinking/content/tool_calls，供 usage-only 尾帧补发时携带
+                    last_sent_thinking = thinking_text
+                    last_sent_content = content_text
+                    last_sent_tool_calls = model_output.tool_calls
 
                     yield AgentLLMOut(
                         thinking_content=thinking_text,

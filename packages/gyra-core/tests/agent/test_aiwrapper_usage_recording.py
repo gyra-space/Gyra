@@ -106,6 +106,36 @@ def test_stream_records_usage_from_terminator():
     assert r.first_token_ms is not None
 
 
+def test_stream_attaches_metrics_to_last_agent_llm_out():
+    """回归：流式末尾 usage-only 帧被跳过时，最后一个 AgentLLMOut 也应带 token 计数。
+
+    修复前 AIWrapper 在 usage-only 帧直接 continue，最后一个采集到的
+    agent_llm_out.metrics 为 None，导致 gpts_messages.metrics.llm_metrics 的
+    token 计数为空（调用详情抽屉显示 '-'）。
+    """
+    ai = _make_wrapper(stream=True)
+
+    async def run():
+        outs = []
+        async for o in ai.create(
+            messages=[{"role": "user", "content": "hi"}],
+            llm_model="fake-model",
+            stream_out=True,
+        ):
+            outs.append(o)
+        return outs
+
+    outs = _run(run())
+    assert outs, "expected at least one AgentLLMOut"
+    last = outs[-1]
+    # 最后一个 AgentLLMOut 应保留累积内容 + 携带 usage 派生 metrics
+    assert last.content == "hello", last.content
+    assert last.metrics is not None, "last AgentLLMOut.metrics should not be None"
+    assert last.metrics.prompt_tokens == 10
+    assert last.metrics.completion_tokens == 5
+    assert last.metrics.total_tokens == 15
+
+
 def test_error_path_still_records():
     class _ErrProvider:
         async def generate(self, request):

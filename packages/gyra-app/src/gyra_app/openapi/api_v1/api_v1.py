@@ -576,6 +576,17 @@ def _format_stream_error_frame(err: Exception) -> str:
     return f"data:{error_content}\n\n"
 
 
+async def _stream_error_frames(err: Exception):
+    """流式异常兜底帧序列：先发 vis error 帧,再补发 [DONE]。
+
+    若只发 error 帧而不发 [DONE],前端会因未收到 [DONE] 而把连接关闭当成
+    「服务端流提前中断」(onStreamDrop),覆盖掉具体错误文案,导致页面看不到真实报错。
+    补发 [DONE] 后前端视为正常收尾(onDone),onError 里的具体错误得以保留。
+    """
+    yield _format_stream_error_frame(err)
+    yield f"data:{json.dumps({'vis': '[DONE]'}, ensure_ascii=False)}\n\n"
+
+
 def _derive_fallback_conv_uid(dialogue: "ConversationVo") -> str:
     """缺省 conv_uid 时派生跨轮稳定的会话 ID（修复多轮追问会话断裂）。
 
@@ -832,7 +843,9 @@ async def chat_completions(
                         yield chunk
                 except Exception as e:
                     logger.exception("chat stream error(quick)!")
-                    yield _format_stream_error_frame(e)
+                    async for frame in _stream_error_frames(e):
+                        yield frame
+                    return
 
             return StreamingResponse(
                 chat_wrapper(),
@@ -857,7 +870,9 @@ async def chat_completions(
                         yield chunk
                 except Exception as e:
                     logger.exception("chat stream error(background)!")
-                    yield _format_stream_error_frame(e)
+                    async for frame in _stream_error_frames(e):
+                        yield frame
+                    return
 
             return StreamingResponse(
                 chat_wrapper(),
@@ -895,7 +910,9 @@ async def chat_completions(
                         yield chunk
                 except Exception as e:
                     logger.exception("chat stream error(default)!")
-                    yield _format_stream_error_frame(e)
+                    async for frame in _stream_error_frames(e):
+                        yield frame
+                    return
 
             return StreamingResponse(
                 chat_wrapper(),
@@ -907,10 +924,8 @@ async def chat_completions(
         logger.exception(f"Chat Exception!{dialogue}", e)
 
         async def error_text(err_msg):
-            error_content = json.dumps(
-                {"vis": f"[ERROR]{str(e)}[/ERROR]"}, ensure_ascii=False
-            )
-            yield f"data:{error_content}\n\n"
+            async for frame in _stream_error_frames(e):
+                yield frame
 
         return StreamingResponse(
             error_text(str(e)),
