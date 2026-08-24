@@ -49,6 +49,24 @@ class ConversationUsageVO(BaseModel):
     error_calls: int = 0
 
 
+class ConversationUsageSummaryVO(BaseModel):
+    """Single-conversation usage summary（会话头部/列表 chip 用）。
+
+    在一次查询内按 conv 聚合，并收集该会话使用过的模型名列表。
+    """
+
+    model_config = ConfigDict(title="ConversationUsageSummary")
+
+    conv_id: str
+    model_names: List[str] = Field(default_factory=list)
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    error_calls: int = 0
+
+
 class AgentUsageVO(BaseModel):
     """Aggregated usage per agent."""
 

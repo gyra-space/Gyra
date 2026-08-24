@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>对话模型使用与 Token 消耗 · 产品原型</title>
+<style>
+  :root {
+    --primary: #0069fe;
+    --bg: #f5f7fa;
+    --panel: #ffffff;
+    --border: #e4e9f0;
+    --text: #1c2533;
+    --muted: #8a94a6;
+    --green: #52c41a;
+    --orange: #faad14;
+    --red: #ff4d4f;
+    --indigo: #4f46e5;
+    --shadow: 0 6px 24px rgba(28, 37, 51, .08);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  .topbar { background: #101828; color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 12px; }
+  .topbar .logo { width: 26px; height: 26px; border-radius: 7px; background: linear-gradient(135deg, #0069fe, #4f46e5); display: grid; place-items: center; font-weight: 800; color: #fff; }
+  .topbar h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .topbar .sub { font-size: 12px; color: #b3bac5; }
+  .layout { display: flex; gap: 20px; padding: 20px 24px; align-items: flex-start; flex-wrap: wrap; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); }
+  .card-head { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .card-head .title { font-weight: 600; font-size: 14px; }
+  .card-head .tag { font-size: 11px; color: var(--muted); background: #f0f2f5; padding: 2px 8px; border-radius: 10px; }
+  .card-body { padding: 16px 18px; }
+  .col { min-width: 340px; flex: 1 1 380px; max-width: 560px; }
+
+  /* ---- 会话列表项 ---- */
+  .list-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 10px; background: #fff; position: relative; }
+  .list-item.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; }
+  .list-item .avatar { width: 36px; height: 36px; border-radius: 9px; background: #eef2ff; display: grid; place-items: center; font-size: 16px; }
+  .list-item .body { flex: 1; min-width: 0; }
+  .list-item .name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list-item .meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
+  .badge-model { display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 7px; border-radius: 9px; font-size: 11px; background: #eef2ff; color: var(--indigo); font-weight: 500; }
+  .badge-model .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--indigo); }
+  .badge-token { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .status-dot.running { background: var(--primary); animation: pulse 1.2s infinite; }
+  .status-dot.complete { background: var(--green); }
+  .status-dot.failed { background: var(--red); }
+  @keyframes pulse { 0%,100%{ opacity:1 } 50%{ opacity:.25 } }
+
+  /* ---- 会话头部 ---- */
+  .agent-header { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .agent-header .app-avatar { width: 38px; height: 38px; border-radius: 11px; background: linear-gradient(135deg, #6366f1, #4f46e5); color: #fff; display: grid; place-items: center; font-weight: 700; }
+  .agent-header .info { flex: 1; min-width: 0; }
+  .agent-header .app-name { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .agent-header .app-sub { display: flex; align-items: center; gap: 8px; margin-top: 4px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
+  .usage-chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 11px; background: #f0f2f5; font-size: 12px; color: var(--text); }
+  .usage-chip.clickable { cursor: pointer; transition: background .15s; }
+  .usage-chip.clickable:hover { background: #e6eaf0; }
+  .usage-chip .sep { color: #c2c9d4; }
+  .ctx-ratio { width: 46px; height: 6px; border-radius: 3px; background: #e6eaf0; overflow: hidden; }
+  .ctx-ratio > i { display: block; height: 100%; background: var(--orange); border-radius: 3px; }
+
+  /* ---- feed 消息 / running indicator ---- */
+  .feed { margin-top: 14px; }
+  .msg { padding: 12px; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; background: #fbfcfe; }
+  .msg.user { background: #eef2ff; }
+  .msg .head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+  .msg .content { font-size: 14px; color: var(--text); }
+  .step-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: #fff; display: flex; align-items: center; gap: 10px; }
+  .step-card .ic { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; font-size: 14px; }
+  .step-card .ic.tool { background: #f0f2f5; }
+  .step-card .ic.think { background: #efe9ff; }
+  .step-card .t { flex: 1; font-size: 13px; }
+  .step-card .t small { display: block; color: var(--muted); font-size: 11px; }
+
+  .running-bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px dashed var(--primary); border-radius: 10px; background: #f5f9ff; }
+  .running-bar .dots { display: flex; gap: 3px; }
+  .running-bar .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--primary); animation: pulse 1s infinite; }
+  .running-bar .dots i:nth-child(2){ animation-delay:.2s } .running-bar .dots i:nth-child(3){ animation-delay:.4s }
+  .running-bar .label { flex: 1; font-size: 13px; color: var(--text); }
+  .live-token { font-size: 12px; color: var(--indigo); font-weight: 600; white-space: nowrap; }
+
+  /* ---- 底部 usage 链条 --- */
+  .summary-strip { margin-top: 14px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .summary-strip .cell { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: #fff; }
+  .summary-strip .cell .k { font-size: 11px; color: var(--muted); }
+  .summary-strip .cell .v { font-size: 16px; font-weight: 600; margin-top: 2px; }
+
+  /* ---- detail drawer ---- */
+  .drawer-mask { position: fixed; inset: 0; background: rgba(16,24,40,.4); display: none; justify-content: flex-end; z-index: 50; }
+  .drawer-mask.open { display: flex; }
+  .drawer { width: 440px; max-width: 92vw; height: 100%; background: #fff; box-shadow: -8px 0 30px rgba(0,0,0,.15); display: flex; flex-direction: column; }
+  .drawer .d-head { padding: 18px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .drawer .d-head .t { font-size: 16px; font-weight: 600; }
+  .drawer .d-head .close { cursor: pointer; font-size: 18px; color: var(--muted); }
+  .drawer .d-body { padding: 18px 20px; overflow: auto; flex: 1; }
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+  .stat { border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+  .stat .v { font-size: 20px; font-weight: 700; margin-top: 4px; }
+  .stat .v small { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .section-title { font-size: 13px; font-weight: 600; margin: 16px 0 10px; display: flex; align-items: center; gap: 6px; }
+  .model-row { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+  .model-row .mr-head { display: flex; align-items: center; gap: 8px; }
+  .model-row .mr-head .m-name { font-weight: 600; font-size: 14px; }
+  .model-row .mr-head .m-calls { font-size: 12px; color: var(--muted); }
+  .bar { height: 6px; border-radius: 3px; background: #eef1f6; margin: 10px 0 6px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--primary), #4f46e5); border-radius: 3px; }
+  .mr-meta { display: flex; gap: 16px; font-size: 12px; color: var(--muted); }
+  .mr-meta b { color: var(--text); font-weight: 600; }
+  .p-legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+  .p-legend .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; vertical-align: middle; }
+  .call-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .call-table th, .call-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  .call-table th { color: var(--muted); font-weight: 500; }
+  .hint { font-size: 12px; color: var(--muted); background: #f8fafc; border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; margin-top: 10px; }
+
+  /* ---- 单次调用还原（排查） ---- */
+  .call-select { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .call-chip { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; cursor: pointer; color: var(--muted); background: #fff; }
+  .call-chip.active { border-color: var(--primary); background: #f5f9ff; color: var(--primary); font-weight: 600; }
+  .m-time { font-size: 12px; color: var(--muted); margin: 4px 0 10px; }
+  .mtab { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 12px 0 10px; flex-wrap: wrap; }
+  .mtab .mt { padding: 6px 12px; font-size: 13px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+  .mtab .mt.active { color: var(--primary); border-color: var(--primary); font-weight: 600; }
+  .mbody { border: 1px solid var(--border); border-radius: 10px; background: #fbfcfe; padding: 12px; }
+  .mbody pre { margin: 0; font-size: 12px; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .mbody .tool-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mbody .tool-tag { font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #eef2ff; color: var(--indigo); }
+  .mbody .kv { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 12px; }
+  .mbody .kv:last-child { border-bottom: none; }
+  .mbody .kv b { font-weight: 600; }
+  .m-json { font-size: 12px; color: var(--muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="logo">G</div>
+    <div>
+      <h1>对话模型使用与 Token 消耗 —— 产品原型</h1>
+      <div class="sub">覆盖 Agent 对话 & 场景空间（Workspace）· 运行中 / 已完成 · 4 个展示触点</div>
+    </div>
+  </div>
+
+  <div class="layout">
+
+    <!-- 左：会话列表 -->
+    <div class="card col">
+      <div class="card-head">
+        <span class="title">① 会话列表（侧边栏 / 空间会话栏）</span>
+        <span class="tag">触点 1</span>
+      </div>
+      <div class="card-body">
+        <div class="list-item active">
+          <div class="avatar">🤖</div>
+          <div class="body">
+            <div class="name">帮我分析本月销售数据并生成图表</div>
+            <div class="meta">
+              <span class="badge-model"><span class="dot"></span>claude-3-5-sonnet</span>
+              <span class="badge-token">⛁ 48.2K tokens</span>
+              <span class="status-dot complete" title="已完成"></span>
+            </div>
+          </div>
+        </div>
+        <div class="list-item">
+          <div class="avatar">🐍</div>
+          <div class="body">
+            <div class="name">修复订单模块的并发问题</div>
+            <div class="meta">
+              <span class="badge-model"><span class="dot"></span>deepseek-v3</span>
+              <span class="badge-token">⛁ 12.6K tokens</span>
+              <span class="status-dot running" title="运行中"></span>
+            </div>
+          </div>
+        </div>
+        <div class="list-item">
+          <div class="avatar">📊</div>
+          <div class="body">
+            <div class="name">生成季度财务报告</div>
+            <div class="meta">
+              <span class="badge-model"><span class="dot"></span>gpt-4o</span>
+              <span class="badge-token">⛁ 21.3K tokens</span>
+              <span class="status-dot complete" title="已完成"></span>
+            </div>
+          </div>
+        </div>
+        <div class="hint">每个历史会话直接显示“最终使用的模型 + 会话累计 tokens”。运行中的会话实时刷新。多模型会话显示主模型 + 数量（如 claude-3-5-sonnet · 2）。</div>
+      </div>
+    </div>
+
+    <!-- 中：Agent 会话详情 -->
+    <div class="card col">
+      <div class="card-head">
+        <span class="title">② Agent 会话头部 + ③④ 详情</span>
+        <span class="tag">触点 2 / 3 / 4</span>
+      </div>
+      <div class="card-body">
+
+        <!-- Agent header -->
+        <div class="agent-header">
+          <div class="app-avatar">财</div>
+          <div class="info">
+            <div class="app-name">财务数据助手 <span class="badge-model" style="vertical-align:middle"><span class="dot"></span>claude-3-5-sonnet</span></div>
+            <div class="app-sub">
+              <span>6 轮对话</span>
+              <!-- 新：模型 + tokens + 上下文占比 chip，可点击打开详情抽屉 -->
+              <span class="usage-chip clickable" onclick="openDrawer()">
+                📎 claude-3-5-sonnet
+                <span class="sep">·</span>
+                <b>48.2K</b> tokens
+                <span class="sep">·</span>
+                <span class="ctx-ratio" style="width:36px"><i style="width:68%"></i></span>
+                68%
+              </span>
+              <!-- 原：上下文压缩监控（保留） -->
+              <span class="usage-chip">🗜 上下文 68%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- feed -->
+        <div class="feed">
+          <div class="msg user">
+            <div class="head">👤 你 · 09:24</div>
+            <div class="content">帮我分析本月销售数据并生成对比图表</div>
+          </div>
+          <div class="step-card">
+            <div class="ic tool">⚙️</div>
+            <div class="t">读取 sales_2026_08.csv <small>tool_call · 2.1K tokens</small></div>
+          </div>
+          <div class="step-card">
+            <div class="ic think">🧠</div>
+            <div class="t">分析趋势 & 设计图表 <small>claude-3-5-sonnet · 14.3K tokens</small></div>
+          </div>
+          <div class="step-card">
+            <div class="ic tool">📈</div>
+            <div class="t">生成可视化图表 <small>vis · 0 tokens</small></div>
+          </div>
+          <div class="msg">
+            <div class="head">🤖 财务数据助手 · 09:26 <span class="badge-model" style="vertical-align:middle"><span class="dot"></span>claude-3-5-sonnet</span></div>
+            <div class="content">已完成分析：本月销量环比上升 23%，建议关注华东区。已生成图表 <a href="#">view</a>。</div>
+          </div>
+
+          <!-- 运行中指示（触点 3） -->
+          <div class="running-bar">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span class="label">deepseek-v3 思考中…</span>
+            <span class="live-token">LIVE · prompt 18.2K / completion 3.4K</span>
+          </div>
+        </div>
+
+        <!-- 底部 usage 汇总条（触点 4 简化） -->
+        <div class="summary-strip">
+          <div class="cell"><div class="k">模型</div><div class="v" style="font-size:14px">claude-3-5-sonnet</div></div>
+          <div class="cell"><div class="k">调用次数</div><div class="v">4</div></div>
+          <div class="cell"><div class="k">总 Tokens</div><div class="v">48.2K</div></div>
+          <div class="cell"><div class="k">估算成本</div><div class="v" style="font-size:14px">$0.71</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右：场景空间 -->
+    <div class="card col">
+      <div class="card-head">
+        <span class="title">④ 场景空间（Workspace）会话</span>
+        <span class="tag">触点 1 / 2 / 3</span>
+      </div>
+      <div class="card-body">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:10px">空间：数据中台 · 会话栏（rail）</div>
+        <div class="list-item active">
+          <div class="avatar">🛠</div>
+          <div class="body">
+            <div class="name">搭建离线数仓任务流</div>
+            <div class="meta">
+              <span class="badge-model"><span class="dot"></span>qwen-max</span>
+              <span class="badge-token">⛁ 132.5K tokens</span>
+              <span class="status-dot complete" title="已完成"></span>
+            </div>
+          </div>
+        </div>
+        <div class="list-item">
+          <div class="avatar">🐞</div>
+          <div class="body">
+            <div class="name">排查任务调度失败问题</div>
+            <div class="meta">
+              <span class="badge-model"><span class="dot"></span>deepseek-r1</span>
+              <span class="badge-token">⛁ 89.1K tokens</span>
+              <span class="status-dot running" title="运行中"></span>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:14px;font-size:12px;color:var(--muted)">运行中：页面顶部/末端显示当前模型 + 实时 token 消耗：</div>
+        <div style="margin-top:8px" class="running-bar">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="label">🤖 数据中台 Agent · qwen-max 执行中…</span>
+          <span class="live-token">⛁ 已消耗 89.1K</span>
+        </div>
+
+        <div style="margin-top:16px" class="hint">
+          场景空间复用同一数据链路：<code>gyra_serve_llm_usage</code>（conv_id 绑定），因此会话栏、头部、运行指示、详情抽屉均可展示与 Agent 一致的信息。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 详情抽屉（触点 4）：按模型拆分的用量详情 -->
+  <div class="drawer-mask" id="drawerMask">
+    <div class="drawer">
+      <div class="d-head">
+        <div class="t">📊 会话用量详情</div>
+        <div class="close" onclick="closeDrawer()">✕</div>
+      </div>
+      <div class="d-body">
+        <div class="stat-grid">
+          <div class="stat"><div class="k">总 Tokens</div><div class="v">48.2K</div></div>
+          <div class="stat"><div class="k">调用次数</div><div class="v">4</div></div>
+          <div class="stat"><div class="k">Prompt</div><div class="v">31.8K</div></div>
+          <div class="stat"><div class="k">Completion</div><div class="v">16.4K</div></div>
+        </div>
+
+        <div class="section-title">🧩 按模型拆分</div>
+        <div class="model-row">
+          <div class="mr-head">
+            <span class="m-name">claude-3-5-sonnet</span>
+            <span class="m-calls">3 次调用</span>
+            <span style="flex:1"></span>
+            <span class="badge-token" style="font-weight:600">37.6K tokens</span>
+          </div>
+          <div class="bar"><i style="width:78%"></i></div>
+          <div class="mr-meta">
+            <span>Prompt <b>24.8K</b></span>
+            <span>Completion <b>12.8K</b></span>
+            <span>成本 <b>$0.62</b></span>
+          </div>
+        </div>
+        <div class="model-row">
+          <div class="mr-head">
+            <span class="m-name">qwen-max</span>
+            <span class="m-calls">1 次调用</span>
+            <span style="flex:1"></span>
+            <span class="badge-token" style="font-weight:600">10.6K tokens</span>
+          </div>
+          <div class="bar"><i style="width:22%"></i></div>
+          <div class="mr-meta">
+            <span>Prompt <b>7.0K</b></span>
+            <span>Completion <b>3.6K</b></span>
+            <span>成本 <b>$0.09</b></span>
+          </div>
+        </div>
+
+        <div class="section-title">🔍 单次调用还原（排查定位）</div>
+        <div class="call-select" id="callSelect"></div>
+        <div class="m-time" id="callTime"></div>
+        <div class="mtab" id="callTabs">
+          <span class="mt active" data-tab="model">模型选用</span>
+          <span class="mt" data-tab="output">模型输出</span>
+          <span class="mt" data-tab="tools">工具列表</span>
+          <span class="mt" data-tab="calls">工具调用</span>
+          <span class="mt" data-tab="sys">系统提示词</span>
+          <span class="mt" data-tab="user">用户提示词</span>
+        </div>
+        <div class="mbody" id="callBody"></div>
+
+        <div class="hint">数据来源：<code>gpts_messages</code> 列 <code>system_prompt</code> / <code>user_prompt</code> / <code>content</code>(输出) / <code>thinking</code> / <code>input_tools</code>(工具列表) / <code>tool_calls</code> / <code>model_name</code> / <code>metrics.llm_metrics</code>。聚合与成本来自 <code>gyra_serve_llm_usage</code>，实时态用 SSE <code>usage_metric</code>。</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function openDrawer(){ document.getElementById('drawerMask').classList.add('open'); renderCalls('c1'); }
+    function closeDrawer(){ document.getElementById('drawerMask').classList.remove('open'); }
+    document.getElementById('drawerMask').addEventListener('click', e => { if(e.target.id==='drawerMask') closeDrawer(); });
+
+    var calls = {
+      c1: { model:"claude-3-5-sonnet", round:"第 1 轮", time:"09:25:12",
+        total:"14.3K", prompt:"9.2K", completion:"5.1K", speed:"32.8 tok/s",
+        duration:"32.8s", started:"09:25:12", first_token:"1.2s", first_done:"2.0s",
+        sys:"你是一个专业的财务数据分析助手，具备读取 CSV、生成图表与 SQL 查询能力。\n请严格按步骤执行，先读取数据再做分析，最后输出结论与可视化。",
+        user:"帮我分析本月销售数据并生成对比图表，重点看华东与华南区。",
+        output:"已完成分析：本月销量环比上升 23%，华东区贡献最大。已生成对比图表，如需可进一步导出。",
+        tools:["read_csv","gen_chart","run_sql"],
+        toolcalls:[{"name":"read_csv","args":{"path":"sales_2026_08.csv"}},{"name":"gen_chart","args":{"type":"bar","by":"region"}}] },
+      c2: { model:"claude-3-5-sonnet", round:"第 2 轮", time:"09:25:48",
+        total:"12.1K", prompt:"7.6K", completion:"4.5K", speed:"29.4 tok/s",
+        duration:"27.5s", started:"09:25:48", first_token:"1.1s", first_done:"1.8s",
+        sys:"你是一个专业的财务数据分析助手。基于上一步结果继续深入分析，并给出可视化。",
+        user:"基于上面图表，进一步展示各区域季度环比变化。",
+        output:"各区域季度环比：华东 +18%、华南 +9%、华北 +4%。已追加趋势图。",
+        tools:["run_sql","gen_chart"],
+        toolcalls:[{"name":"run_sql","args":{"sql":"select region, qoq from sales"}}] },
+      c3: { model:"qwen-max", round:"第 4 轮", time:"09:27:02",
+        total:"10.6K", prompt:"7.0K", completion:"3.6K", speed:"18.1 tok/s",
+        duration:"39.2s", started:"09:27:02", first_token:"2.3s", first_done:"3.1s",
+        sys:"你是报告润色助手，将分析结论整理为结构化月度简报。",
+        user:"把上面的分析整理成一份月度财务简报，含建议。",
+        output:"## 月度财务简报\n- 本月环比 +23%\n- 建议：加大华东资源投放…",
+        tools:["write_file"],
+        toolcalls:[{"name":"write_file","args":{"path":"report.md"}}] }
+    };
+    var order = ["c1","c2","c3"];
+    var activeCall = "c1", activeTab = "model";
+
+    function renderChips(){
+      var el = document.getElementById('callSelect');
+      el.innerHTML = order.map(function(id){
+        var c = calls[id];
+        return '<span class="call-chip'+(id===activeCall?' active':'')+'" data-call="'+id+'">'+c.model+' · '+c.round+' · '+c.total+'</span>';
+      }).join('');
+      el.querySelectorAll('.call-chip').forEach(function(ch){
+        ch.onclick = function(){ activeCall = ch.getAttribute('data-call'); renderChips(); renderBody(); };
+      });
+    }
+    function renderBody(){
+      var c = calls[activeCall];
+      document.getElementById('callTime').textContent = c.round+' · 使用 '+c.model+' · 开始 '+c.started+' · 耗时 '+c.duration;
+      var ms = document.getElementById('callTabs').querySelectorAll('.mt');
+      ms.forEach(function(t){ t.classList.toggle('active', t.getAttribute('data-tab')===activeTab); });
+      var el = document.getElementById('callBody'), html = '';
+      if(activeTab==='model'){
+        html = '<div class="kv"><span>模型名</span><b>'+c.model+'</b></div>'
+             + '<div class="kv"><span>total_token</span><b>'+c.total+'</b></div>'
+             + '<div class="kv"><span>output_token</span><b>'+c.completion+'</b></div>'
+             + '<div class="kv"><span>速度</span><b>'+c.speed+'</b></div>'
+             + '<div class="kv"><span>首 token 耗时</span><b>'+c.first_token+'</b></div>'
+             + '<div class="kv"><span>首 completion</span><b>'+c.first_done+'</b></div>'
+             + '<div class="m-json">metrics.llm_metrics = { collect_index:13, start_time_ms:1787109367201, first_token_time_ms:1787109367861, prompt_tokens:92… }</div>';
+      } else if(activeTab==='output'){ html = '<pre>'+c.output+'</pre>'; }
+      else if(activeTab==='tools'){ html = '<div class="tool-list">'+c.tools.map(function(t){return '<span class="tool-tag">'+t+'</span>';}).join('')+'</div><div class="m-json">input_tools = '+JSON.stringify(c.tools)+'</div>'; }
+      else if(activeTab==='calls'){ html = '<pre>'+JSON.stringify(c.toolcalls, null, 2)+'</pre>'; }
+      else if(activeTab==='sys'){ html = '<pre>'+c.sys+'</pre>'; }
+      else if(activeTab==='user'){ html = '<pre>'+c.user+'</pre>'; }
+      el.innerHTML = html;
+    }
+    document.getElementById('callTabs').querySelectorAll('.mt').forEach(function(t){
+      t.onclick = function(){ activeTab = t.getAttribute('data-tab'); renderBody(); };
+    });
+    function renderCalls(initial){ if(initial) activeCall = initial; renderChips(); renderBody(); }
+  </script>
+</body>
+</html>

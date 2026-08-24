@@ -59,6 +59,13 @@ def _has_custom_tool_renderer(
     # 按内容兜底：skill 工具输出 <skill_content> 时同样认为有自定义渲染器
     if isinstance(tool_result, str) and "<skill_content" in tool_result:
         return True
+    # ECP 语义工具输出 d-ecp-* / d-sql-query 专用 VIS 围栏，由 VisEcpSearch /
+    # VisEcpObject / VisEcpMetric / SqlQueryRenderer 等专用渲染器负责展示，
+    # 同样跳过通用 d-tool，避免同一结果在兜底渲染器与专用渲染器中重复出现。
+    if isinstance(tool_result, str):
+        stripped = tool_result.lstrip()
+        if stripped.startswith("```d-ecp-") or stripped.startswith("```d-sql-query"):
+            return True
     return False
 
 

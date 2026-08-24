@@ -78,6 +78,17 @@ export interface ModelUsage {
   error_calls: number;
 }
 
+export interface ConversationUsageSummary {
+  conv_id: string;
+  model_names: string[];
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  error_calls: number;
+}
+
 export interface TimeSeriesPoint {
   bucket_ms: number;
   calls: number;
@@ -121,6 +132,11 @@ export const listUsageCalls = (
 
 export const getUsageByConversation = (params: UsageFilters = {}) =>
   GET<UsageFilters, ConversationUsage[]>(`${API_PREFIX}/by-conversation`, params);
+
+export const getUsageConversationSummary = (convIds: string[] = []) =>
+  GET<null, ConversationUsageSummary[]>(
+    `${API_PREFIX}/conversation-summary?conv_ids=${encodeURIComponent(convIds.join(','))}`
+  );
 
 export const getUsageByAgent = (params: UsageFilters = {}) =>
   GET<UsageFilters, AgentUsage[]>(`${API_PREFIX}/by-agent`, params);

@@ -10,6 +10,7 @@ from gyra_serve.core import Result
 
 from ..api.schemas import (
     AgentUsageVO,
+    ConversationUsageSummaryVO,
     ConversationUsageVO,
     DeleteResultVO,
     ModelUsageVO,
@@ -91,6 +92,18 @@ async def by_conversation(
             start_ms=start_ms,
             end_ms=end_ms,
         )
+    )
+
+
+@router.get("/conversation-summary", response_model=Result[List[ConversationUsageSummaryVO]])
+async def conversation_summary(
+    conv_ids: Optional[str] = Query(default=None, description="逗号分隔的 conv_id 列表"),
+    service: Service = Depends(get_service),
+) -> Result[List[ConversationUsageSummaryVO]]:
+    """批量获取多个会话的用量概览（会话头部/列表 chip 用），避免 N+1 查询。"""
+    ids = [c for c in (conv_ids or "").split(",") if c.strip()]
+    return Result.succ(
+        service.aggregate_conversation_summary(conv_ids=ids or None)
     )
 
 

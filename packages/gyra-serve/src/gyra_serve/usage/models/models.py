@@ -22,6 +22,7 @@ from gyra.util.pagination_utils import PaginationResult
 
 from ..api.schemas import (
     AgentUsageVO,
+    ConversationUsageSummaryVO,
     ConversationUsageVO,
     DeleteResultVO,
     ModelUsageVO,
@@ -282,6 +283,77 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
             )
             for r in rows
         ]
+
+    def aggregate_conversation_summary(
+        self, conv_ids: Optional[List[str]] = None
+    ) -> List[ConversationUsageSummaryVO]:
+        """一次查询按 conv 聚合用量，并收集该会话使用过的模型名列表。
+
+        用于会话头部/历史列表的「模型 + token」汇总 chip，避免对每个会话逐条请求。
+        """
+        with self.session(commit=False) as session:
+            query = session.query(
+                LLMUsageEntity.conv_id.label("conv_id"),
+                LLMUsageEntity.model_name.label("model_name"),
+                func.count(LLMUsageEntity.id).label("calls"),
+                func.sum(LLMUsageEntity.prompt_tokens).label("prompt_tokens"),
+                func.sum(LLMUsageEntity.completion_tokens).label("completion_tokens"),
+                func.sum(LLMUsageEntity.total_tokens).label("total_tokens"),
+                func.sum(LLMUsageEntity.cost_usd).label("cost_usd"),
+                func.sum(
+                    case((LLMUsageEntity.error_code != 0, 1), else_=0)
+                ).label("error_calls"),
+            )
+            rows = (
+                query.filter(LLMUsageEntity.conv_id.isnot(None))
+                .group_by(LLMUsageEntity.conv_id, LLMUsageEntity.model_name)
+                .order_by(desc(LLMUsageEntity.total_tokens))
+                .all()
+            )
+
+        # conv_id 的定义是「会话uuid_段号」(如 xxx_1),任务列表等按稳定会话 uuid(conv_session_id)传参。
+        # 因此在 Python 侧去掉段号得到基础 uuid 再过滤/聚合,跨 MySQL/Postgres 都安全,不依赖方言函数。
+        requested = set()
+        for cid in conv_ids or []:
+            cid = (cid or "").strip()
+            if not cid:
+                continue
+            requested.add(cid.rsplit("_", 1)[0] if cid.split("_")[-1].isdigit() else cid)
+
+        grouped = {}
+        for r in rows:
+            key = r.conv_id
+            if key and key.split("_")[-1].isdigit():
+                key = key.rsplit("_", 1)[0]
+            if conv_ids and key not in requested:
+                continue
+            item = grouped.get(key)
+            if item is None:
+                item = ConversationUsageSummaryVO(
+                    conv_id=key,
+                    calls=0,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
+                    cost_usd=0.0,
+                    error_calls=0,
+                )
+                grouped[key] = item
+            item.model_names.append(r.model_name)
+            item.calls += int(r.calls or 0)
+            item.prompt_tokens += int(r.prompt_tokens or 0)
+            item.completion_tokens += int(r.completion_tokens or 0)
+            item.total_tokens += int(r.total_tokens or 0)
+            item.cost_usd += float(r.cost_usd or 0.0)
+            item.error_calls += int(r.error_calls or 0)
+
+        for item in grouped.values():
+            seen = []
+            for m in item.model_names:
+                if m not in seen:
+                    seen.append(m)
+            item.model_names = seen
+        return sorted(grouped.values(), key=lambda x: x.total_tokens, reverse=True)
 
     def aggregate_by_agent(self, **filter_kwargs) -> List[AgentUsageVO]:
         f = _filters_to_dict(**filter_kwargs)

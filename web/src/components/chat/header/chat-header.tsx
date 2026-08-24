@@ -22,6 +22,8 @@ import { AgentAvatar } from '@/components/common/agent-avatar';
 import { useSearchParams } from 'next/navigation';
 import { useContextMetrics } from '@/contexts/context-metrics-context';
 import ContextMetricsDisplay from '../chat-content-components/ContextMetricsDisplay';
+import { ConversationUsageChip } from '@/components/chat/ConversationUsageChip';
+import { useCallDetail } from '@/components/chat/call-detail/CallDetailProvider';
 
 interface ChatHeaderProps {
   isScrollToTop?: boolean;
@@ -32,11 +34,12 @@ interface ChatHeaderProps {
 
 const ChatHeader: React.FC<ChatHeaderProps> = ({ isScrollToTop = false, isProcessing = false }) => {
   const { message } = App.useApp();
-  const { appInfo, refreshAppInfo, history, setHistory, onNewChat, onToggleHistoryPanel, historyPanelOpen } = useContext(ChatContentContext);
+  const { appInfo, refreshAppInfo, history, setHistory, onNewChat, onToggleHistoryPanel, historyPanelOpen, currentConvSessionId } = useContext(ChatContentContext);
   const { initChatId } = useContext(AppContext);
   const { t } = useTranslation();
   const searchParams = useSearchParams();
   const { metrics } = useContextMetrics();
+  const { openCallDetail } = useCallDetail();
 
   const icon = useMemo(() => {
     return appInfo?.icon || '';
@@ -161,6 +164,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({ isScrollToTop = false, isProces
           {messageCount > 0 && (
             <span>{messageCount} 轮对话</span>
           )}
+          <ConversationUsageChip convId={currentConvSessionId} onClick={() => openCallDetail()} />
           {metrics && (
             <ContextMetricsDisplay metrics={metrics} compact />
           )}

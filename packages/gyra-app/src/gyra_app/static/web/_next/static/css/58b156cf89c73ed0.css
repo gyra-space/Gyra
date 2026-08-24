@@ -3042,6 +3042,10 @@
   font-size: 10.5px;
 }
 
+.ws-simple-item__usage {
+  margin-top: 4px;
+}
+
 .ws-simple-rail__inbox {
   border: 1px dashed var(--ws-border);
   color: var(--ws-ink-2);
@@ -4027,6 +4031,29 @@
   color: var(--ws-ink);
   font-size: 12.5px;
   font-weight: 600;
+}
+
+.ws-round-head__debug {
+  color: #5b6472;
+  cursor: pointer;
+  background: #fff;
+  border: 1px solid #1c25331f;
+  border-radius: 10px;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  margin-left: 2px;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 1;
+  transition: border-color .15s, background .15s, color .15s;
+  display: inline-flex;
+}
+
+.ws-round-head__debug:hover {
+  color: var(--primary, #0069fe);
+  background: #0069fe0d;
+  border-color: #0069fe66;
 }
 
 .ws-capsule-think__head {

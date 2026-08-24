@@ -291,6 +291,10 @@ function stripVisFence(s: string): string {
 /** 需要一律在内容区渲染执行入参的 ECP 语义工具(入参即查询/指标口径,不能折叠) */
 const FORCE_PARAMS_ACTIONS = new Set(['search_semantics', 'execute_metric_query']);
 
+/** 具备专用前端渲染器的 VIS 围栏(ECP 语义工具):结果由 VisEcpSearch / VisEcpObject /
+ *  VisEcpMetric / SqlQueryRenderer 等专用卡片渲染,而非通用 markdown/table 兜底。 */
+const DEDICATED_VIS_FENCE_RE = /^```d-(?:ecp-[a-z]+|sql-query)\b/;
+
 /** 场景空间步骤 → vis_manus 渲染器可消费的 outputs */
 function stepToOutputs(step: WorkspaceExecutionStep): ManusExecutionOutput[] {
   const outputs: ManusExecutionOutput[] = [];
@@ -327,12 +331,20 @@ function stepToOutputs(step: WorkspaceExecutionStep): ManusExecutionOutput[] {
   // SQL 工具(execute_sql/execute_raw_sql)的 vis 是 d-sql-query 围栏,结构化数据已
   // 从 step.output 剥壳渲染成 SqlQueryRenderer 卡片;vis 再 push 成 markdown 会因该通道
   // 不经过 GPTVis fence 解析而把 ```d-sql-query{...}``` 原文裸渲染,故此处跳过。
-  if (visText && type !== 'sql') outputs.push({ output_type: 'markdown', content: visText });
   const out = (step.output || '').trim();
+  // ECP 语义工具(非 sql)的 output 本身就是专用渲染器识别的 d-ecp-* 围栏:直接以
+  // markdown 喂 GPTVis 渲染成专用卡片(仅一次),并跳过 vis 通道的通用 d-tool(其
+  // tool_result 已内嵌同一 d-ecp 围栏)、以及下方 toStructuredOutput 对数组行 rows
+  // 的误判(会把指标结果退化渲染成通用表格),避免同一结果被重复/错误渲染。
+  const outIsDedicatedFence = type !== 'sql' && DEDICATED_VIS_FENCE_RE.test(out);
+  if (visText && type !== 'sql' && !outIsDedicatedFence) outputs.push({ output_type: 'markdown', content: visText });
   if (out) {
     let handled = false;
     const parsed = parseOutputJson(out);
-    if (parsed && typeof parsed === 'object') {
+    if (outIsDedicatedFence) {
+      outputs.push({ output_type: 'markdown', content: out });
+      handled = true;
+    } else if (parsed && typeof parsed === 'object') {
       if (!Array.isArray(parsed)) {
         const rec = parsed as Record<string, unknown>;
         if (type === 'sql') {

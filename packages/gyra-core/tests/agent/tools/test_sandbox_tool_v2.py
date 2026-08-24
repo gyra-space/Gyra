@@ -433,3 +433,75 @@ class TestEditFileToolV2Execute:
         )
         assert not result.success
         assert "沙箱" in result.error
+
+
+class TestViewFormatTextContent:
+    """沙箱 ViewTool._format_text_content 超长自动切片续读。
+
+    回归:此前内容超过 _MAX_FILE_CHARS 时直接返回 "[文件内容过长...]" 硬报错，
+    Agent 无法继续分段读取而只能降级为动态组装。现改为返回首段 + 续读提示
+    （对齐本地 Read 工具的分段续读行为），避免读到不完整内容时直接放弃。
+    """
+
+    def test_small_content_returned_unchanged(self):
+        from gyra.agent.tools.builtin.sandbox.view import _format_text_content
+
+        text, meta = _format_text_content("line1\nline2\n")
+        assert text == "line1\nline2\n"
+        assert meta["truncated"] is False
+        assert meta["total_lines"] == 2
+        assert meta["seg_start"] == 1
+        assert meta["seg_end"] == 2
+
+    def test_long_multiline_auto_slices_and_hints_continue(self):
+        from gyra.agent.tools.builtin.sandbox.view import (
+            _format_text_content,
+            _MAX_FILE_CHARS,
+        )
+
+        # 每行 5000 字符，10 行共约 50000 字符，远超限制
+        content = ("x" * 5000 + "\n") * 10
+        text, meta = _format_text_content(content)
+
+        assert meta["truncated"] is True
+        assert meta["total_lines"] == 10
+        assert meta["seg_start"] == 1
+        assert meta["seg_end"] >= 1
+        # 首段（含行号，不含续读提示）不超过限制
+        first_block = text.split("\n\n> ⚠️")[0]
+        assert len(first_block) <= _MAX_FILE_CHARS
+        # 续读提示明确给出下一步读取位置
+        assert "offset=" in text
+        assert "view_range=[" in text
+
+    def test_view_range_respected_then_auto_slices(self):
+        from gyra.agent.tools.builtin.sandbox.view import (
+            _format_text_content,
+            _MAX_FILE_CHARS,
+        )
+
+        # 12 行，每行约 4006 字符；请求 [5, -1] 后仍超长 → 在窗口内自动切片
+        content = "".join(f"line{i}" + "x" * 4000 + "\n" for i in range(1, 13))
+        text, meta = _format_text_content(content, (5, -1))
+
+        assert meta["truncated"] is True
+        assert meta["total_lines"] == 12
+        assert meta["seg_start"] == 5
+        assert meta["seg_end"] >= 5
+        first_block = text.split("\n\n> ⚠️")[0]
+        assert len(first_block) <= _MAX_FILE_CHARS
+
+    def test_single_huge_line_still_hints_char_mode(self):
+        from gyra.agent.tools.builtin.sandbox.view import _format_text_content
+
+        # 单行 20000 字符：按行无法继续切片 → 提示 char 模式
+        text, meta = _format_text_content("y" * 20000)
+        assert meta["truncated"] is True
+        assert "char 模式" in text
+
+    def test_out_of_range_returns_error(self):
+        from gyra.agent.tools.builtin.sandbox.view import _format_text_content
+
+        text, meta = _format_text_content("a\nb\n", (5, 10))
+        assert "超出文件范围" in text
+        assert meta["truncated"] is False

@@ -15,6 +15,9 @@ import {
   SearchOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import { ConversationUsageChip } from '@/components/chat/ConversationUsageChip';
+import type { ConversationUsageSummary } from '@/client/api/usage';
+import { convIdBase } from '@/types/context-metrics';
 
 export interface SimpleHistoryItem {
   key: string;
@@ -42,6 +45,8 @@ interface SceneSimpleRailProps {
   onOpenItem?: (item: SimpleHistoryItem) => void;
   onNewConversation?: () => void;
   onOpenInbox?: () => void;
+  /** 会话级用量（模型 + token）map，key=convUid，用于列表 chip 展示 */
+  usageMap?: Record<string, ConversationUsageSummary>;
 }
 
 function StatusDot({ status }: { status: SimpleHistoryItem['status'] }) {
@@ -78,6 +83,7 @@ export function SceneSimpleRail({
   onOpenItem,
   onNewConversation,
   onOpenInbox,
+  usageMap = {},
 }: SceneSimpleRailProps) {
   const [filter, setFilter] = useState('');
   const [collapsedSegs, setCollapsedSegs] = useState<Set<string>>(() => new Set());
@@ -197,6 +203,11 @@ export function SceneSimpleRail({
                         <div className="ws-simple-item__tm">
                           {fmtTime(it.updatedAt)} · {it.statusLabel}
                         </div>
+                        {it.convUid && usageMap[convIdBase(it.convUid)] && (
+                          <div className="ws-simple-item__usage">
+                            <ConversationUsageChip summary={usageMap[convIdBase(it.convUid)]} />
+                          </div>
+                        )}
                       </div>
                     </div>
                   );

@@ -20,6 +20,7 @@ import { useTranslation } from 'react-i18next';
 import { clearAllEventListeners } from '@/utils/event-emitter';
 import { applyDockFrame } from '@/components/chat/dock/apply-dock-frame';
 import type { DockFrame, DockWidget } from '@/components/chat/dock/dock-types';
+import CallDetailProvider from '@/components/chat/call-detail/CallDetailProvider';
 
 const { Content } = Layout;
 
@@ -783,7 +784,7 @@ const sessionContent = (
     </ContextMetricsProvider>
   );
 
-  return sessionContent;
+  return <CallDetailProvider convId={chatId}>{sessionContent}</CallDetailProvider>;
 });
 
 export default ChatSession;

@@ -16,7 +16,7 @@ from gyra_serve.utils.auth import UserRequest, get_user_from_headers
 
 from ..config import SERVE_SERVICE_COMPONENT_NAME, ServeConfig
 from ..service.service import Service
-from .schemas import MessageVo, ServeRequest, ServerResponse
+from .schemas import CallDetailVO, MessageVo, ServeRequest, ServerResponse
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +288,28 @@ async def get_history_messages(
     if not can_read_conversation(auth_user, con_uid):
         return Result.failed(msg="无权访问该会话")
     return Result.succ(service.get_history_messages(ServeRequest(conv_uid=con_uid)))
+
+
+@router.get(
+    "/call-details",
+    response_model=Result[List[CallDetailVO]],
+    dependencies=[Depends(check_api_key)],
+)
+async def get_call_details(
+    con_uid: str,
+    service: Service = Depends(get_service),
+    auth_user: UserRequest = Depends(get_user_from_headers),
+):
+    """获取会话中每次模型调用的输入/输出/工具列表/工具调用/性能指标。
+
+    用于排查定位（用量详情抽屉的"单次调用还原"）。按 conv_uid 懒加载，
+    Agent 与场景空间会话均可使用。
+    """
+    from gyra_serve.permissions import can_read_conversation
+
+    if not can_read_conversation(auth_user, con_uid):
+        return Result.failed(msg="无权访问该会话")
+    return Result.succ(service.get_call_details(con_uid))
 
 
 @router.get(

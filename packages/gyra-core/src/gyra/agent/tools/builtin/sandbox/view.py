@@ -115,42 +115,101 @@ def _format_size(size: int) -> str:
 
 def _format_text_content(
     content: str, view_range: Optional[Tuple[int, int]] = None
-) -> str:
-    """格式化文本内容，处理范围与长度限制。"""
+) -> Tuple[str, Dict[str, Any]]:
+    """格式化文本内容，处理范围与长度限制。
+
+    返回 (content_text, meta)：
+    - meta.truncated：本次输出是否被截断
+    - meta.seg_start / seg_end：本次返回的行区间（1-based）
+    - meta.total_lines / total_chars：文件总行数 / 总字符数
+
+    当内容超长时不再整段报错，而是自动切片返回首段 + 续读提示（对齐本地
+    Read 工具的分段续读行为），避免 Agent 因读到不完整内容直接降级。仅当整文件
+    为 ≤5 行的单行超大文件（按行无法继续切片）时才保留 char 模式提示。
+    """
     lines = content.splitlines(keepends=True)
     total_lines = len(lines)
+    total_chars = len(content)
 
+    start_idx = 0
     if view_range:
         start_line, end_line = view_range
         start_idx = max(0, start_line - 1)
         end_idx = total_lines if end_line == -1 else min(total_lines, end_line)
         if start_idx >= total_lines:
-            return f"[错误: 起始行 {start_line} 超出文件范围 (总行数: {total_lines})]"
+            return (
+                f"[错误: 起始行 {start_line} 超出文件范围 (总行数: {total_lines})]",
+                {
+                    "truncated": False,
+                    "total_lines": total_lines,
+                    "total_chars": total_chars,
+                    "seg_start": 1,
+                    "seg_end": total_lines,
+                },
+            )
         lines = lines[start_idx:end_idx]
 
-    content_joined = "".join(lines)
+    seg_start = start_idx + 1
+    seg_end = start_idx + len(lines)
+    selected_joined = "".join(lines)
 
-    if len(content_joined) > _MAX_FILE_CHARS:
-        if total_lines <= 5:
-            return (
-                f"[文件内容过长: {len(content_joined)} 字符，超出限制 {_MAX_FILE_CHARS} 字符，共 {total_lines} 行]\n"
-                f"此文件为单行或少行大文件，建议：\n"
-                f"  1. 使用 read 工具的 char 模式分段读取：\n"
-                f'     read(path="...", mode="char", offset=0, limit=5000)\n'
-                f"  2. 使用 python 脚本解析（如为 JSON）：\n"
-                f"     python3 -c \"import json; d=json.load(open('path')); print(json.dumps(d, indent=2, ensure_ascii=False))\"\n"
-                f"  3. 使用 grep 工具搜索关键信息"
-            )
-        else:
-            return (
-                f"[文件内容过长: {len(content_joined)} 字符，超出限制 {_MAX_FILE_CHARS} 字符，共 {total_lines} 行]\n"
-                f"建议：\n"
-                f"  1. 使用 view_range 参数分段读取，如 [1, 200] 或 [500, -1]\n"
-                f"  2. 使用 read 工具的 char 模式分段读取\n"
-                f"  3. 使用 grep 工具搜索关键信息"
-            )
+    if len(selected_joined) <= _MAX_FILE_CHARS:
+        return selected_joined, {
+            "truncated": False,
+            "total_lines": total_lines,
+            "total_chars": total_chars,
+            "seg_start": seg_start,
+            "seg_end": seg_end,
+        }
 
-    return content_joined
+    # 整文件 ≤5 行（多为单行超大文件）：按行无法继续切片 → 提示 char 模式 / 脚本 / grep
+    if total_lines <= 5:
+        return (
+            f"[文件内容过长: {len(selected_joined)} 字符，超出限制 {_MAX_FILE_CHARS} 字符，共 {total_lines} 行]\n"
+            f"此文件为单行或少行大文件，建议：\n"
+            f"  1. 使用 read 工具的 char 模式分段读取：\n"
+            f'     read(path="...", mode="char", offset={start_idx}, limit=5000)\n'
+            f"  2. 使用 python 脚本解析（如为 JSON）：\n"
+            f"     python3 -c \"import json; d=json.load(open('path')); print(json.dumps(d, indent=2, ensure_ascii=False))\"\n"
+            f"  3. 使用 grep 工具搜索关键信息",
+            {
+                "truncated": True,
+                "total_lines": total_lines,
+                "total_chars": total_chars,
+                "seg_start": seg_start,
+                "seg_end": seg_end,
+            },
+        )
+
+    # 统一自动切片：取能装进限制的前若干行（至少 1 行），并提示从何处继续
+    slice_lines: List[str] = []
+    used_chars = 0
+    for ln in lines:
+        if slice_lines and used_chars + len(ln) > _MAX_FILE_CHARS:
+            break
+        slice_lines.append(ln)
+        used_chars += len(ln)
+
+    slice_joined = "".join(slice_lines)
+    slice_end = start_idx + len(slice_lines)
+    next_offset = slice_end + 1
+    continue_hint = (
+        "\n\n> ⚠️ **内容不完整**：文件较大，本次仅展示了第 "
+        f"{seg_start}-{slice_end} 行（共 {total_lines} 行）。\n"
+        "> 请继续分段读取获取完整内容，切勿在内容不完整时继续后续操作：\n"
+        f"> 继续读取：`Read(path=..., offset={next_offset}, limit={_MAX_FILE_CHARS})` 或 "
+        f"`view(path=..., view_range=[{next_offset}, -1])`"
+    )
+    return (
+        slice_joined + continue_hint,
+        {
+            "truncated": True,
+            "total_lines": total_lines,
+            "total_chars": total_chars,
+            "seg_start": seg_start,
+            "seg_end": slice_end,
+        },
+    )
 
 
 def _clean_terminal_output(result) -> str:
@@ -650,7 +709,7 @@ class ViewTool(SandboxToolBase):
         if content.startswith("[错误:"):
             return ToolResult.fail(error=content, tool_name=self.name)
 
-        formatted_content = _format_text_content(content, range_tuple)
+        formatted_content, fmt_meta = _format_text_content(content, range_tuple)
 
         # 如果需要标记为交付物
         if mark_as_deliverable:
@@ -663,4 +722,18 @@ class ViewTool(SandboxToolBase):
                 delivery_description,
             )
 
-        return ToolResult.ok(output=formatted_content, tool_name=self.name)
+        return ToolResult.ok(
+            output=formatted_content,
+            tool_name=self.name,
+            metadata={
+                "path": sandbox_path,
+                "lines_read": max(
+                    0, fmt_meta.get("seg_end", 0) - fmt_meta.get("seg_start", 1) + 1
+                ),
+                "total_lines": fmt_meta.get("total_lines"),
+                "total_chars": fmt_meta.get("total_chars"),
+                "truncated": fmt_meta.get("truncated", False),
+                "seg_start": fmt_meta.get("seg_start"),
+                "seg_end": fmt_meta.get("seg_end"),
+            },
+        )

@@ -210,6 +210,19 @@ export function formatTokens(tokens: number): string {
 }
 
 /**
+ * 提取会话的基础 uuid（去掉末尾的 _N 分段号）。
+ * 兼容前端传 conv_id(uuid_N) 或 conv_session_id(纯 uuid) 两种来源。
+ */
+export function convIdBase(id?: string | null): string {
+  if (!id) return '';
+  const parts = id.split('_');
+  if (parts.length > 1 && /^\d+$/.test(parts[parts.length - 1])) {
+    return parts.slice(0, -1).join('_');
+  }
+  return id;
+}
+
+/**
  * 获取使用率等级
  */
 export function getUsageLevel(usageRatio: number): 'low' | 'medium' | 'high' | 'critical' {

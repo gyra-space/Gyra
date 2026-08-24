@@ -10,6 +10,7 @@ from gyra_serve.core import BaseService
 
 from ..api.schemas import (
     AgentUsageVO,
+    ConversationUsageSummaryVO,
     ConversationUsageVO,
     DeleteResultVO,
     ModelUsageVO,
@@ -71,6 +72,11 @@ class Service(BaseService[LLMUsageEntity, Any, Any]):
 
     def aggregate_by_conversation(self, **filters) -> list[ConversationUsageVO]:
         return self._dao.aggregate_by_conversation(**filters)
+
+    def aggregate_conversation_summary(
+        self, conv_ids: list[str] | None = None
+    ) -> list[ConversationUsageSummaryVO]:
+        return self._dao.aggregate_conversation_summary(conv_ids=conv_ids)
 
     def aggregate_by_agent(self, **filters) -> list[AgentUsageVO]:
         return self._dao.aggregate_by_agent(**filters)

@@ -1,6 +1,9 @@
 import { ChatContext } from '@/contexts';
 import { apiInterceptors, delDialogue } from '@/client/api';
 import { IChatDialogueSchema } from '@/types/chat';
+import { getUsageConversationSummary, type ConversationUsageSummary } from '@/client/api/usage';
+import { ConversationUsageChip } from '@/components/chat/ConversationUsageChip';
+import { convIdBase } from '@/types/context-metrics';
 import { CaretLeftOutlined, CaretRightOutlined, DeleteOutlined, ShareAltOutlined, SyncOutlined, CheckCircleOutlined, ExclamationCircleOutlined, LoadingOutlined, BarChartOutlined } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import {App, Flex, Layout, Spin, Tooltip, Typography, Badge } from 'antd';
@@ -11,6 +14,7 @@ import React, { useContext, useMemo, useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppDefaultIcon from '../icons/app-default-icon';
 import { queryChatStatus } from '@/client/api/chat';
+import { useRequest } from 'ahooks';
 
 const { Sider } = Layout;
 
@@ -68,7 +72,8 @@ const MenuItem: React.FC<{
   refresh?: any;
   order: React.MutableRefObject<number>;
   historyLoading?: boolean;
-}> = ({ item, refresh, historyLoading }) => {
+  usageSummary?: ConversationUsageSummary | null;
+}> = ({ item, refresh, historyLoading, usageSummary }) => {
   const { t } = useTranslation();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -107,7 +112,7 @@ const MenuItem: React.FC<{
   return (
     <Flex
       align='center'
-      className={`group/item w-full h-12 p-3 rounded-lg  hover:bg-white dark:hover:bg-theme-dark cursor-pointer mb-2 relative ${
+      className={`group/item w-full min-h-12 p-3 rounded-lg  hover:bg-white dark:hover:bg-theme-dark cursor-pointer mb-2 relative ${
         active ? 'bg-white dark:bg-theme-dark bg-opacity-100' : ''
       }`}
       onClick={() => {
@@ -139,7 +144,7 @@ const MenuItem: React.FC<{
           </div>
         )}
       </Tooltip>
-      <div className='flex flex-1 line-clamp-1'>
+      <div className='flex flex-1 flex-col min-w-0'>
         <Typography.Text
           ellipsis={{
             tooltip: true,
@@ -147,6 +152,14 @@ const MenuItem: React.FC<{
         >
           {item.label}
         </Typography.Text>
+        {usageSummary && (
+          <div className='mt-1'>
+            <ConversationUsageChip
+              summary={usageSummary}
+              onClick={() => router.push(`/usage?conv_id=${item.conv_uid}`)}
+            />
+          </div>
+        )}
       </div>
       <StatusIcon state={item.state} />
       {!item.default && (
@@ -261,6 +274,28 @@ const ChatSider: React.FC<{
     return [];
   }, [dialogueList]);
 
+  // 批量拉取会话级用量（模型 + token），供每条历史会话 chip 展示，避免 N+1
+  const convIds = useMemo(
+    () =>
+      (dialogueList[1] || [])
+        .map((i: IChatDialogueSchema) => i.conv_uid)
+        .filter((v): v is string => !!v),
+    [dialogueList],
+  );
+  const { data: usageMap = {} } = useRequest(
+    async () => {
+      if (!convIds.length) return {};
+      const [err, res] = await apiInterceptors(getUsageConversationSummary(convIds));
+      if (err) return {};
+      const map: Record<string, ConversationUsageSummary> = {};
+      (res || []).forEach(s => {
+        map[convIdBase(s.conv_id)] = s;
+      });
+      return map;
+    },
+    { refreshDeps: [convIds.join(',')] },
+  );
+
   return (
     <Sider
       className='bg-[#ffffff80]  border-r  border-[#d5e5f6] dark:bg-[#ffffff29] dark:border-[#ffffff66]'
@@ -290,7 +325,7 @@ const ChatSider: React.FC<{
           <Spin spinning={listLoading} className='mt-2'>
             {!!items?.length &&
               items.map(item => (
-                <MenuItem key={item?.key} item={item} refresh={refresh} historyLoading={historyLoading} order={order} />
+                <MenuItem key={item?.key} item={item} refresh={refresh} historyLoading={historyLoading} order={order} usageSummary={usageMap[convIdBase(item?.conv_uid)]} />
               ))}
           </Spin>
         </Flex>

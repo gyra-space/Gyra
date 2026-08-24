@@ -54,6 +54,46 @@ class ServeRequest(BaseModel):
         return model_to_dict(self, **kwargs)
 
 
+class CallDetailVO(BaseModel):
+    """单次模型调用详情（用于排查定位）。
+
+    从 gpts_messages 还原一次模型调用的输入（system/user 提示词）、输出、
+    工具列表、工具调用与性能指标。老版本 V1 chat_history 无这些字段时为空。
+    """
+
+    message_id: Optional[str] = Field(
+        default=None, description="gpts message_id（用于定位到具体消息）"
+    )
+    round: Optional[int] = Field(default=None, description="对话轮次")
+    role: Optional[str] = Field(default=None, description="消息角色（assistant/ai）")
+    model_name: Optional[str] = Field(
+        default=None, description="本次调用使用的模型名"
+    )
+    system_prompt: Optional[str] = Field(
+        default=None, description="本次调用发送给模型的系统提示词"
+    )
+    user_prompt: Optional[str] = Field(
+        default=None, description="本次调用发送给模型的用户提示词"
+    )
+    content: Optional[str] = Field(default=None, description="模型输出内容")
+    thinking: Optional[str] = Field(default=None, description="模型推理过程")
+    observation: Optional[str] = Field(default=None, description="观测/工具结果")
+    input_tools: Optional[Any] = Field(
+        default=None, description="本次调用传入的工具列表"
+    )
+    tool_calls: Optional[Any] = Field(
+        default=None, description="本次调用发出的工具调用"
+    )
+    metrics: Optional[Dict] = Field(
+        default=None, description="性能指标（llm_metrics：tokens/耗时/速度等）"
+    )
+    time_stamp: Optional[Any] = Field(default=None, description="消息时间戳")
+
+    def to_dict(self, **kwargs) -> Dict[str, Any]:
+        """Convert the model to a dictionary"""
+        return model_to_dict(self, **kwargs)
+
+
 class ServerResponse(BaseModel):
     """Conversation response model"""
 

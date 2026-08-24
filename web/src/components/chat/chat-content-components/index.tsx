@@ -5,15 +5,17 @@ import {
   ClockCircleOutlined,
   CloseOutlined,
   CodeOutlined,
+  FileSearchOutlined,
   LoadingOutlined,
   RobotOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { GPTVis } from '@antv/gpt-vis';
-import { Tag } from 'antd';
+import { Tag, Tooltip } from 'antd';
 import classNames from 'classnames';
 import { PropsWithChildren, ReactNode, memo, useContext, useMemo } from 'react';
 import { renderModelIcon } from '../header/model-selector';
+import { useCallDetail } from '@/components/chat/call-detail/CallDetailProvider';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from './config';
 
 interface Props {
@@ -66,6 +68,7 @@ function formatMarkdownVal(val: string) {
 
 function ChatContent({ children, content, isChartChat, onLinkClick }: PropsWithChildren<Props>) {
   const { scene } = useContext(ChatContext);
+  const { openCallDetail, enabled: callDetailEnabled } = useCallDetail();
 
   const { context, model_name, role } = content;
   const isRobot = role === 'view';
@@ -156,6 +159,19 @@ function ChatContent({ children, content, isChartChat, onLinkClick }: PropsWithC
       <div className='mr-2 flex flex-shrink-0 items-center justify-center h-7 w-7 rounded-full text-lg sm:mr-4'>
         {isRobot ? renderModelIcon(model_name) || <RobotOutlined /> : <UserOutlined />}
       </div>
+      {isRobot && callDetailEnabled && (
+        <Tooltip title='查看本次模型调用详情（系统/用户提示词、输出、工具、token）'>
+          <button
+            type='button'
+            aria-label='查看本次模型调用详情'
+            onClick={() => openCallDetail(content.message_id)}
+            className='mr-1 mt-1 flex h-6 flex-shrink-0 items-center gap-1 rounded border border-solid border-[#e4e9f0] px-2 text-xs text-gray-400 hover:text-theme-primary hover:border-[#0069fe]/40'
+          >
+            <FileSearchOutlined />
+            <span>详情</span>
+          </button>
+        </Tooltip>
+      )}
       <div className='flex-1 overflow-hidden items-center text-md leading-8 pb-2'>
         {/* User Input */}
         {!isRobot && typeof context === 'string' && context}

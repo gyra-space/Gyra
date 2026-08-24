@@ -7,9 +7,14 @@ import {
   CopyOutlined,
   EditOutlined,
   EyeOutlined,
+  FullscreenOutlined,
+  FullscreenExitOutlined,
   ReloadOutlined,
+  ZoomInOutlined,
+  ZoomOutOutlined,
 } from '@ant-design/icons';
 import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { CodePreview } from './code-preview';
 
 interface VisMermaidProps {
@@ -139,6 +144,9 @@ const getMermaidConfig = (mode: string) => ({
 const TOOLBAR_BTN =
   'flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-theme-dark dark:hover:text-gray-200';
 
+const FULLSCREEN_BTN =
+  'flex items-center gap-1 rounded px-2 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-800 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-gray-100';
+
 const ICON_STYLE: React.CSSProperties = { fontSize: 12 };
 
 /**
@@ -172,6 +180,12 @@ const VisMermaid = ({ code }: VisMermaidProps) => {
   const [copied, setCopied] = useState(false);
   /** 重试计数：递增触发渲染 effect 重跑 */
   const [retryTick, setRetryTick] = useState(0);
+  /** 全屏预览 */
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fsScale, setFsScale] = useState(1);
+  const fsViewportRef = useRef<HTMLDivElement>(null);
+  const fsSvgWrapRef = useRef<HTMLDivElement>(null);
+  const fsNaturalWidthRef = useRef(0);
 
   // 外部 code 变化（LLM 流式输出）同步到 sourceCode
   useEffect(() => {
@@ -252,6 +266,69 @@ const VisMermaid = ({ code }: VisMermaidProps) => {
     setRetryTick(t => t + 1);
   }, []);
 
+  const handleOpenFullscreen = useCallback(() => {
+    if (!containerRef.current) return;
+    setFsScale(1);
+    setFullscreen(true);
+  }, []);
+
+  const handleCloseFullscreen = useCallback(() => {
+    setFullscreen(false);
+  }, []);
+
+  const zoomIn = useCallback(() => setFsScale(s => Math.min(s * 1.25, 20)), []);
+  const zoomOut = useCallback(() => setFsScale(s => Math.max(s / 1.25, 0.1)), []);
+  const fitScreen = useCallback(() => {
+    const viewport = fsViewportRef.current;
+    const w = fsNaturalWidthRef.current;
+    if (!viewport || !w) return;
+    setFsScale(Math.min(1, (viewport.clientWidth - 48) / w));
+  }, []);
+
+  // 全屏打开时把当前渲染好的 SVG 克隆到全屏容器（记录原始像素宽度，避免被缩放到看不清）
+  useEffect(() => {
+    if (!fullscreen) return;
+    const src = containerRef.current?.querySelector('svg');
+    const target = fsSvgWrapRef.current;
+    if (!src || !target) return;
+    const clone = src.cloneNode(true) as SVGSVGElement;
+    const vb = src.viewBox?.baseVal;
+    fsNaturalWidthRef.current = vb?.width || parseFloat(src.getAttribute('width') || '') || 0;
+    target.innerHTML = '';
+    target.appendChild(clone);
+    return () => {
+      target.innerHTML = '';
+    };
+  }, [fullscreen]);
+
+  // 应用缩放：直接改 SVG 宽度（px），让滚动条随内容真实尺寸变化，实现缩放 + 拖拽平移
+  useEffect(() => {
+    if (!fullscreen) return;
+    const svg = fsSvgWrapRef.current?.querySelector('svg') as SVGSVGElement | null;
+    if (!svg) return;
+    const w = fsNaturalWidthRef.current;
+    if (w) {
+      svg.style.width = `${w * fsScale}px`;
+      svg.style.maxWidth = 'none';
+      svg.style.height = 'auto';
+    }
+  }, [fsScale, fullscreen]);
+
+  // 全屏时 Esc 退出 + 锁定页面滚动
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFullscreen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [fullscreen]);
+
   return (
     <div className='mermaid-container my-3 overflow-hidden rounded-lg border border-gray-100 bg-white shadow-card dark:border-theme-dark dark:bg-theme-dark-container dark:shadow-none'>
       {/* 工具栏 */}
@@ -267,6 +344,12 @@ const VisMermaid = ({ code }: VisMermaidProps) => {
             <button className={TOOLBAR_BTN} onClick={() => setView('diagram')} title='查看图表'>
               <EyeOutlined style={ICON_STYLE} />
               图表
+            </button>
+          )}
+          {view === 'diagram' && (
+            <button className={TOOLBAR_BTN} onClick={handleOpenFullscreen} title='全屏查看'>
+              <FullscreenOutlined style={ICON_STYLE} />
+              全屏
             </button>
           )}
           {!editing && (
@@ -352,6 +435,36 @@ const VisMermaid = ({ code }: VisMermaidProps) => {
           )}
         </div>
       )}
+
+      {/* 全屏预览 */}
+      {fullscreen &&
+        createPortal(
+          <div className='gyra-mermaid-fullscreen'>
+            <div className='gyra-mermaid-fullscreen-toolbar'>
+              <span className='text-xs font-medium'>mermaid 全屏预览</span>
+              <div className='flex items-center gap-1'>
+                <button className={FULLSCREEN_BTN} onClick={zoomOut} title='缩小'>
+                  <ZoomOutOutlined style={ICON_STYLE} />
+                </button>
+                <span className='min-w-[40px] text-center text-xs tabular-nums'>{Math.round(fsScale * 100)}%</span>
+                <button className={FULLSCREEN_BTN} onClick={zoomIn} title='放大'>
+                  <ZoomInOutlined style={ICON_STYLE} />
+                </button>
+                <button className={FULLSCREEN_BTN} onClick={fitScreen} title='适应屏幕'>
+                  适应
+                </button>
+                <button className={FULLSCREEN_BTN} onClick={handleCloseFullscreen} title='退出全屏 (Esc)'>
+                  <FullscreenExitOutlined style={ICON_STYLE} />
+                  退出
+                </button>
+              </div>
+            </div>
+            <div ref={fsViewportRef} className='gyra-mermaid-fullscreen-viewport'>
+              <div ref={fsSvgWrapRef} className='gyra-mermaid-fullscreen-svg' />
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 };

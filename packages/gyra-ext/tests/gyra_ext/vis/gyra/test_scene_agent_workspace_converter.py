@@ -6,6 +6,7 @@ import pytest
 
 from gyra_ext.vis.gyra.gyra_vis_scene_agent_workspace_converter import (
     SceneAgentWorkspaceConverter,
+    _MAX_OUTPUT_CHARS,
 )
 
 
@@ -115,6 +116,86 @@ async def test_tool_step_carries_vis_from_view():
         await conv.visualization(messages=[], stream_msg={"type": "all", "message_id": "m2", "action_report": [report2]})
     )
     assert payload2["execution"][0]["vis"] == report2.simple_view
+
+
+def _make_skill_content(repeat: int = 40) -> str:
+    """构造标准 <skill_content> 指令,正文重复 repeat 次(默认远超 _MAX_OUTPUT_CHARS)。"""
+    unit = (
+        "第一步：执行分析SQL → 获取聚合结果 → 用于HTML报告\n"
+        "    ↓\n"
+        "第二步：执行明细SQL → 获取原始记录 → 用于Excel明细\n"
+        "    ↓\n"
+        "第三步：保存明细结果到JSON文件\n"
+        "    ↓\n"
+        "第四步：生成HTML报告(内联分析结果)\n"
+        "    ↓\n"
+        "第五步：校验数据维度;\n"
+    )
+    body = unit * repeat
+    return (
+        f'<skill_content name="data-analysis">\n{body}\n'
+        "<file_preview>\n"
+        "base_path: /skills/data-analysis\n"
+        "  SKILL.md (44.0K)\n"
+        "  references/db_analysis_guide.md (3.2K)\n"
+        "</file_preview>\n"
+        "</skill_content>"
+    )
+
+
+@pytest.mark.asyncio
+async def test_skill_tool_content_not_truncated():
+    """skill 工具输出完整 <skill_content> 指令超过 _MAX_OUTPUT_CHARS 时不被截断。
+
+    回归:场景空间此前把工具 content 一律切成 _MAX_OUTPUT_CHARS(4000),skill
+    指令(如 data-analysis 的 44KB SKILL.md)会在尾部被拦腰截断(如"第五步"
+    丢失),且截断会切掉 </skill_content> 闭合标签导致前端解析失败。与 execute_sql
+    的 d-sql-query 结构化保护同理,skill 内容应保留完整。
+    """
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    skill_content = _make_skill_content()
+    assert len(skill_content) > 4000
+    report = _make_action_output(
+        action_id="skill-1",
+        action="skill",
+        state="complete",
+        content=skill_content,
+    )
+    payload = _extract_payload(
+        await conv.visualization(
+            messages=[], stream_msg={"type": "all", "message_id": "m1", "action_report": [report]}
+        )
+    )
+    step = payload["execution"][0]
+    assert step["action"] == "skill"
+    assert step["status"] == "done"
+    # 完整指令被保留,不做 4000 截断
+    assert step["output"] == skill_content
+    assert len(step["output"]) > 4000
+    # 闭合标签必须在,前端 SkillContentRenderer 才能解析出完整正文
+    assert step["output"].endswith("</skill_content>")
+
+
+@pytest.mark.asyncio
+async def test_non_skill_long_content_still_truncated():
+    """非 skill 工具的普通超长输出仍按 _MAX_OUTPUT_CHARS 截断,保护限定在 skill 内容。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    long_content = "x" * 6000
+    report = _make_action_output(
+        action_id="tool-long",
+        action="Bash",
+        state="complete",
+        content=long_content,
+    )
+    payload = _extract_payload(
+        await conv.visualization(
+            messages=[], stream_msg={"type": "all", "message_id": "m1", "action_report": [report]}
+        )
+    )
+    step = payload["execution"][0]
+    assert step["action"] == "Bash"
+    assert step["output"] == long_content[:_MAX_OUTPUT_CHARS]
+    assert len(step["output"]) == _MAX_OUTPUT_CHARS
 
 
 @pytest.mark.asyncio
@@ -409,6 +490,31 @@ async def test_deliverable_files_move_into_lobby():
     assert len(exhibit) == 1  # 步骤产出与交付文件按 file_<id> 幂等去重
     assert exhibit[0]["kind"] == "slides"
     assert payload["panel_view"] == "deliverable"
+
+
+@pytest.mark.asyncio
+async def test_deliverable_file_keeps_ts_when_message_fallback_lacks_it():
+    """terminate 交付文件带 start_time ts;messages 兜底收集的同 file_id 无 ts 时,
+    合并必须保留带 ts 的那份 —— 前端据此把交付文件归属到对应轮次(否则堆在 feed 底部)。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    report = {
+        "action_id": "tool-d",
+        "action": "deliver_file",
+        "state": "complete",
+        "is_exe_success": True,
+        "content": "已交付",
+        "terminate": True,
+        "start_time": "2026-08-24T09:00:00",
+        "output_files": [
+            _make_output_file(file_id="f9", file_name="deck.pptx", file_type="deliverable"),
+        ],
+    }
+    msg = _make_gpt_msg(content="完成", action_report=[report], message_id="m9")
+    payload = _extract_payload(await conv.visualization(messages=[msg], gpt_msg=msg))
+    # messages 兜底收集的 f9 无 created_at(ts=None),但 terminate 路径有 start_time ts;
+    # 合并后应保留非空 ts,供前端按轮次分组。
+    assert payload["deliverable_files"][0]["file_id"] == "f9"
+    assert payload["deliverable_files"][0]["ts"] == "2026-08-24T09:00:00"
 
 
 @pytest.mark.asyncio

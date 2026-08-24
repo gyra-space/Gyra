@@ -1969,6 +1969,10 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                             content_url = oss_url
                         else:
                             content_url = preview_url or oss_url
+                        # 交付文件的时间归属:优先文件元数据 created_at,缺失时用
+                        # 产出该文件的消息 created_at 兜底(多轮会话据此归属轮次)。
+                        _ts_raw = file_info.get("created_at") or getattr(msg, "created_at", None)
+                        _ts = _ts_raw.isoformat() if hasattr(_ts_raw, "isoformat") else (str(_ts_raw) if _ts_raw else None)
                         deliverable_files.append(ManusDeliverableFile(
                             file_id=file_id,
                             file_name=file_name,
@@ -1978,9 +1982,7 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                             download_url=file_info.get("download_url") or preview_url,
                             object_path=file_info.get("object_path"),
                             render_type=self._determine_render_type(file_name, mime_type),
-                            # 交付文件的时间归属:优先文件元数据 created_at,缺失时用
-                            # 产出该文件的消息 created_at 兜底(多轮会话据此归属轮次)。
-                            ts=file_info.get("created_at") or getattr(msg, "created_at", None),
+                            ts=_ts,
                         ))
 
         return task_files, deliverable_files

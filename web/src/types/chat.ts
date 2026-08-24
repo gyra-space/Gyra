@@ -59,6 +59,23 @@ export type NewDialogueParam = {
 
 export type ChatHistoryResponse = IChatDialogueMessageSchema[];
 
+/** 单次模型调用详情（排查定位用，来自 GET /chat/dialogue/call-details） */
+export type IChatDialogueCallDetail = {
+  message_id?: string;
+  round?: number;
+  role?: string;
+  model_name?: string;
+  system_prompt?: string;
+  user_prompt?: string;
+  content?: string;
+  thinking?: string;
+  observation?: string;
+  input_tools?: unknown;
+  tool_calls?: unknown;
+  metrics?: Record<string, unknown>;
+  time_stamp?: string | number | null;
+};
+
 export type IChatDialogueSchema = {
   conv_uid: string;
   conv_session_id?: string; // 会话ID，用于获取整个会话的消息

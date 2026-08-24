@@ -13,10 +13,12 @@ import {
   DownloadOutlined,
   LoadingOutlined,
   RocketOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons';
 import { Tooltip } from 'antd';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
 import { resolveFileDownloadUrl, transformFileUrl } from '@/utils';
+import { useCallDetail } from '@/components/chat/call-detail/CallDetailProvider';
 import { AgentAvatar } from '@/components/common/agent-avatar';
 import UserAvatar from '@/components/common/user-avatar';
 import { STORAGE_USERINFO_KEY } from '@/utils/constants/index';
@@ -448,6 +450,8 @@ function DeliverablesBlock({ files, onDeliverableClick }: { files: WorkspaceDeli
 }
 
 export function AgentWorkspaceRenderer({ view, running = false, onStepClick, selectedStepId, onDeliverableClick, onTaskClick, onSubagentClick, onInteractionResume, agentIcon, agentName, modelName }: AgentWorkspaceRendererProps) {
+  // 单次调用还原（排查定位）：深层组件通过 context 打开抽屉，未挂 Provider 时为 no-op
+  const { openCallDetail, enabled: callDetailEnabled } = useCallDetail();
   const deliverable_files = useMemo(() => view.deliverable_files ?? [], [view.deliverable_files]);
   const task_files = useMemo(() => view.task_files ?? [], [view.task_files]);
   // 运行中置底文案:按当前产出动态推导(工具执行 / 模型思考 / todo 阶段)
@@ -665,6 +669,18 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
                   <AgentAvatar icon={agentIcon} name={agentName} size={22} />
                 </span>
                 <span className="ws-round-head__name">{agentName || 'Agent'}</span>
+                {callDetailEnabled && (
+                  <button
+                    type="button"
+                    className="ws-round-head__debug"
+                    title="查看本次模型调用详情（系统/用户提示词、输出、工具、token）"
+                    aria-label="查看本次模型调用详情"
+                    onClick={() => openCallDetail()}
+                  >
+                    <FileSearchOutlined style={{ fontSize: 11 }} />
+                    <span>调用详情</span>
+                  </button>
+                )}
               </div>
             )}
             {nodes}

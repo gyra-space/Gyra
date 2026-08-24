@@ -224,7 +224,7 @@ export function AgentWorkspace({
                 send(p);
               }
             }}
-            loading={loading}
+            loading={running}
             onStop={abort}
             disabled={!convUid || switchingTask}
             readOnly={chatReadOnly}

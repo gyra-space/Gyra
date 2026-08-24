@@ -15,7 +15,7 @@ from gyra.util.pagination_utils import PaginationResult
 from gyra_serve.core import BaseService
 
 from ...feedback.api.endpoints import get_service
-from ..api.schemas import MessageVo, ServeRequest, ServerResponse
+from ..api.schemas import CallDetailVO, MessageVo, ServeRequest, ServerResponse
 from ..config import SERVE_SERVICE_COMPONENT_NAME, ServeConfig
 from ..models.models import ServeDao, ServeEntity
 
@@ -413,6 +413,74 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
             f"[MESSAGES_HISTORY][PERF] get_history_messages总耗时: {(time.time() - _total_start) * 1000:.2f}ms"
         )
         return result
+
+    def get_call_details(self, conv_uid: str) -> List[CallDetailVO]:
+        """还原会话中每次模型调用的输入/输出/工具列表/工具调用/性能指标。
+
+        用于排查定位（用量详情抽屉的"单次调用还原"）。仅返回模型调用侧
+        （assistant/ai）消息；V1 老会话（chat_history）没有这些字段时返回空。
+        """
+        try:
+            from gyra_serve.agent.db.gpts_messages_db import GptsMessagesDao
+
+            # conv_uid 可能是 conv_id(uuid_N) 或 conv_session_id(uuid)，剥离 _N
+            if "_" in conv_uid and conv_uid.split("_")[-1].isdigit():
+                conv_session_id = conv_uid.rsplit("_", 1)[0]
+            else:
+                conv_session_id = conv_uid
+            dao = GptsMessagesDao()
+            messages = dao.get_by_conv_session_id(conv_session_id)
+            if not messages:
+                messages = dao.get_by_conv_id_sync(conv_uid)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[call-details] read gpts_messages failed conv={conv_uid}: {e}")
+            return []
+
+        details: List[CallDetailVO] = []
+        for msg in messages:
+            sender = (msg.sender or "").lower()
+            role = (msg.role or "").lower()
+            # 跳过用户/Human 侧消息，只保留模型调用侧
+            if sender in ("user", "human") or role in ("user", "human"):
+                continue
+            if (
+                not msg.model_name
+                and not msg.system_prompt
+                and not msg.content
+                and not msg.input_tools
+            ):
+                continue
+            metrics = None
+            if msg.metrics is not None:
+                try:
+                    metrics = (
+                        msg.metrics.to_dict()
+                        if hasattr(msg.metrics, "to_dict")
+                        else msg.metrics
+                    )
+                except Exception:  # noqa: BLE001
+                    metrics = msg.metrics
+            time_stamp = (
+                msg.created_at.isoformat() if getattr(msg, "created_at", None) else None
+            )
+            details.append(
+                CallDetailVO(
+                    message_id=msg.message_id,
+                    round=msg.rounds,
+                    role=msg.role or "assistant",
+                    model_name=msg.model_name,
+                    system_prompt=msg.system_prompt,
+                    user_prompt=msg.user_prompt,
+                    content=msg.content,
+                    thinking=msg.thinking,
+                    observation=msg.observation,
+                    input_tools=msg.input_tools,
+                    tool_calls=msg.tool_calls,
+                    metrics=metrics,
+                    time_stamp=time_stamp,
+                )
+            )
+        return details
 
     def _get_messages_from_gpts(self, conv_uid: str) -> List[MessageVo]:
         """从gpts_messages表读取消息

@@ -337,6 +337,12 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                     output = json.dumps(sql_dict, ensure_ascii=False)
                 else:
                     output = content.strip()[:_MAX_OUTPUT_CHARS]
+            # skill 工具输出的是完整指令(<skill_content> 包裹 SKILL.md 正文 +
+            # file_preview)。若按 _MAX_OUTPUT_CHARS 截断,会把方法论/关键流程在尾部
+            # 拦腰截断(如"第五步"丢失),且截断会切掉闭合标签导致前端解析失败。SKILL.md
+            # 单次输出上限由 skill 工具自身控制在 100K,这里保留完整内容。
+            elif "<skill_content" in content:
+                output = content.strip()
             else:
                 output = content.strip()[:_MAX_OUTPUT_CHARS]
 
@@ -655,12 +661,28 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         # 前端按 file_id+ts 合并时会把同一次交付识别成两条,重复展示。
         collected = [self._deliverable_file_to_dict(f) for f in deliverable_files]
         if collected:
-            seen = {f.get("file_id") for f in collected}
-            merged = list(collected)
-            for f in self._deliverable_files:
-                if f.get("file_id") not in seen:
-                    merged.append(f)
-            self._deliverable_files = merged
+            # 同一 file_id 的两份里,优先保留「带非空 ts」的那份 —— 前端靠 ts 把
+            # 交付文件归属到对应轮次;若被无 ts 的版本覆盖,文件会失去轮次归属而
+            # 全部堆在 feed 底部(追问多次也看不出属于哪次提问)。
+            merged_by_id: Dict[str, Dict[str, Any]] = {}
+            for f in collected + self._deliverable_files:
+                fid = f.get("file_id")
+                if not fid:
+                    continue
+                existing = merged_by_id.get(fid)
+                if existing is None:
+                    merged_by_id[fid] = f
+                    continue
+                cur_ts = existing.get("ts")
+                new_ts = f.get("ts")
+                if new_ts and not cur_ts:
+                    merged_by_id[fid] = f
+                elif cur_ts and not new_ts:
+                    continue
+                else:
+                    # 都带 ts 或都无 ts:后者(gpts_memory/messages 全量)更新
+                    merged_by_id[fid] = f
+            self._deliverable_files = list(merged_by_id.values())
         else:
             # 全量路径为空时保留增量收集结果,并按 file_id 去重(保留首条),
             # 防止同一文件在多次增量推送中 ts 兜底不同而重复。

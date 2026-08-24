@@ -12,6 +12,7 @@ import {
   CompressionSegmentVo,
   DialogueListResponse,
   FeedBack,
+  IChatDialogueCallDetail,
   IChatDialogueSchema,
   IDB,
   NewDialogueParam,
@@ -308,6 +309,9 @@ export const postChatModeParamsInfoList = (chatMode: string) => {
 };
 export const getChatHistory = (convId: string) => {
   return GET<null, ChatHistoryResponse>(`/api/v1/chat/dialogue/messages/history?con_uid=${convId}`);
+};
+export const getChatCallDetails = (convId: string) => {
+  return GET<null, IChatDialogueCallDetail[]>(`/api/v1/chat/dialogue/call-details?con_uid=${convId}`);
 };
 export const getCompressionSegments = (convId: string) => {
   return GET<null, CompressionSegmentVo[]>(`/api/v1/chat/dialogue/compression/segments?con_uid=${convId}`);

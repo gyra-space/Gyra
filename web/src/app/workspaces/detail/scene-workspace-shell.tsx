@@ -6,6 +6,8 @@ import { App, Button, Modal, Drawer } from 'antd';
 import { CloseOutlined, LeftOutlined, MenuFoldOutlined, MenuUnfoldOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation, getAppInfo } from '@/client/api';
+import { getUsageConversationSummary, type ConversationUsageSummary } from '@/client/api/usage';
+import { convIdBase } from '@/types/context-metrics';
 import { getUserId } from '@/utils';
 import { useSpaceRole } from '@/hooks/use-space-role';
 import { useUserInput } from '@/hooks/use-user-input';
@@ -14,6 +16,7 @@ import type { WorkspaceEvent } from '@/hooks/use-chat';
 import type { AgentStep, DetailContext } from './agent-types';
 import { AgentWorkspace } from './agent-workspace';
 import { AgentWorkspaceInput } from './agent-workspace-input';
+import { CallDetailProvider } from '@/components/chat/call-detail/CallDetailProvider';
 import { SceneSpace } from './scene-space';
 import { SceneTaskRail, statusLabel } from './scene-task-rail';
 import { SceneSimpleRail, type SimpleHistoryItem } from './scene-simple-rail';
@@ -474,6 +477,26 @@ export function SceneWorkspaceShell({
     },
   });
 
+  // 会话是否仍在运行(SSE 进行中 或 后台轮询恢复的 RUNNING)。
+  // 中间区「运行中」badge、输入按钮 running 态、左栏当前会话状态都用它保持一致,
+  // 避免「重开运行中对话」时出现中间显示运行中、按钮/左侧列表却显示就绪/已完成的不一致。
+  const isRunning = simpleChat.loading || simpleChat.convState === 'RUNNING';
+
+  // 记录「观测到仍在运行」的会话 conv_uid(用于左栏状态持久化)。
+  // 只在本会话处于前台、能观测到真实状态时才增删。切到其它任务时,删除动作仅作用于
+  // 当前会话,不会把仍在上一个会话运行的会话误删,从而避免「切换任务后运行中的对话
+  // 在列表里被误判为已完成」;切回该会话时若已到终态,则由下方 effect 一并清除。
+  const [runningConvIds, setRunningConvIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!rightConvUid) return;
+    setRunningConvIds((prev) => {
+      const next = new Set(prev);
+      if (isRunning) next.add(rightConvUid);
+      else next.delete(rightConvUid);
+      return next;
+    });
+  }, [isRunning, rightConvUid]);
+
   // 简洁模式历史项:任务 + 大厅会话统一按时间倒序
   const simpleItems = useMemo<SimpleHistoryItem[]>(() => {
     const taskItems: SimpleHistoryItem[] = (tasks || []).map((t) => ({
@@ -499,23 +522,45 @@ export function SceneWorkspaceShell({
     }));
     const lobbyItems: SimpleHistoryItem[] = (conversations || [])
       .filter((c: any) => c.task_id == null)
-      .map((c: any) => ({
-        key: `conv-${c.conv_uid}`,
-        kind: 'lobby',
-        id: c.conv_uid,
-        title: c.title || `会话 ${String(c.conv_uid || '').slice(0, 8)}`,
-        status: 'done',
-        statusLabel: '大厅会话',
-        updatedAt: c.gmt_created || c.gmt_modified || '',
-        convUid: c.conv_uid,
-        taskId: null,
-      }));
+      .map((c: any) => {
+        const running = runningConvIds.has(c.conv_uid);
+        return {
+          key: `conv-${c.conv_uid}`,
+          kind: 'lobby',
+          id: c.conv_uid,
+          title: c.title || `会话 ${String(c.conv_uid || '').slice(0, 8)}`,
+          status: running ? 'running' : 'done',
+          statusLabel: running ? '运行中' : '大厅会话',
+          updatedAt: c.gmt_created || c.gmt_modified || '',
+          convUid: c.conv_uid,
+          taskId: null,
+        };
+      });
     return [...taskItems, ...lobbyItems].sort((a, b) => {
       const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
       const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
       return tb - ta;
     });
-  }, [tasks, conversations]);
+  }, [tasks, conversations, runningConvIds]);
+
+  // 批量拉取会话级用量（模型 + token），供左栏历史列表 chip 展示，避免 N+1
+  const simpleConvUids = useMemo(
+    () => simpleItems.map((it) => it.convUid).filter(Boolean) as string[],
+    [simpleItems],
+  );
+  const { data: convUsageMap = {} } = useRequest(
+    async () => {
+      if (!simpleConvUids.length) return {};
+      const [err, res] = await apiInterceptors(getUsageConversationSummary(simpleConvUids));
+      if (err) return {};
+      const map: Record<string, ConversationUsageSummary> = {};
+      (res || []).forEach((s) => {
+        map[convIdBase(s.conv_id)] = s;
+      });
+      return map;
+    },
+    { refreshDeps: [simpleConvUids.join(',')] },
+  );
 
   // 简洁模式:点击历史项进入对应任务/会话
   // 大厅会话(lobby):切 conv → 继续该会话的对话
@@ -582,10 +627,11 @@ export function SceneWorkspaceShell({
   // ── 渲染 ────────────────────────────────────────────────────────────
 
   return (
-    <div
-      className={`ws-scene-shell${railOpen ? '' : ' ws-scene-shell--rail-closed'}${spaceCollapsed ? ' ws-scene-shell--space-collapsed' : ''}${isSimple ? ' ws-scene-shell--simple' : ''}`}
-      data-pane={mobilePane}
-    >
+    <CallDetailProvider convId={rightConvUid}>
+      <div
+        className={`ws-scene-shell${railOpen ? '' : ' ws-scene-shell--rail-closed'}${spaceCollapsed ? ' ws-scene-shell--space-collapsed' : ''}${isSimple ? ' ws-scene-shell--simple' : ''}`}
+        data-pane={mobilePane}
+      >
       {isSimple ? (
         /* ── 简洁模式 ── */
         <>
@@ -609,6 +655,7 @@ export function SceneWorkspaceShell({
               onOpenItem={handleSimpleOpenItem}
               onNewConversation={handleSimpleNew}
               onOpenInbox={handleSimpleOpenInbox}
+              usageMap={convUsageMap}
             />
           </div>
           {/* 中间:欢迎态 或 运行态双栏(输入条在左侧步骤流卡片内底部) */}
@@ -630,7 +677,7 @@ export function SceneWorkspaceShell({
                     model={simpleInputModel}
                     onModelChange={setSimpleInputModel}
                     onSend={handleSimpleSend}
-                    loading={simpleChat.loading}
+                    loading={isRunning}
                     onStop={simpleChat.abort}
                     disabled={switchingTask}
                     readOnly={chatReadOnly}
@@ -673,7 +720,7 @@ export function SceneWorkspaceShell({
                   // 避免打开第二个任务后右侧仍停留第一个任务的步骤详情
                   key={rightConvUid}
                   view={simpleChat.workspaceView}
-                  running={simpleChat.loading || simpleChat.convState === 'RUNNING'}
+                  running={isRunning}
                   error={simpleChat.error}
                   switchingTask={switchingTask}
                   convLoadError={convLoadError}
@@ -694,7 +741,7 @@ export function SceneWorkspaceShell({
                     model={simpleInputModel}
                     onModelChange={setSimpleInputModel}
                     onSend={handleSimpleSend}
-                    loading={simpleChat.loading}
+                    loading={isRunning}
                     onStop={simpleChat.abort}
                     disabled={switchingTask}
                     readOnly={chatReadOnly}
@@ -927,6 +974,7 @@ export function SceneWorkspaceShell({
           ))}
         </div>
       </Modal>
-    </div>
+      </div>
+    </CallDetailProvider>
   );
 }
