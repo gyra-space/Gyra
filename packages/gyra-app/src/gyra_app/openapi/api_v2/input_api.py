@@ -35,6 +35,36 @@ def _gateway():
     return get_interaction_gateway()
 
 
+# 会话"进行中"状态(与 use-chat-polling 的 isInProgress 语义一致):
+# 只有这些状态才可能有活跃 Agent 消费补充输入队列。
+_IN_PROGRESS_STATES = {"running", "waiting", "retrying"}
+
+
+async def _has_active_execution(session_id: str) -> bool:
+    """判断会话最近一轮是否处于进行中状态(有活跃 Agent 消费补充输入)。
+
+    兜底校验:打开历史任务/快速切换会话时,前端 running 判定可能误判为
+    RUNNING,把已结束(终态)会话的追问也投递到队列——而该队列没有活跃
+    Agent 消费,消息会被静默搁置(无报错、无 AI 回复)。此处仅当会话最近
+    一轮为 running/waiting/retrying 时才放行入队;终态或无会话则拒绝。
+    任何异常按"放行"降级,不阻断原本合法的入队。
+    """
+    try:
+        from gyra_serve.agent.db.gpts_conversations_db import GptsConversationsDao
+
+        dao = GptsConversationsDao()
+        convs = await dao.get_by_session_id_asc(session_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"[input_api] check active execution failed, degrade to allow: {e}"
+        )
+        return True
+    if not convs:
+        return False
+    state = getattr(convs[-1], "state", None)
+    return state in _IN_PROGRESS_STATES
+
+
 @router.post(
     "/v2/input/submit",
     dependencies=[Depends(require_permission("agent", "chat"))],
@@ -42,9 +72,17 @@ def _gateway():
 async def submit_user_input(request: UserInputSubmitRequest = Body(...)):
     """提交用户补充输入到运行中会话的输入队列。
 
-    前端仅在 agent 运行中调用(按钮态保证);后端不重复校验活跃性,直接入队。
+    前端仅在 agent 运行中调用(按钮态保证);但为防历史任务/会话切换使 running
+    误判,后端兜底校验会话是否确有活跃执行,否则返回明确失败,避免静默吞消息。
     """
     gateway = _gateway()
+    if not await _has_active_execution(request.session_id):
+        return {
+            "success": False,
+            "message": "当前会话没有正在执行的任务, 请直接发送新消息",
+            "queue_length": 0,
+            "execution_node": None,
+        }
     await gateway.submit_user_input(
         session_id=request.session_id,
         content=request.content,

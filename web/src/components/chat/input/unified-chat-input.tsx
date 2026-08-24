@@ -275,6 +275,11 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   // 模型相关
   const [modelList, setModelList] = useState<IModelData[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
+  // 记录当前选中模型:模型列表异步返回/重载时判断是否已有用户选择,避免回填默认覆盖
+  const selectedModelRef = useRef(selectedModel);
+  useEffect(() => {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
   const [modelSearch, setModelSearch] = useState('');
   const [isModelOpen, setIsModelOpen] = useState(false);
   const [isParamsModalOpen, setIsParamsModalOpen] = useState(false);
@@ -327,6 +332,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
           // 此处按 model_type 兜底，防止多媒体模型混入普通聊天模型下拉）
           const llmModels = models.filter((m: IModelData) => m.worker_type === 'llm' && (!m.model_type || m.model_type === 'llm'));
           setModelList(llmModels);
+
+          // 已有选中模型(用户手动选择过)时不回填默认:防止输入框重挂载/模型列表重载后
+          // 覆盖用户选择回退默认模型
+          if (selectedModelRef.current) return;
 
           // 多媒体 Agent：默认选中配置的多媒体生成模型（默认模型 > 候选池第一个）
           if (isMultimedia && multimediaConfig) {

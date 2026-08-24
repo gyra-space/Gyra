@@ -108,6 +108,9 @@ export function SceneWorkspaceShell({
   const agentInputRef = useRef<AgentWorkspaceInputHandle>(null);
   // 简洁模式:中间区是否显示欢迎页(无会话/任务时 true,有内容时 false)
   const [simpleShowWelcome, setSimpleShowWelcome] = useState(true);
+  // 简洁模式输入框共享的选中模型:提升到 shell 层,避免欢迎态→运行态切换、
+  // 会话切换(key 重挂载 SceneSimpleWorkspace)后输入框内部模型 state 丢失回退默认
+  const [simpleInputModel, setSimpleInputModel] = useState<string>('');
 
   // 隐式上下文:用户当前在中间区域查看的交付物(artifact),发消息时自动带入 agent 上下文。
   // 仅 file-preview/entity-card 且有 artifact_id 时生效;点 chip × 设 focusDismissed 取消带入。
@@ -556,12 +559,16 @@ export function SceneWorkspaceShell({
   // 运行中追问复用与运维模式一致的「补充输入」链路(投递到后端队列,不开新 SSE)
   const { submitUserInput } = useUserInput(rightConvUid);
   const handleSimpleSend = async (payload: any) => {
-    setSimpleShowWelcome(false);
     if (simpleChat.loading || simpleChat.convState === 'RUNNING') {
+      setSimpleShowWelcome(false);
       simpleChat.appendOptimisticUser(payload.text);
       submitUserInput(payload.text);
     } else {
-      // convUid 可能为空(简洁模式首次发送),由 hook 内部 ensureConvUid 创建
+      // 首次发送(欢迎态):不要在 send 前关闭欢迎页 —— 新建会话是异步的
+      // (ensureConversation 内 createConversation/link/setCurrent 多次网络请求),
+      // 提前关闭会让运行态先以「最后一次会话」的 convUid 渲染并拉取其历史(闪烁跳转)。
+      // 欢迎页统一由 send 内部的 onConversationStart 在 ensureConversation 完成、
+      // 新会话已写回 workspaceConvUid 之后关闭,一次渲染直达当前新会话。
       await simpleChat.send(payload);
     }
   };
@@ -614,6 +621,8 @@ export function SceneWorkspaceShell({
                     ref={agentInputRef}
                     convUid={rightConvUid}
                     appInfo={appInfo}
+                    model={simpleInputModel}
+                    onModelChange={setSimpleInputModel}
                     onSend={handleSimpleSend}
                     loading={simpleChat.loading}
                     onStop={simpleChat.abort}
@@ -676,6 +685,8 @@ export function SceneWorkspaceShell({
                     ref={agentInputRef}
                     convUid={rightConvUid}
                     appInfo={appInfo}
+                    model={simpleInputModel}
+                    onModelChange={setSimpleInputModel}
                     onSend={handleSimpleSend}
                     loading={simpleChat.loading}
                     onStop={simpleChat.abort}

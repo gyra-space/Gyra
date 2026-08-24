@@ -56,7 +56,7 @@ import {
 import ModelIcon from '@/components/icons/model-icon';
 import cls from 'classnames';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ConnectorsModal } from '@/components/chat/connectors-modal';
 import { InteractionHandler } from '@/components/interaction';
@@ -297,6 +297,11 @@ export default function HomeChat() {
   const [selectedApp, setSelectedApp] = useState<IApp | null>(null);
   const [appList, setAppList] = useState<IApp[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
+  // 记录当前选中模型:模型列表异步返回/重载时判断是否已有用户选择,避免回填默认覆盖
+  const selectedModelRef = useRef(selectedModel);
+  useEffect(() => {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
   const [modelList, setModelList] = useState<IModelData[]>([]);
   const [modelSearch, setModelSearch] = useState('');
   const [isModelOpen, setIsModelOpen] = useState(false);
@@ -1022,6 +1027,9 @@ const [recommendedMcps, setRecommendedMcps] = useState<any[]>([]);
           // are excluded by backend; this model_type check is a frontend fallback)
           const llmModels = models.filter((m: IModelData) => m.worker_type === 'llm' && (!m.model_type || m.model_type === 'llm'));
           setModelList(llmModels);
+
+          // 已有选中模型(用户手动选择过)时不回填默认:防止重挂载/模型列表重载后覆盖回退默认
+          if (selectedModelRef.current) return;
 
           // Default selection logic: prioritize app's configured model
           const appDefaultModel = getDefaultModelFromApp(appDetail, llmModels);

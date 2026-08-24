@@ -371,15 +371,29 @@ interface AgentWorkspaceInputProps {
   usageMetrics?: UsageMetrics | null;
   /** 当前 app 信息（用于识别多媒体 Agent 的 capability/模型池；场景空间可 spawn 多媒体子 Agent） */
   appInfo?: any;
+  /** 受控选中模型(可选):由外部管理模型选择,输入框重挂载(简洁模式欢迎态→运行态、会话切换)后不丢失 */
+  model?: string;
+  /** 模型选择变化回调(与 model 成对使用) */
+  onModelChange?: (name: string) => void;
 }
 
 export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWorkspaceInputProps>(
-  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo }, ref) {
+  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, model, onModelChange }, ref) {
     const [text, setText] = useState('');
     const [resources, setResources] = useState<ResourceItem[]>([]);
     const [uploading, setUploading] = useState<UploadingFile[]>([]);
     const [modelList, setModelList] = useState<IModelData[]>([]);
-    const [selectedModel, setSelectedModel] = useState<string>('');
+    const [internalSelectedModel, setInternalSelectedModel] = useState<string>('');
+    // 受控(外部传入 model)与非受控(本地 state)共用同一读值:场景空间简洁模式由 shell 记忆,
+    // 避免输入框因欢迎态→运行态切换 / key 重挂载丢失用户已选模型而回退默认
+    const selectedModel = model ?? internalSelectedModel;
+    // 模型列表异步返回时用 ref 判断「是否已有选中」,防止 onSuccess 闭包读到过期值覆盖用户选择
+    const selectedModelRef = useRef(selectedModel);
+    const updateSelectedModel = (name: string) => {
+      selectedModelRef.current = name;
+      if (onModelChange) onModelChange(name);
+      else setInternalSelectedModel(name);
+    };
     const [mediaParams, setMediaParams] = useState<MediaParams>({});
     const [showPlaybook, setShowPlaybook] = useState(false);
     const [playbookCommand, setPlaybookCommand] = useState<PlaybookCommand | null>(null);
@@ -416,7 +430,9 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
         // 此处按 model_type 兜底，防止多媒体模型混入普通聊天模型下拉）
         const llm = models.filter(m => m.worker_type === 'llm' && (!m.model_type || m.model_type === 'llm'));
         setModelList(llm);
-        if (llm.length) setSelectedModel(llm[0].model_name);
+        // 仅在尚未选中任何模型时回填默认模型:不覆盖用户已选/外部记忆的模型
+        // (修复提交后输入框重挂载导致模型回退默认的 bug)
+        if (llm.length && !selectedModelRef.current) updateSelectedModel(llm[0].model_name);
       },
     });
 
@@ -1029,7 +1045,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                             type="button"
                             key={m.model_name}
                             className="flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer rounded-lg transition-colors text-left hover:bg-gray-100 dark:hover:bg-gray-700/60"
-                            onClick={() => setSelectedModel(m.model_name)}
+                            onClick={() => updateSelectedModel(m.model_name)}
                           >
                             <ModelIcon model={m.model_name} width={18} height={18} />
                             <span className="min-w-0 flex-1 truncate text-[13px] text-gray-700 dark:text-gray-300">{m.model_name}</span>

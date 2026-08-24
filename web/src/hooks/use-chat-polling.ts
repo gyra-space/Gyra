@@ -203,9 +203,22 @@ export function useChatPolling({
     }
   }, [enabled, isPolling, stopPolling]);
 
+  // 记录上次轮询的 convId:会话切换时据此复位残留状态,避免沿用上一会话的
+  // RUNNING/WAITING 造成 running 误判(见 convId effect 内注释)。
+  const prevConvIdRef = useRef<string | null>(null);
+
   // convId 变化时，检查状态
   useEffect(() => {
     if (convId && enabled) {
+      // 切换会话(打开历史任务/另开任务)时,上一会话可能残留 RUNNING/WAITING。
+      // 若沿用,外层 running = loading || convState === 'RUNNING' 会被误判为 true,
+      // 使"继续追问"被当作补充输入投递到无活跃执行会话的队列而静默吞掉(无报错、
+      // 无 AI 回复)。此处先复位为 UNKNOWN,待下面 checkStatus 拉回新会话真实状态。
+      if (prevConvIdRef.current !== convId) {
+        prevConvIdRef.current = convId;
+        setState('UNKNOWN');
+        setIsPolling(false);
+      }
       checkStatus().then(result => {
         if (result && isInProgress(result.state)) {
           startPolling();
