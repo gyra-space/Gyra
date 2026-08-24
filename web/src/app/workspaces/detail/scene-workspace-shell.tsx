@@ -561,8 +561,14 @@ export function SceneWorkspaceShell({
   const handleSimpleSend = async (payload: any) => {
     if (simpleChat.loading || simpleChat.convState === 'RUNNING') {
       setSimpleShowWelcome(false);
-      simpleChat.appendOptimisticUser(payload.text);
-      submitUserInput(payload.text);
+      // 投递补充输入队列;后端校验确有活跃执行才入队。若提交失败(会话无活跃
+      // 执行/僵尸状态),回退为正常发起对话,避免追问被投入无消费者队列而静默吞掉。
+      const ok = await submitUserInput(payload.text);
+      if (ok) {
+        simpleChat.appendOptimisticUser(payload.text);
+      } else {
+        await simpleChat.send(payload);
+      }
     } else {
       // 首次发送(欢迎态):不要在 send 前关闭欢迎页 —— 新建会话是异步的
       // (ensureConversation 内 createConversation/link/setCurrent 多次网络请求),

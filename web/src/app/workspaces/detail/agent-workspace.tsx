@@ -209,11 +209,17 @@ export function AgentWorkspace({
             ref={inputRef}
             convUid={convUid}
             appInfo={appInfo}
-            onSend={(p) => {
+            onSend={async (p) => {
               if (running) {
-                // 运行中追问:乐观上屏用户气泡 + 投递补充输入队列
-                appendOptimisticUser(p.text);
-                submitUserInput(p.text);
+                // 运行中追问:投递补充输入队列(后端校验确有活跃执行才入队)。
+                // 若提交失败(会话无活跃执行/僵尸状态),回退为正常发起对话,
+                // 避免追问被投入无消费者队列而静默吞掉(无报错、无回复)。
+                const ok = await submitUserInput(p.text);
+                if (ok) {
+                  appendOptimisticUser(p.text);
+                } else {
+                  send(p);
+                }
               } else {
                 send(p);
               }

@@ -81,6 +81,9 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
       const params = { ...data, app_code };
       const isIncremental = data?.ext_info?.incremental;
       const visParser = new VisParser();
+      // 是否已收到流末尾 [DONE]:用于区分"正常结束"与"服务端流提前中断"。
+      // onclose 对两类都触发,但只有收到 [DONE] 才是正常收尾;否则应视为异常中断。
+      let streamDone = false;
 
       // rAF 合帧:高频流式 chunk 先做增量合并(O(k)),markdown 全量序列化
       // 与 React 更新每帧最多一次,避免 token 级 chunk 造成 O(N²) 序列化与渲染风暴
@@ -125,7 +128,21 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
               response.json().then(data => { onMessage?.(data); onDone?.(); ctrl && ctrl.abort(); });
             }
           },
-          onclose() { flushVis(); ctrl && ctrl.abort(); onClose?.(); },
+          onclose() {
+            flushVis();
+            ctrl && ctrl.abort();
+            // 只有收到过 [DONE] 才视为正常结束;否则说明服务端在流中途提前关闭
+            // (如 agent 卡在工具/MCP 调用、异常等),此时若静默 onClose,页面会停留在
+            // 第一个字且无任何提示、也不会重连——正是"追问后直接结束且无报错"的表现。
+            // 走断线自愈/错误提示,让用户能看到并重试。
+            if (!streamDone) {
+              const content = '对话连接中断';
+              if (onStreamDrop) onStreamDrop(content);
+              else onError?.(content);
+            } else {
+              onClose?.();
+            }
+          },
           onerror(err) {
             flushVis();
             console.error('err', err);
@@ -180,7 +197,7 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
               }
             } catch { message = message.replace(/\\n/g, '\n'); }
             if (typeof message === 'string') {
-              if (message === '[DONE]') { flushVis(); onDone?.(); }
+              if (message === '[DONE]') { streamDone = true; flushVis(); onDone?.(); }
               else if (message?.startsWith('[ERROR]')) { flushVis(); onError?.(message?.replace('[ERROR]', '')); }
               else onMessage?.(message);
             } else if (typeof message === 'object' && message !== null) {

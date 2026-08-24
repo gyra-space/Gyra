@@ -7,6 +7,7 @@
 session_id 即前端 convUid(== 后端 conv_session_id)。
 """
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends
@@ -41,13 +42,16 @@ _IN_PROGRESS_STATES = {"running", "waiting", "retrying"}
 
 
 async def _has_active_execution(session_id: str) -> bool:
-    """判断会话最近一轮是否处于进行中状态(有活跃 Agent 消费补充输入)。
+    """判断会话最近一轮是否确有活跃 Agent 在消费补充输入。
 
     兜底校验:打开历史任务/快速切换会话时,前端 running 判定可能误判为
-    RUNNING,把已结束(终态)会话的追问也投递到队列——而该队列没有活跃
-    Agent 消费,消息会被静默搁置(无报错、无 AI 回复)。此处仅当会话最近
-    一轮为 running/waiting/retrying 时才放行入队;终态或无会话则拒绝。
-    任何异常按"放行"降级,不阻断原本合法的入队。
+    RUNNING,把已结束(终态)或"僵尸"会话的追问也投递到队列——而该队列没有
+    活跃 Agent 消费,消息会被静默搁置(无报错、无 AI 回复)。判定规则:
+
+    - 会话最近一轮为终态(非 running/waiting/retrying)或无会话 -> 拒绝;
+    - 状态虽为进行中,但租约(lease_expires_at)已过期 -> 僵尸会话,拒绝;
+    - 其余(确有活跃租约 / 无租约信息) -> 放行,不阻断原本合法的入队。
+    任何异常按"放行"降级。
     """
     try:
         from gyra_serve.agent.db.gpts_conversations_db import GptsConversationsDao
@@ -61,8 +65,25 @@ async def _has_active_execution(session_id: str) -> bool:
         return True
     if not convs:
         return False
-    state = getattr(convs[-1], "state", None)
-    return state in _IN_PROGRESS_STATES
+    last = convs[-1]
+    state = getattr(last, "state", None)
+    if state not in _IN_PROGRESS_STATES:
+        # 终态/未知状态:无活跃执行,拒绝(避免静默吞消息)
+        return False
+    # 状态显示进行中,但租约已过期 => 会话已"僵尸"(心跳/续租早已停止),
+    # 没有活跃 Agent 消费补充输入。此时放行会让追问被永久搁置。
+    lease = getattr(last, "lease_expires_at", None)
+    if lease is not None:
+        try:
+            if isinstance(lease, str):
+                lease = datetime.fromisoformat(lease.replace(" ", "T"))
+            if lease.tzinfo is None:
+                lease = lease.replace(tzinfo=timezone.utc)
+            if lease < datetime.now(timezone.utc):
+                return False
+        except (ValueError, TypeError):
+            pass
+    return True
 
 
 @router.post(
