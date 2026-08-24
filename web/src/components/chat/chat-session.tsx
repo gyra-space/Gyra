@@ -229,6 +229,8 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
     return await apiInterceptors(getDialogueList());
   }, {
     pollingInterval: isPolling ? 5000 : undefined,
+    // 页面隐藏时暂停轮询(ahooks 默认隐藏时仍轮询),回到可见自动恢复
+    pollingWhenHidden: false,
   });
 
   // 同时刷新本页会话列表(currentDialogue)和全局侧边栏历史会话列表
@@ -410,7 +412,7 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
             user_input: content,
             team_mode: appInfo?.team_mode || '',
             app_config_code: appInfo?.config_code || '',
-            conv_uid: chatId,
+            conv_uid: chatId || currentConvSessionId,
             agent_version: appInfo?.agent_version || 'v1',
             ext_info: {
               vis_render: currentVisRender,
@@ -508,7 +510,7 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
         });
       });
     },
-    [history, modelValue, chat, appInfo, isPollingMode, stopPolling, sseActive, props.onWorkspaceEvent, refreshGlobalDialogList],
+    [history, modelValue, chat, appInfo, isPollingMode, stopPolling, sseActive, props.onWorkspaceEvent, refreshGlobalDialogList, currentConvSessionId],
   );
 
   useImperativeHandle(ref, () => ({

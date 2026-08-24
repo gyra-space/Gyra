@@ -57,6 +57,9 @@ export function useChatPolling({
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
+  // 页面可见/聚焦状态:隐藏或失焦时暂停轮询,避免后台无谓打接口;
+  // resume 的异步 checkStatus 期间页面又隐藏时据此放弃恢复(竞态防御)。
+  const visibleRef = useRef(true);
   // 回调用 ref 承载,避免进入 checkStatus/startPolling 依赖导致频繁重建/重复请求。
   // 调用方(如 chat-session)传内联函数,每次渲染新身份 -> startPolling 重建 ->
   // convId effect 重跑 -> 每帧发起一次 /chat/query,页面疯狂刷新无法渲染。
@@ -105,6 +108,11 @@ export function useChatPolling({
   const startPolling = useCallback(() => {
     if (!convId || !enabled) return;
 
+    // 防御:已有轮询在跑则先清掉,避免 interval 引用被覆盖导致旧轮询泄露
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+    }
+
     setIsPolling(true);
 
     // convId effect 已确认会话处于 inProgress(RUNNING/WAITING)才调本方法,这里
@@ -135,6 +143,47 @@ export function useChatPolling({
     }
     setIsPolling(false);
   }, []);
+
+  // 页面切走(隐藏)或失焦时暂停轮询,避免后台无谓打接口;回到可见/聚焦时
+  // 按会话真实状态决定是否恢复(隐藏期间会话可能已到终态,恢复只做一次校验)。
+  const pausePolling = useCallback(() => {
+    visibleRef.current = false;
+    stopPolling();
+  }, [stopPolling]);
+
+  const resumePolling = useCallback(() => {
+    visibleRef.current = true;
+    if (!convId || !enabled) return;
+    checkStatus().then((result) => {
+      // 竞态防御:checkStatus 异步期间页面又隐藏/失焦,则放弃恢复
+      if (!visibleRef.current) return;
+      if (result && isInProgress(result.state)) {
+        startPolling();
+      }
+    });
+  }, [convId, enabled, checkStatus, startPolling]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleVisibility = () => {
+      if (document.hidden) pausePolling();
+      else resumePolling();
+    };
+    const handleBlur = () => pausePolling();
+    const handleFocus = () => resumePolling();
+    // 整页关闭/刷新兜底:确保 interval 在页面销毁前清掉,不留后台轮询
+    const handlePageHide = () => pausePolling();
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [pausePolling, resumePolling]);
 
   // 组件卸载时清理
   useEffect(() => {

@@ -30,6 +30,9 @@ export function useUserInput(sessionId: string | undefined) {
   });
   const pendingInputsRef = useRef<UserInputItem[]>([]);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // 是否处于「外部要求轮询中」:与 interval 的实际存在解耦,供页面隐藏/恢复判断是否续跑。
+  const pollActiveRef = useRef(false);
+  const pollIntervalValueRef = useRef(2000);
 
   const getBaseUrl = useCallback(() => {
     return process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
@@ -171,6 +174,8 @@ export function useUserInput(sessionId: string | undefined) {
   }, []);
 
   const startPolling = useCallback((interval: number = 2000) => {
+    pollActiveRef.current = true;
+    pollIntervalValueRef.current = interval;
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
     }
@@ -180,6 +185,7 @@ export function useUserInput(sessionId: string | undefined) {
   }, [getQueueStatus]);
 
   const stopPolling = useCallback(() => {
+    pollActiveRef.current = false;
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
       pollIntervalRef.current = null;
@@ -191,6 +197,37 @@ export function useUserInput(sessionId: string | undefined) {
       stopPolling();
     };
   }, [stopPolling]);
+
+  // 页面隐藏/失焦时暂停队列轮询,回到可见时若仍在轮询则立即补查并恢复 —— 防后台泄露。
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const pause = () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+    const resume = () => {
+      if (!pollActiveRef.current) return;
+      getQueueStatus();
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = setInterval(getQueueStatus, pollIntervalValueRef.current);
+    };
+    const handleVisibility = () => {
+      if (document.hidden) pause();
+      else resume();
+    };
+    const handleBlur = () => pause();
+    const handleFocus = () => resume();
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [getQueueStatus]);
 
   return {
     submitUserInput,

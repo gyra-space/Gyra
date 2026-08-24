@@ -7,7 +7,7 @@ import type { UsageMetrics } from '@/types/context-metrics';
 import { useChatPolling, type ConversationState } from '@/hooks/use-chat-polling';
 import { stopChat, type ChatQueryResponse } from '@/client/api/chat';
 import { applyDockFrame } from '@/components/chat/dock/apply-dock-frame';
-import type { DockWidget } from '@/components/chat/dock/dock-types';
+import type { DockWidget, DockFrame } from '@/components/chat/dock/dock-types';
 import type { AgentStep } from './agent-types';
 import { parseAgentSteps } from './parse-agent-steps';
 import { parseWorkspaceView } from './parse-workspace-view';
@@ -182,6 +182,9 @@ export function useSceneAgentChat({
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(EMPTY_WORKSPACE_VIEW);
   const [dockWidgets, setDockWidgets] = useState<Record<string, DockWidget>>({});
   const abortRef = useRef<AbortController | null>(null);
+  // 流纪元:每次新 send / 会话切换时自增。SSE 回调据此判断是否仍属当前生效会话,
+  // 避免切换会话后旧流迟到的消息、结束事件污染当前视图。
+  const streamEpochRef = useRef(0);
   const { chat, usageMetrics, resetUsageMetrics } = useChat({ app_code: appCode || '' });
   // convUid 内部态:外部未提供时(简洁模式延迟创建会话)由 ensureConvUid 填充,
   // 提供时跟随外部 prop;这样 send 不依赖外层 re-render。
@@ -219,6 +222,19 @@ export function useSceneAgentChat({
     const prev = prevConvUidRef.current;
     prevConvUidRef.current = effectiveConvUid;
     if (prev === undefined || prev === effectiveConvUid) return;
+    // 会话切换:中断旧 SSE 连接(只断前端,后端 agent 继续后台运行,切回时由轮询恢复渲染),
+    // 使旧流回调全部失效(streamEpochRef 自增),并解除 loading 对轮询的阻塞 ——
+    // 新会话自动降级为轮询渲染,checkStatus 拉取 vis_final 重建历史视图。
+    streamEpochRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setLastInput(null);
+    setError(null);
+    // 终止上一会话的断线恢复循环(若有),避免其迟到的 setError/步骤污染新会话
+    recoverEpochRef.current += 1;
+    recoveringRef.current = false;
+    setRecovering(false);
     setWorkspaceView(EMPTY_WORKSPACE_VIEW);
     setSteps([]);
     setDockWidgets({});
@@ -454,6 +470,8 @@ export function useSceneAgentChat({
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
+      // 本轮新流纪元:使上一条流(若有)的迟到回调失效,也标记本流身份
+      const epoch = ++streamEpochRef.current;
       setLoading(true);
       setLastInput(payload);
       setError(null);
@@ -485,6 +503,8 @@ export function useSceneAgentChat({
           ext_info: data.ext_info,
         },
         onMessage: (message: unknown) => {
+          // 流身份守卫:切换会话/新开一轮后,旧流迟到消息不再污染当前视图
+          if (streamEpochRef.current !== epoch) return;
           // Route a parsed vis object: step-list → appendStep, else
           // scene_agent_workspace → parseWorkspaceView.
           const routeObject = (obj: object) => {
@@ -516,16 +536,19 @@ export function useSceneAgentChat({
           }
         },
         onDone: () => {
+          if (streamEpochRef.current !== epoch) return;
           setLoading(false);
           setLastInput(null);
           settleRunningSteps('done');
         },
         onClose: () => {
+          if (streamEpochRef.current !== epoch) return;
           setLoading(false);
           setLastInput(null);
           settleRunningSteps('done');
         },
         onError: (content: string) => {
+          if (streamEpochRef.current !== epoch) return;
           // 服务端 [ERROR] 帧:Agent 真实报错,直接展示(连接断开走 onStreamDrop)
           setError(content || 'Agent error');
           appendStep({
@@ -540,13 +563,20 @@ export function useSceneAgentChat({
           settleRunningSteps('failed');
         },
         onStreamDrop: (content: string) => {
+          if (streamEpochRef.current !== epoch) return;
           setLoading(false);
           setLastInput(null);
           lastDropErrorRef.current = content;
           void recover(content);
         },
-        onWorkspaceEvent: handleWorkspaceEventInternal,
-        onDock: (frame) => setDockWidgets((prev) => applyDockFrame(prev, frame)),
+        onWorkspaceEvent: (event: WorkspaceEvent) => {
+          if (streamEpochRef.current !== epoch) return;
+          handleWorkspaceEventInternal(event);
+        },
+        onDock: (frame: DockFrame) => {
+          if (streamEpochRef.current !== epoch) return;
+          setDockWidgets((prev) => applyDockFrame(prev, frame));
+        },
       });
     },
     [workspaceId, taskId, focusArtifactId, chat, appendStep, appendOptimisticUser, handleWorkspaceEventInternal, onConversationStart, recover, ensureConvUid, settleRunningSteps],

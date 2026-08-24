@@ -78,6 +78,7 @@ import {
   Typography,
 } from 'antd';
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useVisibilityPolling } from '@/hooks/use-visibility-polling';
 import BatchMaskingModal from './BatchMaskingModal';
 
 const { Text } = Typography;
@@ -454,23 +455,10 @@ export default function DatabaseDetail({
     },
   );
 
-  // Auto-poll learning status when task is active
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Auto-poll learning status when task is active(页面隐藏/失焦暂停,回到可见立即补刷并恢复)
   const isActive = learningStatus?.status === 'running' || learningStatus?.status === 'finalizing' || learningStatus?.status === 'pending' || learningStatus?.status === 'paused';
 
-  useEffect(() => {
-    if (isActive) {
-      pollingRef.current = setInterval(() => {
-        refreshLearning();
-      }, 3000);
-    }
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    };
-  }, [isActive, refreshLearning]);
+  useVisibilityPolling(isActive, refreshLearning, 3000);
 
   // When learning completes, refresh spec and tables
   const prevStatusRef = useRef(learningStatus?.status);

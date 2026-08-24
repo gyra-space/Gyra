@@ -9,6 +9,7 @@ import { apiInterceptors, createConversation, getTaskInfo, linkConversation, lis
 import { getUserId } from '@/utils';
 import { useSpaceRole } from '@/hooks/use-space-role';
 import { useUserInput } from '@/hooks/use-user-input';
+import { useVisibilityPolling } from '@/hooks/use-visibility-polling';
 import type { WorkspaceEvent } from '@/hooks/use-chat';
 import type { AgentStep, DetailContext } from './agent-types';
 import { AgentWorkspace } from './agent-workspace';
@@ -222,11 +223,8 @@ export function SceneWorkspaceShell({
   // 运行时轮询:有活跃任务时每 4s 刷新任务/介入列表,无活跃任务时停。
   // 后台 run_task 的状态变更无法走 workspace 事件流(fire-and-forget,无 SSE 连接),
   // 用轮询替代;task_created 事件触发的 onRefreshLists 仍保留。
-  useEffect(() => {
-    if (!hasActiveTask(tasks) || !onRefreshLists) return;
-    const timer = setInterval(onRefreshLists, 4000);
-    return () => clearInterval(timer);
-  }, [tasks, onRefreshLists]);
+  // 页面隐藏/失焦时暂停,回到可见立即补刷并恢复。
+  useVisibilityPolling(hasActiveTask(tasks) && !!onRefreshLists, onRefreshLists, 4000);
 
   const handlePreview = (item: any, kind: 'task' | 'intervention' | 'ecp_proposal') => {
     setPreviewItem(item);

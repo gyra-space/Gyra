@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useVisibilityPolling } from './use-visibility-polling';
 
 export interface PendingApproval {
   action_uid: string;
@@ -26,7 +27,6 @@ export function useToolApproval(
 ) {
   const [state, setState] = useState<ToolApprovalState>({ hasPending: false, pending: [] });
   const [submitting, setSubmitting] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchPending = useCallback(async () => {
     if (!sessionId) return;
@@ -45,21 +45,13 @@ export function useToolApproval(
     }
   }, [sessionId]);
 
-  // 非生成态轮询；生成态停止并清空（新一轮开始，旧 pending 失效）。
+  // 生成态停止并清空（新一轮开始，旧 pending 失效）。
   useEffect(() => {
-    if (!sessionId || replyLoading) {
-      if (timerRef.current) clearInterval(timerRef.current);
-      timerRef.current = null;
-      if (replyLoading) setState({ hasPending: false, pending: [] });
-      return;
-    }
-    fetchPending();
-    timerRef.current = setInterval(fetchPending, interval);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      timerRef.current = null;
-    };
-  }, [sessionId, replyLoading, interval, fetchPending]);
+    if (replyLoading) setState({ hasPending: false, pending: [] });
+  }, [replyLoading]);
+
+  // 非生成态轮询；页面隐藏/失焦时暂停，回到可见立即补查并恢复。
+  useVisibilityPolling(!replyLoading && !!sessionId, fetchPending, interval);
 
   const approve = useCallback(
     async (actionUid: string, approved: boolean): Promise<boolean> => {

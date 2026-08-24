@@ -870,9 +870,11 @@ class V2Agent(ReActMasterAgent):
             # 终态。turn 结束(run_loop 正常返回或异常)时对仍 pending 的工具调用
             # 补推一次终态 TASK 节点,避免前端步骤永远停在 running。
             await self._flush_pending_tool_states()
-
-        # V2 单源：最终答案写入事件日志（assistant/message 事件）
-        await self._emit_dialog_message("assistant", self._v2_final_answer)
+            # V2 单源：最终答案写入事件日志（assistant/message 事件）。
+            # 放 finally 保证 user/assistant 成对——run_loop 异常 / ask_user 挂起 /
+            # max_steps 触达导致 final_answer 为空时，_emit_dialog_message 落占位
+            # 事件而非跳过，避免下轮投影出现 user-user 连排（追问被当作首问补充）。
+            await self._emit_dialog_message("assistant", self._v2_final_answer)
 
         # 主动触发压缩:turn 收尾时强制走一次历史摘要压缩(复用 Compactor)。
         # 与被动压缩(post_step 压力/周期触发)走同一套 Compactor.run 逻辑。
@@ -1185,9 +1187,17 @@ class V2Agent(ReActMasterAgent):
 
         每轮 turn 结束时成对写入（用户消息 + 最终答案），下轮 LLM 上下文经
         ProjectorRegistry 全量投影即可恢复完整对话——不再依赖 gpts_messages。
+
+        修复：assistant 最终答案为空时（ask_user 挂起 / run_loop 异常 /
+        max_steps 触达 / tool_call 清空后未产出正文）也落一条占位事件，保证
+        user/assistant 成对。否则下轮投影出现 user-user 连排，LLM 会把追问
+        当作首问的补充，表现为"一直在回答第一次提问"。
         """
         if not content:
-            return
+            if role == "assistant":
+                content = "[本轮未产出最终答复，请补充或追问]"
+            else:
+                return
         from gyra.agent.core.v2.step_event import StepEvent
         from gyra.agent.core.v2.step_state import StepState
 

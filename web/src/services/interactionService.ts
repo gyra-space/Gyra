@@ -81,6 +81,9 @@ export class InteractionService {
   private pollingTimer: ReturnType<typeof setInterval> | null = null;
   private pendingRequests: Map<string, InteractionRequest> = new Map();
   private usePolling = false;
+  // HTTP 轮询期间页面可见性监听:隐藏/失焦暂停,恢复自动续跑(防后台轮询泄露)。
+  private isPageVisible = true;
+  private pollingCleanup: (() => void) | null = null;
 
   constructor(
     config: InteractionServiceConfig = {},
@@ -440,11 +443,56 @@ export class InteractionService {
 
   // ========== Internal: HTTP Polling ==========
 
+  /**
+   * 注册页面可见性监听:隐藏/失焦时暂停轮询,回到可见时若仍处于轮询连接态则自动续跑。
+   * 防重复注册:先移除旧监听再挂新监听(resume 会重新调用 startPolling)。
+   */
+  private attachVisibilityListener(): void {
+    if (this.pollingCleanup) {
+      this.pollingCleanup();
+      this.pollingCleanup = null;
+    }
+
+    const pause = () => {
+      this.isPageVisible = false;
+      if (this.pollingTimer) {
+        clearInterval(this.pollingTimer);
+        this.pollingTimer = null;
+      }
+    };
+    const resume = () => {
+      this.isPageVisible = true;
+      // 仅当仍处于轮询连接态(未被主动 disconnect)时恢复
+      if (this.usePolling && this.connectionState === 'connected') {
+        void this.startPolling();
+      }
+    };
+    const handleVisibility = () => {
+      if (document.hidden) pause();
+      else resume();
+    };
+    const handleBlur = () => pause();
+    const handleFocus = () => resume();
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+    this.pollingCleanup = () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }
+
   private async startPolling(): Promise<void> {
+    if (!this.isPageVisible) return;
     this.setConnectionState('connected');
+    this.attachVisibilityListener();
 
     // Fetch initial requests
     await this.fetchPendingRequests();
+
+    // await 期间页面又隐藏:放弃启动,由可见性 resume 兜底恢复
+    if (!this.isPageVisible) return;
 
     // Start polling
     this.pollingTimer = setInterval(async () => {
@@ -464,6 +512,10 @@ export class InteractionService {
     if (this.pollingTimer) {
       clearInterval(this.pollingTimer);
       this.pollingTimer = null;
+    }
+    if (this.pollingCleanup) {
+      this.pollingCleanup();
+      this.pollingCleanup = null;
     }
   }
 

@@ -576,6 +576,33 @@ def _format_stream_error_frame(err: Exception) -> str:
     return f"data:{error_content}\n\n"
 
 
+def _derive_fallback_conv_uid(dialogue: "ConversationVo") -> str:
+    """缺省 conv_uid 时派生跨轮稳定的会话 ID（修复多轮追问会话断裂）。
+
+    根因：此前缺省时每次 ``uuid.uuid1().hex`` 生成新 ID，前端未传 conv_uid 的
+    调用方（如 /chat 页面首次对话、纯 API 调用）每轮都是全新会话，V2/V1 事件
+    日志与历史按不同 conv 隔离，追问丢失上下文。
+
+    派生优先级（从请求已有稳定上下文提取，无状态请求间可复用）：
+    1. ``ext_info.workspace_id + task_id`` → ``ws-{wsid}-task-{taskid}``
+       （任务维度，同一任务下多轮稳定）；
+    2. ``ext_info.workspace_id`` → ``ws-{wsid}-default``（空间维度，工作台多轮共享）；
+    3. 否则 → ``uuid.uuid1().hex``（无 workspace 的一次性请求，保持原行为；
+       多轮场景应由调用方持有会话 ID，前端已从 SSE metadata 帧回填）。
+    """
+    try:
+        ext = dialogue.ext_info or {}
+        ws_id = ext.get("workspace_id")
+        task_id = ext.get("task_id")
+        if ws_id is not None and task_id is not None:
+            return f"ws-{ws_id}-task-{task_id}"
+        if ws_id is not None:
+            return f"ws-{ws_id}-default"
+    except Exception:  # noqa: BLE001
+        pass
+    return uuid.uuid1().hex
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(
     background_tasks: BackgroundTasks,
@@ -587,7 +614,7 @@ async def chat_completions(
         f"{dialogue.model_name}, work_mode={dialogue.work_mode}, timestamp={int(time.time() * 1000)}"
     )
     if not dialogue.conv_uid:
-        dialogue.conv_uid = uuid.uuid1().hex
+        dialogue.conv_uid = _derive_fallback_conv_uid(dialogue)
 
     # Adapt OpenAI messages format to user_input
     if not dialogue.user_input and dialogue.messages:

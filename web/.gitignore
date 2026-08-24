@@ -52,4 +52,4 @@ mock2.json
 mock3.json
 .node
 package-lock.json
-web/.next_old/
+.next_old/

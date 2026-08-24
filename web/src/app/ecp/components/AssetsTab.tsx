@@ -229,19 +229,33 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
 
   // 异步提案任务轮询计时器(卸载时清理)。
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 页面可见性监听(卸载时一并移除,避免组件卸载后隐藏/恢复回调污染状态)。
+  const visibilityHandlerRef = useRef<(() => void) | null>(null);
   useEffect(
     () => () => {
       if (pollTimer.current) clearInterval(pollTimer.current);
+      if (visibilityHandlerRef.current) {
+        document.removeEventListener('visibilitychange', visibilityHandlerRef.current);
+        visibilityHandlerRef.current = null;
+      }
     },
     [],
   );
 
   // 提交后轮询任务状态直到终态,返回最终任务记录(加载中更新顶部进度条文案)。
+  // 页面隐藏/失焦时暂停轮询,回到可见时若任务仍未终态则继续 —— 防后台无谓打接口。
   const waitForTask = useCallback(
     async (taskId: string, label: string): Promise<any> => {
       return new Promise(resolve => {
+        let settled = false;
+        let handleVisibility: () => void = () => {};
         const done = (res: any) => {
+          if (settled) return;
+          settled = true;
           if (pollTimer.current) clearInterval(pollTimer.current);
+          pollTimer.current = null;
+          document.removeEventListener('visibilitychange', handleVisibility);
+          visibilityHandlerRef.current = null;
           setGenTask(null);
           resolve(res);
         };
@@ -264,8 +278,22 @@ export default function AssetsTab({ workspaceId }: { workspaceId: string }) {
             label: `${label}（${res?.status === 'running' ? '生成中' : '排队中'}，可能需数分钟…）`,
           });
         };
-        tick();
-        pollTimer.current = setInterval(tick, 2000);
+        const stop = () => {
+          if (pollTimer.current) clearInterval(pollTimer.current);
+          pollTimer.current = null;
+        };
+        const start = () => {
+          tick();
+          if (pollTimer.current) clearInterval(pollTimer.current);
+          pollTimer.current = setInterval(tick, 2000);
+        };
+        handleVisibility = () => {
+          if (document.hidden) stop();
+          else start();
+        };
+        document.addEventListener('visibilitychange', handleVisibility);
+        visibilityHandlerRef.current = handleVisibility;
+        start();
       });
     },
     [],
