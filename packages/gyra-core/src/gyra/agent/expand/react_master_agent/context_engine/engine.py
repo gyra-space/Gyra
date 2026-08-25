@@ -352,16 +352,28 @@ class ContextEngine:
                     messages.append({"role": ROLE_HUMAN, "content": u.user_content})
             elif u.kind == UnitKind.AI_TEXT:
                 if u.ai_text and u.ai_text.strip():
-                    messages.append({"role": ROLE_AI, "content": u.ai_text})
+                    msg = {"role": ROLE_AI, "content": u.ai_text}
+                    self._attach_reasoning_content(msg, u.ai_thinking)
+                    messages.append(msg)
             elif u.kind == UnitKind.CALL:
                 # render_tool_calls=False（V2）：工具事实由事件日志投影单源提供，
                 # 这里只保留调用前后的旁白（ai_text），不重复渲染 tool_calls/tool 结果。
                 if not self.config.render_tool_calls:
                     if u.ai_text and u.ai_text.strip():
-                        messages.append({"role": ROLE_AI, "content": u.ai_text})
+                        msg = {"role": ROLE_AI, "content": u.ai_text}
+                        self._attach_reasoning_content(msg, u.ai_thinking)
+                        messages.append(msg)
                     continue
                 messages.extend(self._render_call_unit(u, limit))
         return messages
+
+    @staticmethod
+    def _attach_reasoning_content(msg: Dict[str, Any], thinking: Optional[str]):
+        """DeepSeek 思考模式要求历史 assistant 消息必须原样回传 reasoning_content，
+        否则追问会报 'The reasoning_content in the thinking mode must be passed back to the API'。
+        仅在确实存在思维链时附加，避免影响其它模型。"""
+        if thinking and str(thinking).strip():
+            msg["reasoning_content"] = thinking
 
     def _render_call_unit(
         self, u: TimelineUnit, limit: int
@@ -369,7 +381,9 @@ class ContextEngine:
         renderable = u.renderable_calls()
         if not renderable:
             if u.ai_text and u.ai_text.strip():
-                return [{"role": ROLE_AI, "content": u.ai_text}]
+                msg = {"role": ROLE_AI, "content": u.ai_text}
+                self._attach_reasoning_content(msg, u.ai_thinking)
+                return [msg]
             return []
 
         out: List[Dict[str, Any]] = []
@@ -384,9 +398,9 @@ class ContextEngine:
             }
             for b in renderable
         ]
-        out.append(
-            {"role": ROLE_AI, "content": u.ai_text or "", "tool_calls": tool_calls}
-        )
+        ai_msg = {"role": ROLE_AI, "content": u.ai_text or "", "tool_calls": tool_calls}
+        self._attach_reasoning_content(ai_msg, u.ai_thinking)
+        out.append(ai_msg)
         for b in renderable:
             out.append(
                 {

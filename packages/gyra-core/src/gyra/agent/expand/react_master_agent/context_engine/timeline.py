@@ -63,6 +63,7 @@ class TimelineUnit:
     # 角色专属载荷
     user_content: Optional[Union[str, List[Any]]] = None  # USER
     ai_text: Optional[str] = None  # AI_TEXT 或 CALL 的 assistant 文本
+    ai_thinking: Optional[str] = None  # assistant 思维链（DeepSeek 思考模式需回传 reasoning_content）
     calls: List[ToolCallBinding] = field(default_factory=list)  # CALL only
 
     # 记账

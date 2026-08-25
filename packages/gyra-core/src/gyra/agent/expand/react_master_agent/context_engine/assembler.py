@@ -185,6 +185,7 @@ class TimelineAssembler:
 
         # 其余视为 AI 消息（兼容自定义 agent role，如 "BAIZE(GYRA)"）
         ai_text = extract_text_content(getattr(msg, "content", None)) or ""
+        ai_thinking = getattr(msg, "thinking", None) or ""
         tool_calls = getattr(msg, "tool_calls", None)
 
         if tool_calls:
@@ -194,13 +195,13 @@ class TimelineAssembler:
             ]
             bindings = [b for b in bindings if b is not None]
             unit = TimelineUnit(
-                kind=UnitKind.CALL, ai_text=ai_text, calls=bindings, **base
+                kind=UnitKind.CALL, ai_text=ai_text, ai_thinking=ai_thinking, calls=bindings, **base
             )
             unit.tokens = self._call_unit_tokens(ai_text, bindings)
             return unit
 
         if ai_text and ai_text.strip():
-            unit = TimelineUnit(kind=UnitKind.AI_TEXT, ai_text=ai_text, **base)
+            unit = TimelineUnit(kind=UnitKind.AI_TEXT, ai_text=ai_text, ai_thinking=ai_thinking, **base)
             unit.tokens = self.token_counter(ai_text)
             return unit
 
