@@ -10,6 +10,7 @@ from gyra.core.interface.llm import (
     ModelMetadata,
     ModelInferenceMetrics,
 )
+from gyra.core.interface.media import MediaContent
 from gyra.agent.util.llm.provider._image_url_rewriter import get_replace_url_func
 from gyra.agent.util.llm.provider.base import LLMProvider
 from gyra.agent.util.llm.provider.tool_call_compat import (
@@ -119,9 +120,9 @@ class OpenAIProvider(LLMProvider):
             }
             logger.info(f"OpenAIProvider generate response: {json.dumps(log_response, ensure_ascii=False)}")
 
-            return ModelOutput(
-                error_code=0,
+            return ModelOutput.build(
                 text=content,
+                thinking=getattr(choice.message, "reasoning_content", None),
                 tool_calls=tc_output,
                 finish_reason=choice.finish_reason,
                 usage=response.usage.model_dump() if response.usage else None,
@@ -206,6 +207,14 @@ class OpenAIProvider(LLMProvider):
                     continue
                 choice = chunk.choices[0]
                 delta = choice.delta
+                # DeepSeek 思考模式:reasoning_content 是思维链增量,必须收集并随历史
+                # assistant 消息回传,否则追问会报
+                # 'The reasoning_content in the thinking mode must be passed back to the API'
+                chunk_thinking = ""
+                if delta is not None:
+                    _rc = getattr(delta, "reasoning_content", None)
+                    if _rc:
+                        chunk_thinking = _rc
                 content = delta.content if delta else None
                 tool_calls = delta.tool_calls if delta else None
 
@@ -268,9 +277,14 @@ class OpenAIProvider(LLMProvider):
                     }
                     logger.info(f"OpenAIProvider generate_stream response: {json.dumps(log_response, ensure_ascii=False)}")
 
+                _frame = []
+                if chunk_thinking:
+                    _frame.append(MediaContent.build_thinking(chunk_thinking))
+                if content:
+                    _frame.append(MediaContent.build_text(content))
                 yield ModelOutput(
                     error_code=0,
-                    text=content or "",
+                    content=_frame,
                     tool_calls=output_tool_calls,
                     finish_reason=choice.finish_reason,
                     incremental=True,

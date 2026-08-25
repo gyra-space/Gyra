@@ -4033,6 +4033,13 @@
   overflow: hidden;
 }
 
+.ws-capsule-think__icon {
+  opacity: .65;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+
 .ws-capsule-think__text {
   background: var(--ws-bg);
   color: var(--ws-ink-3);

@@ -125,6 +125,7 @@ function ThinkingRow({ step }: { step: WorkspaceExecutionStep }) {
         onClick={text ? () => setOpen((v) => !v) : undefined}
         aria-expanded={open}
       >
+        <img src="/icons/thinking.svg" className="ws-capsule-think__icon" alt="" />
         <span className="ws-capsule-think__label">{step.title}</span>
         {step.status === 'running' && <span className="ws-capsule-step__spin" aria-label="运行中" />}
         {text && <span className={`ws-cchev ws-cchev--sm${open ? ' ws-cchev--up' : ''}`} aria-hidden />}

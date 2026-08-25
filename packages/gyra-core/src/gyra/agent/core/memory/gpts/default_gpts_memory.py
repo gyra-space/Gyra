@@ -212,16 +212,16 @@ class DefaultGptsMessageMemory(GptsMessageMemory):
             row_dict = dict(zip(self.df.columns, row))
             messages.append(GptsMessage.from_dict(row_dict))
 
-        # 按 gmt_create 排序，确保消息按真实时序排列
+        # 按 created_at 排序，确保消息按真实时序排列
         def sort_key(msg):
-            gmt_create = getattr(msg, "gmt_create", None)
-            if gmt_create is None:
+            created_at = getattr(msg, "created_at", None)
+            if created_at is None:
                 return (0, getattr(msg, "id", 0) or 0)
-            if hasattr(gmt_create, "timestamp"):
-                ts = gmt_create.timestamp()
+            if hasattr(created_at, "timestamp"):
+                ts = created_at.timestamp()
             else:
                 try:
-                    ts = float(gmt_create)
+                    ts = float(created_at)
                 except (ValueError, TypeError):
                     ts = 0
             return (ts, getattr(msg, "id", 0) or 0)
@@ -251,18 +251,18 @@ class DefaultGptsMessageMemory(GptsMessageMemory):
             row_dict = dict(zip(self.df.columns, row))
             messages.append(GptsMessage.from_dict(row_dict))
 
-        # 按 gmt_create 排序，确保消息按真实时序排列
-        # 如果 gmt_create 相同，则按 id 排序作为 tiebreak
+        # 按 created_at 排序，确保消息按真实时序排列
+        # 如果 created_at 相同，则按 id 排序作为 tiebreak
         def sort_key(msg):
-            gmt_create = getattr(msg, "gmt_create", None)
-            if gmt_create is None:
+            created_at = getattr(msg, "created_at", None)
+            if created_at is None:
                 return (0, getattr(msg, "id", 0) or 0)
             # 处理 datetime 对象
-            if hasattr(gmt_create, "timestamp"):
-                ts = gmt_create.timestamp()
+            if hasattr(created_at, "timestamp"):
+                ts = created_at.timestamp()
             else:
                 try:
-                    ts = float(gmt_create)
+                    ts = float(created_at)
                 except (ValueError, TypeError):
                     ts = 0
             return (ts, getattr(msg, "id", 0) or 0)

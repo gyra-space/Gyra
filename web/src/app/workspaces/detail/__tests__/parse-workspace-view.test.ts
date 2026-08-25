@@ -343,7 +343,7 @@ describe('deliverable_files / task_files(追问轮不丢前轮交付物)', () =>
     expect(view.deliverable_files![0].file_name).toBe('report-v2.pdf');
   });
 
-  test('同 file_id 不同 ts(跨轮重新交付)分别保留,每轮各自展示自己的文件', () => {
+  test('同 file_id 不同 ts(跨轮重新交付/多次修改)按 file_id 去重,保留 ts 最新的一份', () => {
     const prev: WorkspaceView = {
       planning: null,
       execution: [],
@@ -352,15 +352,16 @@ describe('deliverable_files / task_files(追问轮不丢前轮交付物)', () =>
         { file_id: 'f1', file_name: 'report.pdf', file_size: 1024, mime_type: 'application/pdf', render_type: 'pdf', ts: '2026-08-01T10:00:00' },
       ],
     };
-    // 追问轮重新交付同一 file_id,但产出于不同时间(ts 不同)→ 保留两份,归属不同轮次
+    // 追问轮重新交付同一 file_id,ts 更新(文件被修改/重复交付)→ 只保留最新一份
     const view = parseWorkspaceView({
       ...baseChunk,
       deliverable_files: [
-        { file_id: 'f1', file_name: 'report-v2.pdf', file_size: 1024, mime_type: 'application/pdf', render_type: 'pdf', ts: '2026-08-10T10:00:00' },
+        { file_id: 'f1', file_name: 'report-v2.pdf', file_size: 2048, mime_type: 'application/pdf', render_type: 'pdf', ts: '2026-08-10T10:00:00' },
       ],
     }, prev);
-    expect(view.deliverable_files).toHaveLength(2);
-    expect(view.deliverable_files!.map((f) => f.ts)).toEqual(['2026-08-10T10:00:00', '2026-08-01T10:00:00']);
+    expect(view.deliverable_files).toHaveLength(1);
+    expect(view.deliverable_files![0].file_name).toBe('report-v2.pdf');
+    expect(view.deliverable_files![0].ts).toBe('2026-08-10T10:00:00');
   });
 
   test('task_files 同样按 file_id 合并保留(跨轮)', () => {

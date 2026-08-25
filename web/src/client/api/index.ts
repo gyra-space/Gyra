@@ -1,6 +1,7 @@
 import { getUserId } from '@/utils';
 import { HEADER_USER_ID_KEY, STORAGE_USERINFO_KEY, STORAGE_USERINFO_VALID_TIME_KEY } from '@/utils/constants/index';
 import { getMessage } from '@/utils/antd-instance';
+import { getApiErrorMessage } from '@/utils/apiError';
 import axios, { AxiosError, AxiosRequestConfig, AxiosResponse } from 'axios';
 
 export type ResponseType<T = any> = {
@@ -57,6 +58,29 @@ ins.interceptors.request.use(request => {
   return request;
 });
 
+// 全局错误提示去重：同一错误消息在静默窗口内只提示一次，避免轮询/定时刷新
+// (如打开会话后的状态轮询、列表轮询)在后端异常时每几秒刷屏骚扰用户。
+let lastGlobalErrorMsg = '';
+let lastGlobalErrorTime = 0;
+const GLOBAL_ERROR_DEDUP_MS = 3000;
+
+/**
+ * 统一的"后端/网络错误"兜底提示。所有经 `ins` 发出的请求在拦截器层兜底弹 toast，
+ * 确保页面任何操作(打开会话、拉列表、提交表单等)在后端报错时都有可见反馈，
+ * 而不是静默无响应。401 由上面的重定向逻辑处理，403 单独提示，其余落这里。
+ */
+const notifyGlobalError = (error: AxiosError): void => {
+  if (typeof window === 'undefined') return;
+  const msg = getApiErrorMessage(error) || '请求失败，请稍后重试';
+  const now = Date.now();
+  if (msg === lastGlobalErrorMsg && now - lastGlobalErrorTime < GLOBAL_ERROR_DEDUP_MS) {
+    return;
+  }
+  lastGlobalErrorMsg = msg;
+  lastGlobalErrorTime = now;
+  getMessage()?.error(msg);
+};
+
 ins.interceptors.response.use(
   response => response,
   (error: AxiosError) => {
@@ -77,6 +101,9 @@ ins.interceptors.response.use(
       }
     } else if (typeof window !== 'undefined' && error.response?.status === 403) {
       getMessage()?.error('没有访问该资源的权限 (403)');
+    } else {
+      // 兜底提示：覆盖 4xx/5xx/超时/断网等所有未单独处理的错误
+      notifyGlobalError(error);
     }
     return Promise.reject(error);
   },

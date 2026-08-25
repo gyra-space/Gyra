@@ -313,15 +313,16 @@ export function buildManusWorkspaceView(
   const hasRunningTool = execution.some((s) => s.type === 'tool_call' && s.status === 'running');
   const runningThinking = !!isWorking && !hasRunningTool && !runningPhaseTitle;
 
-  // 交付文件按 file_id+ts 去重(同一次交付取新值;跨轮同名不同 ts 分别保留),
-  // 新值优先(倒序收集)。任务文件按 file_id 合并(单个物理文件,同 id 取新值)。
+  // 交付文件按 file_id 去重:同一物理文件被多次修改/交付时,ts 会因来源不同
+  // (增量 start_time 兜底 vs 全量 created_at)而变,按 file_id+ts 会把同一次交付
+  // 识别成多条,导致同一文件展示多次且无版本记录。这里只保留 ts 最新的一份。
+  // 任务文件同理按 file_id 合并(单个物理文件,同 id 取新值)。
   const seenDeliverable = new Set<string>();
   const deliverable_files: WorkspaceDeliverableFile[] = [];
   for (let i = deliverableInOrder.length - 1; i >= 0; i--) {
     const d = deliverableInOrder[i];
-    const key = `${d.file_id}|${d.ts || ''}`;
-    if (seenDeliverable.has(key)) continue;
-    seenDeliverable.add(key);
+    if (seenDeliverable.has(d.file_id)) continue;
+    seenDeliverable.add(d.file_id);
     deliverable_files.push(d);
   }
   const seenTask = new Set<string>();

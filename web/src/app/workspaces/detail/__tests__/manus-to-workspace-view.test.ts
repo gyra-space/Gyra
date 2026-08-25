@@ -80,14 +80,14 @@ describe('buildManusWorkspaceView', () => {
     expect(ws.summary).toBe('本轮最新摘要');
   });
 
-  test('同一交付文件多次出现时按 file_id+ts 去重,不重复收集', () => {
-    const base = {
-      panel_view: 'deliverable',
-      deliverable_files: [{ file_id: 'f1', file_name: 'dashboard.html', render_type: 'iframe', ts: '2026-08-01T10:00:00' }],
-    };
-    // 同一次交付在多条消息里重复出现(流式/历史重复帧)
+  test('同一交付文件多次出现(含不同 ts)按 file_id 去重,只展示一份', () => {
+    // 同一 file_id 被重复交付/多次修改(ts 不同),无版本记录 → 只保留一份
     const ws = buildManusWorkspaceView(
-      [human(0, '问'), view(1, rightPanel(base)), view(2, rightPanel(base))],
+      [
+        human(0, '问'),
+        view(1, rightPanel({ panel_view: 'deliverable', deliverable_files: [{ file_id: 'f1', file_name: 'index.html', render_type: 'iframe', ts: '2026-08-01T10:00:00' }] })),
+        view(2, rightPanel({ panel_view: 'deliverable', deliverable_files: [{ file_id: 'f1', file_name: 'index.html', render_type: 'iframe', ts: '2026-08-01T10:00:05' }] })),
+      ],
       null,
     );
     expect(ws.deliverable_files!.filter((f) => f.file_id === 'f1')).toHaveLength(1);

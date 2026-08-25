@@ -198,23 +198,25 @@ function mergeFilesById<T extends { file_id: string }>(prev: T[], next: T[]): T[
   return merged;
 }
 
-/** 交付文件归属键:file_id+ts。同 id 同 ts 视为同一次交付(取新值);跨轮次
- *  同名/同 id 但不同 ts 的文件分别保留 —— 多轮会话里每个对话展示自己的交付文件。 */
-function deliveryKey(f: WorkspaceDeliverableFile): string {
-  return `${f.file_id}|${f.ts || ''}`;
-}
-
-/** 交付文件合并:按 file_id+ts 去重,而非仅按 file_id(避免把多轮交付物折叠成一份)。 */
+/** 交付文件合并:按 file_id 去重,同一物理文件只保留 ts 最新(版本最新)的一份。
+ *  不再按 file_id+ts —— 同一文件被多次修改/交付时,ts 会因来源不同而变
+ *  (增量路径 start_time 兜底 vs 全量路径 created_at),按 ts 拆分会把同一次交付
+ *  识别成多条,前端把同一个文件展示多次且无版本记录,毫无意义。 */
 function mergeDeliverableFiles(prev: WorkspaceDeliverableFile[], next: WorkspaceDeliverableFile[]): WorkspaceDeliverableFile[] {
-  const seen = new Set(next.map(deliveryKey));
-  const merged = [...next];
-  for (const f of prev) {
-    if (!seen.has(deliveryKey(f))) {
-      merged.push(f);
-      seen.add(deliveryKey(f));
+  // next 为本轮(较新)数据在前,prev 历史在后;同 file_id 取 ts 较新的一份
+  const byId = new Map<string, WorkspaceDeliverableFile>();
+  for (const f of [...next, ...prev]) {
+    const fid = f.file_id;
+    const existing = byId.get(fid);
+    if (!existing) {
+      byId.set(fid, f);
+      continue;
     }
+    const curMs = tsToMs(existing.ts);
+    const newMs = tsToMs(f.ts);
+    if (newMs !== null && (curMs === null || newMs > curMs)) byId.set(fid, f);
   }
-  return merged;
+  return Array.from(byId.values());
 }
 
 export function parseWorkspaceView(chunk: unknown, prev: WorkspaceView | null): WorkspaceView {

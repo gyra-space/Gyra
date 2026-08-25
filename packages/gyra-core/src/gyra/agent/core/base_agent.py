@@ -1463,6 +1463,17 @@ class ConversableAgent(Role, Agent):
                     content="",
                 )
                 err_message.rounds = 9999
+            # 让前端可见错误原因:仅当正文为空时回填可读错误信息。
+            # (非空正文通常已含部分生成内容,保留 success=False + ERROR action_report
+            #  仍可驱动终态/重试,不回填以免覆盖用户已见内容。)
+            try:
+                _err_content = getattr(err_message, "content", None)
+                if not _err_content or (
+                    isinstance(_err_content, str) and not _err_content.strip()
+                ):
+                    err_message.content = f"对话发生异常，已终止: {str(e)[:200]}"
+            except Exception:  # noqa: BLE001 - 回填失败不应掩盖原始异常
+                pass
             err_message.action_report = [await BlankAction().run(f"ERROR:{str(e)}")]
             err_message.success = False
 
