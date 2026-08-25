@@ -307,7 +307,7 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
             rows = (
                 query.filter(LLMUsageEntity.conv_id.isnot(None))
                 .group_by(LLMUsageEntity.conv_id, LLMUsageEntity.model_name)
-                .order_by(desc(LLMUsageEntity.total_tokens))
+                .order_by(desc("total_tokens"))
                 .all()
             )
 

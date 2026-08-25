@@ -207,6 +207,8 @@ const getCurrentUser = () => {
   }
 };
 
+const confirmStorageKey = (id?: string) => (id ? `gyra_confirm:${id}` : '');
+
 const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onConfirm }) => {
   const { message } = App.useApp();
   const [disabled, setDisabled] = useState<boolean>(!!data.disabled);
@@ -238,6 +240,19 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
       return;
     }
     let cancelled = false;
+    // 本地兜底：上次确认的缓存作为即时只读依据，避免刷新后状态未拉回前被再次确认。
+    try {
+      const cached = localStorage.getItem(confirmStorageKey(requestId));
+      if (cached) {
+        const rec = JSON.parse(cached) as ConfirmRecordData;
+        if (!cancelled && rec?.responded_at) {
+          setConfirmRecord(rec);
+          setDisabled(true);
+        }
+      }
+    } catch {
+      // 缓存损坏则忽略，交给服务端判断
+    }
     (async () => {
       try {
         const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
@@ -247,8 +262,14 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
         if (res.ok) {
           const json = await res.json();
           if (!cancelled && json?.responded && json.record) {
+            // 服务端为权威事实源：以服务端记录为准（含谁/何时），并覆盖本地缓存
             setConfirmRecord(json.record);
             setDisabled(true);
+            try {
+              localStorage.setItem(confirmStorageKey(requestId), JSON.stringify(json.record));
+            } catch {
+              // ignore quota/serialization errors
+            }
           }
         }
       } catch (e) {
@@ -401,7 +422,14 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
 
           if (res.status === 409) {
             const json = await res.json().catch(() => null);
-            if (json?.record) setConfirmRecord(json.record);
+            if (json?.record) {
+              setConfirmRecord(json.record);
+              try {
+                localStorage.setItem(confirmStorageKey(requestId), JSON.stringify(json.record));
+              } catch {
+                // ignore
+              }
+            }
             setDisabled(true);
             message.info('This confirmation has already been submitted.');
             return;
@@ -444,6 +472,13 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
 
       setConfirmRecord(localRecord);
       setDisabled(true);
+      if (requestId) {
+        try {
+          localStorage.setItem(confirmStorageKey(requestId), JSON.stringify(localRecord));
+        } catch {
+          // ignore
+        }
+      }
     } catch (error) {
       console.error('Failed to submit response:', error);
       message.error('Submit failed, please try again');

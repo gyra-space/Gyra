@@ -158,6 +158,11 @@ async def respond_to_interaction(request: InteractionRespondRequest):
             )
 
         logger.info(
+            f"[InteractionAPI] Confirm record persisted for request_id={request.request_id} "
+            f"responder={record['responder']} confirm_type={record['confirm_type']}"
+        )
+
+        logger.info(
             f"[InteractionAPI] Response delivered for request_id={request.request_id}"
         )
 
