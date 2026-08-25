@@ -23,6 +23,8 @@ from ..api.schemas import (
     DebugPreviewRequest,
     DebugPreviewVO,
     DeprecateRequest,
+    EcpImportRequest,
+    EcpImportResultVO,
     GenerateProposalsRequest,
     GenerateProposalsTaskVO,
     GenerateProposalsVO,
@@ -552,6 +554,42 @@ async def save_workspace_config(
             proposal_agent_id=request.proposal_agent_id,
         )
     )
+
+
+# ---------------------------------------------------------------- 资产迁移
+@router.get("/export", response_model=Result[dict])
+async def export_workspace(
+    workspace_id: Optional[str] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[dict]:
+    """Export a workspace's semantic assets as a portable JSON snapshot.
+
+    语义资产快照(所有版本链 + 状态 + payload + db 资产引用),用于跨系统迁移:
+    导入时通过 datasource_map 重绑 datasource_id 即可直接使用。
+    """
+    try:
+        return Result.succ(service.export_workspace(workspace_id=workspace_id))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[ecp] export workspace failed")
+        return Result.failed(msg=str(e))
+
+
+@router.post("/import", response_model=Result[EcpImportResultVO])
+async def import_workspace(
+    request: EcpImportRequest,
+    service: Service = Depends(get_service),
+) -> Result[EcpImportResultVO]:
+    """Import a semantic-asset snapshot (merge into a workspace)."""
+    try:
+        result = service.import_workspace(
+            data=request.data,
+            workspace_id=request.workspace_id,
+            datasource_map=request.datasource_map,
+        )
+        return Result.succ(EcpImportResultVO(**result))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[ecp] import workspace failed")
+        return Result.failed(msg=str(e))
 
 
 # ------------------------------------------------------------- linked resources

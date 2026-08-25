@@ -195,7 +195,8 @@ class MetaGyrasMessageMemory(GptsMessageMemory):
 
     async def get_by_conv_id(self, conv_id: str) -> Optional[List[GptsMessage]]:
         db_results = await self.gpts_message.get_by_conv_id(conv_id)
-        return sorted(db_results, key=lambda x: x.rounds)
+        # 数据库层已按 gmt_create 排序，此处无需再排序
+        return db_results
 
     def get_by_message_id(self, message_id: str) -> Optional[GptsMessage]:
         return self.gpts_message.get_by_message_id(message_id)
@@ -225,7 +226,7 @@ class MetaAgentSystemMessageMemory(AgentSystemMessageMemory):
         db_results = self.gpts_message_system_dao.get_by_conv_id(conv_id)
         results = []
         if db_results:
-            db_results = sorted(db_results, key=lambda x: x.rounds)
+            # 数据库层已按 gmt_create 排序，此处无需再排序
             for item in db_results:
                 results.append(AgentSystemMessage.from_dict(item.__dict__))
         return results

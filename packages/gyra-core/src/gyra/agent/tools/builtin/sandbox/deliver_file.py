@@ -496,9 +496,7 @@ class DeliverFileTool(SandboxToolBase):
                             file_metadata.preview_url,
                             file_metadata.oss_url,
                         )
-                        if url
-                        and isinstance(url, str)
-                        and url.startswith(("http://", "https://"))
+                        if _is_deliverable_url(url)
                     ),
                     None,
                 )
@@ -523,16 +521,19 @@ class DeliverFileTool(SandboxToolBase):
         ]
 
         if not web_url:
-            logger.warning(
-                f"[deliver_file] Storage upload failed for {path}. "
+            # 与沙箱模式保持一致：交付 URL 缺失意味着交付失败，
+            # 返回 fail(STORAGE_UPLOAD_FAILED)，避免上游误以为交付成功。
+            error_msg = (
+                f"Storage upload failed for {path}. "
                 f"File exists locally but is not accessible via web URL. "
                 f"Please check storage configuration."
             )
-            result_parts.append(
-                "\n⚠️ **注意：文件已标记，但无法生成可访问的预览/下载链接。**\n"
-                "请检查存储配置是否正确。"
+            logger.warning(f"[deliver_file] {error_msg}")
+            return ToolResult.fail(
+                error=error_msg,
+                tool_name=self.name,
+                error_code="STORAGE_UPLOAD_FAILED",
             )
-            return ToolResult.ok(output="\n".join(result_parts), tool_name=self.name)
 
         # 生成 d-attach 组件
         try:

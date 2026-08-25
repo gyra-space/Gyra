@@ -643,12 +643,24 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             except Exception as e:
                 logger.warning(f"[SceneWorkspace] gpts_memory collection failed: {e}")
 
-        # 兜底 / 增量:从 messages 收集
-        if not deliverable_files and messages:
+        # 兜底 / 增量:从 messages 收集。与 gpts_memory 结果按 file_id 并集合并,
+        # 杜绝「gpts_memory 收集到任务文件但无交付文件 → messages 路径覆盖清空 task_files」
+        # 与「messages 为空 → 丢掉 gpts_memory 已收集文件」两种文件丢失。
+        if messages:
             try:
-                task_files, deliverable_files = self._collect_files_from_messages(messages)
+                msg_task_files, msg_deliverable_files = self._collect_files_from_messages(messages)
             except Exception as e:
                 logger.warning(f"[SceneWorkspace] message fallback collection failed: {e}")
+                msg_task_files, msg_deliverable_files = [], []
+            # task_files:按 file_id 并集(同 id 取较新,但任一来源有值即保留)
+            task_by_id: Dict[str, Any] = {}
+            for f in list(task_files) + list(msg_task_files):
+                fid = self._file_id_of(f)
+                if fid:
+                    task_by_id[fid] = f
+            task_files = list(task_by_id.values())
+            # deliverable_files:两份都并入,由下方 merge(按 file_id+ts 保带 ts 的那份)统一去重
+            deliverable_files = list(deliverable_files) + list(msg_deliverable_files)
 
         self._task_files = [self._task_file_to_dict(f) for f in task_files]
         # 合并而非覆盖:terminate 收尾已在 _upsert_tool_step 收集过交付文件,
@@ -708,6 +720,18 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             self._panel_view = "summary"
         else:
             self._panel_view = "execution"
+
+        logger.debug(
+            f"[SceneWorkspace] collected files: task_files={len(self._task_files)}, "
+            f"deliverable_files={len(self._deliverable_files)}, conv_id={conv_id}"
+        )
+
+    @staticmethod
+    def _file_id_of(f: Any) -> str:
+        """兼容提取文件 file_id(pydantic 对象 / dict 两种形态)。"""
+        if isinstance(f, dict):
+            return str(f.get("file_id") or "")
+        return str(getattr(f, "file_id", None) or "")
 
     @staticmethod
     def _task_file_to_dict(f: Any) -> Dict[str, Any]:

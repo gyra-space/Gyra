@@ -1577,7 +1577,7 @@ class ConversableAgent(Role, Agent):
             "prev_content": prev_content,
         }
         if self.not_null_agent_context.output_process_message or self.is_final_role:
-            logger.info(
+            logger.debug(
                 f"[VisBridge][D][listen_thinking_stream] pushing temp_message: "
                 f"msg_id={reply_message_id}, output_process_message={self.not_null_agent_context.output_process_message}, "
                 f"is_final_role={self.is_final_role}, content_len={len(cu_content_incr or '')}, "

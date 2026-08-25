@@ -184,3 +184,100 @@ async def test_create_file_accepts_relative_url():
         sandbox_path="/out/r.md", file_type=FileType.DELIVERABLE.value
     )
     assert _is_deliverable_url(md.download_url)
+
+
+# --------------------------------------------------------------------------- #
+# deliver_file 本地模式（无沙箱）：相对 URL 也必须交付成功
+# --------------------------------------------------------------------------- #
+class _LocalCtx:
+    """模拟本地模式（无沙箱）下用于 _execute_local 的 ToolContext。"""
+
+    conversation_id = "conv-local"
+
+
+@pytest.mark.asyncio
+async def test_deliver_file_local_succeeds_with_relative_url(tmp_path, monkeypatch):
+    """本地模式（用户实际走 _execute_local）必须接纳相对 URL，
+    否则 /api/v2/serve/file/files/... 会被误判为不可交付，导致前端拿不到
+    交付文件组件/下载入口（本次沃尔玛周报 22:14 事故根因）。"""
+    from gyra.agent.core.file_system import agent_file_system as afs_mod
+
+    report = tmp_path / "沃尔玛运营周报_20260825.html"
+    report.write_text("<html>report</html>", encoding="utf-8")
+
+    async def fake_save_binary_file(self, **kwargs):
+        name = kwargs["file_name"]
+        return AgentFileMetadata(
+            file_id="fake-id",
+            conv_id=self.conv_id,
+            conv_session_id=self.conv_id,
+            file_key=kwargs["file_key"],
+            file_name=name,
+            file_type=FileType.DELIVERABLE.value,
+            local_path=str(report),
+            file_size=report.stat().st_size,
+            oss_url="gyra-fs://distributed/agent_files/x",
+            preview_url=None,
+            download_url="/api/v2/serve/file/files/agent_files/fake-id",
+            metadata={},
+        )
+
+    tool = DeliverFileTool()
+    monkeypatch.setattr(tool, "_get_file_storage_client", lambda: object())
+    monkeypatch.setattr(
+        afs_mod.AgentFileSystem, "save_binary_file", fake_save_binary_file
+    )
+
+    res = await tool._execute_local(
+        path=str(report),
+        description="沃尔玛运营周报HTML报告",
+        file_type="report",
+        context=_LocalCtx(),
+    )
+    assert res.success, f"本地模式不应失败: {res.error}"
+    out = res.get_output_string()
+    assert "/api/v2/serve/file/files/agent_files/fake-id" in out
+    assert "交付文件" in out
+    assert "⚠️" not in out
+    assert "无法生成可访问" not in out
+
+
+@pytest.mark.asyncio
+async def test_deliver_file_local_no_url_returns_storage_fail(tmp_path, monkeypatch):
+    """本地模式彻底无法生成交付 URL 时，必须返回 fail(STORAGE_UPLOAD_FAILED)，
+    与沙箱分支一致，避免伪装"✅ 已标记为交付物"。"""
+    from gyra.agent.core.file_system import agent_file_system as afs_mod
+
+    report = tmp_path / "data.csv"
+    report.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    async def fake_save_binary_file(self, **kwargs):
+        return AgentFileMetadata(
+            file_id="id",
+            conv_id=self.conv_id,
+            conv_session_id=self.conv_id,
+            file_key=kwargs["file_key"],
+            file_name=kwargs["file_name"],
+            file_type=FileType.DELIVERABLE.value,
+            local_path=str(report),
+            file_size=report.stat().st_size,
+            oss_url=None,
+            preview_url=None,
+            download_url=None,
+            metadata={},
+        )
+
+    tool = DeliverFileTool()
+    monkeypatch.setattr(tool, "_get_file_storage_client", lambda: object())
+    monkeypatch.setattr(
+        afs_mod.AgentFileSystem, "save_binary_file", fake_save_binary_file
+    )
+
+    res = await tool._execute_local(
+        path=str(report),
+        description="d",
+        file_type="data",
+        context=_LocalCtx(),
+    )
+    assert not res.success
+    assert res.error_code == "STORAGE_UPLOAD_FAILED"

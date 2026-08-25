@@ -242,6 +242,14 @@ export function buildManusWorkspaceView(
     execution.push(step);
   };
 
+  // 交付/任务文件按消息顺序收集:前端 history 里每条 view 消息的 running_window
+  // 都带有它当时下发的 deliverable_files/task_files。后端追问轮(新建 agent conv)
+  // 只推本轮文件,若不累积,上轮交付物(如下发的 dashboard.html)会在追问轮消失。
+  const deliverableInOrder: WorkspaceDeliverableFile[] = [];
+  const taskFileInOrder: WorkspaceTaskFile[] = [];
+  // summary 兜底:latestRight 未携带摘要时,回退到最近一条带 summary_content 的消息
+  let fallbackSummary: string | null = null;
+
   for (const msg of messages) {
     if (msg.role === 'human') {
       const text = typeof msg.context === 'string' ? msg.context.trim() : '';
@@ -273,6 +281,18 @@ export function buildManusWorkspaceView(
         // 非 JSON 视图忽略
       }
     }
+    // 跨消息累积交付/任务文件:与步骤一样按真实时序收集,避免追问轮丢上轮交付物
+    if (rightData) {
+      if (rightData.summary_content) fallbackSummary = rightData.summary_content;
+      for (const f of rightData.deliverable_files || []) {
+        const d = toDeliverable(f);
+        if (d) deliverableInOrder.push(d);
+      }
+      for (const f of rightData.task_files || []) {
+        const t = toTaskFile(f);
+        if (t) taskFileInOrder.push(t);
+      }
+    }
     // 思考(d-thinking)注入为 thinking 步骤:与工具步骤按同一消息帧穿插。
     // 旁白/结论(planning_window 的正文累加流)仍不注入 —— 最终结论统一走
     // view.summary 在 feed 底部渲染,避免把结论排到工具步骤之前。
@@ -292,12 +312,33 @@ export function buildManusWorkspaceView(
   const isWorking = !!latestRight?.is_running || !!leftPanel?.is_working;
   const hasRunningTool = execution.some((s) => s.type === 'tool_call' && s.status === 'running');
   const runningThinking = !!isWorking && !hasRunningTool && !runningPhaseTitle;
+
+  // 交付文件按 file_id+ts 去重(同一次交付取新值;跨轮同名不同 ts 分别保留),
+  // 新值优先(倒序收集)。任务文件按 file_id 合并(单个物理文件,同 id 取新值)。
+  const seenDeliverable = new Set<string>();
+  const deliverable_files: WorkspaceDeliverableFile[] = [];
+  for (let i = deliverableInOrder.length - 1; i >= 0; i--) {
+    const d = deliverableInOrder[i];
+    const key = `${d.file_id}|${d.ts || ''}`;
+    if (seenDeliverable.has(key)) continue;
+    seenDeliverable.add(key);
+    deliverable_files.push(d);
+  }
+  const seenTask = new Set<string>();
+  const task_files: WorkspaceTaskFile[] = [];
+  for (let i = taskFileInOrder.length - 1; i >= 0; i--) {
+    const t = taskFileInOrder[i];
+    if (seenTask.has(t.file_id)) continue;
+    seenTask.add(t.file_id);
+    task_files.push(t);
+  }
+
   return {
     planning: null,
     execution,
-    summary: source?.summary_content || null,
-    deliverable_files: (source?.deliverable_files || []).map(toDeliverable).filter((f): f is WorkspaceDeliverableFile => f !== null),
-    task_files: (source?.task_files || []).map(toTaskFile).filter((f): f is WorkspaceTaskFile => f !== null),
+    summary: source?.summary_content || fallbackSummary || null,
+    deliverable_files,
+    task_files,
     panel_view: source ? toPanelView(source.panel_view) : 'execution',
     lobby_exhibits: [],
     subagents: [],

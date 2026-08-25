@@ -5,9 +5,11 @@ Interaction API - 用户交互端点
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,19 @@ def _get_interaction_gateway():
         return None
 
 
+_confirm_store: Optional[Any] = None
+
+
+def _get_confirm_store():
+    """获取确认记录存取（持久化：跟随系统数据库，重启不丢）。"""
+    global _confirm_store
+    if _confirm_store is None:
+        from gyra.agent.core.v2.state_store import create_state_store
+
+        _confirm_store = create_state_store()
+    return _confirm_store
+
+
 @router.post("/respond", response_model=InteractionRespondResponse)
 async def respond_to_interaction(request: InteractionRespondRequest):
     """
@@ -104,7 +119,43 @@ async def respond_to_interaction(request: InteractionRespondRequest):
             metadata=request.metadata,
         )
 
+        # 先解除 Agent 阻塞（deliver_response 幂等：已响应则 no-op），再持久化确认记录。
         await gateway.deliver_response(response)
+
+        # 持久化"谁在何时确认了什么"，并拒绝重复确认。
+        confirm_store = _get_confirm_store()
+        responder = request.metadata.get("responder") or request.metadata.get("user") or {}
+        if not isinstance(responder, dict):
+            responder = {}
+        record = {
+            "request_id": request.request_id,
+            "responded_at": datetime.now(timezone.utc).isoformat(),
+            "responder": {
+                "user_no": responder.get("user_no"),
+                "nick_name": responder.get("nick_name"),
+                "avatar_url": responder.get("avatar_url"),
+            },
+            "confirm_type": request.metadata.get("confirm_type") or "select",
+            "question": request.metadata.get("question"),
+            "header": request.metadata.get("header"),
+            "choice": request.choice,
+            "input_content": request.input_value,
+            "is_custom_input": bool(request.metadata.get("is_custom_input", False)),
+        }
+        first_save = await confirm_store.save_confirm_record(request.request_id, record)
+        if not first_save:
+            existing = await confirm_store.get_confirm_record(request.request_id)
+            logger.info(
+                f"[InteractionAPI] Duplicate response rejected for request_id={request.request_id}"
+            )
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "success": False,
+                    "message": "already_responded",
+                    "record": existing,
+                },
+            )
 
         logger.info(
             f"[InteractionAPI] Response delivered for request_id={request.request_id}"
@@ -151,6 +202,20 @@ async def get_pending_requests(session_id: str) -> List[PendingRequestItem]:
     except Exception as e:
         logger.warning(f"[InteractionAPI] Failed to get pending requests: {e}")
         return []
+
+
+@router.get("/status")
+async def get_confirm_status(request_id: str) -> Dict[str, Any]:
+    """
+    查询确认卡片的已确认状态。
+
+    前端 VisConfirmCard 每次渲染据此决定交互态 / 只读态：
+    - 未确认(response.responded=False)：可交互；
+    - 已确认(response.responded=True)：只读并展示谁在何时确认了什么。
+    """
+    confirm_store = _get_confirm_store()
+    record = await confirm_store.get_confirm_record(request_id)
+    return {"responded": record is not None, "record": record}
 
 
 @router.post("/cancel", response_model=InteractionRespondResponse)

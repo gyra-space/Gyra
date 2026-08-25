@@ -1,4 +1,4 @@
-import React, { useState, useContext } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
 import { VisConfirmCardWrap } from './style';
 import {
   codeComponents,
@@ -6,9 +6,10 @@ import {
   markdownPlugins,
 } from '../../config';
 import { GPTVis } from '@antv/gpt-vis';
-import { Button, Divider, Space, Input, App } from 'antd';
+import { Button, Divider, Input, App } from 'antd';
 import { CheckCircleOutlined } from '@ant-design/icons';
 import { ChatContentContext } from '@/contexts';
+import { STORAGE_USERINFO_KEY } from '@/utils/constants';
 
 interface QuestionOption {
   label: string;
@@ -178,6 +179,34 @@ const buildConfirmResponseDisplayMessage = (
   return `\`\`\`drsk-confirm-response\n${JSON.stringify(responseData, null, 2)}\n\`\`\``;
 };
 
+interface ConfirmRecordData {
+  request_id?: string;
+  responded_at?: string;
+  responder?: { user_no?: string; nick_name?: string; avatar_url?: string };
+  confirm_type?: 'select' | 'input' | 'confirm';
+  question?: string | null;
+  header?: string | null;
+  choice?: string | null;
+  input_content?: string | null;
+  is_custom_input?: boolean;
+}
+
+const formatTime = (ts?: string) => {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleString();
+};
+
+const getCurrentUser = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_USERINFO_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
 const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onConfirm }) => {
   const { message } = App.useApp();
   const [disabled, setDisabled] = useState<boolean>(!!data.disabled);
@@ -186,10 +215,52 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
   const [optionInputValue, setOptionInputValue] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [isCustomInputMode, setIsCustomInputMode] = useState<boolean>(false);
+  const [confirmRecord, setConfirmRecord] = useState<ConfirmRecordData | null>(null);
+  const [statusLoaded, setStatusLoaded] = useState<boolean>(false);
 
   const { handleChat, appInfo, scrollRef } = useContext(ChatContentContext);
 
   const extra = data.extra || {};
+  const requestId =
+    data.request_id ||
+    extra.original_message_id ||
+    extra.approval_message_id ||
+    extra.message_id;
+
+  // 服务端已确认记录作为唯一事实源：一旦确认（本组件提交或历史回放），卡片即只读，
+  // 不能再次交互 —— 解决"反复刷新渲染仍可重复确认"的问题。
+  const isConfirmedState = disabled || !!confirmRecord;
+  const interactionDisabled = isConfirmedState || (!!requestId && !statusLoaded);
+
+  useEffect(() => {
+    if (!requestId) {
+      setStatusLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+        const res = await fetch(
+          `${apiBaseUrl}/api/v1/interaction/status?request_id=${encodeURIComponent(requestId)}`,
+        );
+        if (res.ok) {
+          const json = await res.json();
+          if (!cancelled && json?.responded && json.record) {
+            setConfirmRecord(json.record);
+            setDisabled(true);
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch confirm status:', e);
+      } finally {
+        if (!cancelled) setStatusLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [requestId]);
 
   // Support both top-level questions and extra.questions
   const questions: Question[] = data.questions || extra.questions || [];
@@ -217,7 +288,6 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
   const selectedOptionData = options.find(
     (o) => o.label === selectedOption || o.value === selectedOption,
   );
-  const showOptionInput = selectedOptionData?.requires_input && !isCustomInputMode;
 
   const handleConfirm = async () => {
     if (disabled) return;
@@ -284,13 +354,34 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
 
     setSubmitting(true);
 
+    const user = getCurrentUser();
+    const responder = {
+      user_no: user?.user_no || '',
+      nick_name: user?.nick_name || '',
+      avatar_url: user?.avatar_url || '',
+    };
+    const recordHeader = hasQuestions
+      ? questions[0]?.header || ''
+      : data.header || extra.header || '';
+    const localRecord: ConfirmRecordData = {
+      request_id: requestId,
+      responded_at: new Date().toISOString(),
+      responder,
+      confirm_type: actualConfirmType,
+      question: confirmMessage,
+      header: recordHeader,
+      choice: isCustomInputMode ? null : selectedOpt?.label || selectedOption,
+      input_content: finalInputValue || inputValue || undefined,
+      is_custom_input: isCustomInputMode,
+    };
+
     try {
-      // Submit to interaction API to unblock gateway's send_and_wait()
-      const requestId = data.request_id || extra.original_message_id || extra.approval_message_id;
+      // Submit to interaction API to unblock agent; server persists who/when and
+      // rejects duplicates (409) so the card can never be re-confirmed.
       if (requestId) {
         try {
           const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
-          await fetch(`${apiBaseUrl}/api/v1/interaction/respond`, {
+          const res = await fetch(`${apiBaseUrl}/api/v1/interaction/respond`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -301,9 +392,23 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
               metadata: {
                 confirm_type: actualConfirmType,
                 is_custom_input: isCustomInputMode,
+                question: confirmMessage,
+                header: recordHeader,
+                responder,
               },
             }),
           });
+
+          if (res.status === 409) {
+            const json = await res.json().catch(() => null);
+            if (json?.record) setConfirmRecord(json.record);
+            setDisabled(true);
+            message.info('This confirmation has already been submitted.');
+            return;
+          }
+          if (!res.ok) {
+            console.warn('Interaction API responded with non-OK status:', res.status);
+          }
         } catch (interactionError) {
           console.warn('Interaction API call failed (non-critical):', interactionError);
         }
@@ -323,7 +428,6 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
             timestamp: new Date().toISOString(),
           },
         });
-        setDisabled(true);
         message.success('Submitted, continuing execution...');
 
         setTimeout(() => {
@@ -335,9 +439,11 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
       } else {
         // Fallback: use legacy onConfirm
         onConfirm?.(data?.extra ?? {});
-        setDisabled(true);
         message.info('Selection recorded');
       }
+
+      setConfirmRecord(localRecord);
+      setDisabled(true);
     } catch (error) {
       console.error('Failed to submit response:', error);
       message.error('Submit failed, please try again');
@@ -346,64 +452,74 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
     }
   };
 
+  const renderConfirmedRecord = () => {
+    const rec = confirmRecord;
+    const answer = rec?.is_custom_input
+      ? rec?.input_content
+      : rec?.choice || selectedOptionData?.label || selectedOption || '';
+    const who = rec?.responder?.nick_name;
+
+    return (
+      <div className="confirm-record">
+        {confirmMessage && <div className="confirm-record-question">{confirmMessage}</div>}
+        {answer && <div className="confirm-record-answer">{answer}</div>}
+        {(who || rec?.responded_at) && (
+          <div className="confirm-record-meta">
+            {who ? `Confirmed by ${who}` : 'Confirmed'}
+            {rec?.responded_at ? ` · ${formatTime(rec.responded_at)}` : ''}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderSelectOptions = () => {
     if (options.length === 0) return null;
 
     return (
-      <div style={{ width: '100%', marginTop: 16, marginBottom: 16 }}>
-        <div style={{ fontWeight: 500, marginBottom: 12, color: '#1890ff' }}>
+      <div className="option-section">
+        <div className="confirm-question">
           {hasQuestions ? confirmMessage : 'Please select:'}
         </div>
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <div className="option-list">
           {options.map((opt, idx) => {
-            const isSelected = selectedOption === (opt.value || opt.label);
+            const optValue = opt.value || opt.label;
+            const isSelected = selectedOption === optValue;
             const shouldShowInput = isSelected && opt.requires_input;
 
             return (
               <div key={idx} style={{ width: '100%' }}>
-                <Button
-                  type={isSelected ? 'primary' : 'default'}
-                  block
+                <button
+                  type="button"
+                  className={`option-item${isSelected ? ' is-selected' : ''}`}
                   onClick={() => {
-                    setSelectedOption(opt.value || opt.label);
+                    setSelectedOption(optValue);
                     setIsCustomInputMode(false);
                     setOptionInputValue('');
                   }}
-                  disabled={disabled}
-                  style={{
-                    textAlign: 'left',
-                    height: 'auto',
-                    padding: '12px 16px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                  }}
+                  disabled={interactionDisabled}
                 >
-                  <span>
-                    <strong>{opt.label}</strong>
+                  <span className="option-label-wrap">
+                    <span className="option-label">{opt.label}</span>
                     {opt.description && (
-                      <span style={{ color: '#666', marginLeft: 8, fontSize: 14 }}>
-                        - {opt.description}
-                      </span>
+                      <span className="option-desc">{opt.description}</span>
                     )}
                     {opt.requires_input && (
-                      <span style={{ color: '#1890ff', marginLeft: 4, fontSize: 12 }}>
-                        (can add notes)
-                      </span>
+                      <span className="option-hint">(can add notes)</span>
                     )}
                   </span>
-                  {isSelected && <CheckCircleOutlined />}
-                </Button>
+                  {isSelected && <CheckCircleOutlined className="option-check" />}
+                </button>
 
                 {shouldShowInput && (
-                  <div style={{ marginTop: 8, paddingLeft: 16 }}>
+                  <div className="option-input">
                     <Input.TextArea
                       value={optionInputValue}
                       onChange={(e) => setOptionInputValue(e.target.value)}
                       placeholder={opt.input_placeholder || 'Please provide additional details...'}
-                      disabled={disabled}
+                      disabled={interactionDisabled}
                       rows={2}
-                      style={{ fontSize: 14 }}
+                      autoSize={{ minRows: 2, maxRows: 4 }}
                     />
                   </div>
                 )}
@@ -411,45 +527,35 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
             );
           })}
           {allowCustomInput && (
-            <Button
-              key="custom-input"
-              type={isCustomInputMode ? 'primary' : 'default'}
-              block
+            <button
+              type="button"
+              className={`option-item custom-input-item${isCustomInputMode ? ' is-selected' : ''}`}
               onClick={() => {
                 setIsCustomInputMode(true);
                 setSelectedOption(null);
                 setOptionInputValue('');
               }}
-              disabled={disabled}
-              style={{
-                textAlign: 'left',
-                height: 'auto',
-                padding: '12px 16px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                borderStyle: 'dashed',
-              }}
+              disabled={interactionDisabled}
             >
-              <span>
-                <strong>Custom input</strong>
-                <span style={{ color: '#666', marginLeft: 8, fontSize: 14 }}>
-                  - Type your own response
-                </span>
+              <span className="option-label-wrap">
+                <span className="option-label">Custom input</span>
+                <span className="option-desc">Type your own response</span>
               </span>
-              {isCustomInputMode && <CheckCircleOutlined />}
-            </Button>
+              {isCustomInputMode && <CheckCircleOutlined className="option-check" />}
+            </button>
           )}
-        </Space>
+        </div>
         {isCustomInputMode && (
-          <Input.TextArea
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Type your custom content..."
-            disabled={disabled}
-            rows={3}
-            style={{ marginTop: 12 }}
-          />
+          <div className="custom-input-area">
+            <Input.TextArea
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder="Type your custom content..."
+              disabled={interactionDisabled}
+              rows={2}
+              autoSize={{ minRows: 2, maxRows: 5 }}
+            />
+          </div>
         )}
       </div>
     );
@@ -457,28 +563,28 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
 
   const renderInput = () => {
     return (
-      <div style={{ width: '100%', marginTop: 16, marginBottom: 16 }}>
-        <div style={{ fontWeight: 500, marginBottom: 12, color: '#1890ff' }}>
+      <div className="option-section">
+        <div className="confirm-question">
           {hasQuestions ? confirmMessage : 'Please enter:'}
         </div>
         <Input.TextArea
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           placeholder={placeholder}
-          disabled={disabled}
+          disabled={interactionDisabled}
           rows={3}
-          style={{ marginBottom: 12 }}
+          autoSize={{ minRows: 3, maxRows: 6 }}
         />
       </div>
     );
   };
 
   const renderConfirmButton = () => {
-    if (disabled) {
+    if (isConfirmedState) {
       return (
-        <div style={{ color: '#52c41a', display: 'flex', alignItems: 'center' }}>
-          <CheckCircleOutlined style={{ marginRight: 8 }} />
-          Confirmed, Agent is processing...
+        <div className="confirm-status">
+          <CheckCircleOutlined className="status-icon" />
+          <span className="confirm-status-text">Confirmed</span>
         </div>
       );
     }
@@ -505,12 +611,9 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
     return (
       <Button
         type="primary"
+        className="confirm-button"
         loading={submitting}
-        disabled={isDisabled}
-        style={{
-          backgroundImage: 'linear-gradient(104deg, #3595ff 13%, #185cff 99%)',
-          color: '#ffffff',
-        }}
+        disabled={isDisabled || !statusLoaded}
         onClick={handleConfirm}
       >
         {buttonText}
@@ -526,12 +629,12 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
         <span className="confirm-title">{cardTitle}</span>
         <Divider
           style={{
-            margin: '8px 0px 8px 0px',
+            margin: '12px 0',
             borderWidth: '1px',
-            borderColor: 'rgba(0, 0, 0, 0.03)',
+            borderColor: 'var(--line-soft)',
           }}
         />
-        <div className="whitespace-normal">
+        <div className="confirm-markdown whitespace-normal">
           {/* @ts-ignore */}
           <GPTVis
             className="whitespace-normal"
@@ -542,14 +645,19 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
           </GPTVis>
         </div>
 
-        {confirmType === 'select' && renderSelectOptions()}
-        {confirmType === 'input' && renderInput()}
+        {confirmType === 'select' && (
+          isConfirmedState ? renderConfirmedRecord() : renderSelectOptions()
+        )}
+        {confirmType === 'input' && (
+          isConfirmedState ? renderConfirmedRecord() : renderInput()
+        )}
+        {confirmType === 'confirm' && isConfirmedState && renderConfirmedRecord()}
 
         <Divider
           style={{
-            margin: '8px 0px 8px 0px',
+            margin: '12px 0',
             borderWidth: '1px',
-            borderColor: 'rgba(0, 0, 0, 0.03)',
+            borderColor: 'var(--line-soft)',
           }}
         />
         <div className="confirm-footer">{renderConfirmButton()}</div>

@@ -44,6 +44,16 @@ _CUSTOM_RENDER_TOOL_NAMES = {
     "load_skill",
 }
 
+# ECP 语义工具的结果由专用前端渲染器（VisEcpSearch / VisEcpObject / VisEcpMetric /
+# SqlQueryRenderer）负责展示。即使执行失败（返回错误文本而非 d-ecp 围栏），也由专用
+# 渲染器展示错误，因此不生成通用 d-tool 兜底视图，避免同一结果（尤其入参）被重复展示。
+_ECP_DEDICATED_RENDER_TOOL_NAMES = {
+    "search_semantics",
+    "get_semantic_object",
+    "execute_metric_query",
+    "execute_raw_sql",
+}
+
 
 def _has_custom_tool_renderer(
     tool_name: Optional[str],
@@ -51,6 +61,14 @@ def _has_custom_tool_renderer(
     err_msg: Optional[str],
 ) -> bool:
     """工具是否由专用前端渲染器负责展示（而非通用 d-tool 兜底）。"""
+    # ECP 语义工具具备专用前端渲染器：无论成功（d-ecp-* / d-sql-query 围栏）还是
+    # 失败（错误文本），均由专用渲染器展示，跳过通用 d-tool，避免结果/入参被重复渲染。
+    if (tool_name or "") in _ECP_DEDICATED_RENDER_TOOL_NAMES:
+        return True
+    if isinstance(tool_result, str):
+        stripped = tool_result.lstrip()
+        if stripped.startswith("```d-ecp-") or stripped.startswith("```d-sql-query"):
+            return True
     if err_msg:
         # 出错时仍走通用兜底，确保错误信息可见
         return False
@@ -59,13 +77,6 @@ def _has_custom_tool_renderer(
     # 按内容兜底：skill 工具输出 <skill_content> 时同样认为有自定义渲染器
     if isinstance(tool_result, str) and "<skill_content" in tool_result:
         return True
-    # ECP 语义工具输出 d-ecp-* / d-sql-query 专用 VIS 围栏，由 VisEcpSearch /
-    # VisEcpObject / VisEcpMetric / SqlQueryRenderer 等专用渲染器负责展示，
-    # 同样跳过通用 d-tool，避免同一结果在兜底渲染器与专用渲染器中重复出现。
-    if isinstance(tool_result, str):
-        stripped = tool_result.lstrip()
-        if stripped.startswith("```d-ecp-") or stripped.startswith("```d-sql-query"):
-            return True
     return False
 
 
@@ -741,7 +752,7 @@ class ToolAction(Action[ToolInput]):
         #   这些工具已自行管理输出大小（分段读取）
         should_truncate = (
             tool_output_chars > _MAX_TOOL_OUTPUT_CHARS
-            and tool_info.name not in ("read", "read_file", "view", "Skill", "skill", "execute_sql", "get_table_spec")
+            and tool_info.name not in ("read", "read_file", "view", "Skill", "skill", "execute_sql", "execute_raw_sql", "get_table_spec")
         )
 
         if should_truncate:

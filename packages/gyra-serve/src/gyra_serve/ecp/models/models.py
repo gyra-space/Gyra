@@ -204,6 +204,18 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() if dt else None
 
 
+def _parse_dt(value: Any) -> Optional[datetime]:
+    """Parse an ISO datetime string (or pass a datetime through) for import."""
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
 def to_object_vo(e: EcpSemanticObjectEntity) -> SemanticObjectVO:
     return SemanticObjectVO(
         id=e.id,
@@ -568,6 +580,88 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
                 )
             )
         return entries
+
+    def list_all_versions(
+        self, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> List[SemanticObjectVO]:
+        """All historic versions of every object of a workspace (export source).
+
+        Unlike ``list_latest`` (one row per id), this returns the full version
+        history so an export faithfully preserves the version chain and the
+        ``supersedes`` links that make the asset layer reproducible.
+        """
+        with self.session(commit=False) as session:
+            rows = (
+                session.query(EcpSemanticObjectEntity)
+                .filter(EcpSemanticObjectEntity.workspace_id == workspace_id)
+                .order_by(EcpSemanticObjectEntity.id, EcpSemanticObjectEntity.version)
+                .all()
+            )
+        return [to_object_vo(r) for r in rows]
+
+    def import_object(
+        self,
+        object_id: str,
+        version: int,
+        obj_type: str,
+        workspace_id: str,
+        status: str = STATUS_PROPOSED,
+        name: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        confidence: Optional[float] = None,
+        evidence: Optional[List[Dict[str, Any]]] = None,
+        created_by: str = "import",
+        created_at: Optional[Any] = None,
+        confirmed_by: Optional[str] = None,
+        confirmed_at: Optional[Any] = None,
+        source: Optional[str] = None,
+        supersedes: Optional[int] = None,
+    ) -> Optional[SemanticObjectVO]:
+        """Restore one semantic object row from an export (merge import).
+
+        Merge semantics:
+        - An existing ``(id, version, workspace_id)`` row is skipped (None),
+          so re-importing a snapshot is idempotent.
+        - Importing a ``confirmed`` row supersedes any existing confirmed
+          version of the same id (follows write rule 3).
+        - Row status / version / supersedes are taken verbatim from the source
+          so the imported asset layer behaves exactly like the original.
+        """
+        with self.session() as session:
+            exists = (
+                session.query(EcpSemanticObjectEntity)
+                .filter(
+                    EcpSemanticObjectEntity.id == object_id,
+                    EcpSemanticObjectEntity.version == version,
+                    EcpSemanticObjectEntity.workspace_id == workspace_id,
+                )
+                .first()
+            )
+            if exists:
+                return None
+            if status == STATUS_CONFIRMED:
+                self._supersede_confirmed(session, object_id, workspace_id)
+            entity = EcpSemanticObjectEntity(
+                id=object_id,
+                version=version,
+                workspace_id=workspace_id,
+                obj_type=obj_type,
+                status=status,
+                name=name,
+                payload=payload or {},
+                confidence=confidence,
+                evidence=evidence,
+                created_by=created_by,
+                created_at=_parse_dt(created_at) or datetime.now(),
+                confirmed_by=confirmed_by,
+                confirmed_at=_parse_dt(confirmed_at),
+                source=source,
+                supersedes=supersedes,
+            )
+            session.add(entity)
+            session.flush()
+            session.refresh(entity)
+            return to_object_vo(entity)
 
 
 class ResolutionCacheDao(BaseDao[EcpResolutionCacheEntity, Any, Any]):

@@ -9,6 +9,7 @@
 import { useMemo, useState } from 'react';
 import { Input } from 'antd';
 import {
+  DeleteOutlined,
   InboxOutlined,
   PlusOutlined,
   RightOutlined,
@@ -47,6 +48,12 @@ interface SceneSimpleRailProps {
   onOpenInbox?: () => void;
   /** 会话级用量（模型 + token）map，key=convUid，用于列表 chip 展示 */
   usageMap?: Record<string, ConversationUsageSummary>;
+  /** 删除单个历史项(任务/会话)。按 kind 由外层决定调用任务/会话删除接口。 */
+  onDeleteItem?: (item: SimpleHistoryItem) => void;
+  /** 是否允许删除任务项(space.task.manage) */
+  canDeleteTask?: boolean;
+  /** 是否允许删除会话项(space.chat.use) */
+  canDeleteConversation?: boolean;
 }
 
 function StatusDot({ status }: { status: SimpleHistoryItem['status'] }) {
@@ -84,6 +91,9 @@ export function SceneSimpleRail({
   onNewConversation,
   onOpenInbox,
   usageMap = {},
+  onDeleteItem,
+  canDeleteTask,
+  canDeleteConversation,
 }: SceneSimpleRailProps) {
   const [filter, setFilter] = useState('');
   const [collapsedSegs, setCollapsedSegs] = useState<Set<string>>(() => new Set());
@@ -209,6 +219,22 @@ export function SceneSimpleRail({
                           </div>
                         )}
                       </div>
+                      {!disabled && onDeleteItem && (
+                        (it.kind === 'task' && canDeleteTask) ||
+                        (it.kind === 'lobby' && canDeleteConversation)
+                      ) && (
+                        <span
+                          className="ws-simple-item__del"
+                          role="button"
+                          tabIndex={-1}
+                          title="删除"
+                          aria-label="删除"
+                          onClick={(e) => { e.stopPropagation(); onDeleteItem?.(it); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onDeleteItem?.(it); } }}
+                        >
+                          <DeleteOutlined />
+                        </span>
+                      )}
                     </div>
                   );
                 })}

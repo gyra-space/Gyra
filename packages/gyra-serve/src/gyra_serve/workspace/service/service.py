@@ -716,6 +716,30 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
         entity = self._conv_link_dao.get_by_conv(conv_uid)
         return self._conv_link_dao.to_response(entity) if entity else None
 
+    def delete_conversation(
+        self, workspace_id: int, conv_uid: str, user_id: Optional[int] = None
+    ) -> bool:
+        """从空间移除(删除)会话关联,删除后该会话不再出现在空间任务列表。
+
+        归属校验:会话关联若指定了所有者(user_id),仅所有者本人可删除;
+        无主(共享)会话对具备空间对话权限的用户放行。
+        """
+        link = self._conv_link_dao.get_by_conv(conv_uid)
+        if link is None or link.workspace_id != workspace_id:
+            raise ValueError(
+                f"Conversation {conv_uid} not linked to workspace {workspace_id}"
+            )
+        if (
+            user_id is not None
+            and link.user_id is not None
+            and link.user_id != user_id
+        ):
+            raise ValueError(
+                f"Conversation {conv_uid} not owned by user {user_id}"
+            )
+        self._conv_link_dao.delete_by_conv(conv_uid)
+        return True
+
     # ---------------- Conversation title (A: first input / B: LLM summary) ----
     def get_conversation_title(self, conv_uid: str) -> Optional[str]:
         """Return current conv_link title (None if not linked / no title)."""

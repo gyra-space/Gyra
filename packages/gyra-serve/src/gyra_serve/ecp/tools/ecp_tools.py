@@ -30,6 +30,55 @@ def _ws(workspace_id: Optional[str]) -> str:
     return workspace_id or DEFAULT_WORKSPACE_ID
 
 
+# d-sql-query VIS 围栏的 JSON 上限:保证围栏完整、不被外层截断,避免前端渲染成残缺组件。
+_MAX_SQL_VIS_BYTES = 3 * 1024
+# execute_raw_sql 单次最多物化的行数(避免超大结果整体进内存),超出部分用 has_more 提示。
+_MAX_SQL_VIS_ROWS = 1000
+
+
+def _cap_sql_display_rows(
+    sql: str,
+    db_name: str,
+    db_type: str,
+    dialect: str,
+    columns: List[Any],
+    rows: List[List[Any]],
+) -> List[List[Any]]:
+    """逐步缩减显示行数,使 d-sql-query JSON 不超过 _MAX_SQL_VIS_BYTES。
+
+    原始查询可能返回超大量行(execute_raw_sql 为探索路径不强制 LIMIT),若整段围栏
+    超过 _MAX_TOOL_OUTPUT_CHARS(8K)会被 ToolAction 截断,把 JSON 拦腰截断导致前端
+    渲染成残缺组件;这里先缩减展示行数,保证围栏完整且数据量可控。
+
+    返回缩减后的展示 rows(仅含本页)。
+    """
+    if not rows:
+        return rows
+
+    def _size(r: List[List[Any]]) -> int:
+        data = {
+            "sql": sql,
+            "db_name": db_name,
+            "db_type": db_type,
+            "dialect": dialect,
+            "columns": columns,
+            "rows": r,
+        }
+        return len(json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"))
+
+    if _size(rows) <= _MAX_SQL_VIS_BYTES:
+        return rows
+
+    for limit in (200, 100, 50, 20, 10, 5):
+        if limit >= len(rows):
+            continue
+        candidate = rows[:limit]
+        if _size(candidate) <= _MAX_SQL_VIS_BYTES:
+            return candidate
+
+    return rows[:5]
+
+
 @tool(
     "search_semantics",
     description=(
@@ -348,24 +397,38 @@ async def execute_raw_sql(
     except Exception as e:  # noqa: BLE001
         return json.dumps({"error": str(e), "trust": "none"}, ensure_ascii=False)
     columns, rows = [], []
+    total_rows = 0
     if raw:
         columns = list(raw[0])
-        # Convert to list of lists (consistent with execute_sql format)
-        rows = [list(r) for r in raw[1:]]
+        # 转换为 list(与 execute_sql 一致);仅物化展示上限内的行,避免超大结果
+        # (如百万行)整体进内存,总数仍以 raw 为准,超出部分用 has_more 提示。
+        total_rows = len(raw) - 1
+        rows = [list(r) for r in raw[1 : 1 + _MAX_SQL_VIS_ROWS]]
+
+    # 缩减展示行数:保证 d-sql-query 围栏完整(不被外层截断成残缺组件)且数据量可控。
+    db_type = getattr(connector, 'db_type', 'unknown')
+    dialect = getattr(connector, 'dialect', getattr(connector, 'db_type', 'unknown'))
+    display_rows = _cap_sql_display_rows(sql, db_name, db_type, dialect, columns, rows)
+    page_size = len(display_rows)
+    has_more = page_size < total_rows
 
     # Use d-sql-query VIS component for rendering (same as execute_sql)
     result_data = {
         "sql": sql,
         "db_name": db_name,
-        "db_type": getattr(connector, 'db_type', 'unknown'),
-        "dialect": getattr(connector, 'dialect', getattr(connector, 'db_type', 'unknown')),
+        "db_type": db_type,
+        "dialect": dialect,
         "columns": columns,
-        "rows": rows,
-        "total_rows": len(rows),
+        "rows": display_rows,
+        "total_rows": total_rows,
         "page": 1,
+        # 响应仅含本页数据,前端 Pagination 并不向后端拉取下一页,总页数固定为 1,
+        # 用 has_more / display_truncated 提示还有更多行,避免出现可点但无数据的空页。
         "total_pages": 1,
-        "page_size": len(rows),
-        "has_more": False,
+        "page_size": page_size,
+        "has_more": has_more,
+        "display_truncated": has_more,
+        "display_row_count": page_size,
         # ECP-specific fields
         "trust": "inferred",
         "warning": "⚠️ 未验证口径：此结果未经语义层确认",

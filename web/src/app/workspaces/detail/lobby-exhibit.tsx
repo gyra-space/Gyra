@@ -694,6 +694,8 @@ function SlidesR({ exhibit }: { exhibit: LobbyExhibit }) {
   const mode = exhibit.render_hints?.slides?.mode || 'html';
   const url = resolveExhibitUrl(exhibit);
   const inline = exhibit.source.inline;
+  // 二进制 PPT/Key 无法被浏览器内联渲染
+  const isBinarySlides = /\.(ppt|pptx|key)$/i.test(exhibit.title || '');
 
   if (mode === 'pdf') {
     if (!url) return <FetchState loading={false} error="无幻灯片地址" url="" />;
@@ -727,6 +729,10 @@ function SlidesR({ exhibit }: { exhibit: LobbyExhibit }) {
         className="ws-renderer__deliverable-iframe"
       />
     );
+  }
+  // 二进制 PPT/Key 无内联渲染:避免空白 iframe,给"下载/新窗口"兜底
+  if (isBinarySlides) {
+    return <FileR exhibit={exhibit} />;
   }
   if (!url) return <FetchState loading={false} error="无幻灯片地址" url="" />;
   return (

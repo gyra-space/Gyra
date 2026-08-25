@@ -16,6 +16,7 @@ import { useRequest } from 'ahooks';
 import { App, Button, Input, Popconfirm, Select, Spin, Table } from 'antd';
 import { useState } from 'react';
 
+import AssetMigrationCard from './AssetMigrationCard';
 import { Dot, EcpEmpty } from './common';
 
 /** Proposal agent: pick a STANDARD agent from the agent store. */
@@ -184,6 +185,7 @@ export default function SettingsTab({ workspaceId }: { workspaceId: string }) {
           ))
         )}
         </div>
+        <AssetMigrationCard workspaceId={workspaceId} />
       </div>
 
       <div className="ecp-card" style={{ marginTop: 0 }}>

@@ -89,8 +89,13 @@ class TimelineUnit:
 
     @property
     def sort_key(self):
-        """单一排序键：(rounds, created_at, seq)。不含不可靠的字段。"""
-        return (self.rounds, self.created_at, self.seq)
+        """单一排序键：(created_at, seq)。
+
+        rounds 字段在某些场景下不可靠（如多轮对话加载时可能未正确设置），
+        因此不再作为主排序键。优先使用时间戳 created_at，seq 作为最终 tiebreak。
+        这样可以确保消息按照真实的时序排列，而不是依赖可能混乱的 rounds 字段。
+        """
+        return (self.created_at, self.seq)
 
 
 @dataclass
@@ -104,7 +109,8 @@ class Segment:
 
     @property
     def sort_key(self):
-        return (self.first_rounds, self.first_created_at)
+        """使用创建时间排序，不依赖可能不可靠的 rounds 字段。"""
+        return (self.first_created_at,)
 
 
 @dataclass

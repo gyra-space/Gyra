@@ -51,11 +51,11 @@ function getRiskLevelColor(riskLevel?: string): string {
     case 'safe':
       return 'success';
     case 'low':
-      return 'blue';
+      return 'processing';
     case 'medium':
       return 'warning';
     case 'high':
-      return 'orange';
+      return 'warning';
     case 'critical':
       return 'error';
     default:
@@ -177,7 +177,7 @@ const VisAuthorizationCard: React.FC<VisAuthorizationCardProps> = ({ data }) => 
           style={{
             margin: '8px 0px 8px 0px',
             borderWidth: '1px',
-            borderColor: 'rgba(0, 0, 0, 0.06)',
+            borderColor: 'var(--line-soft)',
           }}
         />
 
@@ -202,7 +202,7 @@ const VisAuthorizationCard: React.FC<VisAuthorizationCardProps> = ({ data }) => 
         {riskFactors.length > 0 && (
           <div className="risk-factors">
             {riskFactors.map((factor, index) => (
-              <Tag key={index} color="orange">
+              <Tag key={index} color="warning">
                 {factor}
               </Tag>
             ))}
@@ -258,7 +258,7 @@ const VisAuthorizationCard: React.FC<VisAuthorizationCardProps> = ({ data }) => 
           style={{
             margin: '8px 0px 8px 0px',
             borderWidth: '1px',
-            borderColor: 'rgba(0, 0, 0, 0.06)',
+            borderColor: 'var(--line-soft)',
           }}
         />
 
@@ -277,15 +277,6 @@ const VisAuthorizationCard: React.FC<VisAuthorizationCardProps> = ({ data }) => 
             disabled={disabled}
             type="primary"
             icon={<CheckCircleOutlined />}
-            style={
-              !disabled
-                ? {
-                    backgroundImage:
-                      'linear-gradient(104deg, #3595ff 13%, #185cff 99%)',
-                    color: '#ffffff',
-                  }
-                : undefined
-            }
             onClick={handleAuthorize}
             loading={loading}
           >

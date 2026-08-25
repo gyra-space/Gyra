@@ -333,6 +333,26 @@ class WorkspaceConversationLinkDao(
         finally:
             session.close()
 
+    def delete_by_conv(self, conv_uid: str) -> bool:
+        """删除会话关联记录(从空间任务列表移除会话)。"""
+        session = self.get_raw_session()
+        try:
+            entity = (
+                session.query(WorkspaceConversationLinkEntity)
+                .filter(WorkspaceConversationLinkEntity.conv_uid == conv_uid)
+                .first()
+            )
+            if entity is None:
+                return False
+            session.delete(entity)
+            session.commit()
+            return True
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def list_by_workspace(
         self, workspace_id: int, user_id: Optional[int] = None, limit: int = 100
     ) -> List[WorkspaceConversationLinkEntity]:

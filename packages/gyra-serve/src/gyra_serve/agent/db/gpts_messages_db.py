@@ -429,7 +429,7 @@ class GptsMessagesDao(BaseDao):
             result = await session.execute(
                 select(GptsMessagesEntity)
                 .where(GptsMessagesEntity.conv_id == conv_id)
-                .order_by(GptsMessagesEntity.rounds)
+                .order_by(GptsMessagesEntity.gmt_create, GptsMessagesEntity.id)
             )
             entities = result.scalars().all()
             return [self._to_gpts_message(e) for e in entities]
@@ -439,7 +439,7 @@ class GptsMessagesDao(BaseDao):
         gpts_messages = session.query(GptsMessagesEntity)
         if conv_id:
             gpts_messages = gpts_messages.filter(GptsMessagesEntity.conv_id == conv_id)
-        entities = gpts_messages.order_by(GptsMessagesEntity.rounds).all()
+        entities = gpts_messages.order_by(GptsMessagesEntity.gmt_create, GptsMessagesEntity.id).all()
         session.close()
         return [self._to_gpts_message(e) for e in entities]
 
@@ -450,7 +450,7 @@ class GptsMessagesDao(BaseDao):
             gpts_messages = gpts_messages.filter(
                 GptsMessagesEntity.conv_session_id == conv_session_id
             )
-        entities = gpts_messages.order_by(GptsMessagesEntity.rounds).all()
+        entities = gpts_messages.order_by(GptsMessagesEntity.gmt_create, GptsMessagesEntity.id).all()
         session.close()
         return [self._to_gpts_message(e) for e in entities]
 
@@ -470,7 +470,7 @@ class GptsMessagesDao(BaseDao):
         entity = (
             session.query(GptsMessagesEntity)
             .filter(GptsMessagesEntity.conv_id == conv_id)
-            .order_by(desc(GptsMessagesEntity.rounds))
+            .order_by(desc(GptsMessagesEntity.gmt_create), desc(GptsMessagesEntity.id))
             .first()
         )
         session.close()
@@ -491,7 +491,7 @@ class GptsMessagesDao(BaseDao):
         old_message_qry = old_message_qry.filter(
             GptsMessagesEntity.message_id == message_id
         )
-        old_message = old_message_qry.order_by(GptsMessagesEntity.rounds).one_or_none()
+        old_message = old_message_qry.order_by(GptsMessagesEntity.id).one_or_none()
         if old_message:
             session.delete(old_message)
             session.commit()

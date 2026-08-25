@@ -59,7 +59,7 @@ class GyraJsonConverter(VisProtocolConverter):
                 continue
             deal_messages.append(message)
 
-        deal_messages = sorted(deal_messages, key=lambda _message: _message.rounds)
+        deal_messages = sorted(deal_messages, key=lambda _message: (_message.created_at or 0, _message.id or 0))
         vis_items: List[dict[any, any]] = []
         for message in deal_messages:
             vis_items.append(await self.gen_message_vis(message))
@@ -94,7 +94,7 @@ class GyraJsonConverter(VisProtocolConverter):
                 continue
             deal_messages.append(message)
 
-        deal_messages = sorted(deal_messages, key=lambda _message: _message.rounds)
+        deal_messages = sorted(deal_messages, key=lambda _message: (_message.created_at or 0, _message.id or 0))
         vis_items: List[dict[any, any]] = []
         for message in deal_messages:
             vis_items.append(await self.gen_message_vis(message))

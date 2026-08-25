@@ -718,6 +718,28 @@ async def rename_conversation(
         return Result.failed(str(e))
 
 
+@router.post("/conversations/{conv_uid}/delete", response_model=Result[bool],
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.chat.use"))])
+async def delete_conversation(
+    conv_uid: str,
+    request: dict,
+    user_id: Optional[int] = Header(None, alias="X-User-ID"),
+    service: Service = Depends(get_service),
+) -> Result[bool]:
+    """删除会话(从空间任务列表移除)。仅限归属用户或具备空间对话权限的用户。"""
+    try:
+        workspace_id = request.get("workspace_id")
+        if workspace_id is None:
+            return Result.failed("workspace_id is required")
+        return Result.succ(service.delete_conversation(
+            workspace_id=int(workspace_id), conv_uid=conv_uid, user_id=user_id
+        ))
+    except Exception as e:
+        logger.exception("conversation delete exception!")
+        return Result.failed(str(e))
+
+
 # ----------------------- Inbox (个人待办收件箱) -----------------------
 def get_inbox_service() -> InboxService:
     if global_system_app is None:

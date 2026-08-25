@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { forwardRef, useImperativeHandle, useEffect, useMemo, useRef, useState } from 'react';
 import { Input, Popover, Drawer, Progress, Statistic, Row, Col } from 'antd';
 import {
   ArrowUpOutlined,
@@ -375,10 +375,12 @@ interface AgentWorkspaceInputProps {
   model?: string;
   /** 模型选择变化回调(与 model 成对使用) */
   onModelChange?: (name: string) => void;
+  /** 默认模型(可选):优先于全局模型列表首个;用于场景空间默认取「空间设置模型列表」首个配置模型 */
+  defaultModel?: string;
 }
 
 export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWorkspaceInputProps>(
-  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, model, onModelChange }, ref) {
+  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, model, onModelChange, defaultModel }, ref) {
     const [text, setText] = useState('');
     const [resources, setResources] = useState<ResourceItem[]>([]);
     const [uploading, setUploading] = useState<UploadingFile[]>([]);
@@ -389,6 +391,10 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const selectedModel = model ?? internalSelectedModel;
     // 模型列表异步返回时用 ref 判断「是否已有选中」,防止 onSuccess 闭包读到过期值覆盖用户选择
     const selectedModelRef = useRef(selectedModel);
+    // 用户是否手动选过模型:区分「手动选择」与「系统回填默认」,使空间默认模型到达后不会覆盖手动选择
+    const userSelectedRef = useRef(false);
+    // 当前「默认值」是否由系统回填(而非用户选择/外部记忆):仅回填默认时,空间默认模型可以覆盖之
+    const systemDefaultRef = useRef(false);
     const updateSelectedModel = (name: string) => {
       selectedModelRef.current = name;
       if (onModelChange) onModelChange(name);
@@ -432,9 +438,21 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
         setModelList(llm);
         // 仅在尚未选中任何模型时回填默认模型:不覆盖用户已选/外部记忆的模型
         // (修复提交后输入框重挂载导致模型回退默认的 bug)
-        if (llm.length && !selectedModelRef.current) updateSelectedModel(llm[0].model_name);
+        if (llm.length && !selectedModelRef.current) {
+          // 优先使用传入的默认模型(如空间设置模型列表首个),否则回退全局模型列表首个
+          systemDefaultRef.current = true;
+          updateSelectedModel(defaultModel || llm[0].model_name);
+        }
       },
     });
+
+    // 空间默认模型异步返回(晚于全局模型列表)时,仅当当前是「系统回填默认」(非用户选择/外部记忆)
+    // 才用空间默认模型覆盖;避免覆盖用户手选或外部记忆的模型
+    useEffect(() => {
+      if (defaultModel && !userSelectedRef.current && systemDefaultRef.current) {
+        updateSelectedModel(defaultModel);
+      }
+    }, [defaultModel, modelList]);
 
     // 技能列表:+ 号菜单「技能」面板的数据源
     const { data: skillList } = useRequest(async () => {
@@ -1045,7 +1063,11 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                             type="button"
                             key={m.model_name}
                             className="flex w-full items-center gap-2.5 px-3 py-2 cursor-pointer rounded-lg transition-colors text-left hover:bg-gray-100 dark:hover:bg-gray-700/60"
-                            onClick={() => updateSelectedModel(m.model_name)}
+                            onClick={() => {
+                              userSelectedRef.current = true;
+                              systemDefaultRef.current = false;
+                              updateSelectedModel(m.model_name);
+                            }}
                           >
                             <ModelIcon model={m.model_name} width={18} height={18} />
                             <span className="min-w-0 flex-1 truncate text-[13px] text-gray-700 dark:text-gray-300">{m.model_name}</span>

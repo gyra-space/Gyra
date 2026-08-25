@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Alert, Button, Spin } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { WorkspaceEvent } from '@/hooks/use-chat';
@@ -12,7 +12,7 @@ import type { AgentWorkspaceInputHandle, WorkspaceDeliverableFile } from './agen
 import { useSceneAgentChat } from './use-scene-agent-chat';
 import { useUserInput } from '@/hooks/use-user-input';
 import { useRequest } from 'ahooks';
-import { apiInterceptors, getAppInfo } from '@/client/api';
+import { apiInterceptors, getAppInfo, listResources } from '@/client/api';
 
 export interface AgentWorkspaceProps {
   convUid?: string;
@@ -100,6 +100,21 @@ export function AgentWorkspace({
     { refreshDeps: [appCode] },
   );
   const appInfo = appInfoTuple?.[1];
+
+  // 空间配置模型:任务级工作区输入框默认取「空间设置 → 空间模型」列表第一个启用的模型。
+  // 未配置空间模型时为空字符串,输入框内部回退到全局模型列表首个(与旧逻辑一致)。
+  const { data: spaceModels } = useRequest(async () => {
+    if (!workspaceId) return [];
+    const [, data] = await apiInterceptors(listResources({ workspace_id: Number(workspaceId), type: 'llm_model' }));
+    return data || [];
+  }, { refreshDeps: [workspaceId] });
+
+  const spaceDefaultModel = useMemo(() => {
+    const list = spaceModels || [];
+    if (!list.length) return '';
+    const first = list.find((m: any) => m.is_active !== false) || list[0];
+    return first?.config?.model || first?.physical_ref || first?.name || '';
+  }, [spaceModels]);
 
   // ask_user 交互确认后续跑:复用同一 conv_uid 发一条新消息,后端
   // `_initialize_agent_conversation` 检测到 WAITING 会话后恢复 Agent loop。
@@ -209,6 +224,7 @@ export function AgentWorkspace({
             ref={inputRef}
             convUid={convUid}
             appInfo={appInfo}
+            defaultModel={spaceDefaultModel}
             onSend={async (p) => {
               if (running) {
                 // 运行中追问:投递补充输入队列(后端校验确有活跃执行才入队)。

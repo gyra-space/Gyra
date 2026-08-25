@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Modal, Drawer } from 'antd';
 import { CloseOutlined, LeftOutlined, MenuFoldOutlined, MenuUnfoldOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation, getAppInfo } from '@/client/api';
+import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation, getAppInfo, listResources, deleteTask, deleteConversation } from '@/client/api';
 import { getUsageConversationSummary, type ConversationUsageSummary } from '@/client/api/usage';
 import { convIdBase } from '@/types/context-metrics';
 import { getUserId } from '@/utils';
@@ -77,13 +77,15 @@ export function SceneWorkspaceShell({
   // 权限门控:对话输入区需 space.chat.use(查看角色只读,不发对话)
   const { can } = useSpaceRole(workspaceId);
   const chatReadOnly = !can('space.chat.use');
+  const canManageTask = can('space.task.manage');
+  const canUseChat = can('space.chat.use');
   const [previewItem, setPreviewItem] = useState<any>(null);
   const [detailContext, setDetailContext] = useState<DetailContext>('dashboard');
   const [activeTaskId, setActiveTaskId] = useState<number | null>(null);
   const [activeTask, setActiveTask] = useState<any>(null);
   const [taskConvUid, setTaskConvUid] = useState<string>('');
   const [switchingTask, setSwitchingTask] = useState(false);
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   // rail 抽屉(中屏)与单列 tab(小屏)状态
   const [railOpen, setRailOpen] = useState(true);
   const [mobilePane, setMobilePane] = useState<'rail' | 'space' | 'agent'>('space');
@@ -173,6 +175,21 @@ export function SceneWorkspaceShell({
     const [, data] = await apiInterceptors(listPlaybooks({ workspace_id: Number(workspaceId) }));
     return (data || []).map((p: any) => ({ playbook_id: p.id, playbook_name: p.name }));
   }, { refreshDeps: [workspaceId] });
+
+  // 空间配置模型:取「空间设置 → 空间模型」列表里第一个启用的模型作为输入框默认模型。
+  // 未配置空间模型时为空字符串,输入框内部回退到全局模型列表首个(与旧逻辑一致)。
+  const { data: spaceModels } = useRequest(async () => {
+    if (!workspaceId) return [];
+    const [, data] = await apiInterceptors(listResources({ workspace_id: workspaceId, type: 'llm_model' }));
+    return data || [];
+  }, { refreshDeps: [workspaceId] });
+
+  const spaceDefaultModel = useMemo(() => {
+    const list = spaceModels || [];
+    if (!list.length) return '';
+    const first = list.find((m: any) => m.is_active !== false) || list[0];
+    return first?.config?.model || first?.physical_ref || first?.name || '';
+  }, [spaceModels]);
 
   // Agent 头像数据:appCode 对应 app 的 icon/name(与通用聊天页同源)
   const { data: appInfoTuple } = useRequest(
@@ -594,6 +611,49 @@ export function SceneWorkspaceShell({
     onSimpleDrawerChange?.('inbox');
   };
 
+  // 简洁模式:删除历史项(任务/会话)。按 kind 路由到对应删除接口并刷新列表。
+  const handleSimpleDelete = (item: SimpleHistoryItem) => {
+    const wsId = workspaceId;
+    if (!wsId) return;
+    if (item.kind === 'task' && item.taskId != null) {
+      const taskId = item.taskId;
+      modal.confirm({
+        title: '删除任务',
+        content: '删除后任务记录不可恢复(运行中/待介入的任务需先终止)。',
+        okText: '删除',
+        okButtonProps: { danger: true },
+        onOk: async () => {
+          const [err] = await apiInterceptors(deleteTask(taskId));
+          if (err) { message.error(err.message); return; }
+          message.success('已删除');
+          onRefreshLists?.();
+          // 删除的是当前打开的任务时,回到欢迎态/工作台,避免停留死引用
+          if (activeTaskId === taskId) {
+            setActiveTaskId(null);
+            setDetailContext('dashboard');
+            setPreviewItem(null);
+          }
+        },
+      });
+      return;
+    }
+    if (item.convUid) {
+      const convUid = item.convUid;
+      modal.confirm({
+        title: '删除会话',
+        content: '删除后该会话将从空间任务列表移除,不可恢复。',
+        okText: '删除',
+        okButtonProps: { danger: true },
+        onOk: async () => {
+          const [err] = await apiInterceptors(deleteConversation({ workspace_id: wsId, conv_uid: convUid }));
+          if (err) { message.error(err.message); return; }
+          message.success('已删除');
+          onRefreshLists?.();
+        },
+      });
+    }
+  };
+
   // 简洁模式:推荐问题 → 填入输入框并聚焦
   const handleSimpleAsk = (text?: string) => {
     if (text) agentInputRef.current?.insertText(`${text} `);
@@ -656,6 +716,9 @@ export function SceneWorkspaceShell({
               onNewConversation={handleSimpleNew}
               onOpenInbox={handleSimpleOpenInbox}
               usageMap={convUsageMap}
+              onDeleteItem={handleSimpleDelete}
+              canDeleteTask={canManageTask}
+              canDeleteConversation={canUseChat}
             />
           </div>
           {/* 中间:欢迎态 或 运行态双栏(输入条在左侧步骤流卡片内底部) */}
@@ -675,6 +738,7 @@ export function SceneWorkspaceShell({
                     convUid={rightConvUid}
                     appInfo={appInfo}
                     model={simpleInputModel}
+                    defaultModel={spaceDefaultModel}
                     onModelChange={setSimpleInputModel}
                     onSend={handleSimpleSend}
                     loading={isRunning}
@@ -739,6 +803,7 @@ export function SceneWorkspaceShell({
                     convUid={rightConvUid}
                     appInfo={appInfo}
                     model={simpleInputModel}
+                    defaultModel={spaceDefaultModel}
                     onModelChange={setSimpleInputModel}
                     onSend={handleSimpleSend}
                     loading={isRunning}

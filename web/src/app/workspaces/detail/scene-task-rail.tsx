@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Dropdown, Form, Input, Modal } from 'antd';
-import { CheckOutlined, CommentOutlined, DownOutlined, LinkOutlined, MoreOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
+import { CheckOutlined, CommentOutlined, DeleteOutlined, DownOutlined, LinkOutlined, MoreOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { apiInterceptors, createAsset, resolveAndExecuteIntervention, abortIntervention, terminateTask, deleteTask, reassignTask } from '@/client/api';
+import { apiInterceptors, createAsset, resolveAndExecuteIntervention, abortIntervention, terminateTask, deleteTask, reassignTask, deleteConversation } from '@/client/api';
 import { listInbox, updateInboxStatus, listMembers, type InboxItem } from '@/client/api/workspace';
 import { confirmEcpObject } from '@/client/api/ecp';
 import { getUserId } from '@/utils';
@@ -194,6 +194,7 @@ export function SceneTaskRail({
   // 卡片内 terminate/delete 的状态驱动选择逻辑保持不变)
   const { can } = useSpaceRole(workspaceId);
   const canManageTask = can('space.task.manage');
+  const canDeleteConversation = can('space.chat.use');
   const [view, setView] = useState<'inbox' | 'tasks'>('tasks');
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [inboxLoading, setInboxLoading] = useState(false);
@@ -526,6 +527,22 @@ export function SceneTaskRail({
     });
   };
 
+  const handleDeleteConversation = (convUid: string) => {
+    if (!workspaceId) return;
+    modal.confirm({
+      title: '删除会话',
+      content: '删除后该会话将从空间任务列表移除,不可恢复。',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        const [err] = await apiInterceptors(deleteConversation({ workspace_id: workspaceId, conv_uid: convUid }));
+        if (err) { message.error(err.message); return; }
+        message.success('已删除');
+        onRefreshLists?.();
+      },
+    });
+  };
+
   const handleAbort = async (id: number) => {
     const [err] = await apiInterceptors(abortIntervention(id));
     if (err) { message.error(err.message); return; }
@@ -644,6 +661,20 @@ export function SceneTaskRail({
             <span className="ws-rail-tm">{fmtTime(it.updatedAt)}</span>
             <span className="ws-rail-meta-sep">·</span>
             <span className="ws-rail-src">大厅会话</span>
+            {canDeleteConversation && !disabled && (
+              <div className="ws-rail-card-actions">
+                <span
+                  className="ws-rail-card-act"
+                  title="删除会话"
+                  role="button"
+                  tabIndex={-1}
+                  onClick={(e) => { e.stopPropagation(); handleDeleteConversation(c.conv_uid); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); handleDeleteConversation(c.conv_uid); } }}
+                >
+                  <DeleteOutlined />
+                </span>
+              </div>
+            )}
           </div>
         </div>
       );

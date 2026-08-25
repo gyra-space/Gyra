@@ -211,6 +211,22 @@ class DefaultGptsMessageMemory(GptsMessageMemory):
         for row in result.itertuples(index=False, name=None):
             row_dict = dict(zip(self.df.columns, row))
             messages.append(GptsMessage.from_dict(row_dict))
+
+        # 按 gmt_create 排序，确保消息按真实时序排列
+        def sort_key(msg):
+            gmt_create = getattr(msg, "gmt_create", None)
+            if gmt_create is None:
+                return (0, getattr(msg, "id", 0) or 0)
+            if hasattr(gmt_create, "timestamp"):
+                ts = gmt_create.timestamp()
+            else:
+                try:
+                    ts = float(gmt_create)
+                except (ValueError, TypeError):
+                    ts = 0
+            return (ts, getattr(msg, "id", 0) or 0)
+
+        messages.sort(key=sort_key)
         return messages
 
     def get_by_message_id(self, message_id: str) -> Optional[GptsMessage]:
@@ -234,4 +250,22 @@ class DefaultGptsMessageMemory(GptsMessageMemory):
         for row in result.itertuples(index=False, name=None):
             row_dict = dict(zip(self.df.columns, row))
             messages.append(GptsMessage.from_dict(row_dict))
+
+        # 按 gmt_create 排序，确保消息按真实时序排列
+        # 如果 gmt_create 相同，则按 id 排序作为 tiebreak
+        def sort_key(msg):
+            gmt_create = getattr(msg, "gmt_create", None)
+            if gmt_create is None:
+                return (0, getattr(msg, "id", 0) or 0)
+            # 处理 datetime 对象
+            if hasattr(gmt_create, "timestamp"):
+                ts = gmt_create.timestamp()
+            else:
+                try:
+                    ts = float(gmt_create)
+                except (ValueError, TypeError):
+                    ts = 0
+            return (ts, getattr(msg, "id", 0) or 0)
+
+        messages.sort(key=sort_key)
         return messages

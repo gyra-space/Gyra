@@ -21,8 +21,7 @@ import {
   DatabaseOutlined,
 } from '@ant-design/icons';
 import { SceneWorkspaceShell } from './scene-workspace-shell';
-import { CallDetailProvider, useCallDetail } from '@/components/chat/call-detail/CallDetailProvider';
-import { ConversationUsageChip } from '@/components/chat/ConversationUsageChip';
+import { CallDetailProvider } from '@/components/chat/call-detail/CallDetailProvider';
 import { useWorkspaceViewMode, type WorkspaceViewMode } from './use-view-mode';
 import { ChatContext } from '@/contexts';
 import { useSpaceRole } from '@/hooks/use-space-role';
@@ -74,8 +73,6 @@ export default function WorkspaceDetailPage() {
 
   // 权限门控:设置 tab 仅空间管理(space.workspace.manage,owner)可见,其余 tab 全角色可见
   const { role, can } = useSpaceRole(workspaceId);
-  const { openCallDetail } = useCallDetail();
-
   // 视图模式:按角色决定默认(owner 管理成员→运维,普通成员→简洁);
   // 用户手动选择(localStorage)与 URL ?mode= 优先于角色默认
   const defaultViewMode: WorkspaceViewMode = role === 'owner' ? 'ops' : 'simple';
@@ -202,7 +199,6 @@ export default function WorkspaceDetailPage() {
               <div className="ws-console-sub">
                 {ws.workspace_code} · {scenario}
               </div>
-              <ConversationUsageChip convId={convUid} onClick={() => openCallDetail()} />
             </div>
           </div>
           <nav className="ws-console-nav" aria-label="Workspace navigation">

@@ -289,7 +289,12 @@ function stripVisFence(s: string): string {
 }
 
 /** 需要一律在内容区渲染执行入参的 ECP 语义工具(入参即查询/指标口径,不能折叠) */
-const FORCE_PARAMS_ACTIONS = new Set(['search_semantics', 'execute_metric_query']);
+const FORCE_PARAMS_ACTIONS = new Set(['search_semantics', 'get_semantic_object', 'execute_metric_query']);
+
+/** 具备专用前端渲染器(VisEcpSearch / VisEcpObject / VisEcpMetric / SqlQueryRenderer)的
+ *  ECP 语义工具:结果由专用卡片渲染,不再生成/渲染通用 d-tool 兜底视图,避免同一结果
+ *  在「输出参数/入参」兜底卡片与专用卡片中重复出现。 */
+const DEDICATED_RENDER_ACTIONS = new Set(['search_semantics', 'get_semantic_object', 'execute_metric_query', 'execute_raw_sql']);
 
 /** 具备专用前端渲染器的 VIS 围栏(ECP 语义工具):结果由 VisEcpSearch / VisEcpObject /
  *  VisEcpMetric / SqlQueryRenderer 等专用卡片渲染,而非通用 markdown/table 兜底。 */
@@ -337,7 +342,11 @@ function stepToOutputs(step: WorkspaceExecutionStep): ManusExecutionOutput[] {
   // tool_result 已内嵌同一 d-ecp 围栏)、以及下方 toStructuredOutput 对数组行 rows
   // 的误判(会把指标结果退化渲染成通用表格),避免同一结果被重复/错误渲染。
   const outIsDedicatedFence = type !== 'sql' && DEDICATED_VIS_FENCE_RE.test(out);
-  if (visText && type !== 'sql' && !outIsDedicatedFence) outputs.push({ output_type: 'markdown', content: visText });
+  // ECP 语义工具具备专用渲染器:即使 output 不是 d-ecp 围栏(如执行失败返回错误文本),
+  // 也不渲染通用 d-tool 兜底(通用兜底会把入参/结果再展示一遍),由专用卡片 +
+  // FORCE_PARAMS_ACTIONS 的入参区负责展示。
+  const isDedicatedRenderAction = DEDICATED_RENDER_ACTIONS.has((step.action || '').toLowerCase());
+  if (visText && type !== 'sql' && !outIsDedicatedFence && !isDedicatedRenderAction) outputs.push({ output_type: 'markdown', content: visText });
   if (out) {
     let handled = false;
     const parsed = parseOutputJson(out);

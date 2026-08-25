@@ -5,9 +5,9 @@ export const VisConfirmResponseWrap = styled.div`
   padding: 4px 6px;
 
   .response-card {
-    background: #f6ffed;
-    border: 1px solid #b7eb8f;
-    border-radius: 8px;
+    background: rgba(var(--mcp-success-rgb), 0.1);
+    border: 1px solid rgba(var(--mcp-success-rgb), 0.35);
+    border-radius: var(--r-md);
     padding: 12px 16px;
 
     .response-header {
@@ -17,24 +17,27 @@ export const VisConfirmResponseWrap = styled.div`
       margin-bottom: 8px;
 
       .check-icon {
-        color: #52c41a;
+        color: var(--success);
         font-size: 16px;
       }
 
       .response-title {
-        font-size: 14px;
-        color: #237804;
+        font-size: var(--fs-title);
+        color: var(--ink-900);
+        font-weight: 600;
       }
 
       .response-time {
         margin-left: auto;
-        font-size: 12px;
+        font-size: var(--fs-aux);
+        color: var(--ink-400);
       }
     }
 
     .response-question {
       margin-bottom: 8px;
-      font-size: 13px;
+      font-size: var(--fs-body);
+      color: var(--ink-500);
     }
 
     .response-content {
@@ -44,18 +47,22 @@ export const VisConfirmResponseWrap = styled.div`
         gap: 8px;
 
         .selection-tag {
-          font-size: 13px;
+          font-size: var(--fs-body);
+          color: var(--brand) !important;
+          border-color: rgba(var(--brand-rgb), 0.4) !important;
+          background-color: rgba(var(--brand-rgb), 0.08) !important;
         }
 
         .selection-desc {
-          font-size: 12px;
+          font-size: var(--fs-aux);
+          color: var(--ink-400);
         }
       }
 
       .response-input {
         margin-top: 4px;
-        font-size: 13px;
-        color: #333;
+        font-size: var(--fs-body);
+        color: var(--ink-700);
       }
     }
   }

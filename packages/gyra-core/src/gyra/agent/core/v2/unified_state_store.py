@@ -85,6 +85,16 @@ class _InteractionCheckpointRow(_V2Base):
     __table_args__ = (Index("idx_v2_checkpoint_conv", "conv_id"),)
 
 
+class _ConfirmRecordRow(_V2Base):
+    __tablename__ = "v2_confirm_record"
+
+    request_id = Column(String(64), primary_key=True)
+    record = Column(Text, nullable=False)
+    responded_at = Column(Float, nullable=False)
+
+    __table_args__ = (Index("idx_v2_confirm_record_time", "responded_at"),)
+
+
 class _AgentTranscriptRow(_V2Base):
     __tablename__ = "v2_agent_transcript"
 
@@ -391,6 +401,38 @@ class SqlAlchemyStateStore(StateStore):
                 session.commit()
 
         await self._do(self._run_sync, _delete)
+
+    # ------------------------------------------------------------------
+    # confirm_record（用户确认记录：谁在何时确认了什么）
+    # ------------------------------------------------------------------
+
+    async def save_confirm_record(self, request_id: str, record: dict) -> bool:
+        """幂等写入确认记录；已存在返回 False（拒绝重复确认）。"""
+
+        def _save(session):
+            existing = session.get(_ConfirmRecordRow, request_id)
+            if existing is not None:
+                return False
+            session.add(
+                _ConfirmRecordRow(
+                    request_id=request_id,
+                    record=json.dumps(record, ensure_ascii=False),
+                    responded_at=time.time(),
+                )
+            )
+            session.commit()
+            return True
+
+        return await self._do(self._run_sync, _save)
+
+    async def get_confirm_record(self, request_id: str) -> Optional[dict]:
+        def _get(session):
+            row = session.get(_ConfirmRecordRow, request_id)
+            if row is None:
+                return None
+            return json.loads(row.record)
+
+        return await self._do(self._run_sync, _get)
 
     # ------------------------------------------------------------------
     # agent_transcript

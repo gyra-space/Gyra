@@ -634,6 +634,15 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
             nodes.push(<AnswerBlock key={step.id} step={step} />);
             continue;
           }
+          // ask_user 步骤本身是 tool_call,必须先于胶囊归组判定:
+          // 否则会被当作普通工具步骤压进 StepFlow,无法渲染可交互的确认卡片。
+          if (extractAskUserData(step.output || step.vis)) {
+            flushBatch();
+            if (onInteractionResume) {
+              nodes.push(<SceneAskUserCard key={step.id} step={step} onResume={onInteractionResume} />);
+            }
+            continue;
+          }
           if (CAPSULE_STEP_TYPES.has(step.type)) {
             if (!batch.length) batchKey = `flow-${step.id}`;
             batch.push(step);
@@ -644,9 +653,6 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
             nodes.push(<AnswerBlock key={step.id} step={step} />);
           } else if (step.type === 'task_created') {
             nodes.push(<TaskCreatedCard key={step.id} step={step} onTaskClick={onTaskClick} />);
-          } else if (onInteractionResume && extractAskUserData(step.output ?? step.vis)) {
-            // ask_user 交互:直接把确认卡片渲染在 feed 里,用户可就地选择并续跑对话
-            nodes.push(<SceneAskUserCard key={step.id} step={step} onResume={onInteractionResume} />);
           }
         }
         flushBatch();

@@ -9,6 +9,7 @@ import os
 import logging
 
 from .base import SandboxToolBase
+from .deliver_file import _is_deliverable_url
 from ...base import ToolCategory, ToolRiskLevel, ToolEnvironment, ToolSource
 from ...metadata import ToolMetadata
 from ...context import ToolContext
@@ -275,9 +276,7 @@ class EditFileTool(SandboxToolBase):
                                 preview_url_value,
                                 oss_url_value,
                             )
-                            if url
-                            and isinstance(url, str)
-                            and url.startswith(("http://", "https://"))
+                            if _is_deliverable_url(url)
                         ),
                         None,
                     )
@@ -328,16 +327,12 @@ class EditFileTool(SandboxToolBase):
                 # 此时回退到 oss_temp_url（可下载链接）以保证前端有可用 URL。
                 dattach_preview_url = (
                     preview_url_value
-                    if preview_url_value
-                    and isinstance(preview_url_value, str)
-                    and preview_url_value.startswith(("http://", "https://"))
+                    if _is_deliverable_url(preview_url_value)
                     else oss_temp_url
                 )
                 dattach_download_url = (
                     download_url_value
-                    if download_url_value
-                    and isinstance(download_url_value, str)
-                    and download_url_value.startswith(("http://", "https://"))
+                    if _is_deliverable_url(download_url_value)
                     else oss_temp_url
                 )
 

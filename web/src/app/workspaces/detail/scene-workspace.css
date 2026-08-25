@@ -2658,6 +2658,22 @@
 .ws-simple-item__usage {
   margin-top: 4px;
 }
+.ws-simple-item__del {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--ws-ink-2);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.ws-simple-item__del:hover {
+  background: rgba(var(--ws-danger-rgb), .1);
+  color: var(--ws-danger);
+}
 .ws-simple-rail__inbox {
   margin: 0 8px 10px;
   flex-shrink: 0;

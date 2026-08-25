@@ -83,7 +83,7 @@ export function SceneAskUserCard({
   onResume: (userMessage: string) => void;
 }) {
   const data = useMemo(
-    () => extractAskUserData(step.output ?? step.vis),
+    () => extractAskUserData(step.output || step.vis),
     [step.output, step.vis],
   );
   const contextValue = useMemo(() => buildSceneChatContext(onResume), [onResume]);

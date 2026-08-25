@@ -10,8 +10,8 @@ join 规则（每个 tool_call）：
   4. 都 miss → ResultStatus.MISSING，**永不渲染成 tool 消息**
      （根除 ``[result not available]`` 死循环）
 
-排序：``order_key = (rounds, created_at, seq)``。不含会在授权恢复时 re-baseline
-的不可靠字段。
+排序：``order_key = (created_at, seq)``。优先使用时间戳，seq 作为最终 tiebreak。
+rounds 字段在多轮对话场景下可能不可靠，不再作为主排序键。
 """
 
 import logging

@@ -74,6 +74,16 @@ class StateStore(ABC):
     async def delete_interaction_checkpoint(self, request_id: str) -> None: ...
 
     @abstractmethod
+    async def save_confirm_record(self, request_id: str, record: dict) -> bool:
+        """持久化一条用户确认记录（谁在何时确认了什么）。
+
+        幂等：同一 request_id 首次写入返回 True，已存在返回 False（用于拒绝重复确认）。
+        """
+
+    @abstractmethod
+    async def get_confirm_record(self, request_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
     async def save_transcript(
         self, transcript_id: str, task_id: str, sub_conv_id: str,
         parent_step_id: str, parent_conv_id: str, agent_name: str,
@@ -137,6 +147,13 @@ CREATE TABLE IF NOT EXISTS interaction_checkpoint (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_checkpoint_conv ON interaction_checkpoint(conv_id);
+
+CREATE TABLE IF NOT EXISTS confirm_record (
+    request_id TEXT PRIMARY KEY,
+    record TEXT NOT NULL,
+    responded_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_confirm_record_time ON confirm_record(responded_at);
 
 CREATE TABLE IF NOT EXISTS agent_transcript (
     transcript_id TEXT PRIMARY KEY,
@@ -425,6 +442,38 @@ class DbStateStore(StateStore):
             finally:
                 pass  # 连接由 store 线程局部复用（见 _connect/close）
         await asyncio.to_thread(_do)
+
+    async def save_confirm_record(self, request_id: str, record: dict) -> bool:
+        """幂等写入确认记录；已存在返回 False（拒绝重复确认）。"""
+
+        def _do():
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO confirm_record "
+                    "(request_id, record, responded_at) VALUES (?, ?, ?)",
+                    (request_id, json.dumps(record, ensure_ascii=False), time.time()),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                pass  # 连接由 store 线程局部复用（见 _connect/close）
+        return await asyncio.to_thread(_do)
+
+    async def get_confirm_record(self, request_id: str) -> Optional[dict]:
+        def _do():
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT record, responded_at FROM confirm_record WHERE request_id = ?",
+                    (request_id,),
+                ).fetchone()
+                if not row:
+                    return None
+                return json.loads(row["record"])
+            finally:
+                pass  # 连接由 store 线程局部复用（见 _connect/close）
+        return await asyncio.to_thread(_do)
 
     async def save_transcript(
         self, transcript_id: str, task_id: str, sub_conv_id: str,

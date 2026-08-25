@@ -302,6 +302,37 @@ class WorkspaceConfigUpdateRequest(BaseModel):
     proposal_agent_id: Optional[str] = None
 
 
+class EcpImportRequest(BaseModel):
+    """Import a semantic-asset snapshot (from an export) into a workspace.
+
+    ``datasource_map`` rewrites ``entity.binding.datasource_id`` and ``db``
+    asset refs, so assets from another system bind to the target's datasources.
+    """
+
+    model_config = ConfigDict(title="EcpImportRequest")
+
+    workspace_id: Optional[str] = None
+    data: Dict[str, Any] = Field(
+        default_factory=dict, description="导出的语义资产 JSON(export_workspace 产物)"
+    )
+    datasource_map: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="str(旧 datasource_id) -> 新 datasource_id",
+    )
+
+
+class EcpImportResultVO(BaseModel):
+    """Result of an import run."""
+
+    model_config = ConfigDict(title="EcpImportResult")
+
+    workspace_id: str
+    imported: int = 0
+    skipped: int = 0
+    assets_imported: int = 0
+    errors: List[str] = Field(default_factory=list)
+
+
 class DebugPreviewRequest(BaseModel):
     """确认页调试验证(dry-run)请求参数。
 

@@ -439,3 +439,70 @@ export const normalizeEcpConfirmed = (workspace_id?: string) =>
     `${API_PREFIX}/admin/normalize${workspace_id ? `?workspace_id=${encodeURIComponent(workspace_id)}` : ''}`,
     {},
   );
+
+// =============================================================================
+// 资产迁移(导出 / 导入)
+// =============================================================================
+
+export interface EcpDatasourceRef {
+  datasource_id: string;
+  db_name?: string;
+  db_type?: string;
+  tables?: string[];
+}
+
+export interface EcpExportObject {
+  id: string;
+  version: number;
+  workspace_id: string;
+  obj_type: string;
+  status: string;
+  name?: string | null;
+  payload: Record<string, any>;
+  confidence?: number | null;
+  evidence?: Array<{ source?: string; quote?: string }> | null;
+  created_by: string;
+  created_at?: string | null;
+  confirmed_by?: string | null;
+  confirmed_at?: string | null;
+  source?: string | null;
+  supersedes?: number | null;
+}
+
+export interface EcpExportAsset {
+  id: number;
+  workspace_id: string;
+  kind: 'db' | 'document' | 'space' | 'api';
+  ref_id: string;
+  ref_meta: Record<string, any>;
+  status: string;
+  last_checked_at?: string | null;
+}
+
+export interface EcpExportPayload {
+  format_version: number;
+  exported_at: string;
+  source_workspace_id: string;
+  datasource_refs: EcpDatasourceRef[];
+  objects: EcpExportObject[];
+  assets: EcpExportAsset[];
+}
+
+export interface EcpImportResult {
+  workspace_id: string;
+  imported: number;
+  skipped: number;
+  assets_imported: number;
+  errors: string[];
+}
+
+export const exportEcpWorkspace = (workspace_id?: string) =>
+  GET<{ workspace_id?: string }, EcpExportPayload>(`${API_PREFIX}/export`, {
+    workspace_id,
+  });
+
+export const importEcpWorkspace = (data: {
+  workspace_id?: string;
+  data: EcpExportPayload;
+  datasource_map?: Record<string, string>;
+}) => POST<typeof data, EcpImportResult>(`${API_PREFIX}/import`, data);
