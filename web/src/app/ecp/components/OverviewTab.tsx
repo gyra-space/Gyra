@@ -8,7 +8,6 @@ import {
   listEcpObjects,
 } from '@/client/api/ecp';
 import { useRequest } from 'ahooks';
-import { useState } from 'react';
 
 import OverviewGraphCard from './OverviewGraphCard';
 import { Dot, EcpEmpty, StatusTag, TYPE_DOT } from './common';
@@ -23,8 +22,6 @@ export default function OverviewTab({
   onGoGraph: () => void;
   workspaceId: string;
 }) {
-  const [assetExpanded, setAssetExpanded] = useState(false);
-
   const { data: confirmed } = useRequest(
     async () => {
       const [err, res] = await apiInterceptors(
@@ -81,67 +78,13 @@ export default function OverviewTab({
           <div className="ecp-metric-card__foot">确认前不影响任何查询</div>
         </div>
 
-        <div
-          className="ecp-metric-card ecp-rise ecp-rise--3"
-          onClick={() => setAssetExpanded(e => !e)}
-          style={{ cursor: 'pointer' }}
-        >
-          <div className="ecp-metric-card__head" style={{ justifyContent: 'space-between' }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <Dot kind="ecp-dot--entity" />
-              登记资产
-            </span>
-            {(assets ?? []).length > 0 && (
-              <span style={{ fontSize: 11, color: 'var(--ink-400)' }}>
-                {assetExpanded ? '收起' : '明细'}
-              </span>
-            )}
+        <div className="ecp-metric-card ecp-rise ecp-rise--3">
+          <div className="ecp-metric-card__head">
+            <Dot kind="ecp-dot--entity" />
+            登记资产
           </div>
           <div className="ecp-metric-card__num">{assets?.length ?? 0}</div>
           <div className="ecp-metric-card__foot">数据源 / 知识资产引用</div>
-          {assetExpanded && (
-            <div
-              style={{
-                marginTop: 10,
-                fontSize: 12,
-                color: 'var(--ink-500)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6,
-              }}
-            >
-              {(assets ?? []).length === 0 ? (
-                <span style={{ color: 'var(--ink-400)' }}>尚未登记资产</span>
-              ) : (
-                (assets ?? []).map(a => (
-                  <div
-                    key={a.id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <span
-                      style={{
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      <Dot kind={`ecp-dot--${a.kind}`} /> {a.kind} ·{' '}
-                      <code style={{ fontSize: 12 }}>{a.ref_id}</code>
-                    </span>
-                    <span className="ecp-status">
-                      <Dot kind={a.status === 'active' ? 'ecp-dot--success' : 'ecp-dot--neutral'} />
-                      {a.status}
-                    </span>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
         </div>
 
         <div className="ecp-metric-card ecp-rise ecp-rise--4">
@@ -191,6 +134,36 @@ export default function OverviewTab({
 
         {/* 全景图速览：替代原「资产状态」，首屏右侧即可看到语义关系形状 */}
         <OverviewGraphCard workspaceId={workspaceId} onGoGraph={onGoGraph} />
+      </div>
+
+      {/* 资产状态：底部横向卡片 */}
+      <div className="ecp-card" style={{ marginTop: 16 }}>
+        <div className="ecp-card__title">资产状态</div>
+        {(assets ?? []).length === 0 ? (
+          <EcpEmpty
+            title="尚未登记资产"
+            desc="到「数据资产」接入数据库或到「知识资产」上传知识文档"
+          />
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            {(assets ?? []).map(a => (
+              <span
+                key={a.id}
+                className="ecp-type-chip"
+                style={{ fontSize: 13, padding: '6px 12px' }}
+              >
+                <Dot kind={`ecp-dot--${a.kind}`} />
+                <span style={{ color: 'var(--ink-700)' }}>
+                  {a.kind} · <code style={{ fontSize: 12 }}>{a.ref_id}</code>
+                </span>
+                <span className="ecp-status" style={{ marginLeft: 6 }}>
+                  <Dot kind={a.status === 'active' ? 'ecp-dot--success' : 'ecp-dot--neutral'} />
+                  {a.status}
+                </span>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </>
   );
