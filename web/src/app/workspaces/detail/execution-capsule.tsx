@@ -130,6 +130,7 @@ function PhaseStepRow({
       {step.status === 'done' && duration !== undefined && (
         <span className="ws-capsule-step__dur">{fmtDuration(duration)}</span>
       )}
+      {step.narration && <div className="ws-capsule-step__narration">{step.narration}</div>}
     </div>
   );
 }

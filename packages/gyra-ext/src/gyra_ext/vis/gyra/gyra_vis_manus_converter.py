@@ -1310,13 +1310,17 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
 
         vis_parts: List[str] = []
 
-        # thinking 通道：推理文本渲染为思考卡片（d-thinking）
+        # thinking 通道：推理文本渲染为思考卡片（d-thinking）。
+        # dynamic=True：思考文本是按 uid 累积的增量流，前端据此做简单字符串拼接，
+        # 逐段累积显示；若 dynamic=False 会走 AST 智能合并，思考文本里一旦出现
+        # 代码围栏(```)，无 uid 的增量节点会被静默丢弃，导致思考内容截断/不显示。
         thinking = stream_msg.get("thinking")
         if thinking and isinstance(thinking, str) and thinking.strip():
             thinking_content = DrskThinkingContent(
                 markdown=thinking,
                 uid=f"{message_id}_thinking",
                 type=UpdateType.INCR.value,
+                dynamic=True,
             )
             vis_parts.append(
                 GyraThinking().sync_display(

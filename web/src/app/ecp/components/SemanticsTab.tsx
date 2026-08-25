@@ -1,12 +1,21 @@
 'use client';
 
 import { apiInterceptors } from '@/client/api';
-import { EcpSemanticObject, listEcpObjects } from '@/client/api/ecp';
+import {
+  EcpSemanticObject,
+  confirmEcpObject,
+  getEcpInbox,
+  listEcpObjects,
+  rejectEcpObject,
+} from '@/client/api/ecp';
+import { getUserId } from '@/utils';
+import { CheckOutlined, CloseOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { Input, Select, Spin } from 'antd';
+import { App, Button, Input, Modal, Popconfirm, Segmented, Select, Spin } from 'antd';
 import { useState } from 'react';
 
 import {
+  DeprecateFooter,
   Dot,
   EcpEmpty,
   ObjectDetailDrawer,
@@ -14,60 +23,142 @@ import {
   summarizePayload,
   TYPE_DOT,
 } from './common';
+import CreateProposalModal from './CreateProposalModal';
+import PayloadEditor from './PayloadEditor';
 
 const TYPES = ['entity', 'metric', 'relation', 'dimension', 'claim', 'terminology', 'policy'] as const;
 
-function useTypeCount(obj_type: string, workspaceId: string) {
-  return useRequest(
-    async () => {
-      const [err, res] = await apiInterceptors(
-        listEcpObjects({ obj_type, page_size: 1, workspace_id: workspaceId }),
-      );
-      return err ? 0 : res?.total_count ?? 0;
-    },
-    { refreshDeps: [workspaceId] },
+type StatusMode = 'proposed' | 'confirmed' | 'all';
+
+function Confidence({ value }: { value?: number | null }) {
+  if (value == null) return null;
+  const pct = Math.round(value * 100);
+  return (
+    <span className="ecp-confidence">
+      <span className="ecp-confidence__bar">
+        <span className="ecp-confidence__fill" style={{ width: `${pct}%` }} />
+      </span>
+      {pct}%
+    </span>
   );
 }
 
-function SideGroup({
-  type,
-  active,
-  onSelect,
-  workspaceId,
+function ProposalCard({
+  obj,
+  onConfirm,
+  onReject,
+  onDetail,
+  onEdit,
+  confirming,
+  reject,
 }: {
-  type: string | undefined;
-  active: boolean;
-  onSelect: () => void;
-  workspaceId: string;
+  obj: EcpSemanticObject;
+  onConfirm: (o: EcpSemanticObject) => void;
+  onReject: (o: EcpSemanticObject) => void;
+  onDetail: (o: EcpSemanticObject) => void;
+  onEdit: (o: EcpSemanticObject) => void;
+  confirming: boolean;
+  reject: boolean;
 }) {
-  const { data: count } = useTypeCount(type ?? '', workspaceId);
   return (
-    <div
-      className={`ecp-semantics__group ${active ? 'ecp-semantics__group--active' : ''}`}
-      onClick={onSelect}
-    >
-      <span className="ecp-semantics__group-name">
-        <Dot kind={type ? (TYPE_DOT[type] ?? 'ecp-dot--neutral') : 'ecp-dot--neutral'} />
-        {type ?? '全部'}
-      </span>
-      {type && <span className="ecp-semantics__count">{count ?? 0}</span>}
+    <div className="ecp-proposal ecp-rise ecp-rise--1">
+      <div className="ecp-proposal__head">
+        <Dot kind={TYPE_DOT[obj.obj_type] ?? 'ecp-dot--neutral'} />
+        <span className="ecp-proposal__id" onClick={() => onDetail(obj)}>
+          {obj.id}
+        </span>
+        <span className="ecp-proposal__name">
+          {obj.name ?? ''}
+          {obj.payload?.aliases?.length ? `（${obj.payload.aliases.join('/')}）` : ''}
+        </span>
+        <span style={{ flex: 1 }} />
+        <StatusTag status={obj.status} />
+      </div>
+
+      <div className="ecp-proposal__summary">{summarizePayload(obj)}</div>
+
+      {!!obj.evidence?.length && (
+        <div className="ecp-proposal__evidence">
+          「{obj.evidence[0].quote ?? ''}」
+          <span style={{ fontStyle: 'normal', color: 'var(--ink-400)' }}>
+            {' '}
+            —— {obj.evidence[0].source ?? '来源未知'}
+          </span>
+        </div>
+      )}
+
+      <div className="ecp-proposal__foot">
+        <div className="ecp-proposal__meta">
+          <Confidence value={obj.confidence} />
+          <span>来源 {obj.source ?? '-'}</span>
+          <span>{obj.created_at?.slice(0, 16) ?? ''}</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button size="small" onClick={() => onDetail(obj)}>
+            详情
+          </Button>
+          <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(obj)}>
+            编辑并确认
+          </Button>
+          <Popconfirm title="否决该提案？" onConfirm={() => onReject(obj)}>
+            <Button size="small" danger icon={<CloseOutlined />} loading={reject} />
+          </Popconfirm>
+          <Button
+            size="small"
+            type="primary"
+            icon={<CheckOutlined />}
+            loading={confirming}
+            onClick={() => onConfirm(obj)}
+          >
+            确认生效
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
 
-/** Hard semantic layer: the enterprise Wikidata browser. */
+/**
+ * 业务口径：一个空间内「AI 提案 → 人确认 → 版本冻结」的唯一视图。
+ * 待确认列表直接确认/否决，已确认/全部以目录形式浏览，点击看版本/证据/Payload。
+ */
 export default function SemanticsTab({ workspaceId }: { workspaceId: string }) {
+  const { message } = App.useApp();
+  const [statusMode, setStatusMode] = useState<StatusMode>('proposed');
   const [typeFilter, setTypeFilter] = useState<string>();
-  const [statusFilter, setStatusFilter] = useState<string>();
   const [keyword, setKeyword] = useState<string>();
   const [detail, setDetail] = useState<EcpSemanticObject | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<EcpSemanticObject | null>(null);
+  const [editPayload, setEditPayload] = useState<Record<string, any>>({});
 
-  const { data, loading } = useRequest(
+  // 待确认：提案卡片（确认动线核心）
+  const {
+    data: inbox,
+    loading: inboxLoading,
+    refresh: refreshInbox,
+  } = useRequest(
+    async () => {
+      const [err, res] = await apiInterceptors(
+        getEcpInbox({ obj_type: typeFilter, keyword, page_size: 50, workspace_id: workspaceId }),
+      );
+      if (err) throw err;
+      return res;
+    },
+    { refreshDeps: [typeFilter, keyword, workspaceId] },
+  );
+
+  // 已确认 / 全部：语义目录列表
+  const {
+    data: catalog,
+    loading: catalogLoading,
+    refresh: refreshCatalog,
+  } = useRequest(
     async () => {
       const [err, res] = await apiInterceptors(
         listEcpObjects({
           obj_type: typeFilter,
-          status: statusFilter,
+          status: statusMode === 'confirmed' ? 'confirmed' : undefined,
           keyword,
           page_size: 100,
           workspace_id: workspaceId,
@@ -76,108 +167,220 @@ export default function SemanticsTab({ workspaceId }: { workspaceId: string }) {
       if (err) throw err;
       return res;
     },
-    { refreshDeps: [typeFilter, statusFilter, keyword, workspaceId] },
+    { refreshDeps: [statusMode, typeFilter, keyword, workspaceId] },
   );
 
-  const items = data?.items ?? [];
+  const { run: confirm, loading: confirming } = useRequest(
+    async (obj: EcpSemanticObject) => {
+      const user_id = getUserId() ?? 'unknown';
+      const [err] = await apiInterceptors(
+        confirmEcpObject(obj.id, obj.version, { user_id, workspace_id: obj.workspace_id }),
+      );
+      if (err) throw err;
+      message.success(`已确认 ${obj.id}，该口径即刻生效`);
+      refreshInbox();
+      refreshCatalog();
+    },
+    { manual: true },
+  );
+
+  const { run: reject, loading: rejecting } = useRequest(
+    async (obj: EcpSemanticObject) => {
+      const user_id = getUserId() ?? 'unknown';
+      const [err] = await apiInterceptors(
+        rejectEcpObject(obj.id, obj.version, { user_id, workspace_id: obj.workspace_id }),
+      );
+      if (err) throw err;
+      message.success(`已否决 ${obj.id}`);
+      refreshInbox();
+      refreshCatalog();
+    },
+    { manual: true },
+  );
+
+  const openEdit = (obj: EcpSemanticObject) => {
+    setEditPayload({ ...(obj.payload ?? {}) });
+    setEditing(obj);
+  };
+
+  const { run: confirmEdited, loading: editConfirming } = useRequest(
+    async (obj: EcpSemanticObject) => {
+      const user_id = getUserId() ?? 'unknown';
+      const [err] = await apiInterceptors(
+        confirmEcpObject(obj.id, obj.version, {
+          user_id,
+          workspace_id: obj.workspace_id,
+          edited_payload: editPayload,
+        }),
+      );
+      if (err) throw err;
+      message.success(`已确认 ${obj.id}（编辑后），该口径即刻生效`);
+      setEditing(null);
+      refreshInbox();
+      refreshCatalog();
+    },
+    { manual: true },
+  );
+
+  const inboxItems = inbox?.items ?? [];
+  const catalogItems = catalog?.items ?? [];
+  const inboxCount = inbox?.total_count ?? 0;
 
   return (
-    <div className="ecp-semantics">
-      <div className="ecp-semantics__side">
-        <SideGroup
-          type={undefined}
-          active={!typeFilter}
-          onSelect={() => setTypeFilter(undefined)}
-          workspaceId={workspaceId}
+    <>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          marginBottom: 16,
+          flexWrap: 'wrap',
+        }}
+      >
+        <Segmented
+          value={statusMode}
+          onChange={v => setStatusMode(v as StatusMode)}
+          options={[
+            { label: `待确认${inboxCount ? ` (${inboxCount})` : ''}`, value: 'proposed' },
+            { label: '已确认', value: 'confirmed' },
+            { label: '全部', value: 'all' },
+          ]}
         />
-        {TYPES.map(tp => (
-          <SideGroup
-            key={tp}
-            type={tp}
-            active={typeFilter === tp}
-            onSelect={() => setTypeFilter(tp)}
-            workspaceId={workspaceId}
-          />
-        ))}
-        <div style={{ padding: '12px 8px 4px' }}>
+        <div style={{ display: 'flex', gap: 10 }}>
           <Select
             allowClear
-            placeholder="状态"
-            size="small"
-            style={{ width: '100%' }}
-            value={statusFilter}
-            onChange={setStatusFilter}
-            options={['confirmed', 'proposed', 'rejected', 'deprecated', 'superseded'].map(
-              v => ({ value: v, label: v }),
-            )}
+            placeholder="类型"
+            style={{ width: 140 }}
+            value={typeFilter}
+            onChange={setTypeFilter}
+            options={TYPES.map(v => ({ value: v, label: v }))}
           />
-        </div>
-        <div style={{ padding: '8px 8px 4px' }}>
           <Input.Search
             allowClear
-            size="small"
-            placeholder="搜索"
+            placeholder="搜索名称 / id"
+            style={{ width: 260 }}
             onSearch={setKeyword}
           />
+          <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+            新增语义
+          </Button>
         </div>
       </div>
 
-      <div className="ecp-semantics__main">
-        {loading ? (
+      {statusMode === 'proposed' ? (
+        inboxLoading ? (
           <Spin style={{ display: 'block', margin: '64px auto' }} />
-        ) : items.length === 0 ? (
+        ) : inboxItems.length === 0 ? (
           <EcpEmpty
-            title="语义目录为空"
-            desc="到「资产层」生成提案并在「收件箱」确认后，这里会出现已确认的语义资产"
+            title="没有待确认的提案"
+            desc="到「数据资产」对数据源执行「生成提案」，AI 提炼的业务口径会在这里等待你确认。"
           />
         ) : (
-          <div className="ecp-card" style={{ padding: '8px 20px' }}>
-            {items.map(obj => (
-              <div
-                key={`${obj.id}@${obj.version}`}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  padding: '13px 0',
-                  borderBottom: '1px solid var(--line-soft)',
-                  cursor: 'pointer',
-                }}
-                onClick={() => setDetail(obj)}
-              >
-                <Dot kind={TYPE_DOT[obj.obj_type] ?? 'ecp-dot--neutral'} />
-                <div style={{ width: 220, flexShrink: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-900)' }}>
-                    {obj.id}
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--ink-400)' }}>
-                    {obj.name ?? ''}
-                    {obj.payload?.aliases?.length
-                      ? `（${obj.payload.aliases.join('/')}）`
-                      : ''}
-                  </div>
+          inboxItems.map((obj, i) => (
+            <div key={`${obj.id}@${obj.version}`} style={{ marginBottom: 12 }}>
+              <ProposalCard
+                obj={obj}
+                onConfirm={o => confirm(o)}
+                onReject={o => reject(o)}
+                onDetail={setDetail}
+                onEdit={openEdit}
+                confirming={confirming}
+                reject={rejecting}
+              />
+            </div>
+          ))
+        )
+      ) : catalogLoading ? (
+        <Spin style={{ display: 'block', margin: '64px auto' }} />
+      ) : catalogItems.length === 0 ? (
+        <EcpEmpty
+          title={statusMode === 'confirmed' ? '暂无已确认口径' : '语义目录为空'}
+          desc="到「数据资产」生成提案并在此确认后，这里会出现已确认的业务口径目录。"
+        />
+      ) : (
+        <div className="ecp-card" style={{ padding: '8px 20px' }}>
+          {catalogItems.map(obj => (
+            <div
+              key={`${obj.id}@${obj.version}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '13px 0',
+                borderBottom: '1px solid var(--line-soft)',
+                cursor: 'pointer',
+              }}
+              onClick={() => setDetail(obj)}
+            >
+              <Dot kind={TYPE_DOT[obj.obj_type] ?? 'ecp-dot--neutral'} />
+              <div style={{ width: 220, flexShrink: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-900)' }}>
+                  {obj.id}
                 </div>
-                <div
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    fontSize: 12,
-                    color: 'var(--ink-500)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {summarizePayload(obj)}
+                <div style={{ fontSize: 12, color: 'var(--ink-400)' }}>
+                  {obj.name ?? ''}
+                  {obj.payload?.aliases?.length ? `（${obj.payload.aliases.join('/')}）` : ''}
                 </div>
-                <StatusTag status={obj.status} />
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+              <div
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: 12,
+                  color: 'var(--ink-500)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {summarizePayload(obj)}
+              </div>
+              <StatusTag status={obj.status} />
+            </div>
+          ))}
+        </div>
+      )}
 
-      <ObjectDetailDrawer obj={detail} open={!!detail} onClose={() => setDetail(null)} />
-    </div>
+      <ObjectDetailDrawer
+        obj={detail}
+        open={!!detail}
+        onClose={() => setDetail(null)}
+        footer={
+          <DeprecateFooter
+            obj={detail}
+            onDone={() => {
+              setDetail(null);
+              refreshInbox();
+              refreshCatalog();
+            }}
+          />
+        }
+      />
+
+      <CreateProposalModal
+        workspaceId={workspaceId}
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={() => {
+          refreshInbox();
+          refreshCatalog();
+        }}
+      />
+
+      {editing && (
+        <Modal
+          title={`编辑并确认 ${editing.id}`}
+          open={!!editing}
+          okText="确认生效"
+          cancelText="取消"
+          confirmLoading={editConfirming}
+          onOk={() => confirmEdited(editing)}
+          onCancel={() => setEditing(null)}
+        >
+          <PayloadEditor objType={editing.obj_type} value={editPayload} onChange={setEditPayload} />
+        </Modal>
+      )}
+    </>
   );
 }

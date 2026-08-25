@@ -34,6 +34,35 @@ export interface ManusViewMessage {
 
 const RIGHT_PANEL_FENCE = /```manus-right-panel\s*\n([\s\S]*?)\n```/;
 const LEFT_PANEL_FENCE = /```manus-left-panel\s*\n([\s\S]*?)\n```/;
+// 思考围栏:d-thinking(drsk 思考卡片)/drsk-thinking(旧版思考卡片)。planning_window 的
+// 正文(正文叙述/结论)是累加流,不能注入步骤流(会把最终结论排到工具步骤之前);
+// 但思考(d-thinking)是纯推理过程,应注入为 thinking 步骤,否则对话页一旦进入
+// "工作流"渲染(有工具步骤)就会切换到 AgentWorkspaceRenderer,把 thinking 完全隐藏。
+const THINKING_FENCE = /```(?:d-thinking|drsk-thinking)\s*\n([\s\S]*?)\n```/g;
+
+/** 从 planning_window 中提取思考内容(去重后返回 uid -> markdown)。
+ *
+ * thinking 围栏的 markdown 在流式阶段按 uid 累积,最后一帧携带完整文本;
+ * 历史消息里同一 uid 会重复出现,故取"最后一次出现"的完整值,避免只渲染到片段。
+ */
+function extractThinkingFromPlanning(planningWindow: string): Map<string, string> {
+  const byUid = new Map<string, string>();
+  if (!planningWindow || typeof planningWindow !== 'string') return byUid;
+  THINKING_FENCE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  // eslint-disable-next-line no-cond-assign
+  while ((m = THINKING_FENCE.exec(planningWindow))) {
+    try {
+      const parsed = JSON.parse(m[1].trim());
+      const uid = typeof parsed.uid === 'string' ? parsed.uid : '';
+      const markdown = typeof parsed.markdown === 'string' ? parsed.markdown : '';
+      if (uid && markdown) byUid.set(uid, markdown);
+    } catch {
+      // 非 JSON 围栏忽略
+    }
+  }
+  return byUid;
+}
 
 /** 解析围栏 JSON;非 JSON 或结构不符返回 null */
 function parseFenceJson(body: string): Record<string, unknown> | null {
@@ -184,11 +213,33 @@ export function buildManusWorkspaceView(
 ): WorkspaceView {
   const execution: WorkspaceExecutionStep[] = [];
   const stepIds = new Set<string>();
+  // 思考步骤按 uid 累积:同一 uid 在流式/历史消息里重复出现,取最后一次完整文本,
+  // 但步骤位置固定在首次出现处(即该轮开头的思考),保证思考在工具步骤之前。
+  const thinkingById = new Map<string, WorkspaceExecutionStep>();
 
   const pushStep = (s: WorkspaceExecutionStep) => {
     if (stepIds.has(s.id)) return;
     stepIds.add(s.id);
     execution.push(s);
+  };
+
+  const pushThinkingStep = (uid: string, markdown: string) => {
+    const id = `think-${uid}`;
+    const existing = thinkingById.get(id);
+    if (existing) {
+      // 只更新文本,不移动位置:同一轮思考的时序锚点固定在首次出现处
+      existing.output = markdown;
+      return;
+    }
+    const step: WorkspaceExecutionStep = {
+      id,
+      type: 'thinking',
+      title: '深度思考',
+      status: 'done',
+      output: markdown,
+    };
+    thinkingById.set(id, step);
+    execution.push(step);
   };
 
   for (const msg of messages) {
@@ -206,6 +257,7 @@ export function buildManusWorkspaceView(
     }
     if (msg.role !== 'view') continue;
     let rightData: ManusRightPanelData | null = null;
+    let planningWindow = '';
     if (typeof msg.context === 'string') {
       try {
         const ctx = JSON.parse(msg.context);
@@ -216,13 +268,18 @@ export function buildManusWorkspaceView(
             if (parsed) rightData = parsed as unknown as ManusRightPanelData;
           }
         }
+        planningWindow = typeof ctx.planning_window === 'string' ? ctx.planning_window : '';
       } catch {
         // 非 JSON 视图忽略
       }
     }
-    // 工具步骤(按真实时序,跨消息累积去重)。旁白/结论一律不在此注入 ——
-    // planning_window 的正文是累加流,若按 thinking 步骤注入会把最终结论放到
-    // 工具步骤之前;结论统一走 view.summary 在 feed 底部渲染,顺序才正确。
+    // 思考(d-thinking)注入为 thinking 步骤:与工具步骤按同一消息帧穿插。
+    // 旁白/结论(planning_window 的正文累加流)仍不注入 —— 最终结论统一走
+    // view.summary 在 feed 底部渲染,避免把结论排到工具步骤之前。
+    for (const [uid, markdown] of extractThinkingFromPlanning(planningWindow)) {
+      pushThinkingStep(uid, markdown);
+    }
+    // 工具步骤(按真实时序,跨消息累积去重)
     for (const s of stepsMapToExecution(rightData?.steps_map)) pushStep(s);
   }
 

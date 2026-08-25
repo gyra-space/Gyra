@@ -9,14 +9,17 @@ import {
 } from '@/client/api/ecp';
 import { useRequest } from 'ahooks';
 
+import OverviewGraphCard from './OverviewGraphCard';
 import { Dot, EcpEmpty, StatusTag, TYPE_DOT } from './common';
 
 /** Overview: semantic-asset solidification dashboard. */
 export default function OverviewTab({
-  onGoInbox,
+  onGoSemantics,
+  onGoGraph,
   workspaceId,
 }: {
-  onGoInbox: () => void;
+  onGoSemantics: () => void;
+  onGoGraph: () => void;
   workspaceId: string;
 }) {
   const { data: confirmed } = useRequest(
@@ -57,7 +60,7 @@ export default function OverviewTab({
   const metrics = [
     { label: '已确认语义对象', num: confirmedCount, dot: 'ecp-dot--success', foot: 'confirmed 口径即刻参与查询' },
     { label: '待确认提案', num: pendingCount, dot: 'ecp-dot--warning', foot: '确认前不影响任何查询' },
-    { label: '登记资产', num: assets?.length ?? 0, dot: 'ecp-dot--entity', foot: 'DB / 知识空间 / 文档 / API 引用' },
+    { label: '登记资产', num: assets?.length ?? 0, dot: 'ecp-dot--entity', foot: '数据源 / 知识资产引用' },
     { label: '资产固化率', num: `${rate}%`, dot: 'ecp-dot--metric', foot: '北极星：⚠️→✅ 的转化程度' },
   ];
 
@@ -80,8 +83,8 @@ export default function OverviewTab({
         <div className="ecp-card">
           <div className="ecp-card__title">
             待确认 Top 5
-            <span className="ecp-card__title-link" onClick={onGoInbox}>
-              去收件箱 →
+            <span className="ecp-card__title-link" onClick={onGoSemantics}>
+              去业务口径 →
             </span>
           </div>
           {(inbox?.items ?? []).length === 0 ? (
@@ -116,7 +119,7 @@ export default function OverviewTab({
           {(assets ?? []).length === 0 ? (
             <EcpEmpty
               title="尚未登记资产"
-              desc="到「资产层」接入 DB 数据源或知识空间"
+              desc="到「数据资产」接入数据库或到「知识资产」上传知识文档"
             />
           ) : (
             (assets ?? []).map(a => (
@@ -142,6 +145,10 @@ export default function OverviewTab({
             ))
           )}
         </div>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <OverviewGraphCard workspaceId={workspaceId} onGoGraph={onGoGraph} />
       </div>
     </>
   );

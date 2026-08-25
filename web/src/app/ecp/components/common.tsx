@@ -1,10 +1,12 @@
 'use client';
 
 import { apiInterceptors } from '@/client/api';
-import { EcpSemanticObject, getEcpObjectVersions } from '@/client/api/ecp';
+import { deprecateEcpObject, EcpSemanticObject, getEcpObjectVersions } from '@/client/api/ecp';
+import { getUserId } from '@/utils';
 import { useRequest } from 'ahooks';
-import { Drawer, Table } from 'antd';
-import React from 'react';
+import { App, Button, Drawer, Input, Popconfirm, Table } from 'antd';
+import { DeleteOutlined } from '@ant-design/icons';
+import React, { useState } from 'react';
 
 import '../ecp.css';
 
@@ -219,5 +221,58 @@ export function ObjectDetailDrawer({
     >
       <ObjectDetailContent obj={obj} />
     </Drawer>
+  );
+}
+
+export function DeprecateFooter({
+  obj,
+  onDone,
+}: {
+  obj: EcpSemanticObject | null;
+  onDone?: () => void;
+}) {
+  const { message } = App.useApp();
+  const [reason, setReason] = useState('');
+  const { run: deprecate, loading } = useRequest(
+    async () => {
+      if (!obj) return;
+      const user_id = getUserId() ?? 'unknown';
+      const [err] = await apiInterceptors(
+        deprecateEcpObject(obj.id, {
+          user_id,
+          workspace_id: obj.workspace_id,
+          reason: reason || undefined,
+        }),
+      );
+      if (err) throw err;
+      message.success(`已弃用 ${obj.id}`);
+      onDone?.();
+    },
+    { manual: true },
+  );
+
+  if (!obj || obj.status !== 'confirmed') return null;
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <Input
+        placeholder="弃用原因（可选）"
+        size="small"
+        value={reason}
+        onChange={e => setReason(e.target.value)}
+        style={{ flex: 1 }}
+      />
+      <Popconfirm
+        title="弃用该语义口径？"
+        description="弃用后将不再被目录/查询消费，需确认人权限。"
+        okText="弃用"
+        cancelText="取消"
+        okButtonProps={{ danger: true, loading }}
+        onConfirm={() => deprecate()}
+      >
+        <Button size="small" danger icon={<DeleteOutlined />} loading={loading}>
+          弃用
+        </Button>
+      </Popconfirm>
+    </div>
   );
 }

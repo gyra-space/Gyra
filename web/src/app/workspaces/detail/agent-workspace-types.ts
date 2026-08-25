@@ -84,6 +84,8 @@ export interface WorkspaceExecutionStep {
   output?: string | null;
   artifact?: WorkspaceArtifact | null;
   vis?: unknown;
+  /** 工具旁白(LLM 调用工具前的 narration),折叠进工具步骤,作为工具胶囊的说明行展示 */
+  narration?: string | null;
   /** 步骤关联的大厅入驻内容:点击步骤时大厅打开对应 Exhibit */
   exhibit?: LobbyExhibit | null;
   /** skill_loaded 步骤:预加载技能的 <skill_content> XML(右侧渲染用) */

@@ -113,7 +113,9 @@ function buildDurations(phases: ExecutionPhase[]): Map<string, number> {
 
 /** thinking 行:简单 icon 标记,灰字弱化,可展开,不计步骤数 */
 function ThinkingRow({ step }: { step: WorkspaceExecutionStep }) {
-  const [open, setOpen] = useState(false);
+  // 运行中(流式期间)默认展开,让思考过程即时可见;结束后保持用户交互状态,
+  // 已完成的历史思考行仍折叠,避免长会话被思考文本撑满。
+  const [open, setOpen] = useState(step.status === 'running');
   const text = (step.output || '').trim();
   return (
     <div className="ws-capsule-think">
@@ -172,6 +174,7 @@ function StepRow({
           <span className="ws-capsule-step__dur">{fmtDuration(duration)}</span>
         )}
       </span>
+      {step.narration && <div className="ws-capsule-step__narration">{step.narration}</div>}
     </div>
   );
 }

@@ -17,7 +17,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useEffect, useMemo, useState } from 'react';
 
-import { Dot, EcpEmpty, ObjectDetailDrawer, StatusTag } from './common';
+import { DeprecateFooter, Dot, EcpEmpty, ObjectDetailDrawer, StatusTag } from './common';
 import type { EcpSemanticObject } from '@/client/api/ecp';
 
 // ---------------------------------------------------------------------------
@@ -422,6 +422,16 @@ export default function GraphTab({ workspaceId }: { workspaceId: string }) {
           setSelected(null);
           setObjectDetail(null);
         }}
+        footer={
+          <DeprecateFooter
+            obj={objectDetail}
+            onDone={() => {
+              setSelected(null);
+              setObjectDetail(null);
+              refresh();
+            }}
+          />
+        }
       />
 
       {/* 资产 / 知识层节点详情 */}

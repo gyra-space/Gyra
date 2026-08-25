@@ -5,40 +5,31 @@ import { apiInterceptors } from '@/client/api';
 import { getEcpInbox } from '@/client/api/ecp';
 import { useRequest } from 'ahooks';
 
-import AssetsTab from './AssetsTab';
+import DataTab from './DataTab';
+import GovernanceTab from './GovernanceTab';
 import GraphTab from './GraphTab';
-import InboxTab from './InboxTab';
-import LintTab from './LintTab';
-import MissTab from './MissTab';
+import KnowledgeTab from './KnowledgeTab';
 import OverviewTab from './OverviewTab';
 import SemanticsTab from './SemanticsTab';
-import SettingsTab from './SettingsTab';
-import WikiTab from './WikiTab';
 import '../ecp.css';
 
 export const VALID_TABS = [
   'overview',
-  'inbox',
-  'assets',
   'semantics',
-  'wiki',
+  'data',
+  'knowledge',
   'graph',
-  'miss',
-  'lint',
-  'settings',
+  'governance',
 ] as const;
 export type TabKey = (typeof VALID_TABS)[number];
 
 export const TAB_LABELS: Record<TabKey, string> = {
   overview: '总览',
-  inbox: '收件箱',
-  assets: '资产层',
-  semantics: '硬语义',
-  wiki: '软知识',
+  semantics: '业务口径',
+  data: '数据资产',
+  knowledge: '知识资产',
   graph: '全景图',
-  miss: '未命中',
-  lint: '巡检',
-  settings: '设置',
+  governance: '治理',
 };
 
 export interface EcpConsoleProps {
@@ -77,7 +68,7 @@ export function EcpConsole({ workspaceId, tab: controlledTab, onTabChange }: Ecp
             onClick={() => setTab(key)}
           >
             {TAB_LABELS[key]}
-            {key === 'inbox' && pendingCount > 0 && (
+            {key === 'semantics' && pendingCount > 0 && (
               <span className="ecp-nav__count">{pendingCount}</span>
             )}
           </span>
@@ -86,16 +77,17 @@ export function EcpConsole({ workspaceId, tab: controlledTab, onTabChange }: Ecp
 
       <div className="ecp-tab-content">
         {tab === 'overview' && (
-          <OverviewTab onGoInbox={() => setTab('inbox')} workspaceId={workspaceId} />
+          <OverviewTab
+            onGoSemantics={() => setTab('semantics')}
+            onGoGraph={() => setTab('graph')}
+            workspaceId={workspaceId}
+          />
         )}
-        {tab === 'inbox' && <InboxTab workspaceId={workspaceId} />}
-        {tab === 'assets' && <AssetsTab workspaceId={workspaceId} />}
+        {tab === 'data' && <DataTab workspaceId={workspaceId} />}
         {tab === 'semantics' && <SemanticsTab workspaceId={workspaceId} />}
-        {tab === 'wiki' && <WikiTab workspaceId={workspaceId} />}
+        {tab === 'knowledge' && <KnowledgeTab workspaceId={workspaceId} />}
         {tab === 'graph' && <GraphTab workspaceId={workspaceId} />}
-        {tab === 'miss' && <MissTab workspaceId={workspaceId} />}
-        {tab === 'lint' && <LintTab workspaceId={workspaceId} />}
-        {tab === 'settings' && <SettingsTab workspaceId={workspaceId} />}
+        {tab === 'governance' && <GovernanceTab workspaceId={workspaceId} />}
       </div>
     </>
   );

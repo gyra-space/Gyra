@@ -63,6 +63,22 @@ function toolNames(inputTools: unknown): string[] {
   return [String(inputTools)];
 }
 
+/** 工具调用消息的 tool_calls 里提取函数名，作为 input_tools 缺失时的工具列表回退。 */
+function toolNamesFromCalls(toolCalls: unknown): string[] {
+  if (!toolCalls) return [];
+  if (Array.isArray(toolCalls)) {
+    return toolCalls.map((tc: any) => tc?.function?.name || tc?.name || tc?.id || JSON.stringify(tc));
+  }
+  return [String(toolCalls)];
+}
+
+/** 综合工具列表：优先 input_tools（传入的工具），缺失时回退到实际调用参数 tool_calls。 */
+function mergedToolNames(inputTools: unknown, toolCalls: unknown): string[] {
+  const fromInput = toolNames(inputTools);
+  if (fromInput.length) return fromInput;
+  return toolNamesFromCalls(toolCalls);
+}
+
 export const ConversationCallDetailDrawer: React.FC<ConversationCallDetailDrawerProps> = ({
   convId,
   open,
@@ -179,7 +195,7 @@ export const ConversationCallDetailDrawer: React.FC<ConversationCallDetailDrawer
       ),
       tools: (
         <Space wrap>
-          {toolNames(activeCall.input_tools).map((n, i) => (
+          {mergedToolNames(activeCall.input_tools, activeCall.tool_calls).map((n, i) => (
             <Tag color="blue" key={`${n}-${i}`}>
               {n}
             </Tag>

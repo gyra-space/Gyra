@@ -100,8 +100,8 @@ export default function EcpPage() {
           <div className="ecp-hero__eyebrow">Enterprise Context Protocol</div>
           <h1 className="ecp-hero__title">{t('ecp_page_title')}工作台</h1>
           <div className="ecp-hero__sub">
-            业务层的高阶知识库：口径、指标、维度、join
-            路径全部资产化——AI 提案、人确认、版本冻结，数字只来自已确认的语义。
+            在同一个工作台维护数据资产与知识资产：接入数据库、提炼并确认业务口径、沉淀业务知识，
+            让 AI 用可信的数字回答业务问题。
           </div>
           <div style={{ marginTop: 12 }}>
             <Select

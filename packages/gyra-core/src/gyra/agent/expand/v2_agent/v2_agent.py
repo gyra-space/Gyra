@@ -150,6 +150,8 @@ class V2Agent(ReActMasterAgent):
     _v2_db_catalog_consumer: Any = PrivateAttr(default=None)
     # 当前 turn 生效的模型别名（usage 展示桥接用）
     _v2_model_alias: str = PrivateAttr(default="")
+    # 最近一次 LLM 调用 usage 事件（this_call 字典，供工具调用消息回填 metrics）
+    _v2_last_usage_this_call: Optional[dict] = PrivateAttr(default=None)
     # engine 装配完成回调（serve 层绑定 job_registry 等；懒装配后触发）
     _v2_engine_ready_hook: Any = PrivateAttr(default=None)
     # 会话对话消息事件 seq（user/message、assistant/message 单调递增）
@@ -992,6 +994,27 @@ class V2Agent(ReActMasterAgent):
         except Exception:  # noqa: BLE001
             args_str = "{}"
         conv_id = self.not_null_agent_context.conv_id
+        # 回填本次 LLM 调用 usage：工具调用轮次的 Token 消耗统计不再是空。
+        tool_call_metrics = None
+        if self._v2_last_usage_this_call:
+            try:
+                from gyra.agent.core.schema import MessageMetrics
+                from gyra.core import ModelInferenceMetrics
+
+                uc = self._v2_last_usage_this_call
+                tool_call_metrics = MessageMetrics(
+                    llm_metrics=ModelInferenceMetrics(
+                        prompt_tokens=int(uc.get("prompt") or 0),
+                        completion_tokens=int(uc.get("completion") or 0),
+                        total_tokens=int(uc.get("total") or 0),
+                    ),
+                    # 工具轮次未记录确切起止时间，置 None 让抽屉显示 "-"，
+                    # 避免继承 MessageMetrics.start_time_ms 的模块级默认值造成假时间。
+                    start_time_ms=None,
+                    end_time_ms=None,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[V2Agent] build tool_call metrics failed: {e}")
         gmsg = GptsMessage(
             conv_id=conv_id,
             conv_session_id=self.not_null_agent_context.conv_session_id or conv_id,
@@ -999,6 +1022,8 @@ class V2Agent(ReActMasterAgent):
             sender_name=self.name or self.role or "assistant",
             message_id=message_id,
             role="assistant",
+            model_name=self._v2_model_alias or None,
+            metrics=tool_call_metrics,
             # content 必须置空：工具调用消息是动作声明，历史 thinking 若回流
             # 会让模型在下一轮复述旧思考再新增，导致 thinking 文本逐轮累积重复
             content="",
@@ -1377,6 +1402,8 @@ class V2Agent(ReActMasterAgent):
         completion = int(this_call.get("completion") or 0)
         if not prompt and not completion:
             return
+        # 记录最近一次 LLM 调用 usage，供工具调用消息回填 metrics（Token 消耗统计）
+        self._v2_last_usage_this_call = this_call
         try:
             from gyra.agent.core.usage_metric import (
                 emit_usage_metric as v1_emit_usage,

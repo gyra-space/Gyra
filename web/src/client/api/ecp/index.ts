@@ -174,6 +174,21 @@ export const deprecateEcpObject = (
     data,
   );
 
+export const proposeEcpObject = (data: {
+  id: string;
+  obj_type: string;
+  payload: Record<string, any>;
+  workspace_id?: string;
+  confidence?: number;
+  evidence?: Array<{ source?: string; quote?: string }>;
+  created_by?: string;
+  source?: string;
+}) =>
+  POST<typeof data, EcpSemanticObject>(
+    `${API_PREFIX}/objects/propose`,
+    data,
+  );
+
 export const getEcpCatalog = (params?: { workspace_id?: string; keyword?: string }) =>
   GET<typeof params, EcpCatalogEntry[]>(`${API_PREFIX}/catalog`, params);
 

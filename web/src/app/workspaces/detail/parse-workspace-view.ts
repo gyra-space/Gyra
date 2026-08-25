@@ -106,6 +106,7 @@ function normalizeStep(raw: unknown): WorkspaceExecutionStep | null {
     output: typeof r.output === 'string' ? r.output : null,
     artifact: r.artifact && typeof r.artifact === 'object' ? (r.artifact as WorkspaceExecutionStep['artifact']) : null,
     vis: r.vis ?? null,
+    narration: typeof r.narration === 'string' ? r.narration : null,
     exhibit: normalizeExhibit(r.exhibit),
     task_id: typeof r.task_id === 'number' ? r.task_id : undefined,
     task_title: typeof r.task_title === 'string' ? r.task_title : undefined,

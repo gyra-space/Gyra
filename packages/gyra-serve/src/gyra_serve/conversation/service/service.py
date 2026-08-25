@@ -448,6 +448,8 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                 and not msg.system_prompt
                 and not msg.content
                 and not msg.input_tools
+                and not msg.tool_calls
+                and not msg.thinking
             ):
                 continue
             metrics = None

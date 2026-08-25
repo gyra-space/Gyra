@@ -620,6 +620,33 @@
   white-space: pre-wrap;
 }
 
+/* --------------------------------------------------------- 知识拖拽上传 */
+.ecp-knowledge-dragger .ant-upload-drag {
+  background: var(--bg-fill) !important;
+  border-color: var(--line-soft) !important;
+  border-radius: var(--r-md) !important;
+}
+
+.ecp-knowledge-dragger .ant-upload-drag:hover {
+  border-color: var(--brand) !important;
+}
+
+/* ------------------------------------------------- 总览·全景图速览卡 */
+.ecp-overview-graph__stats {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+  color: var(--ink-500);
+}
+
+.ecp-overview-graph__canvas {
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--bg-fill);
+}
+
 /* --------------------------------------------------------- graph 层 */
 .ecp-panorama {
   display: flex;

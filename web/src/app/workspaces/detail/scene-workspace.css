@@ -3358,6 +3358,7 @@
 }
 .ws-capsule-step {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
   padding: 1px 2px;
@@ -3408,6 +3409,18 @@
   font-size: 10px;
   color: var(--ws-ink-3);
   opacity: 0.85;
+}
+/* 工具旁白说明行:折叠进工具步骤,占满一行,弱化灰字,下行展示(不参与计数/状态) */
+.ws-capsule-step__narration {
+  flex-basis: 100%;
+  min-width: 0;
+  padding-left: 21px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ws-ink-3);
+  opacity: 0.92;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 .ws-capsule-step__failed-label {
   flex-shrink: 0;
