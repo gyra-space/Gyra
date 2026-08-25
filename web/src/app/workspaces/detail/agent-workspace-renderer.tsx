@@ -28,7 +28,7 @@ import { SceneAskUserCard, extractAskUserData } from './scene-ask-user-card';
 import { statusLabel } from './scene-task-rail';
 import { StepFlow } from './step-flow';
 import { buildExecutionPhases, usePlanningTimeline } from './use-execution-phases';
-import { groupDeliverablesByRound, splitRounds } from './deliverable-rounds';
+import { splitRounds } from './deliverable-rounds';
 import type {
   WorkspaceDeliverableFile,
   WorkspaceExecutionStep,
@@ -568,11 +568,9 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
     return splitRounds(execution);
   }, [view.execution, running]);
 
-  // 交付文件按轮次归属:每轮产出贴到该轮结尾,无时间戳/无法归属的文件进 leftover 兜底
-  const { byRound: deliverableByRound, leftover: leftoverDeliverables } = useMemo(
-    () => groupDeliverablesByRound(rounds, deliverable_files),
-    [rounds, deliverable_files],
-  );
+  // 交付文件统一沉底展示:不按轮次内联(追问/多轮场景下按轮次归属会把上一轮交付物
+  // 埋在上方,用户在底部结论/任务文件附近看不到)。始终在 feed 底部、任务文件条之前
+  // 集中展示,保证「交付文件」组件稳定可见。
 
   // 任务文件点击 → 适配为交付文件形状,在中间容器预览
   const handleTaskFileOpen = onDeliverableClick
@@ -690,13 +688,6 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
               </div>
             )}
             {nodes}
-            {/* 本轮产出的交付文件,跟在轮次结尾(不是全塞在 feed 底部) */}
-            {onDeliverableClick && (deliverableByRound.get(round.key)?.length ?? 0) > 0 && (
-              <DeliverablesBlock
-                files={deliverableByRound.get(round.key)!}
-                onDeliverableClick={onDeliverableClick}
-              />
-            )}
           </Fragment>
         );
       })}
@@ -710,9 +701,9 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
           </div>
         </div>
       )}
-      {/* 无法归属到具体轮次的交付文件(缺时间戳):feed 底部兜底展示 */}
-      {leftoverDeliverables.length > 0 && onDeliverableClick && (
-        <DeliverablesBlock files={leftoverDeliverables} onDeliverableClick={onDeliverableClick} />
+      {/* 交付文件统一沉底展示:在任务文件条之前,始终可见 */}
+      {deliverable_files.length > 0 && onDeliverableClick && (
+        <DeliverablesBlock files={deliverable_files} onDeliverableClick={onDeliverableClick} />
       )}
       {/* 其余任务文件:一行折叠开关,零视觉噪音 */}
       {extraTaskFiles.length > 0 && (
