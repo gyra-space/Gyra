@@ -53,6 +53,43 @@ class ProposeRequest(BaseModel):
     source: Optional[str] = None
 
 
+class SqlAddRequest(BaseModel):
+    """给 SQL 直接添加语义(添加即确认)。
+
+    用户只提供一条 SQL(可附一句业务说明),后端用已配置的提案 Agent 提炼出
+    entity/metric/dimension 等语义对象,并**直接落库为 confirmed**——手动添加
+    即确认,不经过待确认收件箱。
+    """
+
+    model_config = ConfigDict(title="EcpSqlAdd")
+
+    sql: str = Field(..., description="用户手写的 SQL,助手据此提炼语义资产")
+    description: Optional[str] = Field(
+        default=None, description="可选业务说明(提升提炼质量)"
+    )
+    workspace_id: Optional[str] = None
+    user_id: str = Field(
+        default="user", description="发起添加的用户;添加即确认,其作为确认人"
+    )
+    confirm: bool = Field(
+        default=True, description="True=直接生效为已确认;False=仅进待确认收件箱"
+    )
+
+
+class SqlAddVO(BaseModel):
+    """给 SQL 添加语义的结果。"""
+
+    model_config = ConfigDict(title="EcpSqlAddResult")
+
+    workspace_id: str
+    added: int = 0
+    confirmed_ids: List[str] = Field(default_factory=list)
+    duplicate_existing: List[str] = Field(
+        default_factory=list, description="已存在同名确认口径,未重复添加"
+    )
+    errors: List[str] = Field(default_factory=list)
+
+
 class ConfirmRequest(BaseModel):
     """Confirm a proposed object version."""
 

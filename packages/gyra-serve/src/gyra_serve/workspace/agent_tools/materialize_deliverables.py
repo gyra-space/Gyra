@@ -116,6 +116,9 @@ async def materialize_direct_conversation_deliverables(
             artifact = service.create(ArtifactRequest(
                 task_id=task_id,
                 workspace_id=workspace_id,
+                # 会话级交付(task_id=0)写入归属会话,用于不同会话之间彻底隔离;
+                # 关联真实任务(task_id>0)的交付 conv_id 可为 None。
+                conv_id=conv_id if task_id == LOBBY_ARTIFACT_TASK_ID else None,
                 type="file",
                 title=file_name,
                 content_ref=file_url,

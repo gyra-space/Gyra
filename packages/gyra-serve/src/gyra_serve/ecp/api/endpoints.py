@@ -36,6 +36,8 @@ from ..api.schemas import (
     SemanticObjectListVO,
     SemanticObjectVO,
     SpaceInfoVO,
+    SqlAddRequest,
+    SqlAddVO,
     WorkspaceConfigUpdateRequest,
     WorkspaceConfigVO,
 )
@@ -73,6 +75,29 @@ async def propose_object(
             source=request.source,
         )
         return Result.succ(vo)
+    except ValueError as e:
+        return Result.failed(msg=str(e))
+
+
+@router.post("/objects/manual", response_model=Result[SqlAddVO])
+async def add_from_sql(
+    request: SqlAddRequest,
+    service: Service = Depends(get_service),
+) -> Result[SqlAddVO]:
+    """给 SQL 直接添加语义(添加即确认)。
+
+    用户只需给一条 SQL(可附说明),其余(type/id/payload)由已配置的提案 Agent 提炼,
+    提炼结果直接落库为 confirmed,不经待确认收件箱。需工作空间已配置 proposal_agent_id。
+    """
+    try:
+        data = await service.add_from_sql(
+            sql=request.sql,
+            workspace_id=request.workspace_id,
+            description=request.description,
+            user_id=request.user_id,
+            confirm=request.confirm,
+        )
+        return Result.succ(SqlAddVO(**data))
     except ValueError as e:
         return Result.failed(msg=str(e))
 

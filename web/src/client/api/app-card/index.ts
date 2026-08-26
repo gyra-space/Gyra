@@ -31,6 +31,8 @@ export interface AppCardItem {
   permissions?: string[];
   is_owner?: boolean;
   can_manage?: boolean;
+  share_mode?: string | null;
+  share_token?: string | null;
   gmt_created: string;
   gmt_modified: string;
 }
@@ -60,6 +62,38 @@ export function invokeAppCard(
     `/api/v1/serve_app_card_service/app_cards/${cardId}/invoke?workspace_id=${workspaceId}`,
     data,
   );
+}
+
+/** 匿名分享: 凭分享令牌加载子应用渲染信息(无需登录)。 */
+export function getAppCardShare(cardId: number, token: string) {
+  return GET(
+    `/api/v1/serve_app_card_service/app_cards/share/render?card_id=${cardId}&token=${encodeURIComponent(token)}`,
+  );
+}
+
+/** 匿名分享: 凭分享令牌走统一 invoke 协议取数(无需登录)。 */
+export function invokeAppCardShare(
+  cardId: number,
+  token: string,
+  data: { op: string; params?: Record<string, unknown>; query_key?: string },
+) {
+  return POST(
+    `/api/v1/serve_app_card_service/app_cards/share/invoke?card_id=${cardId}&token=${encodeURIComponent(token)}`,
+    data,
+  );
+}
+
+/** 登录分享: 已登录用户凭卡片 id 加载渲染信息(受卡片查看权限约束)。 */
+export function getAppCardShareLogin(cardId: number) {
+  return GET(`/api/v1/serve_app_card_service/app_cards/share/login/render?card_id=${cardId}`);
+}
+
+/** 登录分享: 已登录用户凭卡片 id 走统一 invoke 协议取数(受卡片查看权限约束)。 */
+export function invokeAppCardShareLogin(
+  cardId: number,
+  data: { op: string; params?: Record<string, unknown>; query_key?: string },
+) {
+  return POST(`/api/v1/serve_app_card_service/app_cards/share/login/invoke?card_id=${cardId}`, data);
 }
 
 export function listAppCards(workspaceId: number, limit = 50) {

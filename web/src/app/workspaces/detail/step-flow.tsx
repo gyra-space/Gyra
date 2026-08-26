@@ -13,7 +13,7 @@
  * - 交付文件 / 回答由 feed 主视觉渲染,不在本组件职责内。
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   CodeOutlined,
   CompassOutlined,
@@ -111,28 +111,20 @@ function buildDurations(phases: ExecutionPhase[]): Map<string, number> {
   return map;
 }
 
-/** thinking 行:简单 icon 标记,灰字弱化,可展开,不计步骤数 */
+/** thinking 行:默认折叠,只展示最后一行摘要(参考图2),点击展开全文,不计步骤数 */
 function ThinkingRow({ step }: { step: WorkspaceExecutionStep }) {
-  // 运行中(流式期间)默认展开,让思考过程即时可见;输出结束(running→done/failed)
-  // 时自动折叠,避免长会话被思考文本撑满。历史已完成行挂载即折叠。
-  // 若用户在流式期间手动折叠/展开过该行,则以用户交互状态为准,不再自动折叠。
-  const [open, setOpen] = useState(step.status === 'running');
-  const userToggledRef = useRef(false);
-  const prevStatusRef = useRef(step.status);
+  // 默认折叠(参考图2):思考内容只在展开时全文展示,折叠态只保留「标题 · 最后一行」摘要。
+  const [open, setOpen] = useState(false);
   const text = (step.output || '').trim();
-
-  useEffect(() => {
-    const prev = prevStatusRef.current;
-    prevStatusRef.current = step.status;
-    // 仅「运行中 → 结束」这一转变触发自动折叠;用户手动操作过则保持其选择
-    if (prev === 'running' && step.status !== 'running' && !userToggledRef.current) {
-      setOpen(false);
-    }
-  }, [step.status]);
+  // 折叠态摘要:取最后一行非空内容(参考图2「Think · <最后一行>」)。
+  const lastLine = useMemo(() => {
+    if (!text) return '';
+    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+    return lines.length ? lines[lines.length - 1] : '';
+  }, [text]);
 
   const handleToggle = () => {
     if (!text) return;
-    userToggledRef.current = true;
     setOpen((v) => !v);
   };
 
@@ -145,7 +137,10 @@ function ThinkingRow({ step }: { step: WorkspaceExecutionStep }) {
         aria-expanded={open}
       >
         <img src="/icons/thinking.svg" className="ws-capsule-think__icon" alt="" />
-        <span className="ws-capsule-think__label">{step.title}</span>
+        <span className="ws-capsule-think__label">
+          <span className="ws-capsule-think__name">{step.title}</span>
+          {!open && lastLine && <span className="ws-capsule-think__preview">· {lastLine}</span>}
+        </span>
         {step.status === 'running' && <span className="ws-capsule-step__spin" aria-label="运行中" />}
         {text && <span className={`ws-cchev ws-cchev--sm${open ? ' ws-cchev--up' : ''}`} aria-hidden />}
       </button>

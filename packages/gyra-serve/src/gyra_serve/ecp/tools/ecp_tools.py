@@ -405,6 +405,18 @@ async def execute_raw_sql(
         total_rows = len(raw) - 1
         rows = [list(r) for r in raw[1 : 1 + _MAX_SQL_VIS_ROWS]]
 
+    # 隐私脱敏:与 execute_sql 一致,结果统一走脱敏入口后再进入展示/导出,
+    # 保证 ECP 兜底的 execute_raw_sql 也遵守数据库脱敏原则。
+    if rows:
+        try:
+            from gyra_serve.sql_guard.masking import mask_run_result
+
+            columns, rows, _masked = mask_run_result(
+                datasource_id, columns, rows
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[execute_raw_sql] masking skipped: {e}")
+
     # 缩减展示行数:保证 d-sql-query 围栏完整(不被外层截断成残缺组件)且数据量可控。
     db_type = getattr(connector, 'db_type', 'unknown')
     dialect = getattr(connector, 'dialect', getattr(connector, 'db_type', 'unknown'))

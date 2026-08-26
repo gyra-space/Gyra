@@ -208,6 +208,113 @@ async def run_proposal_agent(
     return result
 
 
+async def run_sql_proposal(
+    system_app,
+    app_code: str,
+    workspace_id: Optional[str],
+    sql: str,
+    description: Optional[str] = None,
+    domain_hint: Optional[str] = None,
+) -> GenerateProposalsVO:
+    """Run the proposal Agent focused on ONE user-supplied SQL.
+
+    Unlike :func:`run_proposal_agent` (scan-all-assets), this asks the Agent to
+    extract the semantic asset(s) for the given SQL only — usually a metric plus
+    its referenced entity/dimension. The Agent still explores only the tables/
+    columns relevant to the SQL via get_table_spec; it does not sweep the whole
+    workspace. Returns the newly proposed ids so the caller can confirm them
+    ("添加即确认").
+    """
+    from gyra.agent import AgentContext, UserProxyAgent
+    from gyra.core import HumanMessage
+    from gyra_serve.agent.agents.chat.agent_chat import get_app_service
+
+    ws = workspace_id or DEFAULT_WORKSPACE_ID
+    # datasource_id=0 marks a workspace-level (non-table-batch) run
+    result = GenerateProposalsVO(datasource_id=0)
+
+    dyn = _assets_to_dynamic_resources(ws, result)
+    if not dyn:
+        if not result.errors:
+            result.errors.append(f"工作空间 {ws} 无可用登记资产(SQL 涉及的表需已接入 ECP)")
+        return result
+
+    try:
+        from gyra_serve.agent.agents.chat.agent_chat_simple import SimpleAgentChat
+
+        agent_chat = SimpleAgentChat(system_app)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"AgentChat 不可用: {e}")
+        return result
+
+    try:
+        app = await get_app_service().app_detail(app_code, building_mode=False)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"找不到提案 Agent {app_code}: {e}")
+        return result
+
+    conv_id = f"ecp_sql_{ws}_{uuid.uuid4().hex[:8]}"
+    context = AgentContext(
+        conv_id=conv_id,
+        conv_session_id=conv_id,
+        gpts_app_code=app_code,
+        gpts_app_name=getattr(app, "app_name", app_code) or app_code,
+        agent_app_code=app_code,
+        extra={"dynamic_resources": dyn},
+    )
+    agent_memory = agent_chat.get_or_build_agent_memory(conv_id, app.app_name)
+
+    logger.info(
+        f"[ecp-sql-runner] build agent {app_code} ws={ws} conv={conv_id}"
+    )
+    try:
+        recipient = await agent_chat.build_agent_by_app_code(
+            app_code, context, agent_memory
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"[ecp-sql-runner] build agent failed: {e}")
+        result.errors.append(f"构建 Agent 失败: {e}")
+        return result
+
+    before = _proposed_ids(ws)
+    user_proxy = await UserProxyAgent().bind(context).bind(agent_memory).build()
+
+    task = (
+        f"用户想把下面这条 SQL 固化为企业语义资产(通常是指标 metric,或它依赖的 "
+        f"entity/dimension)。\n"
+        f"请只围绕这条 SQL 涉及的表/列,用 get_table_spec(datasource_id=<database.datasource_id>, "
+        f"table_name='表名') 读取必要结构(禁止全量扫描无关表),必要时用 "
+        f"sample_distinct_values 采样低基数维度列,然后用 "
+        f"propose_semantic(..., workspace_id={ws}) 落地与该 SQL 对应的语义提案。"
+        f"若 SQL 还依赖前置实体/维度且尚未存在,可一并补提案,但不要过度提案。"
+        f"表名必须与 get_table_spec 返回完全一致(多 schema 库保留 owner 前缀)。\n\n"
+        f"【SQL】\n{sql}"
+    )
+    if description and description.strip():
+        task = f"【用户说明】{description.strip()}\n\n{task}"
+    if domain_hint:
+        task = f"【领域背景】{domain_hint}\n\n{task}"
+
+    logger.info(f"[ecp-sql-runner] initiate_chat task for ws={ws}")
+    try:
+        await user_proxy.initiate_chat(
+            recipient=recipient, message=HumanMessage(content=task)
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"[ecp-sql-runner] agent run failed: {e}")
+        result.errors.append(f"Agent 运行失败: {e}")
+
+    after = _proposed_ids(ws)
+    new_ids = sorted(after - before)
+    result.proposals_created = len(new_ids)
+    result.proposal_ids = new_ids
+    logger.info(
+        f"[ecp-sql-runner] done ws={ws}: +{result.proposals_created} "
+        f"proposals {new_ids}"
+    )
+    return result
+
+
 # --------------------------------------------------------------------- async
 # 提案生成改为真异步任务:POST /proposals/generate 立即返回 task_id,生成在后台执行,
 # 前端轮询任务状态。任务记录持久化到 gpts_async_tasks(AsyncTaskDao),与 media-jobs

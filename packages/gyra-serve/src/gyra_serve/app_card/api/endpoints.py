@@ -152,6 +152,74 @@ async def delete_app_card(
         return Result.failed(str(e))
 
 
+@router.get("/app_cards/share/render", response_model=Result,
+            dependencies=[Depends(check_api_key)])
+async def get_app_card_share_render(
+    card_id: int = Query(...),
+    token: str = Query(...),
+    service: AppCardService = Depends(get_service),
+) -> Result:
+    """匿名分享: 凭分享令牌加载子应用渲染信息(无需登录)。"""
+    try:
+        payload = service.get_render_anonymous(card_id, token)
+        if payload is None:
+            return Result.failed("无效的分享链接或未开启匿名分享")
+        return Result.succ(payload)
+    except Exception as e:
+        logger.exception("app_card share render exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/app_cards/share/invoke", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def invoke_app_card_share(
+    card_id: int,
+    request: AppCardInvokeRequest,
+    token: str = Query(...),
+    service: AppCardService = Depends(get_service),
+) -> Result:
+    """匿名分享: 凭分享令牌走统一 invoke 协议取数(无需登录)。"""
+    try:
+        return Result.succ(service.invoke_anonymous(card_id, token, request))
+    except Exception as e:
+        logger.exception("app_card share invoke exception!")
+        return Result.failed(str(e))
+
+
+@router.get("/app_cards/share/login/render", response_model=Result,
+            dependencies=[Depends(check_api_key)])
+async def get_app_card_login_render(
+    card_id: int = Query(...),
+    service: AppCardService = Depends(get_service),
+    user: UserRequest = Depends(get_user_from_headers),
+) -> Result:
+    """登录分享: 已登录用户凭卡片 id 加载渲染信息(受卡片查看权限约束)。"""
+    try:
+        result = service.get_render_share_login(card_id, user)
+        if not result:
+            return Result.failed("无权查看该子应用，或子应用不存在")
+        return Result.succ(result)
+    except Exception as e:
+        logger.exception("app_card login share render exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/app_cards/share/login/invoke", response_model=Result,
+             dependencies=[Depends(check_api_key)])
+async def invoke_app_card_login_share(
+    card_id: int,
+    request: AppCardInvokeRequest,
+    service: AppCardService = Depends(get_service),
+    user: UserRequest = Depends(get_user_from_headers),
+) -> Result:
+    """登录分享: 已登录用户凭卡片 id 走统一 invoke 协议取数(受卡片查看权限约束)。"""
+    try:
+        return Result.succ(service.invoke_login(card_id, request, user))
+    except Exception as e:
+        logger.exception("app_card login share invoke exception!")
+        return Result.failed(str(e))
+
+
 def init_endpoints(system_app: SystemApp, config: ServeConfig) -> None:
     global global_system_app
     system_app.register(AppCardService, config=config)

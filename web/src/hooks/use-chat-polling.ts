@@ -224,6 +224,16 @@ export function useChatPolling({
           startPolling();
         }
       });
+    } else {
+      // 回到"无会话"态(如场景空间欢迎态/「新任务」):复位上一会话残留的执行状态。
+      // 若不复位,外层 running = loading || convState === 'RUNNING' 仍为 true,
+      // 导致新任务的首次发送被当作上一会话的"补充输入"投递到旧会话队列,
+      // 追问承接在最后一个对话里,而不是真正新开对话。
+      if (prevConvIdRef.current !== convId) {
+        prevConvIdRef.current = convId;
+        setState('UNKNOWN');
+        setIsPolling(false);
+      }
     }
     
     return () => {

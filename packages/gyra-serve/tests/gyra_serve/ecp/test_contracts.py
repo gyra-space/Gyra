@@ -294,3 +294,22 @@ class TestEntityBindingsNormalize:
         svc.confirm("mtr.x", 1, "user0")
         svc._object_dao.confirm_version.assert_called_once()
         svc._object_dao.create_confirmed_version.assert_not_called()
+
+
+# -------------------------------------------------------------- add_from_sql (添加即确认)
+class TestAddFromSql:
+    """add_from_sql requires proposal agent configured; after proposal generated,
+    validate contract then confirm directly (manual -> confirmed in one step).
+    """
+    def test_no_agent_config_raises(self):
+        from types import SimpleNamespace
+        svc = Service.__new__(Service)
+        svc._object_dao = MagicMock()
+        svc._confirmer_dao = MagicMock()
+        svc._cache_dao = MagicMock()
+        svc._oplog_dao = MagicMock()
+        svc._system_app = MagicMock()
+        cfg = SimpleNamespace(proposal_agent_id=None)
+        svc.get_workspace_config = MagicMock(return_value=cfg)
+        with pytest.raises(ValueError, match="未配置提案 Agent"):
+            svc.add_from_sql(sql="SELECT * FROM t", user_id="user0")

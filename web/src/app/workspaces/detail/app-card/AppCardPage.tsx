@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { DeleteOutlined, SettingOutlined } from '@ant-design/icons';
+import { CopyOutlined, DeleteOutlined, SettingOutlined } from '@ant-design/icons';
 import { Button, Drawer, Input, Modal, Select, Tag, message } from 'antd';
 import { apiInterceptors } from '@/client/api';
 import { deleteAppCard, updateAppCard, type AppCardItem } from '@/client/api/app-card';
@@ -14,6 +14,16 @@ const PERMISSION_OPTIONS = [
   { value: 'admin', label: '管理员' },
   { value: 'owner', label: '仅所有者' },
 ];
+const SHARE_OPTIONS = [
+  { value: 'login', label: '登录后分享', desc: '任何人打开链接, 需已登录且有查看权限' },
+  { value: 'anonymous', label: '匿名公开分享', desc: '任何人都能打开, 无需登录' },
+];
+
+/** 分享链接(与分享模式对应的独立页 URL)。 */
+function buildShareLink(card: AppCardItem): string {
+  const base = `${window.location.origin}/app-card-share?card_id=${card.id}`;
+  return card.share_mode === 'anonymous' && card.share_token ? `${base}&token=${card.share_token}` : base;
+}
 
 /** 场景空间中间栏渲染的全屏应用页:固定 header(应用信息 + 维护入口) + 完整子应用页面。 */
 export function AppCardPage({
@@ -29,19 +39,23 @@ export function AppCardPage({
   const [maintainOpen, setMaintainOpen] = useState(false);
   const [icon, setIcon] = useState(initialCard.icon || '📊');
   const [permissions, setPermissions] = useState<string[]>(initialCard.permissions ?? []);
+  const [shareMode, setShareMode] = useState<'login' | 'anonymous'>(
+    initialCard.share_mode === 'anonymous' ? 'anonymous' : 'login',
+  );
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const openMaintain = () => {
     setIcon(card.icon || '📊');
     setPermissions(card.permissions ?? []);
+    setShareMode(card.share_mode === 'anonymous' ? 'anonymous' : 'login');
     setMaintainOpen(true);
   };
 
   const handleSave = async () => {
     setSaving(true);
     const [err, res] = await apiInterceptors(
-      updateAppCard({ id: card.id, workspace_id: workspaceId, icon, permissions }),
+      updateAppCard({ id: card.id, workspace_id: workspaceId, icon, permissions, share_mode: shareMode }),
     );
     setSaving(false);
     if (err) {
@@ -51,6 +65,38 @@ export function AppCardPage({
     if (res) setCard((prev) => ({ ...prev, ...res }));
     message.success('已保存');
     setMaintainOpen(false);
+  };
+
+  const handleCopyShare = async () => {
+    let effective = card;
+    // 匿名分享首次需生成令牌; 切换模式或需令牌时先保存一次
+    const needGenToken = shareMode === 'anonymous' && !effective.share_token;
+    const modeChanged = shareMode !== effective.share_mode;
+    if (needGenToken || modeChanged) {
+      setSaving(true);
+      const [err, res] = await apiInterceptors(
+        updateAppCard({
+          id: card.id,
+          workspace_id: workspaceId,
+          share_mode: shareMode,
+          ...(needGenToken ? { share_token_refresh: true } : {}),
+        }),
+      );
+      setSaving(false);
+      if (err || !res) {
+        message.error((err as Error)?.message || '生成分享链接失败');
+        return;
+      }
+      effective = res;
+      setCard((prev) => ({ ...prev, ...res }));
+      if (shareMode !== effective.share_mode) return;
+    }
+    try {
+      await navigator.clipboard.writeText(buildShareLink(effective));
+      message.success('分享链接已复制');
+    } catch {
+      message.error('复制链接失败，请手动复制');
+    }
   };
 
   const handleDelete = () => {
@@ -152,6 +198,28 @@ export function AppCardPage({
           />
           <div className="ws-app-card-page__hint">
             默认为空 = 仅开发者可见。勾选后对应角色可见；owner/admin 同时可维护该应用。
+          </div>
+        </div>
+        <div className="ws-app-card-page__field">
+          <div className="ws-app-card-page__label">分享设置</div>
+          <Select
+            style={{ width: '100%' }}
+            value={shareMode}
+            options={SHARE_OPTIONS}
+            onChange={(v) => setShareMode(v as 'login' | 'anonymous')}
+          />
+          <div className="ws-app-card-page__hint">
+            {SHARE_OPTIONS.find((o) => o.value === shareMode)?.desc}
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <Button icon={<CopyOutlined />} loading={saving} onClick={handleCopyShare}>
+              生成并复制分享链接
+            </Button>
+            {shareMode === 'anonymous' && card.share_token && (
+              <Tag bordered={false} color="green" style={{ marginLeft: 8 }}>
+                已开启匿名分享
+              </Tag>
+            )}
           </div>
         </div>
       </Drawer>

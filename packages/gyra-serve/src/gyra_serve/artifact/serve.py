@@ -46,6 +46,35 @@ class Serve(BaseServe):
         from .models.models import ArtifactEntity, ArtifactVersionEntity  # noqa: F401
         _ = [ArtifactEntity.__tablename__, ArtifactVersionEntity.__tablename__]
 
+    def _ensure_column_conv_id(self, init_db) -> None:
+        """存量 server_app_artifact 表补 conv_id 列（幂等，失败只告警）。
+
+        用于大厅会话级交付(task_id=0)按归属会话彻底隔离;新表由 create_all 直接建出,
+        旧表需 ALTER 补齐。
+        """
+        from sqlalchemy import inspect as sa_inspect, text
+
+        from .config import SERVER_APP_TABLE_NAME
+
+        try:
+            engine = init_db.engine
+            existing = {
+                c["name"]
+                for c in sa_inspect(engine).get_columns(SERVER_APP_TABLE_NAME)
+            }
+            if "conv_id" in existing:
+                return
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {SERVER_APP_TABLE_NAME} "
+                        "ADD COLUMN conv_id VARCHAR(255) NULL"
+                    )
+                )
+            logger.info("artifact table: added column conv_id")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"ensure conv_id column failed: {e}")
+
     def before_start(self):
         from .models.models import ArtifactEntity, ArtifactVersionEntity  # noqa: F401
         db_manager_factory = self._system_app.get_component(
@@ -59,5 +88,7 @@ class Serve(BaseServe):
             init_db = DatabaseManager.build_from(init_db, base=Model)
         try:
             init_db.create_all()
+            # 存量表加列：create_all 不会 ALTER 已存在的表
+            self._ensure_column_conv_id(init_db)
         except Exception as e:
             logger.warning(f"Failed to create Artifact tables: {e}")

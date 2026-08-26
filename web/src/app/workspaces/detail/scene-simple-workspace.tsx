@@ -36,8 +36,8 @@ import {
 } from '@/components/chat/chat-content-components/VisComponents/VisManusRightPanel/renderers';
 import type { ManusExecutionOutput, ManusStepStatus } from '@/types/manus';
 import { AgentWorkspaceRenderer } from './agent-workspace-renderer';
-import { ExhibitHost, resolveExhibitDownloadUrl } from './lobby-exhibit';
-import { transformFileUrl } from '@/utils';
+import { ExhibitHost } from './lobby-exhibit';
+import { resolveFileDownloadUrl } from '@/utils';
 import type {
   LobbyExhibit,
   WorkspaceDeliverableFile,
@@ -57,6 +57,8 @@ export interface SceneSimpleWorkspaceProps {
   agentName?: string | null;
   /** 本次对话选用的模型名(运行中文案「xx模型 思考中」使用) */
   modelName?: string | null;
+  /** 工作空间 id:用于在文件预览里一键导入 App Card 等空间级能力 */
+  workspaceId?: number;
   onInteractionResume?: (userMessage: string) => void;
   /** 返回欢迎态(退出任务/会话详情) */
   onExit?: () => void;
@@ -507,6 +509,7 @@ export function SceneSimpleWorkspace({
   agentIcon,
   agentName,
   modelName,
+  workspaceId,
   onInteractionResume,
   onExit,
   inputSlot,
@@ -847,7 +850,7 @@ export function SceneSimpleWorkspace({
           <div className="ws-simple-right__scroll" ref={contentRef}>
             {activeFile ? (
               <div className="ws-simple-right__preview">
-                <ExhibitHost exhibit={activeFile.exhibit} />
+                <ExhibitHost exhibit={activeFile.exhibit} workspaceId={workspaceId} />
               </div>
             ) : (
               <>
@@ -883,13 +886,16 @@ export function SceneSimpleWorkspace({
                       () => handleOpenTaskFile(f),
                       (e) => {
                         e.stopPropagation();
-                        const exhibit = taskFileToExhibit(f);
-                        const url = resolveExhibitDownloadUrl(exhibit) || transformFileUrl(f.download_url || f.preview_url || f.oss_url || '');
+                        const download = f.download_url || f.preview_url || f.oss_url || '';
+                        const url = resolveFileDownloadUrl(download);
                         if (url) {
                           const a = document.createElement('a');
                           a.href = url;
                           a.download = f.file_name || 'download';
+                          a.style.display = 'none';
+                          document.body.appendChild(a);
                           a.click();
+                          document.body.removeChild(a);
                         }
                       },
                     ),
@@ -900,7 +906,11 @@ export function SceneSimpleWorkspace({
             {!activeFile && rightTab === 'summary' && (
               <>
                 {view.summary ? (
-                  <div className="ws-simple-right__summary">{view.summary}</div>
+                  <div className="ws-simple-right__summary">
+                    <GPTVis components={markdownComponents} {...markdownPlugins}>
+                      {preprocessLaTeX(view.summary)}
+                    </GPTVis>
+                  </div>
                 ) : (
                   <div className="ws-simple-right__empty">
                     <InboxOutlined />

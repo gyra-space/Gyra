@@ -147,6 +147,7 @@ function LayoutWrapper({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!mounted || !isMobileDevice) return;
     const p = pathname || '';
+    if (p.startsWith('/app-card-share')) return; // 分享页桌面/移动统一渲染
     if (p.startsWith('/m/') || p === '/m') return; // 已在移动端
     if (p === '/auth/callback') return; // 桌面/移动共用 OAuth 回调,不跳转
     if (p === '/login') {
@@ -182,6 +183,18 @@ function LayoutWrapper({ children }: { children: React.ReactNode }) {
     // 其余移动路由 → 桌面首页
     window.location.replace('/');
   }, [mounted, isMobileDevice, pathname]);
+
+  // 公开页面:直接渲染(无侧边栏)。app-card-share 为应用卡片独立分享页(匿名无需登录)
+  if (pathname?.startsWith("/app-card-share")) {
+    return (
+      <ConfigProvider
+        locale={i18n.language === "en" ? enUS : zhCN}
+        theme={{ ...antdTheme, algorithm: undefined }}
+      >
+        <App><StaticInstanceBridge />{children}</App>
+      </ConfigProvider>
+    );
+  }
 
   const isPublicRoute =
     pathname?.startsWith("/login") ||

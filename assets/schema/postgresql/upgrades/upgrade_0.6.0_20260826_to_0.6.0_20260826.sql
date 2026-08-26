@@ -6,3 +6,5 @@ CREATE INDEX "ix_server_app_app_card_version_app_card_id" ON "server_app_app_car
 CREATE UNIQUE INDEX "uk_app_card_version" ON "server_app_app_card_version" ("app_card_id", "version");
 ALTER TABLE "server_app_app_card" ADD COLUMN "permissions_json" TEXT;
 ALTER TABLE "server_app_app_card" ADD COLUMN "icon" VARCHAR(64);
+ALTER TABLE "server_app_artifact" ADD COLUMN "conv_id" VARCHAR(255);
+CREATE INDEX "ix_server_app_artifact_conv_id" ON "server_app_artifact" ("conv_id");

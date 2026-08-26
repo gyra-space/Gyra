@@ -43,6 +43,9 @@ class ArtifactEntity(Model):
     id = Column(Integer, primary_key=True, autoincrement=True)
     task_id = Column(Integer, nullable=False, index=True)
     workspace_id = Column(Integer, nullable=False, index=True)
+    # 大厅会话级交付(file/task_id=0)的归属会话 id,用于不同会话之间的彻底隔离;
+    # 关联真实任务的 Artifact 无需该字段(可为 None)。
+    conv_id = Column(String(255), nullable=True, index=True)
     type = Column(String(32), nullable=False)
     title = Column(String(256), nullable=False)
     content_ref = Column(String(512), nullable=True)
@@ -91,6 +94,7 @@ class ArtifactDao(BaseDao[ArtifactEntity, ArtifactRequest, ArtifactResponse]):
             id=entity.id,
             task_id=entity.task_id,
             workspace_id=entity.workspace_id,
+            conv_id=entity.conv_id,
             type=entity.type,
             title=entity.title,
             content_ref=entity.content_ref,
@@ -106,6 +110,7 @@ class ArtifactDao(BaseDao[ArtifactEntity, ArtifactRequest, ArtifactResponse]):
             id=entity.id,
             task_id=entity.task_id,
             workspace_id=entity.workspace_id,
+            conv_id=entity.conv_id,
             type=entity.type,
             title=entity.title,
             content_ref=entity.content_ref,
@@ -127,6 +132,8 @@ class ArtifactDao(BaseDao[ArtifactEntity, ArtifactRequest, ArtifactResponse]):
             )
             if f.task_id is not None:
                 query = query.filter(ArtifactEntity.task_id == f.task_id)
+            if f.conv_id is not None:
+                query = query.filter(ArtifactEntity.conv_id == f.conv_id)
             if f.type:
                 query = query.filter(ArtifactEntity.type == f.type)
             entities = query.order_by(desc(ArtifactEntity.gmt_modified)).limit(f.limit).all()

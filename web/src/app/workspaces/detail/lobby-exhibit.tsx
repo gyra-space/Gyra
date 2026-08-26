@@ -9,7 +9,7 @@
  * EXHIBIT_RENDERERS,协议本身不变。
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { message, Table, Tabs, Tag, Tooltip } from 'antd';
+import { App, Button, Table, Tabs, Tag, Tooltip } from 'antd';
 // xlsx 浏览器端解析(v9 走 Web Worker 后台解析,不阻塞 UI;旧版 xls 不支持,仍引导下载)
 import readXlsxFile from 'read-excel-file/browser';
 import {
@@ -26,9 +26,12 @@ import { GPTVis } from '@antv/gpt-vis';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
-import { GET } from '@/client/api';
+import { GET, apiInterceptors } from '@/client/api';
+import { createAppCard } from '@/client/api/app-card';
 import { injectLocalLibsForReport, resolveFileDownloadUrl, transformFileUrl } from '@/utils';
 import type { LobbyExhibit } from './agent-workspace-types';
+import { isAppCardPayloadText, extractAppCardPayload } from './app-card/AppCardImportButton';
+import './app-card/app-card.css';
 
 /* ═══════════════════════════════════════════════════════════════
    公共辅助
@@ -844,7 +847,8 @@ function stripExt(name: string): string {
   return name.replace(/\.(md|markdown|txt|log|json|csv|py|js|ts|sql|html?|htm)$/i, '') || 'report';
 }
 
-export function ExhibitHost({ exhibit }: { exhibit: LobbyExhibit }) {
+export function ExhibitHost({ exhibit, workspaceId }: { exhibit: LobbyExhibit; workspaceId?: number }) {
+  const { message } = App.useApp();
   const url = resolveExhibitUrl(exhibit);
   const downloadUrl = resolveExhibitDownloadUrl(exhibit);
   const actions = exhibit.actions || ['preview', 'download'];
@@ -852,6 +856,46 @@ export function ExhibitHost({ exhibit }: { exhibit: LobbyExhibit }) {
   const size = fmtSize(exhibit.source.file_size);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [docBusy, setDocBusy] = useState(false);
+  const [appCardBusy, setAppCardBusy] = useState(false);
+  // 文本类文件(code/data/text)可尝试作为 App Card payload 一键导入
+  const isTextKind = exhibit.kind === 'code' || exhibit.kind === 'data' || exhibit.kind === 'text';
+  const canImportAppCard = workspaceId != null && isTextKind;
+
+  /** 一键导入为场景空间子应用:实时拉取 inline/url 文本,校验 app card payload 后落库。
+   *  用 message.open 的全局 loading 文案,让"导入中/完成/失败"全程可见。 */
+  const handleImportAppCard = async () => {
+    if (workspaceId == null) return;
+    const msgKey = `appcard-import-${exhibit.exhibit_id}`;
+    setAppCardBusy(true);
+    message.open({ key: msgKey, type: 'loading', content: '正在导入为场景空间子应用…', duration: 0 });
+    try {
+      let raw = exhibit.source.inline ?? '';
+      if (!raw && url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        raw = await res.text();
+      }
+      if (!isAppCardPayloadText(raw)) {
+        message.open({ key: msgKey, type: 'warning', content: '该文件不是有效的 App Card payload（需含 meta.schema_name 或 name+code）' });
+        return;
+      }
+      const payload = extractAppCardPayload(raw, workspaceId);
+      if (!payload) {
+        message.open({ key: msgKey, type: 'warning', content: 'App Card 内容解析失败' });
+        return;
+      }
+      const [err] = await apiInterceptors(createAppCard(payload));
+      if (err) {
+        message.open({ key: msgKey, type: 'error', content: (err as Error).message || '导入失败' });
+        return;
+      }
+      message.open({ key: msgKey, type: 'success', content: `已导入子应用「${payload.name}」` });
+    } catch (e) {
+      message.open({ key: msgKey, type: 'error', content: (e as Error).message || '内容获取失败，无法导入' });
+    } finally {
+      setAppCardBusy(false);
+    }
+  };
 
   const canDoc = DOC_KINDS.has(exhibit.kind) && !!(url || exhibit.source.inline);
   const canPrint = PRINT_KINDS.has(exhibit.kind);
@@ -1013,6 +1057,19 @@ export function ExhibitHost({ exhibit }: { exhibit: LobbyExhibit }) {
         <Tag color="blue">{KIND_LABEL[exhibit.kind] || exhibit.kind}</Tag>
         {size && <Tag>{size}</Tag>}
         <span className="ws-exhibit__head-actions">
+          {canImportAppCard && (
+            <Button
+              type="primary"
+              size="small"
+              ghost
+              icon={appCardBusy ? <LoadingOutlined spin /> : <DownloadOutlined />}
+              loading={appCardBusy}
+              disabled={appCardBusy}
+              onClick={handleImportAppCard}
+            >
+              {appCardBusy ? '导入中…' : '导入为场景空间子应用'}
+            </Button>
+          )}
           <HeadTool tip="分享(复制链接)" icon={<ShareAltOutlined />} onClick={handleShare} disabled={!url} />
           {canPrint && (
             <HeadTool

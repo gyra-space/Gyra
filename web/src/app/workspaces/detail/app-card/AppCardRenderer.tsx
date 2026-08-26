@@ -19,16 +19,21 @@ export function AppCardRenderer({
   appCard,
   workspaceId,
   height = 520,
+  invoke,
 }: {
   appCard: AppCardItem;
   workspaceId: number;
   height?: number;
+  /** 自定 invoke 桥(如匿名分享走 token 端点);默认用登录鉴权的 invokeAppCard。 */
+  invoke?: (op: string, params: Record<string, unknown>, queryKey?: string) => Promise<unknown>;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [loaded, setLoaded] = useState(false);
   const [booting, setBooting] = useState(true);
   const cardRef = useRef(appCard);
   cardRef.current = appCard;
+  const invokeRef = useRef(invoke);
+  invokeRef.current = invoke;
 
   const srcDoc = useSrcDoc(appCard, workspaceId);
 
@@ -40,9 +45,15 @@ export function AppCardRenderer({
       if (!d || d.type !== 'gyra-app-card') return;
       const { reqId, op, params, query_key } = d;
       try {
-        const [err, res] = await apiInterceptors(invokeAppCard(workspaceId, cardRef.current.id, { op, params, query_key }));
+        let data: unknown;
+        if (invokeRef.current) {
+          data = await invokeRef.current(op, params, query_key);
+        } else {
+          const [err, res] = await apiInterceptors(invokeAppCard(workspaceId, cardRef.current.id, { op, params, query_key }));
+          data = err ? null : res;
+        }
         frame.contentWindow?.postMessage(
-          { type: 'gyra-app-card-resp', reqId, data: err ? null : res, error: err ? (err as Error).message || '请求失败' : null },
+          { type: 'gyra-app-card-resp', reqId, data, error: data === null ? '请求失败' : null },
           '*',
         );
       } catch (e2) {

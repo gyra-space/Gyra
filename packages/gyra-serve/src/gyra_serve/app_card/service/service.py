@@ -10,6 +10,7 @@ semantic layer (metric) and the workspace data sources (sql), keeping the same
 
 import json
 import logging
+import secrets
 from typing import Any, Callable, Dict, List, Optional
 
 from gyra.component import SystemApp
@@ -21,7 +22,9 @@ from ..api.schemas import (
     AppCardResponse, AppCardUpdateRequest, AppCardValidateResponse,
     AppCardValidateResult,
 )
-from ..models.models import AppCardDao, AppCardEntity, AppCardVersionEntity, _dump_json
+from ..models.models import (
+    AppCardDao, AppCardEntity, AppCardVersionEntity, _dump_json, _load_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +203,35 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
         resp.can_manage = self.can_manage(user, resp)
         return resp
 
+    # ------------------------------------------------------------ 分享配置
+    @staticmethod
+    def _share_conf(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """读取卡片配置中的分享项。config.share = {"mode": login|anonymous, "token": ...}"""
+        conf = config or {}
+        share = conf.get("share")
+        if not isinstance(share, dict):
+            share = {}
+        mode = share.get("mode")
+        if mode not in ("anonymous", "login"):
+            mode = "login"
+        return {"mode": mode, "token": share.get("token")}
+
+    def _decorate_share(self, resp: AppCardResponse) -> AppCardResponse:
+        """把 config.share 回填到响应字段。分享令牌仅维护者可读(can_manage)。"""
+        share = self._share_conf(resp.config)
+        resp.share_mode = share["mode"]
+        resp.share_token = share["token"] if resp.can_manage else None
+        return resp
+
+    def _anon_ok(self, entity, token: Optional[str]) -> bool:
+        """匿名分享校验: 卡片开启 anonymous 且令牌一致(恒定时间比较)。"""
+        if not token:
+            return False
+        share = self._share_conf(getattr(entity, "config", None))
+        if share["mode"] != "anonymous" or not share["token"]:
+            return False
+        return secrets.compare_digest(str(share["token"]), str(token))
+
     # ------------------------------------------------------------------ CRUD
     def create(self, request: AppCardCreateRequest) -> AppCardResponse:
         validate_result = self.validate_queries(request.workspace_id, request.queries) if request.dry_run else None
@@ -216,7 +248,7 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
             raise
         finally:
             session.close()
-        return self.dao.to_response(entity)
+        return self._decorate_share(self.dao.to_response(entity))
 
     def update(self, request: AppCardUpdateRequest, user: UserRequest) -> Optional[AppCardResponse]:
         session = self.dao.get_raw_session()
@@ -242,6 +274,19 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
                 entity.icon = request.icon
             if request.permissions is not None:
                 entity.permissions_json = _dump_json(request.permissions)
+            # 分享设置: 写入 config.share(mode + token)。anonymous 且无 token(或要求重置)时生成新令牌
+            if request.share_mode is not None:
+                conf = _load_json(entity.config_json) or {}
+                share = self._share_conf(conf)
+                mode = request.share_mode if request.share_mode in ("anonymous", "login") else share["mode"]
+                token = share["token"]
+                if mode == "anonymous":
+                    if not token or request.share_token_refresh:
+                        token = secrets.token_urlsafe(32)
+                else:
+                    token = None
+                conf["share"] = {"mode": mode, "token": token}
+                entity.config_json = _dump_json(conf)
             entity.current_version = (entity.current_version or 1) + 1
             self._snapshot_version(session, entity, entity.current_version, request.created_by or "agent")
             session.commit()
@@ -250,15 +295,18 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
             raise
         finally:
             session.close()
-        return self._decorate_perms(self.dao.to_response(entity), user)
+        resp = self.dao.to_response(entity)
+        resp = self._decorate_perms(resp, user)
+        return self._decorate_share(resp)
 
     def get_by_id(self, card_id: int, user: UserRequest) -> Optional[AppCardResponse]:
-        entity = self.dao.get_one({"id": card_id})
-        if not entity:
+        resp = self.dao.get_one({"id": card_id})
+        if not resp:
             return None
-        if not self.can_view(user, entity):
+        if not self.can_view(user, resp):
             return None
-        return self._decorate_perms(self.dao.to_response(entity), user)
+        resp = self._decorate_perms(resp, user)
+        return self._decorate_share(resp)
 
     def delete(self, card_id: int, workspace_id: int, user: UserRequest) -> bool:
         session = self.dao.get_raw_session()
@@ -286,7 +334,8 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
         visible = []
         for resp in self.dao.list_by_workspace(f):
             if self.can_view(user, resp):
-                visible.append(self._decorate_perms(resp, user))
+                resp = self._decorate_perms(resp, user)
+                visible.append(self._decorate_share(resp))
         return visible
 
     def _snapshot_version(self, session, entity: AppCardEntity, version: int, created_by: str) -> None:
@@ -305,8 +354,11 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
             return {"trust": "none", "error": "workspace mismatch"}
         if not self.can_view(user, entity):
             return {"trust": "none", "error": "无权访问该应用卡片"}
-        # get_one 返回 AppCardResponse(已解析 queries), 直接用其 queries 列表
-        queries = list(entity.queries or [])
+        return self._dispatch(entity, workspace_id, entity.queries, req)
+
+    def _dispatch(self, entity, workspace_id, queries, req: AppCardInvokeRequest) -> Dict[str, Any]:
+        # queries: get_one 返回 AppCardResponse(已解析); 程序化取数尽量用已声明的查询契约
+        queries = list(queries or [])
         dispatch: Dict[str, Callable] = {
             "query.metric": self._invoke_metric,
             "query.sql": self._invoke_sql,
@@ -318,6 +370,53 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
         if handler is None:
             return {"trust": "none", "error": f"不支持的能力 {req.op}"}
         return handler(entity, workspace_id, queries, req.params or {}, req.query_key)
+
+    # ------------------------------------------------------ 匿名公开分享
+    def get_render_anonymous(self, card_id: int, token: Optional[str]) -> Optional[Dict[str, Any]]:
+        """匿名模式取渲染信息(不含分享令牌), 供未登录用户加载子应用。"""
+        entity = self.dao.get_one({"id": card_id})
+        if not entity or not self._anon_ok(entity, token):
+            return None
+        conf = dict(entity.config or {})
+        conf["share"] = {"mode": "anonymous"}  # 不暴露 token
+        return {
+            "id": entity.id,
+            "workspace_id": entity.workspace_id,
+            "name": entity.name,
+            "icon": entity.icon,
+            "kind": entity.kind,
+            "code": entity.code,
+            "config": conf,
+            "queries": list(entity.queries or []),
+        }
+
+    def get_render_share_login(self, card_id: int, user: UserRequest) -> Optional[Dict[str, Any]]:
+        """登录分享取渲染信息: 已登录且可查看即返回, 但剥离一切维护能力字段(只读)。"""
+        resp = self.get_by_id(card_id, user)
+        if resp is None:
+            return None
+        resp.is_owner = False
+        resp.can_manage = False
+        resp.share_token = None
+        return resp
+
+    def invoke_anonymous(self, card_id: int, token: Optional[str], req: AppCardInvokeRequest) -> Dict[str, Any]:
+        """匿名模式取数: 校验令牌后走统一 dispatch, 不受登录/can_view 约束。"""
+        entity = self.dao.get_one({"id": card_id})
+        if not entity:
+            return {"trust": "none", "error": f"app_card {card_id} not found"}
+        if not self._anon_ok(entity, token):
+            return {"trust": "none", "error": "无效的分享令牌或未开启匿名分享"}
+        return self._dispatch(entity, entity.workspace_id, entity.queries, req)
+
+    def invoke_login(self, card_id: int, req: AppCardInvokeRequest, user: UserRequest) -> Dict[str, Any]:
+        """登录分享取数: 复用 invoke 的校验(登录 + 卡片查看权限), workspace 取自卡片本身。"""
+        entity = self.dao.get_one({"id": card_id})
+        if not entity:
+            return {"trust": "none", "error": f"app_card {card_id} not found"}
+        if not self.can_view(user, entity):
+            return {"trust": "none", "error": "无权访问该应用卡片"}
+        return self._dispatch(entity, entity.workspace_id, entity.queries, req)
 
     def _invoke_metric(self, entity, workspace_id, queries, params, query_key) -> Dict[str, Any]:
         from gyra_serve.ecp.service.executor import GateError, execute_metric_query

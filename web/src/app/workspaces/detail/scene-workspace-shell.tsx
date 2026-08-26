@@ -22,6 +22,8 @@ import { SceneTaskRail, statusLabel } from './scene-task-rail';
 import { SceneSimpleRail, type SimpleHistoryItem } from './scene-simple-rail';
 import { SceneSimpleInbox } from './scene-simple-inbox';
 import { SceneSimpleWorkspace } from './scene-simple-workspace';
+import { SimpleAppCardLauncher } from './app-card/SimpleAppCardLauncher';
+import { AppCardPage } from './app-card/AppCardPage';
 import type { AgentWorkspaceInputHandle } from './agent-workspace-types';
 import { useSceneAgentChat } from './use-scene-agent-chat';
 import type { WorkspaceViewMode } from './use-view-mode';
@@ -93,6 +95,14 @@ export function SceneWorkspaceShell({
   // 点击步骤/文件卡片等主动查看动作会自动展开;折叠期间被动到达的新内容点亮角标。
   const [spaceCollapsed, setSpaceCollapsed] = useState(false);
   const [spaceHasNew, setSpaceHasNew] = useState(false);
+  // 场景空间最大化:中间 space 占满整个壳区,隐藏左侧任务栏与右侧 Agent 对话窗口。
+  // 典型场景:在空间内使用应用卡片/大屏看板等需要最大显示面积时,可最大化并随时还原。
+  const [spaceMaximized, setSpaceMaximized] = useState(false);
+  const toggleSpaceMaximized = () => {
+    // 最大化与「折叠大厅」互斥:最大化时强制展开大厅,避免双状态叠加冲突
+    setSpaceCollapsed(false);
+    setSpaceMaximized((v) => !v);
+  };
   // 用户主动查看内容 → 展开大厅;被动事件 → 仅折叠时点亮角标
   const expandSpace = () => {
     setSpaceCollapsed(false);
@@ -109,6 +119,8 @@ export function SceneWorkspaceShell({
   // 收件箱刷新信号:中间区域确认/否决 ECP 提案后 bump,通知左侧 rail 重新拉待办。
   const [inboxTick, setInboxTick] = useState(0);
   const bumpInbox = () => setInboxTick((t) => t + 1);
+  // 简洁模式应用使用态:欢迎态点击应用卡片 → 中间区切换为全屏应用页(不创建会话)。
+  const [simpleAppCard, setSimpleAppCard] = useState<any>(null);
   const prevActiveTaskId = useRef<number | null>(null);
   const agentInputRef = useRef<AgentWorkspaceInputHandle>(null);
   // 简洁模式:中间区是否显示欢迎页(无会话/任务时 true,有内容时 false)
@@ -287,6 +299,8 @@ export function SceneWorkspaceShell({
     setDetailContext('dashboard');
     setPreviewItem(null);
     expandSpace();
+    // 返回工作台(无顶栏)时退出最大化,避免失去还原入口
+    setSpaceMaximized(false);
   };
 
   // 点击异步子 agent 卡片:在中间容器内联展开子会话(不再新标签打开)
@@ -604,6 +618,7 @@ export function SceneWorkspaceShell({
     setActiveTaskId(null);
     setDetailContext('dashboard');
     setPreviewItem(null);
+    setSimpleAppCard(null);
   };
 
   // 简洁模式:待办入口 → 右侧滑出待办抽屉(不切模式,不打断当前会话)
@@ -689,7 +704,7 @@ export function SceneWorkspaceShell({
   return (
     <CallDetailProvider convId={rightConvUid}>
       <div
-        className={`ws-scene-shell${railOpen ? '' : ' ws-scene-shell--rail-closed'}${spaceCollapsed ? ' ws-scene-shell--space-collapsed' : ''}${isSimple ? ' ws-scene-shell--simple' : ''}`}
+        className={`ws-scene-shell${railOpen ? '' : ' ws-scene-shell--rail-closed'}${spaceCollapsed ? ' ws-scene-shell--space-collapsed' : ''}${spaceMaximized ? ' ws-scene-shell--space-maximized' : ''}${isSimple ? ' ws-scene-shell--simple' : ''}`}
         data-pane={mobilePane}
       >
       {isSimple ? (
@@ -723,7 +738,18 @@ export function SceneWorkspaceShell({
           </div>
           {/* 中间:欢迎态 或 运行态双栏(输入条在左侧步骤流卡片内底部) */}
           <div className="ws-scene-shell__space">
-            {simpleWelcome ? (
+            {simpleAppCard && isSimple ? (
+              /* 简洁模式 · 应用使用态:全屏常驻子应用,不创建会话 */
+              <div className="ws-simple-app">
+                <div className="ws-simple-app__bar">
+                  <button type="button" className="ws-simple-app__back" onClick={() => setSimpleAppCard(null)}>
+                    <LeftOutlined /> 返回
+                  </button>
+                  <span className="ws-simple-app__hint">正在运行子应用,不进入任务记录</span>
+                </div>
+                <AppCardPage card={simpleAppCard} workspaceId={workspaceId} onDeleted={() => setSimpleAppCard(null)} />
+              </div>
+            ) : simpleWelcome ? (
               <div className="ws-simple-welcome">
                 <div className="ws-simple-welcome__hero">
                   <span className="ws-simple-welcome__ava">✦</span>
@@ -776,6 +802,7 @@ export function SceneWorkspaceShell({
                     ))}
                   </div>
                 </div>
+                <SimpleAppCardLauncher workspaceId={workspaceId} onOpen={(card) => setSimpleAppCard(card)} />
               </div>
             ) : (
               <div className="ws-simple-run">
@@ -792,6 +819,7 @@ export function SceneWorkspaceShell({
                   agentIcon={appInfo?.icon}
                   agentName={appInfo?.app_name}
                   modelName={simpleChat.modelName}
+                  workspaceId={workspaceId}
                   onInteractionResume={(msg) => simpleChat.send({ text: msg })}
                   onExit={() => {
                     setSimpleShowWelcome(true);
@@ -927,6 +955,8 @@ export function SceneWorkspaceShell({
               workspaceCode={workspace?.workspace_code}
               appCode={appCode}
               playbooks={playbooks}
+              isMaximized={spaceMaximized}
+              onToggleMaximize={toggleSpaceMaximized}
               onBack={handleBackToDashboard}
               onProposalResolved={bumpInbox}
               onEnterFlywheel={handleEnterFlywheel}

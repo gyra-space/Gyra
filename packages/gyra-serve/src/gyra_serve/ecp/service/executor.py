@@ -33,6 +33,37 @@ def _is_time_type(col_type: Any) -> bool:
     return bool(_TIME_TYPE_RE.search(col_type))
 
 
+def _mask_dict_rows(
+    datasource_id: Optional[int],
+    columns,
+    rows: List[Dict[str, Any]],
+    *,
+    table_name: Optional[str] = None,
+):
+    """对 dict 行结果统一走脱敏入口(-- 隐私脱敏,与 execute_sql 一致)。
+
+    rows 为 ``[dict]`` 结构;脱敏按列索引作用,需先按 ``columns`` 顺序重排成
+    list,脱敏完成后再按不变的 ``columns`` 重建 dict,保证键与顺序不丢失。
+
+    Returns:
+        (masked_rows, masked_column_names): 脱敏后的 dict 行 + 实际被脱敏列名。
+        任何失败返回原始 rows 与空列表(脱敏永不破坏查询路径)。
+    """
+    if not rows or not columns:
+        return rows, []
+    try:
+        from gyra_serve.sql_guard.masking import mask_run_result
+
+        list_rows = [[r.get(c) for c in columns] for r in rows]
+        _, list_rows, masked = mask_run_result(
+            datasource_id, columns, list_rows, table_name=table_name
+        )
+        return [dict(zip(columns, mr)) for mr in list_rows], masked
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[mask_dict_rows] masking skipped: {e}")
+        return rows, []
+
+
 class GateError(Exception):
     """Deterministic gate rejection (agent-visible, never bypassable)."""
 
@@ -174,6 +205,12 @@ class DbBindingExecutor(BindingExecutor):
         if raw:
             columns = list(raw[0])
             rows = [dict(zip(columns, r)) for r in raw[1:]]
+            # 隐私脱敏:DB 结果统一走脱敏入口,与 execute_sql 保持一致。
+            if rows:
+                rows, _ = _mask_dict_rows(
+                    datasource_id, columns, rows,
+                    table_name=binding.get("table"),
+                )
 
         return {
             "rows": rows,
@@ -629,6 +666,9 @@ def _preview_run(sql: str, datasource_id: int, obj: Any,
     if raw:
         columns = list(raw[0])
         rows = [dict(zip(columns, r)) for r in raw[1:]]
+    # 隐私脱敏:preview(confirm 试跑)同样遵守脱敏原则,与其他 DB 出口一致。
+    if rows:
+        rows, _ = _mask_dict_rows(datasource_id, columns, rows)
     result.update(columns=columns, rows=rows, row_count=len(rows))
     return result
 

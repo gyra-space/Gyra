@@ -24,12 +24,23 @@ import {
   SaveOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { App, Button, Segmented, Spin, Tree, Upload } from 'antd';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { App, Button, Segmented, Spin, Tree } from 'antd';
+import {
+  type DragEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import ReactMarkdown from 'react-markdown';
+import rehypeHighlight from 'rehype-highlight';
+import rehypeRaw from 'rehype-raw';
+import remarkBreaks from 'remark-breaks';
+import remarkGfm from 'remark-gfm';
 
 import { EcpEmpty } from './common';
-
-const { Dragger } = Upload;
 
 const STATUS_LABEL: Record<string, string> = {
   pending: '排队中',
@@ -42,7 +53,15 @@ const STATUS_LABEL: Record<string, string> = {
 
 type SideView = 'wiki' | 'raw';
 
-function toTreeData(nodes: TreeNode[], isDirIcon?: (n: TreeNode) => boolean): any[] {
+interface TreeChildNode {
+  key: string;
+  title: string;
+  isLeaf: boolean;
+  children?: TreeChildNode[];
+  icon?: ReactNode;
+}
+
+function toTreeData(nodes: TreeNode[], isDirIcon?: (n: TreeNode) => boolean): TreeChildNode[] {
   return (nodes ?? []).map(n => ({
     key: n.path,
     title: n.name,
@@ -50,6 +69,11 @@ function toTreeData(nodes: TreeNode[], isDirIcon?: (n: TreeNode) => boolean): an
     children: n.children ? toTreeData(n.children, isDirIcon) : undefined,
     icon: n.is_dir ? undefined : (isDirIcon?.(n) ? <FileTextOutlined /> : <FileMarkdownOutlined />),
   }));
+}
+
+function countTree(nodes: TreeChildNode[] | undefined): number {
+  if (!nodes) return 0;
+  return nodes.reduce((acc, n) => acc + (n.isLeaf ? 1 : countTree(n.children)), 0);
 }
 
 /**
@@ -66,6 +90,8 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
   const [draft, setDraft] = useState('');
   const [dirty, setDirty] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [dragDepth, setDragDepth] = useState(0);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const { data: space, loading: spaceLoading } = useRequest(
     async () => {
@@ -144,7 +170,7 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
     { manual: true },
   );
 
-  const { run: doUpload } = useRequest(
+  const { runAsync: doUpload } = useRequest(
     async (file: File) => {
       if (!slug) return;
       const [err] = await apiInterceptors(uploadFile({ slug, file }));
@@ -155,6 +181,27 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
     },
     { manual: true },
   );
+
+  const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (Array.from(e.dataTransfer?.types ?? []).includes('Files')) {
+      setDragDepth(d => d + 1);
+    }
+  };
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+  };
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragDepth(d => Math.max(0, d - 1));
+  };
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragDepth(0);
+    Array.from(e.dataTransfer?.files ?? []).forEach(f => {
+      doUpload(f).catch(err => message.error(String(err)));
+    });
+  };
 
   const treeData = useMemo(() => toTreeData(wikiTree ?? []), [wikiTree]);
   const rawTreeData = useMemo(() => toTreeData(rawTree ?? [], () => true), [rawTree]);
@@ -183,202 +230,232 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
   return (
     <>
       <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 12,
-          flexWrap: 'wrap',
-          gap: 10,
-        }}
+        className="ecp-kn"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
       >
-        <span style={{ fontSize: 13, color: 'var(--ink-500)', maxWidth: 560 }}>
-          在这里直接维护业务知识资产——拖拽上传原始文档自动生成词条，也可手动新建 / 编辑 wiki
-          文档，无需跳转知识库模块。
-        </span>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={() => {
-              refreshWiki();
-              refreshRaw();
-              pollJobs();
-            }}
-          />
-          <Button icon={<EditOutlined />} onClick={() => setWikiOpen(true)}>
-            新建词条
-          </Button>
-          <Button icon={<FileTextOutlined />} onClick={() => setRawOpen(true)}>
-            新建原始文件
-          </Button>
-        </div>
-      </div>
-
-      <Dragger
-        multiple
-        showUploadList={false}
-        beforeUpload={file => {
-          doUpload(file as File).catch(e => message.error(String(e)));
-          return false;
-        }}
-        className="ecp-knowledge-dragger"
-      >
-        <p className="ant-upload-drag-icon" style={{ marginBottom: 4 }}>
-          <InboxOutlined style={{ color: '#4f46e5', fontSize: 24 }} />
-        </p>
-        <p className="ant-upload-text" style={{ fontSize: 13, color: 'var(--ink-700)' }}>
-          拖拽文件到此处批量上传，或点击选择
-        </p>
-        <p className="ant-upload-hint" style={{ fontSize: 12, color: 'var(--ink-400)' }}>
-          pdf / docx / pptx / txt / md / xlsx / 图片 / 音频 / 视频
-        </p>
-      </Dragger>
-
-      {pendingJobs.length > 0 && (
-        <div
-          style={{
-            marginTop: 10,
-            fontSize: 12,
-            color: 'var(--brand)',
-            background: 'var(--bg-fill)',
-            padding: '6px 12px',
-            borderRadius: 8,
-          }}
-        >
-          {pendingJobs.length} 个文档解析任务进行中（
-          {STATUS_LABEL[pendingJobs[0].status] ?? pendingJobs[0].status}），完成后可在「wiki
-          词条」中查看
-        </div>
-      )}
-
-      <div className="ecp-wiki">
-        <div className="ecp-wiki__side">
-          <div className="ecp-wiki__side-title">
-            <span>知识资产</span>
-            <code style={{ fontSize: 11 }}>{slug}</code>
+        {dragDepth > 0 && (
+          <div className="ecp-kn__drop-overlay">
+            <div className="ecp-kn__drop-inner">
+              <div className="ecp-kn__drop-icon">
+                <InboxOutlined />
+              </div>
+              <div className="ecp-kn__drop-title">松手即可上传文档</div>
+              <div className="ecp-kn__drop-hint">
+                支持 pdf / docx / pptx / txt / md / xlsx / 图片 / 音频 / 视频，自动解析生成词条
+              </div>
+            </div>
           </div>
-          <Segmented
-            size="small"
-            block
-            value={side}
-            onChange={v => setSide(v as SideView)}
-            options={[
-              { label: 'wiki 词条', value: 'wiki' },
-              { label: '原始文件', value: 'raw' },
-            ]}
-          />
-          <div style={{ marginTop: 10 }}>
-            {side === 'wiki' ? (
-              wikiLoading ? (
-                <Spin style={{ display: 'block', margin: '32px auto' }} />
-              ) : treeData.length ? (
+        )}
+        <header className="ecp-kn__toolbar">
+          <div className="ecp-kn__head">
+            <div className="ecp-kn__heading">
+              <h2 className="ecp-kn__title">知识资产</h2>
+              <code className="ecp-kn__space">{slug}</code>
+            </div>
+            <p className="ecp-kn__sub">
+              拖拽文件到任意位置即可上传，也可手动新建 / 编辑 wiki 文档。
+            </p>
+          </div>
+          <div className="ecp-kn__actions">
+            <Button type="primary" icon={<InboxOutlined />} onClick={() => fileRef.current?.click()}>
+              上传文档
+            </Button>
+            <Button icon={<EditOutlined />} onClick={() => setWikiOpen(true)}>
+              新建词条
+            </Button>
+            <Button icon={<FileTextOutlined />} onClick={() => setRawOpen(true)}>
+              新建原始文件
+            </Button>
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={() => {
+                refreshWiki();
+                refreshRaw();
+                pollJobs();
+              }}
+            />
+          </div>
+        </header>
+
+        {pendingJobs.length > 0 && (
+          <div className="ecp-kn__jobs">
+            <span className="ecp-kn__jobs-dot" />
+            <span>
+              正在解析 {pendingJobs.length} 个文档（
+              {STATUS_LABEL[pendingJobs[0].status] ?? pendingJobs[0].status}），完成后可在「wiki
+              词条」中查看
+            </span>
+          </div>
+        )}
+
+        <div className="ecp-kn__workbench">
+          <aside className="ecp-kn__explorer">
+            <Segmented
+              size="small"
+              block
+              value={side}
+              onChange={v => setSide(v as SideView)}
+              options={[
+                { label: 'wiki 词条', value: 'wiki' },
+                { label: '原始文件', value: 'raw' },
+              ]}
+            />
+            <div className="ecp-kn__explorer-body">
+              {side === 'wiki' ? (
+                wikiLoading ? (
+                  <Spin style={{ display: 'block', margin: '40px auto' }} />
+                ) : treeData.length ? (
+                  <Tree
+                    className="ecp-kn__tree"
+                    showIcon
+                    blockNode
+                    treeData={treeData}
+                    selectedKeys={selectedDoc ? [selectedDoc] : []}
+                    onSelect={keys => {
+                      const k = keys[0] as string | undefined;
+                      if (k && k.endsWith('.md')) {
+                        setSelectedDoc(k);
+                        setEditing(false);
+                        setDirty(false);
+                      }
+                    }}
+                  />
+                ) : (
+                  <EcpEmpty title="暂无词条" desc="上传文档或点「新建词条」创建" />
+                )
+              ) : rawLoading ? (
+                <Spin style={{ display: 'block', margin: '40px auto' }} />
+              ) : rawTreeData.length ? (
                 <Tree
+                  className="ecp-kn__tree"
                   showIcon
-                  treeData={treeData}
-                  selectedKeys={selectedDoc ? [selectedDoc] : []}
+                  blockNode
+                  treeData={rawTreeData}
+                  selectedKeys={selectedRaw ? [selectedRaw] : []}
                   onSelect={keys => {
                     const k = keys[0] as string | undefined;
-                    if (k && k.endsWith('.md')) {
-                      setSelectedDoc(k);
-                      setEditing(false);
-                      setDirty(false);
-                    }
+                    if (k && !k.endsWith('/')) setSelectedRaw(k);
                   }}
                 />
               ) : (
-                <EcpEmpty title="暂无词条" desc="上传文档或点「新建词条」创建" />
-              )
-            ) : rawLoading ? (
-              <Spin style={{ display: 'block', margin: '32px auto' }} />
-            ) : rawTreeData.length ? (
-              <Tree
-                showIcon
-                treeData={rawTreeData}
-                selectedKeys={selectedRaw ? [selectedRaw] : []}
-                onSelect={keys => {
-                  const k = keys[0] as string | undefined;
-                  if (k && !k.endsWith('/')) setSelectedRaw(k);
-                }}
-              />
-            ) : (
-              <EcpEmpty title="暂无原始文件" desc="点「上传文档」或「新建原始文件」添加" />
-            )}
-          </div>
-        </div>
+                <EcpEmpty title="暂无原始文件" desc="点「新建原始文件」添加" />
+              )}
+            </div>
+            <div className="ecp-kn__explorer-foot">
+              {side === 'wiki'
+                ? `${countTree(treeData)} 篇词条`
+                : `${countTree(rawTreeData)} 个文件`}
+              <span className="ecp-kn__explorer-tip">点击条目浏览</span>
+            </div>
+          </aside>
 
-        <div className="ecp-wiki__reader">
-          {side === 'wiki' ? (
-            !selectedDoc ? (
-              <EcpEmpty title="从左侧选择一篇词条" desc="选中后可直接查看或编辑" />
-            ) : docLoading ? (
-              <Spin style={{ display: 'block', margin: '64px auto' }} />
-            ) : doc ? (
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-                  <div className="ecp-wiki__doc-title" style={{ flex: 1 }}>
-                    {doc.title}
-                  </div>
-                  <Button
-                    size="small"
-                    type={editing ? 'default' : 'primary'}
-                    icon={<EditOutlined />}
-                    onClick={() => setEditing(e => !e)}
-                  >
-                    {editing ? '取消编辑' : '编辑'}
-                  </Button>
-                  {editing && (
-                    <Button
-                      size="small"
-                      type="primary"
-                      icon={<SaveOutlined />}
-                      loading={saving}
-                      disabled={!dirty}
-                      onClick={() => saveDoc()}
-                    >
-                      保存
-                    </Button>
-                  )}
-                </div>
-                {!!doc.frontmatter?.ref && (
-                  <div className="ecp-wiki__doc-ref">ref → {String(doc.frontmatter.ref)}</div>
-                )}
-                <div className="ecp-wiki__doc-body" style={{ height: editing ? 480 : 'auto' }}>
-                  {editing ? (
-                    <div style={{ height: 480, border: '1px solid var(--line-soft)', borderRadius: 8, overflow: 'hidden' }}>
-                      <MarkdownEditor
-                        value={draft}
-                        onChange={t => {
-                          setDraft(t);
-                          setDirty(true);
-                        }}
-                      />
+          <section className="ecp-kn__reader">
+            {side === 'wiki' ? (
+              !selectedDoc ? (
+                <EcpEmpty title="从左侧选择一篇词条" desc="选中后即可预览或编辑，支持 Markdown 排版" />
+              ) : docLoading ? (
+                <Spin style={{ display: 'block', margin: '64px auto' }} />
+              ) : doc ? (
+                <>
+                  <div className="ecp-kn__doc-top">
+                    <span className="ecp-kn__doc-path">{selectedDoc}</span>
+                    <div className="ecp-kn__doc-actions">
+                      <Button
+                        size="small"
+                        icon={<EditOutlined />}
+                        onClick={() => setEditing(e => !e)}
+                      >
+                        {editing ? '取消编辑' : '编辑'}
+                      </Button>
+                      {editing && (
+                        <Button
+                          size="small"
+                          type="primary"
+                          icon={<SaveOutlined />}
+                          loading={saving}
+                          disabled={!dirty}
+                          onClick={() => saveDoc()}
+                        >
+                          保存
+                        </Button>
+                      )}
                     </div>
-                  ) : (
-                    doc.content
+                  </div>
+                  <h1 className="ecp-kn__doc-title">{doc.title}</h1>
+                  {!!doc.frontmatter?.ref && (
+                    <div className="ecp-kn__doc-ref">ref → {String(doc.frontmatter.ref)}</div>
                   )}
+                  <div className="ecp-kn__doc-body" style={{ height: editing ? 480 : 'auto' }}>
+                    {editing ? (
+                      <div
+                        style={{
+                          height: 480,
+                          border: '1px solid var(--line-soft)',
+                          borderRadius: 8,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <MarkdownEditor
+                          value={draft}
+                          onChange={t => {
+                            setDraft(t);
+                            setDirty(true);
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <div className="ecp-kn__md">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm, remarkBreaks]}
+                          rehypePlugins={[rehypeRaw, rehypeHighlight]}
+                        >
+                          {doc.content}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <EcpEmpty title="读取失败" />
+              )
+            ) : !selectedRaw ? (
+              <EcpEmpty title="从左侧选择原始文件" desc="原始文件为只读，上传解析后生成 wiki 词条" />
+            ) : rawLoadingFile ? (
+              <Spin style={{ display: 'block', margin: '64px auto' }} />
+            ) : rawContent ? (
+              <>
+                <div className="ecp-kn__doc-top">
+                  <span className="ecp-kn__doc-path">{selectedRaw}</span>
+                </div>
+                <h1 className="ecp-kn__doc-title">{selectedRaw.split('/').pop()}</h1>
+                <div className="ecp-kn__doc-body ecp-kn__raw">
+                  <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, fontFamily: 'inherit', margin: 0 }}>
+                    {rawContent.content}
+                  </pre>
                 </div>
               </>
             ) : (
               <EcpEmpty title="读取失败" />
-            )
-          ) : !selectedRaw ? (
-            <EcpEmpty title="从左侧选择原始文件" desc="原始文件为只读，上传解析后生成 wiki 词条" />
-          ) : rawLoadingFile ? (
-            <Spin style={{ display: 'block', margin: '64px auto' }} />
-          ) : rawContent ? (
-            <>
-              <div className="ecp-wiki__doc-title">{selectedRaw}</div>
-              <div className="ecp-wiki__doc-body">
-                <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, fontFamily: 'inherit', margin: 0 }}>
-                  {rawContent.content}
-                </pre>
-              </div>
-            </>
-          ) : (
-            <EcpEmpty title="读取失败" />
-          )}
+            )}
+          </section>
         </div>
       </div>
+
+      <input
+        ref={fileRef}
+        type="file"
+        multiple
+        hidden
+        onChange={e => {
+          Array.from(e.target.files ?? []).forEach(f => {
+            doUpload(f).catch(err => message.error(String(err)));
+          });
+          e.target.value = '';
+        }}
+      />
 
       <WikiCreateModal
         slug={slug}

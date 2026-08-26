@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { Button, Spin, Tag, Tooltip } from 'antd';
-import { ArrowLeftOutlined, DownloadOutlined, ExportOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, DownloadOutlined, ExportOutlined, FullscreenOutlined, FullscreenExitOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { GPTVis } from '@antv/gpt-vis';
 import dayjs from 'dayjs';
@@ -57,6 +57,10 @@ export interface SceneSpaceProps {
   onRunPlaybook?: (pb: { playbook_id: number; playbook_name: string }) => void;
   /** 任务/介入刷新信号(最近产出/交付/待办同步刷新) */
   listsRefreshKey?: number;
+  /** 场景空间最大化状态(顶栏按钮显示最大化/还原) */
+  isMaximized?: boolean;
+  /** 场景空间最大化/还原切换 */
+  onToggleMaximize?: () => void;
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -357,7 +361,7 @@ function buildArtifactExhibit(artifact: any, resolvedUrl: string): LobbyExhibit 
 }
 
 /** artifact_produced 等只带 id 的事件:拉取 artifact 详情后渲染内容 */
-function ArtifactPreview({ artifactId, title, type }: { artifactId: number; title?: string; type?: string }) {
+function ArtifactPreview({ artifactId, title, type, workspaceId }: { artifactId: number; title?: string; type?: string; workspaceId: number }) {
   const { data: res, loading } = useRequest(
     async () => apiInterceptors(getArtifactInfo(artifactId)),
     { refreshDeps: [artifactId] },
@@ -371,11 +375,12 @@ function ArtifactPreview({ artifactId, title, type }: { artifactId: number; titl
   const fileSize = artifact.provenance?.file_size;
   const previewable = fileUrl ? isPreviewableFile(fileUrl) : false;
   // 文件类文章物:用通用 ExhibitHost 真正打开/预览文件内容(优先于原文内容)
+  // App Card 检测+一键导入统一在 ExhibitHost 内处理(传 workspaceId 即可)
   const fileExhibit = buildArtifactExhibit(artifact, resolvedUrl);
   return (
     <div className="ws-preview">
       {fileExhibit ? (
-        <ExhibitHost exhibit={fileExhibit} />
+        <ExhibitHost exhibit={fileExhibit} workspaceId={workspaceId} />
       ) : (
         <>
           <div className="ws-preview__head">
@@ -419,7 +424,7 @@ function ArtifactPreview({ artifactId, title, type }: { artifactId: number; titl
 }
 
 /** 交付详情:拉取 delivery 详情,展示基本信息 + 关联 artifact 内容/文件下载 */
-function DeliveryPreview({ deliveryId, title }: { deliveryId: number; title?: string }) {
+function DeliveryPreview({ deliveryId, title, workspaceId }: { deliveryId: number; title?: string; workspaceId: number }) {
   const { data: res, loading } = useRequest(
     async () => apiInterceptors(getDeliveryInfo(deliveryId)),
     { refreshDeps: [deliveryId] },
@@ -456,7 +461,7 @@ function DeliveryPreview({ deliveryId, title }: { deliveryId: number; title?: st
       {artifactId && (
         <section className="ws-preview__section">
           <div className="ws-preview__section-title">关联交付物</div>
-          <ArtifactPreview artifactId={artifactId} />
+          <ArtifactPreview artifactId={artifactId} workspaceId={workspaceId} />
         </section>
       )}
     </div>
@@ -465,8 +470,13 @@ function DeliveryPreview({ deliveryId, title }: { deliveryId: number; title?: st
 
 /** 交付文件预览:适配为大厅通用 Exhibit,由 ExhibitHost 按 kind 渲染
  * (图片/视频/音频/表格/幻灯片/HTML/PDF/Markdown/Code 等统一入口) */
-function DeliverableFilePreview({ file }: { file: WorkspaceDeliverableFile }) {
-  return <ExhibitHost exhibit={deliverableFileToExhibit(file)} />;
+function DeliverableFilePreview({ file, workspaceId }: { file: WorkspaceDeliverableFile; workspaceId: number }) {
+  const exhibit = deliverableFileToExhibit(file);
+  return (
+    <div className="ws-preview">
+      <ExhibitHost exhibit={exhibit} workspaceId={workspaceId} />
+    </div>
+  );
 }
 
 /** Agent 步骤(工具调用/思考)富预览 */
@@ -548,6 +558,8 @@ export function SceneSpace({
   onAsk,
   onRunPlaybook,
   listsRefreshKey,
+  isMaximized,
+  onToggleMaximize,
 }: SceneSpaceProps) {
   const taskId = context === 'task-detail' && previewItem?.id ? previewItem.id : undefined;
   // 点击任务卡片走 handlePreview(不进任务对话),activeTask 不会被填充;
@@ -605,6 +617,18 @@ export function SceneSpace({
           返回
         </Button>
         <span className="ws-scene-space__header-title">{CONTEXT_TITLE[context] || ''}</span>
+        {onToggleMaximize && (
+          <Tooltip title={isMaximized ? '还原窗口' : '最大化窗口'}>
+            <Button
+              className="ws-scene-space__maximize"
+              icon={isMaximized ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+              onClick={onToggleMaximize}
+              size="small"
+              type="text"
+              aria-label={isMaximized ? '还原窗口' : '最大化窗口'}
+            />
+          </Tooltip>
+        )}
       </div>
       {context === 'flywheel' && (
         <FlywheelWorkspace workspaceId={workspaceId} workspaceCode={workspaceCode} />
@@ -646,7 +670,7 @@ export function SceneSpace({
       {context === 'exhibit' && (
         <div className="ws-scene-space__body">
           {previewItem?.payload?.exhibit ? (
-            <ExhibitHost exhibit={previewItem.payload.exhibit} />
+            <ExhibitHost exhibit={previewItem.payload.exhibit} workspaceId={workspaceId} />
           ) : (
             <div className="ws-preview__empty">暂无入驻内容</div>
           )}
@@ -655,12 +679,13 @@ export function SceneSpace({
       {context === 'file-preview' && (
         <div className="ws-scene-space__body">
           {previewItem?.payload?.deliverable_file ? (
-            <DeliverableFilePreview file={previewItem.payload.deliverable_file} />
+            <DeliverableFilePreview file={previewItem.payload.deliverable_file} workspaceId={workspaceId} />
           ) : previewItem?.payload?.artifact_id ? (
             <ArtifactPreview
               artifactId={previewItem.payload.artifact_id}
               title={previewItem.payload.title}
               type={previewItem.payload.type}
+              workspaceId={workspaceId}
             />
           ) : (
             <div className="ws-preview">
@@ -681,6 +706,7 @@ export function SceneSpace({
               artifactId={previewItem.payload.artifact_id}
               title={previewItem.payload.title}
               type={previewItem.payload.type}
+              workspaceId={workspaceId}
             />
           ) : (
             <div className="ws-preview">
@@ -698,6 +724,7 @@ export function SceneSpace({
             <DeliveryPreview
               deliveryId={previewItem.payload.delivery_id}
               title={previewItem.payload.title}
+              workspaceId={workspaceId}
             />
           ) : (
             <div className="ws-preview">

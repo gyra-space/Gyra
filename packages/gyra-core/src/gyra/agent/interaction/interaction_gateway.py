@@ -220,15 +220,23 @@ class InteractionGateway:
     async def send_and_wait(
         self,
         request: InteractionRequest,
+        timeout: Optional[int] = None,
     ) -> InteractionResponse:
-        """发送请求并等待响应"""
+        """发送请求并等待响应
+
+        Args:
+            request: 交互请求
+            timeout: 响应等待超时(秒), 缺省时回退到 request.timeout 或默认 300
+        """
         future = asyncio.Future()
         self._pending_requests[request.request_id] = future
         
         await self.send(request)
         
         try:
-            response = await asyncio.wait_for(future, timeout=request.timeout or 300)
+            response = await asyncio.wait_for(
+                future, timeout=timeout or request.timeout or 300
+            )
             self._stats["responses_received"] += 1
             return response
         except asyncio.TimeoutError:

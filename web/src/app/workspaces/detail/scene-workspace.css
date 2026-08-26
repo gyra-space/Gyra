@@ -2329,6 +2329,39 @@
   }
 }
 
+/* === 场景空间最大化:中间 space 占满整个壳区,隐藏左侧任务栏与右侧 Agent,可随时还原 === */
+/* 顶栏最大化/还原按钮:右对齐幽灵图标钮,悬浮点亮品牌色(与头部功能图标语言一致) */
+.ws-scene-space__header .ws-scene-space__maximize {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.ws-scene-space__maximize.ant-btn {
+  color: var(--ws-ink-2);
+}
+.ws-scene-space__maximize.ant-btn:hover {
+  color: var(--ws-accent);
+  background: var(--ws-accent-light);
+}
+
+@media (min-width: 900px) {
+  /* 最大化:仅 space 一列占满,rail / agent / 各悬浮折叠把手全部隐藏 */
+  .ws-scene-shell--space-maximized {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ws-scene-shell--space-maximized .ws-scene-shell__rail,
+  .ws-scene-shell--space-maximized .ws-scene-shell__agent,
+  .ws-scene-shell--space-maximized .ws-scene-shell__rail-toggle,
+  .ws-scene-shell--space-maximized .ws-scene-shell__space-toggle {
+    display: none;
+  }
+}
+/* 小屏:空间面板本身已随 tab 全宽展示,隐藏最大化按钮避免与 tab 切换语义重复 */
+@media (max-width: 899px) {
+  .ws-scene-space__maximize {
+    display: none;
+  }
+}
+
 /* === 大厅通用 Exhibit 宿主 === */
 .ws-exhibit {
   display: flex;
@@ -2825,6 +2858,111 @@
   color: var(--ws-accent);
   transform: translateY(-1px);
   box-shadow: var(--ws-shadow-sm);
+}
+
+/* 简洁模式欢迎态:「应用卡片」启动条 —— 极简图标启动器,点击进入全屏使用态 */
+.ws-simple-apps {
+  margin-top: 30px;
+  width: 100%;
+  max-width: 680px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.ws-simple-apps__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ws-ink-2);
+}
+.ws-simple-apps__label .anticon { font-size: 12px; }
+.ws-simple-apps__row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+.ws-simple-apps__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--ws-border);
+  background: var(--ws-surface);
+  border-radius: 12px;
+  padding: 8px 14px 8px 10px;
+  cursor: pointer;
+  transition: all .18s;
+}
+.ws-simple-apps__item:hover {
+  border-color: var(--ws-accent);
+  box-shadow: var(--ws-shadow-sm);
+  transform: translateY(-1px);
+}
+.ws-simple-apps__icon {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--ws-accent-light, rgba(var(--ws-accent-rgb), .1));
+  font-size: 16px;
+}
+.ws-simple-apps__name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ws-ink);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 简洁模式应用使用态:全屏常驻子应用(不创建会话),底部轻提示返回欢迎态 */
+.ws-simple-app {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  background: var(--ws-surface-2);
+}
+.ws-simple-app__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ws-simple-app__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--ws-border);
+  background: var(--ws-surface);
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ws-ink);
+  cursor: pointer;
+  transition: all .18s;
+}
+.ws-simple-app__back:hover {
+  border-color: var(--ws-accent);
+  color: var(--ws-accent);
+}
+.ws-simple-app__hint {
+  font-size: 11.5px;
+  color: var(--ws-ink-3);
+}
+/* 全屏子应用页填满可用空间并允许滚动 */
+.ws-simple-app .ws-app-card-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 /* ---- 简洁模式:运行态(双栏,输入条在左侧步骤流卡片底部) ---- */
@@ -3477,11 +3615,26 @@
 .ws-capsule-think__label {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  color: var(--ws-ink-3);
+  font-style: normal;
+}
+.ws-capsule-think__name {
+  flex-shrink: 0;
+  font-style: normal;
+  color: var(--ws-ink-3);
+}
+.ws-capsule-think__preview {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--ws-ink-3);
-  font-style: normal;
+  color: var(--ws-ink-2);
+  opacity: 0.72;
 }
 .ws-capsule-think__icon {
   flex-shrink: 0;
@@ -3501,6 +3654,74 @@
   max-height: 220px;
   overflow-y: auto;
 }
+
+/* 上下文注入(参考图2):用户消息后、Agent 回复前,展示默认注入的协议文件(skill / agents.md 等) */
+.ws-context-inject {
+  margin: 0 0 8px;
+}
+.ws-context-inject__head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  font-family: inherit;
+  color: var(--ws-ink-3);
+  border-radius: 6px;
+}
+.ws-context-inject__head:hover { background: var(--ws-bg); }
+.ws-context-inject__icon {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--ws-ink-2);
+}
+.ws-context-inject__label {
+  flex-shrink: 0;
+  font-weight: 500;
+  color: var(--ws-ink-2);
+  white-space: nowrap;
+}
+.ws-context-inject__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ws-ink-3);
+  opacity: 0.8;
+}
+.ws-context-inject__count {
+  flex-shrink: 0;
+  min-width: 16px;
+  text-align: center;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--ws-bg);
+  font-size: 10.5px;
+  font-family: var(--ws-mono);
+  color: var(--ws-ink-3);
+}
+.ws-context-inject__items {
+  margin: 2px 0 4px;
+  padding: 2px 0 2px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ws-context-inject__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ws-ink-2);
+}
+.ws-context-inject__item-icon { flex-shrink: 0; font-size: 12px; color: var(--ws-ink-3); }
+.ws-context-inject__item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── StepFlow:简洁模式执行过程顺序流 ─────────────────────────────── */
 /* 轮次头部:Agent logo + 名称(一轮回复一个,阶段文本不再各自带头像) */

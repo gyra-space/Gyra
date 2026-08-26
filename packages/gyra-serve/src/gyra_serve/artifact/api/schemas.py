@@ -9,6 +9,8 @@ class ArtifactRequest(BaseModel):
     id: Optional[int] = None
     task_id: int
     workspace_id: int
+    # 大厅会话级交付(task_id=0)的归属会话 id,用于不同会话之间彻底隔离
+    conv_id: Optional[str] = None
     type: str = Field(..., description="report/analysis/dataset")
     title: str
     content_ref: Optional[str] = None
@@ -23,6 +25,7 @@ class ArtifactResponse(BaseModel):
     id: int
     task_id: int
     workspace_id: int
+    conv_id: Optional[str] = None
     type: str
     title: str
     content_ref: Optional[str] = None
@@ -41,6 +44,7 @@ class ArtifactResponse(BaseModel):
 class ArtifactListFilter(BaseModel):
     workspace_id: int
     task_id: Optional[int] = None
+    conv_id: Optional[str] = None
     type: Optional[str] = None
     limit: int = 100
 

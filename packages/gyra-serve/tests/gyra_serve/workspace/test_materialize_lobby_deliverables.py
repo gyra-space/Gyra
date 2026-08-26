@@ -153,6 +153,59 @@ def test_list_by_filter_isolates_lobby_session_from_playbook_task(artifact_servi
     assert [x.title for x in task42] == ["task42.txt"]  # 任务详情不含大厅会话文件
 
 
+def test_list_by_filter_isolates_lobby_conversations_by_conv_id(artifact_service):
+    """两个独立大厅会话(task_id=0 相同)在 listArtifacts 上彻底隔离:
+    会话级交付物写入各自 conv_id,按 conv_id 精确过滤,互不串扰。
+    这是「a 会话的交付文件展示在 b 会话」问题的修复验证。"""
+    from gyra_serve.artifact.api.schemas import ArtifactRequest
+    from gyra_serve.workspace.agent_tools.materialize_deliverables import (
+        LOBBY_ARTIFACT_TASK_ID,
+    )
+
+    # conv-a 的交付文件
+    artifact_service.create(ArtifactRequest(
+        task_id=LOBBY_ARTIFACT_TASK_ID, workspace_id=7, conv_id="conv-a",
+        type="file", title="a_report.pdf",
+        content_ref="https://x/a_report.pdf",
+        provenance={"source": "deliverable_file", "conv_id": "conv-a", "file_id": "fa1"},
+    ))
+    # conv-b 的交付文件(与 conv-a 同属 task_id=0)
+    artifact_service.create(ArtifactRequest(
+        task_id=LOBBY_ARTIFACT_TASK_ID, workspace_id=7, conv_id="conv-b",
+        type="file", title="b_notes.xlsx",
+        content_ref="https://x/b_notes.xlsx",
+        provenance={"source": "deliverable_file", "conv_id": "conv-b", "file_id": "fb1"},
+    ))
+    # 未落 conv_id 的旧数据(历史遗留/奇葩),仅按 task_id 查会露出,按 conv_id 查则隔离
+    artifact_service.create(ArtifactRequest(
+        task_id=LOBBY_ARTIFACT_TASK_ID, workspace_id=7, conv_id=None,
+        type="file", title="legacy.txt",
+        content_ref="https://x/legacy.txt",
+    ))
+
+    conv_a = artifact_service.list_artifacts(
+        ArtifactListFilter(
+            workspace_id=7, task_id=LOBBY_ARTIFACT_TASK_ID,
+            conv_id="conv-a", limit=100,
+        )
+    )
+    assert [x.title for x in conv_a] == ["a_report.pdf"]  # 只返回 conv-a,不带 b/legacy
+
+    conv_b = artifact_service.list_artifacts(
+        ArtifactListFilter(
+            workspace_id=7, task_id=LOBBY_ARTIFACT_TASK_ID,
+            conv_id="conv-b", limit=100,
+        )
+    )
+    assert [x.title for x in conv_b] == ["b_notes.xlsx"]  # 只返回 conv-b
+
+    # 兜底:不带 conv_id 的会话级查询仍能看到该桶全部(兼容旧前端/历史数据迁移期间)
+    all_lobby = artifact_service.list_artifacts(
+        ArtifactListFilter(workspace_id=7, task_id=LOBBY_ARTIFACT_TASK_ID, limit=100)
+    )
+    assert len(all_lobby) == 3
+
+
 def test_aggregation_chat_finally_materializes_lobby_only():
     """收尾仅在 workspace + task_id 空(大厅)时调用物化,任务模式跳过。"""
     src = (

@@ -189,6 +189,23 @@ export const proposeEcpObject = (data: {
     data,
   );
 
+export interface EcpSqlAddResult {
+  workspace_id: string;
+  added: number;
+  confirmed_ids: string[];
+  duplicate_existing: string[];
+  errors: string[];
+}
+
+/** 给 SQL 直接添加语义(添加即确认)。 */
+export const addEcpObjectFromSql = (data: {
+  sql: string;
+  description?: string;
+  workspace_id?: string;
+  user_id: string;
+  confirm?: boolean;
+}) => POST<typeof data, EcpSqlAddResult>(`${API_PREFIX}/objects/manual`, data);
+
 export const getEcpCatalog = (params?: { workspace_id?: string; keyword?: string }) =>
   GET<typeof params, EcpCatalogEntry[]>(`${API_PREFIX}/catalog`, params);
 

@@ -21,6 +21,96 @@
   color: #1f2328;
 }
 
+/* 区块头部右侧操作: 导入 + 刷新 */
+.ws-lobby__section-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 运行结果/交付文件预览里的 App Card 一键导入条 */
+.ws-app-card__import-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  border: 1px dashed #adc6ff;
+  border-radius: 10px;
+  background: #f0f5ff;
+}
+.ws-app-card__import-bar-hint {
+  font-size: 12px;
+  color: #0069fe;
+}
+
+/* 空态(无卡片时仍展示导入入口) */
+.ws-app-card__empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed #d0d5dd;
+  border-radius: 12px;
+  background: #fafbfc;
+  color: #8c8c8c;
+  font-size: 13px;
+}
+.ws-app-card__empty-icon {
+  color: #bfbfbf;
+  font-size: 16px;
+}
+.ws-app-card__empty-text {
+  flex: 1;
+}
+
+/* 启动器内“导入”附加 tile */
+.ws-app-card__tile--add {
+  border-style: dashed;
+  color: #8c8c8c;
+}
+.ws-app-card__tile--add:hover {
+  border-color: #0069fe;
+  color: #0069fe;
+}
+
+/* 导入弹窗 */
+.ws-app-card-import__desc {
+  font-size: 13px;
+  color: #595959;
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+.ws-app-card-import__desc code {
+  background: #f0f5ff;
+  color: #0069fe;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.ws-app-card-import__upload {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.ws-app-card-import__hint {
+  font-size: 12px;
+  color: #8c8c8c;
+}
+.ws-app-card-import__name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.ws-app-card-import__name > span {
+  flex: none;
+  font-size: 13px;
+  color: #595959;
+}
+
 /* 图标启动器: 一排小 tile, 点击打开完整应用页 */
 .ws-app-card__launcher {
   display: grid;

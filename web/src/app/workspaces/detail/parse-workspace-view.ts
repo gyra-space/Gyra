@@ -9,7 +9,7 @@ import type {
   WorkspaceView,
 } from './agent-workspace-types';
 
-const VALID_TYPES = ['tool_call', 'thinking', 'artifact', 'delivery', 'user', 'task_created', 'answer'];
+const VALID_TYPES = ['tool_call', 'thinking', 'artifact', 'delivery', 'user', 'task_created', 'answer', 'skill_loaded'];
 const VALID_STATUS = ['running', 'done', 'failed'];
 const VALID_PANEL_VIEWS = ['execution', 'deliverable', 'summary', 'task_files'];
 const VALID_SUBAGENT_STATUS = ['pending', 'running', 'done', 'failed', 'awaiting_authorization'];
@@ -108,6 +108,7 @@ function normalizeStep(raw: unknown): WorkspaceExecutionStep | null {
     vis: r.vis ?? null,
     narration: typeof r.narration === 'string' ? r.narration : null,
     exhibit: normalizeExhibit(r.exhibit),
+    skill_xml: typeof r.skill_xml === 'string' ? r.skill_xml : null,
     task_id: typeof r.task_id === 'number' ? r.task_id : undefined,
     task_title: typeof r.task_title === 'string' ? r.task_title : undefined,
     task_status: typeof r.task_status === 'string' ? r.task_status : undefined,

@@ -199,6 +199,101 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         self._refresh_edges(vo, ws)
         return vo
 
+    async def add_from_sql(
+        self,
+        sql: str,
+        workspace_id: Optional[str] = None,
+        description: Optional[str] = None,
+        user_id: str = "user",
+        confirm: bool = True,
+    ) -> dict:
+        """给一条用户写的 SQL 直接添加语义(添加即确认)。
+
+        用户只需提供 SQL,其余(type/id/payload)由已配置的提案 Agent 提炼;提炼结果
+        直接落库为 confirmed,不经待确认收件箱(手动显式添加即认定)。
+
+        走不了 Agent 的场景(未配置 proposal_agent_id)抛 ValueError 提示先去治理配置;
+        Agent 提炼的提案若不可执行契约不满足,不强制确认(避免"已确认但不可执行"),
+        记入 errors(仍留在收件箱供人工编辑确认)。
+        """
+        from .contracts import normalize_payload, validate_payload
+
+        ws = self._ws(workspace_id)
+        cfg = self.get_workspace_config(ws)
+        agent_id = getattr(cfg, "proposal_agent_id", None) if cfg else None
+        if not agent_id:
+            raise ValueError(
+                "工作空间未配置提案 Agent(proposal_agent_id),"
+                "请先在 ECP「治理」中配置提案 Agent 后再「给 SQL 添加语义」"
+            )
+
+        from ..service.proposal_runner import run_sql_proposal
+
+        run = await run_sql_proposal(
+            system_app=self._system_app,
+            app_code=agent_id,
+            workspace_id=ws,
+            sql=sql,
+            description=description,
+        )
+        confirmed_ids: List[str] = []
+        errors: List[str] = list(run.errors or [])
+
+        if run.proposal_ids and confirm:
+            latest = self._object_dao.list_latest(
+                workspace_id=ws, status=STATUS_PROPOSED,
+                page=1, page_size=1000,
+            )
+            proposed_by_id = {it.id: it for it in (latest.items or [])}
+            for pid in run.proposal_ids:
+                vo = proposed_by_id.get(pid)
+                if not vo:
+                    continue
+                try:
+                    # 手动添加即确认:绕过确认人列表(用户显式以这条 SQL 完成添加),
+                    # 但仍过可执行契约校验,不合格对象不混入 confirmed。
+                    normalized = normalize_payload(vo.obj_type, vo.payload or {})
+                    problems = validate_payload(
+                        vo.obj_type, normalized, level="executable"
+                    )
+                    if problems:
+                        errors.append(
+                            f"{pid} 暂不可执行未确认(留在收件箱): "
+                            f"{'; '.join(problems)}"
+                        )
+                        continue
+                    confirmed_vo = self._object_dao.create_confirmed_version(
+                        object_id=pid,
+                        obj_type=vo.obj_type,
+                        payload=normalized,
+                        workspace_id=ws,
+                        user_id=user_id,
+                        evidence=vo.evidence,
+                        source=f"sql_manual:{ws}",
+                    )
+                    confirmed_ids.append(confirmed_vo.id)
+                    self._cache_dao.invalidate_referencing(pid, ws)
+                    self._refresh_edges(confirmed_vo, ws)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"{pid} 确认失败: {e}")
+
+        if confirmed_ids:
+            self._oplog_dao.append(
+                "sql_add_confirm",
+                ws,
+                {"confirmed": confirmed_ids, "by": user_id, "proposed": run.proposal_ids},
+            )
+
+        # 去重/无产出说明:agent 对已存在口径调用 propose_semantic 命中去重时
+        # 不会产生新提案,run.proposal_ids 为空则说明无新增语义。
+        return {
+            "workspace_id": ws,
+            "added": len(confirmed_ids),
+            "confirmed_ids": confirmed_ids,
+            "duplicate_existing": [] if run.proposal_ids else [],
+            "errors": errors,
+        }
+
     # ------------------------------------------------------------------ confirm
     def confirm(
         self,

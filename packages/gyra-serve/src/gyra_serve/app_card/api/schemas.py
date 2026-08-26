@@ -38,6 +38,8 @@ class AppCardUpdateRequest(BaseModel):
     permissions: Optional[List[str]] = None
     created_by: Optional[str] = None
     dry_run: bool = False
+    share_mode: Optional[str] = Field(default=None, description="分享模式: login(登录后分享) / anonymous(匿名公开)")
+    share_token_refresh: bool = Field(default=False, description="分享模式为 anonymous 时, 是否重新生成分享令牌")
 
 
 class AppCardDeleteRequest(BaseModel):
@@ -68,6 +70,9 @@ class AppCardResponse(BaseModel):
     # 卡片级能力(由 service 按当前用户填充): 是否开发者本人 / 当前用户可否维护
     is_owner: bool = Field(default=False, description="当前用户是否为卡片开发者")
     can_manage: bool = Field(default=False, description="当前用户可否维护该卡片(改/删)")
+    # 分享配置(由 service 按当前用户填充): share_token 仅维护者可读
+    share_mode: Optional[str] = Field(default=None, description="分享模式: login(登录后分享) / anonymous(匿名公开)")
+    share_token: Optional[str] = Field(default=None, description="匿名分享令牌(仅维护者可读, 用于拼公开链接)")
     gmt_created: str
     gmt_modified: str
 

@@ -347,6 +347,45 @@ function TaskFilesStrip({
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   Context injection — 「上下文注入」区(参考图2):
+   默认注入的协议文件(skill / agents.md 等 preload 内容)在用户消息后、
+   Agent 回复前展示,点击展开查看每条注入项。
+   ═══════════════════════════════════════════════════════════════ */
+
+function ContextInjectionSection({ steps }: { steps: WorkspaceExecutionStep[] }) {
+  const [open, setOpen] = useState(false);
+  if (!steps.length) return null;
+  const names = steps.map((s) => s.title).filter(Boolean);
+  const display = names.join(' · ');
+  return (
+    <div className="ws-context-inject">
+      <button
+        type="button"
+        className="ws-context-inject__head"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <FileOutlined className="ws-context-inject__icon" />
+        <span className="ws-context-inject__label">上下文注入</span>
+        <span className="ws-context-inject__name">{display}</span>
+        {steps.length > 1 && <span className="ws-context-inject__count">{steps.length}</span>}
+        <span className={`ws-cchev ws-cchev--sm${open ? ' ws-cchev--up' : ''}`} aria-hidden />
+      </button>
+      {open && (
+        <div className="ws-context-inject__items">
+          {steps.map((s) => (
+            <div key={s.id} className="ws-context-inject__item">
+              <FileOutlined className="ws-context-inject__item-icon" />
+              <span className="ws-context-inject__item-name">{s.title}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
    Main component — 按轮次的对话 feed:用户消息 → StepFlow 顺序流(过程,
    按 Todo 分组折叠 / 无 Todo 平铺展开) → 回答/交付文件卡片(结果)。
    结果占据主视觉;交付文件默认展示在 feed 底部,不折叠。
@@ -540,6 +579,13 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
     (f) => !deliverable_files.some((d) => d.file_id === f.file_id),
   );
 
+  // 上下文注入:默认注入的协议文件(skill / agents.md 等 preload 内容)抽离到
+  // 用户消息之后、Agent 回复之前展示(参考图2),不再混入执行步骤流。
+  const injectedSteps = useMemo(
+    () => (view.execution || []).filter((s) => s.type === 'skill_loaded'),
+    [view.execution],
+  );
+
   // planning 状态观测时间线(planning 属于最新一轮);归组按胶囊批次执行,避免跨轮次步骤混入
   const planningTimeline = usePlanningTimeline(view.planning);
   const rounds = useMemo(() => {
@@ -548,8 +594,16 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
     const execution = running
       ? view.execution
       : view.execution.map((s) => (s.status === 'running' ? { ...s, status: 'done' as const } : s));
-    return splitRounds(execution);
+    // 上下文注入步骤已抽离到 feed 顶部(用户消息后/Agent 回复前),步骤流里不再重复渲染
+    return splitRounds(execution.filter((s) => s.type !== 'skill_loaded'));
   }, [view.execution, running]);
+
+  // 上下文注入插到「首个用户消息之后、Agent 回复之前」:取首个带 user 步骤的轮次。
+  // 无用户消息(恢复会话等)时回退到首轮,避免注入区因找不到锚点而缺失。
+  const injectionRoundIdx = useMemo(() => {
+    const idx = rounds.findIndex((r) => r.user);
+    return idx >= 0 ? idx : 0;
+  }, [rounds]);
 
   // 交付文件统一沉底展示:不按轮次内联(追问/多轮场景下按轮次归属会把上一轮交付物
   // 埋在上方,用户在底部结论/任务文件附近看不到)。始终在 feed 底部、任务文件条之前
@@ -580,9 +634,8 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
       )}
       {rounds.map((round, roundIdx) => {
         const isLastRound = roundIdx === rounds.length - 1;
-        // 轮内节点:严格按步骤真实时序(ts 交错)渲染 —— 连续过程步骤攒批成 StepFlow,
-        // 遇到 answer/阶段回复/特殊卡片就 flush 并原地渲染。运行中与完成后走同一套
-        // 顺序,不另做「过程全在前、结论全在后」的重排,避免完成后工具被挤到答案之后。
+        // 轮内节点:连续过程步骤攒批成 StepFlow。文本(旁白/阶段 reply)先于其
+        // 工具步骤展示(answer 先渲染再冲刷前置工具批次),运行中与完成后同一套顺序。
         const nodes: ReactNode[] = [];
         let batch: WorkspaceExecutionStep[] = [];
         let batchKey = '';
@@ -623,11 +676,16 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
             batch.push(step);
             continue;
           }
-          flushBatch();
+          // answer 文本先于其前置工具批次展示(工具调用前的 narration/阶段回复语义),
+          // 其余非胶囊步骤(如任务卡片)仍保持「先冲刷工具批次再原地渲染」的原序。
           if (step.type === 'answer') {
             nodes.push(<AnswerBlock key={step.id} step={step} />);
-          } else if (step.type === 'task_created') {
-            nodes.push(<TaskCreatedCard key={step.id} step={step} onTaskClick={onTaskClick} />);
+            flushBatch();
+          } else {
+            flushBatch();
+            if (step.type === 'task_created') {
+              nodes.push(<TaskCreatedCard key={step.id} step={step} onTaskClick={onTaskClick} />);
+            }
           }
         }
         flushBatch();
@@ -643,6 +701,10 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
                 avatarUrl={userInfo?.avatar_url}
                 name={userInfo?.nick_name}
               />
+            )}
+            {/* 上下文注入:插到用户消息之后、Agent 回复之前(仅首个用户轮次展示) */}
+            {roundIdx === injectionRoundIdx && injectedSteps.length > 0 && (
+              <ContextInjectionSection steps={injectedSteps} />
             )}
             {hasAgentOutput && (
               <div className="ws-round-head">
