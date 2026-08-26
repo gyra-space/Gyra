@@ -17,7 +17,6 @@ import {
   ToolOutlined,
   ApiOutlined,
   RobotOutlined,
-  CloudServerOutlined,
   PlusOutlined,
   ExportOutlined,
   ReloadOutlined,
@@ -26,7 +25,6 @@ import { useRequest } from 'ahooks';
 import { useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import Link from 'next/link';
-import { SpaceModelsTab } from '../settings/space-models-tab';
 import './assets.css';
 
 const TYPE_META: Record<string, { label: string; tagColor: string; color: string; icon: React.ReactNode }> = {
@@ -278,17 +276,7 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
               {s.items.map(renderCard)}
             </div>
           </div>
-        ))
-      )}
-
-      {/* 专属模型:复用设置页的 SpaceModelsTab,完整保留私有 token / 推理参数 / 编辑配置 */}
-      <div className="ws-asset-section">
-        <div className="ws-asset-section__head">
-          <span className="ws-asset-section__icon"><CloudServerOutlined /></span>
-          <span className="ws-asset-section__title">专属模型</span>
-        </div>
-        <SpaceModelsTab workspaceId={workspaceId} workspaceCode={workspaceCode || ''} canManage={canManage} />
-      </div>
+        )))}
 
       <Modal
         open={addOpen}

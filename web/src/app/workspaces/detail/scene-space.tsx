@@ -728,7 +728,7 @@ export function SceneSpace({
       {context === 'app-card' && (
         <div className="ws-scene-space__body ws-scene-space__body--app-card">
           {previewItem?.payload?.card ? (
-            <AppCardPage card={previewItem.payload.card} workspaceId={workspaceId} />
+            <AppCardPage card={previewItem.payload.card} workspaceId={workspaceId} onDeleted={onBack} />
           ) : (
             <div className="ws-preview__empty">暂无应用卡片</div>
           )}

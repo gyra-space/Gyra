@@ -83,6 +83,111 @@
   border-radius: 12px;
 }
 
+/* 应用页固定 header: 应用信息 + 维护入口 */
+.ws-app-card-page__header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #eef0f3;
+  border-radius: 12px;
+  margin-bottom: 12px;
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+}
+.ws-app-card-page__icon {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: #f0f5ff;
+  font-size: 22px;
+}
+.ws-app-card-page__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.ws-app-card-page__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1f2328;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-app-card-page__desc {
+  font-size: 12px;
+  color: #8c8c8c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-app-card-page__roles {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 2px;
+}
+.ws-app-card-page__status {
+  font-size: 12px;
+  color: #389e0d;
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+  border-radius: 6px;
+  padding: 1px 8px;
+  flex: none;
+}
+
+/* 维护抽屉 */
+.ws-app-card-page__field {
+  margin-bottom: 20px;
+}
+.ws-app-card-page__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2328;
+  margin-bottom: 8px;
+}
+.ws-app-card-page__icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.ws-app-card-page__icon-opt {
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  border: 1px solid #eef0f3;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+.ws-app-card-page__icon-opt:hover {
+  border-color: #d0d5dd;
+}
+.ws-app-card-page__icon-opt--active {
+  border-color: #0069fe;
+  background: #f0f5ff;
+}
+.ws-app-card-page__hint {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-top: 6px;
+}
+
 /* iframe 宿主(由 AppCardRenderer 控制高度) */
 .ws-app-card {
   position: relative;

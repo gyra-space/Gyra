@@ -112,7 +112,13 @@ export function AgentWorkspace({
   const spaceDefaultModel = useMemo(() => {
     const list = spaceModels || [];
     if (!list.length) return '';
-    const first = list.find((m: any) => m.is_active !== false) || list[0];
+    // 优先取空间「设为默认」标记的模型(is_default);无标记时沿用原逻辑取第一个启用的模型。
+    const isDefault = (m: any) => !!(m?.config && m.config.is_default);
+    const first =
+      list.find((m: any) => m.is_active !== false && isDefault(m)) ||
+      list.find((m: any) => isDefault(m)) ||
+      list.find((m: any) => m.is_active !== false) ||
+      list[0];
     return first?.config?.model || first?.physical_ref || first?.name || '';
   }, [spaceModels]);
 

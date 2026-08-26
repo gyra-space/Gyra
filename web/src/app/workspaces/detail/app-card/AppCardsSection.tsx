@@ -44,7 +44,7 @@ export function AppCardsSection({ workspaceId, refreshKey, onSelectAppCard }: Ap
             aria-label={card.name}
             title={card.name}
           >
-            <span className="ws-app-card__tile-icon"><AppstoreOutlined /></span>
+            <span className="ws-app-card__tile-icon">{card.icon || '📊'}</span>
             <span className="ws-app-card__tile-main">
               <span className="ws-app-card__tile-name">{card.name}</span>
               <span className="ws-app-card__tile-status">{card.status}</span>

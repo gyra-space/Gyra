@@ -14,11 +14,11 @@
     {
       "name": "upgrade_0.6.0_20260826_to_0.6.0_20260826.sql",
       "from_version": "0.6.0",
-      "from_timestamp": "20260825",
+      "from_timestamp": "20260826",
       "to_version": "0.6.0",
       "to_timestamp": "20260826",
       "seq": 0,
-      "checksum": "55f9d9e8b865ff9b53286bf594bf7efbb4a670f24f60ae09be811b9af6577801",
+      "checksum": "ab246b15de9bc323d00c6de4d7ff697736ae2b9f0b31ae0536ee5f841a5051f0",
       "version": 2
     }
   ]

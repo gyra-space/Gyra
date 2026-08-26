@@ -165,6 +165,10 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
                 entity.config_json = _dump_json(request.config)
             if request.queries is not None:
                 entity.queries_json = _dump_json(request.queries)
+            if request.icon is not None:
+                entity.icon = request.icon
+            if request.permissions is not None:
+                entity.permissions_json = _dump_json(request.permissions)
             entity.current_version = (entity.current_version or 1) + 1
             self._snapshot_version(session, entity, entity.current_version, request.created_by or "agent")
             session.commit()
@@ -178,6 +182,26 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
     def get_by_id(self, card_id: int) -> Optional[AppCardResponse]:
         entity = self.dao.get_one({"id": card_id})
         return self.dao.to_response(entity) if entity else None
+
+    def delete(self, card_id: int, workspace_id: int) -> bool:
+        session = self.dao.get_raw_session()
+        try:
+            entity = (
+                session.query(AppCardEntity)
+                .filter(AppCardEntity.id == card_id,
+                        AppCardEntity.workspace_id == workspace_id)
+                .first()
+            )
+            if not entity:
+                return False
+            session.delete(entity)
+            session.commit()
+            return True
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def list_by_workspace(self, f: AppCardListFilter) -> List[AppCardResponse]:
         return self.dao.list_by_workspace(f)

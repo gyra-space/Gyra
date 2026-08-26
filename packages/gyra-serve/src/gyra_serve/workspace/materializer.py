@@ -460,8 +460,15 @@ def materialize_resources(system_app, workspace_id: int) -> MaterializedResource
         logger.warning(f"materializer list_resources failed: {e}")
         return result
 
+    # llm_model 特殊处理:空间可绑定多个可用模型,但空间级模型覆盖(ContextVar)只承载
+    # 一个「默认模型」。统一物化顺序 = is_default 标记者 > 列表首个(当前默认模型),
+    # 以避免旧实现「遍历中被最后一个覆盖」导致的顺序歧义(oldest-wins)。
+    llm_records: List[Any] = []
     for r in resources:
         if not getattr(r, "is_active", True):
+            continue
+        if getattr(r, "type", None) == "llm_model":
+            llm_records.append(r)
             continue
         rtype = r.type
         handler_name = _MATERIALIZE_DISPATCH.get(rtype)
@@ -489,5 +496,26 @@ def materialize_resources(system_app, workspace_id: int) -> MaterializedResource
         except Exception as e:
             logger.warning(
                 f"materializer fail type={rtype} name={r.name}: {e}"
+            )
+
+    if llm_records:
+        chosen = llm_records[0]
+        for rec in llm_records[1:]:
+            raw = getattr(rec, "config", None)
+            if raw is None:
+                raw = getattr(rec, "config_json", None)
+            if _parse_config(raw).get("is_default"):
+                chosen = rec
+                break
+        raw_config = getattr(chosen, "config", None)
+        if raw_config is None:
+            raw_config = getattr(chosen, "config_json", None)
+        try:
+            _materialize_llm_model(
+                getattr(chosen, "physical_ref", None), _parse_config(raw_config)
+            )
+        except Exception as e:
+            logger.warning(
+                f"materializer fail type=llm_model name={getattr(chosen, 'name', None)}: {e}"
             )
     return result

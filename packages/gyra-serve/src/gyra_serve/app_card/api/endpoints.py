@@ -10,7 +10,7 @@ from gyra_serve.core import Result
 from gyra_serve.permissions import require_space
 
 from .schemas import (
-    AppCardCreateRequest, AppCardInvokeRequest, AppCardListFilter,
+    AppCardCreateRequest, AppCardDeleteRequest, AppCardInvokeRequest, AppCardListFilter,
     AppCardResponse, AppCardUpdateRequest, AppCardValidateResponse,
 )
 from ..config import ServeConfig
@@ -122,6 +122,19 @@ async def validate_app_card(
         return Result.succ(service.validate_queries(request.workspace_id, request.queries or []))
     except Exception as e:
         logger.exception("app_card validate exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/app_cards/delete", response_model=Result,
+             dependencies=[Depends(check_api_key), Depends(require_space("space.task.manage"))])
+async def delete_app_card(
+    request: AppCardDeleteRequest, service: AppCardService = Depends(get_service),
+) -> Result:
+    try:
+        ok = service.delete(request.id, request.workspace_id)
+        return Result.succ({"deleted": ok})
+    except Exception as e:
+        logger.exception("app_card delete exception!")
         return Result.failed(str(e))
 
 

@@ -27,6 +27,8 @@ export interface AppCardItem {
   current_version: number;
   source_task_id?: number | null;
   created_by?: string | null;
+  icon?: string | null;
+  permissions?: string[];
   gmt_created: string;
   gmt_modified: string;
 }
@@ -41,6 +43,8 @@ export interface AppCardCreatePayload {
   queries?: AppCardQuery[];
   source_task_id?: number;
   created_by?: string;
+  icon?: string;
+  permissions?: string[];
   dry_run?: boolean;
 }
 
@@ -73,4 +77,8 @@ export function updateAppCard(payload: Record<string, unknown>) {
     throw new Error('updateAppCard requires workspace_id');
   }
   return POST('/api/v1/serve_app_card_service/app_cards/update', payload);
+}
+
+export function deleteAppCard(cardId: number, workspaceId: number) {
+  return POST('/api/v1/serve_app_card_service/app_cards/delete', { id: cardId, workspace_id: workspaceId });
 }

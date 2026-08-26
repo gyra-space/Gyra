@@ -20,6 +20,8 @@ class AppCardCreateRequest(BaseModel):
     )
     source_task_id: Optional[int] = None
     created_by: Optional[str] = None
+    icon: Optional[str] = None
+    permissions: Optional[List[str]] = Field(default_factory=list, description="可访问角色(如 member/owner/all)")
     dry_run: bool = Field(default=False, description="创建前是否 dry-run 校验所有查询")
 
 
@@ -32,8 +34,15 @@ class AppCardUpdateRequest(BaseModel):
     code: Optional[str] = None
     config: Optional[Dict[str, Any]] = None
     queries: Optional[List[Dict[str, Any]]] = None
+    icon: Optional[str] = None
+    permissions: Optional[List[str]] = None
     created_by: Optional[str] = None
     dry_run: bool = False
+
+
+class AppCardDeleteRequest(BaseModel):
+    id: int
+    workspace_id: int
 
 
 class AppCardListFilter(BaseModel):
@@ -54,6 +63,8 @@ class AppCardResponse(BaseModel):
     current_version: int = 1
     source_task_id: Optional[int] = None
     created_by: Optional[str] = None
+    icon: Optional[str] = None
+    permissions: List[str] = Field(default_factory=list)
     gmt_created: str
     gmt_modified: str
 

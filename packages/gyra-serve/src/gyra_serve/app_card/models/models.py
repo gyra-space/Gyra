@@ -50,6 +50,8 @@ class AppCardEntity(Model):
     current_version = Column(Integer, nullable=False, default=1)
     source_task_id = Column(Integer, nullable=True, index=True)
     created_by = Column(String(128), nullable=True)
+    icon = Column(String(64), nullable=True)
+    permissions_json = Column(Text, nullable=True)
 
     gmt_created = Column(DateTime, name="gmt_create", default=datetime.now)
     gmt_modified = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -84,9 +86,13 @@ class AppCardDao(BaseDao[AppCardEntity, AppCardCreateRequest, AppCardResponse]):
         data.pop("dry_run", None)
         config = data.pop("config", None)
         queries = data.pop("queries", None)
+        icon = data.pop("icon", None)
+        permissions = data.pop("permissions", None)
         entity = AppCardEntity(**data)
         entity.config_json = _dump_json(config)
         entity.queries_json = _dump_json(queries)
+        entity.icon = icon
+        entity.permissions_json = _dump_json(permissions)
         return entity
 
     def to_request(self, entity: AppCardEntity) -> AppCardCreateRequest:
@@ -100,6 +106,8 @@ class AppCardDao(BaseDao[AppCardEntity, AppCardCreateRequest, AppCardResponse]):
             queries=_load_json(entity.queries_json) or [],
             source_task_id=entity.source_task_id,
             created_by=entity.created_by,
+            icon=entity.icon,
+            permissions=_load_json(entity.permissions_json) or [],
         )
 
     def to_response(self, entity: AppCardEntity) -> AppCardResponse:
@@ -116,6 +124,8 @@ class AppCardDao(BaseDao[AppCardEntity, AppCardCreateRequest, AppCardResponse]):
             current_version=entity.current_version,
             source_task_id=entity.source_task_id,
             created_by=entity.created_by,
+            icon=entity.icon,
+            permissions=_load_json(entity.permissions_json) or [],
             gmt_created=entity.gmt_created.isoformat() if entity.gmt_created else "",
             gmt_modified=entity.gmt_modified.isoformat() if entity.gmt_modified else "",
         )

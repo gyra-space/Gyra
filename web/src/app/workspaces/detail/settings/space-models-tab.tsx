@@ -13,7 +13,7 @@ import {
   App, Alert, AutoComplete, Button, Collapse, Form, Input, InputNumber, Modal, Select, Spin, Switch, Tag,
 } from 'antd';
 import {
-  CloudServerOutlined, PlusOutlined, EditOutlined,
+  CloudServerOutlined, PlusOutlined, EditOutlined, StarFilled, StarOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -54,6 +54,18 @@ function getCfg(resource: any, key: string, fallback = '') {
   return resource?.config?.[key] ?? fallback;
 }
 
+/** 是否为空间默认模型(由 config.is_default 标记)。 */
+function isDefaultModel(resource: any) {
+  return !!getCfg(resource, 'is_default', false);
+}
+
+/** 列表中默认模型的展示名(无默认标记则返回空字符串)。 */
+function defaultResourceName(list: any[]) {
+  const d = list.find(isDefaultModel);
+  if (!d) return '';
+  return d?.config?.model || d?.physical_ref || d?.name || '';
+}
+
 /**
  * 空间模型:为空间绑定可用模型并配置专属 token(api_key_ref 引用加密 secrets)。
  * 未配置任何空间模型时,空间任务/对话回退到全局默认模型(agent 配置)。
@@ -88,6 +100,18 @@ export function SpaceModelsTab({
     collapsedInit.current = true;
     if (!resources?.length) setActiveKeys([]);
   }, [loading, resources]);
+
+  // 展示顺序:默认模型置顶,其余沿用后端返回顺序(gmt_modified 倒序)。
+  const sortedResources = useMemo(() => {
+    const list = [...(resources || [])];
+    list.sort((a, b) => {
+      const ad = isDefaultModel(a);
+      const bd = isDefaultModel(b);
+      if (ad !== bd) return ad ? -1 : 1;
+      return 0;
+    });
+    return list;
+  }, [resources]);
 
   const { data: availableData } = useRequest(async () => {
     if (!workspaceId) return [];
@@ -177,6 +201,8 @@ export function SpaceModelsTab({
       const opt = modelOptions.find((o) => o.value === model);
       if (opt?.is_multimodal) config.is_multimodal = true;
       if (opt?.capabilities?.length) config.capabilities = opt.capabilities;
+      // 编辑时保留默认标记,避免改参数后默认丢失
+      if (editing && isDefaultModel(editing)) config.is_default = true;
 
       let err: any = null;
       if (editing) {
@@ -252,6 +278,35 @@ export function SpaceModelsTab({
     });
   };
 
+  // 设为目标模型为空间默认:清掉其余模型的 is_default 标记,只保留目标一个。
+  const handleSetDefault = async (r: any, setDefault: boolean) => {
+    if (!setDefault) return; // 当前仅支持"设为默认",取消默认通过把默认交给别的模型实现
+    const list = resources || [];
+    if (isDefaultModel(r)) return;
+    let fail = false;
+    for (const item of list) {
+      const target = item.id === r.id;
+      const current = isDefaultModel(item);
+      if (target === current) continue; // 已符合预期,跳过
+      const [err] = await apiInterceptors(updateResource({
+        resource_id: item.id,
+        resource: {
+          workspace_id: workspaceId,
+          type: item.type,
+          name: item.name,
+          category: item.category,
+          physical_ref: item.physical_ref,
+          config: { ...(item.config || {}), is_default: target },
+          access_mode: item.access_mode,
+          is_active: item.is_active,
+        },
+      }));
+      if (err) { fail = true; message.error(`设置默认失败:${err.message}`); break; }
+    }
+    if (!fail) message.success('已设为默认模型');
+    refresh();
+  };
+
   const renderCard = (r: any) => {
     const provider = getCfg(r, 'provider');
     const model = getCfg(r, 'model') || r.physical_ref || r.name;
@@ -280,6 +335,7 @@ export function SpaceModelsTab({
 
         <div className="wsm-card__tags">
           <Tag color="cyan">模型</Tag>
+          {isDefaultModel(r) ? <Tag color="gold" icon={<StarFilled />}>默认</Tag> : null}
           {getCfg(r, 'is_multimodal') ? <Tag color="purple">多模态</Tag> : <Tag color="blue">对话</Tag>}
           {apiKeyRef ? <Tag color="green">专属 token</Tag> : <Tag color="default">沿用全局凭据</Tag>}
         </div>
@@ -328,6 +384,9 @@ export function SpaceModelsTab({
           </span>
           {canManage && (
             <span className="wsm-card__ops">
+              {!isDefaultModel(r) && (
+                <Button size="small" type="text" icon={<StarOutlined />} onClick={() => handleSetDefault(r, true)}>设为默认</Button>
+              )}
               <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
               <Button size="small" type="text" danger onClick={() => handleRemove(r)}>移除</Button>
             </span>
@@ -377,7 +436,7 @@ export function SpaceModelsTab({
         </div>
       ) : (
         <div className="wsm-grid">
-          {resources.map(renderCard)}
+          {sortedResources.map(renderCard)}
         </div>
       )}
 
@@ -408,7 +467,12 @@ export function SpaceModelsTab({
                   {loading ? (
                     <Spin size="small" />
                   ) : resources?.length ? (
-                    <Tag color="blue">已配置 {resources.length} 个模型</Tag>
+                    <>
+                      <Tag color="blue">已配置 {resources.length} 个模型</Tag>
+                      <Tag color="gold" icon={<StarFilled />}>
+                        默认：{defaultResourceName(sortedResources) || '—'}
+                      </Tag>
+                    </>
                   ) : (
                     <Tag>未配置空间模型</Tag>
                   )}

@@ -165,6 +165,66 @@ def test_materialize_llm_model_sets_space_config_and_injects_agentinfo():
     ModelConfigCache.set_space_model_config(None)  # 清理,避免影响其他用例
 
 
+def test_materialize_llm_model_prefers_is_default():
+    """多个 llm_model 时,空间级模型覆盖取 config.is_default 标记的那个。"""
+    from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+    ModelConfigCache.set_space_model_config(None)
+    system_app = MagicMock()
+    first = MagicMock(
+        type="llm_model", name="model_a", physical_ref="model-a",
+        config={"provider": "openai", "model": "model-a", "is_default": False},
+        is_active=True,
+    )
+    second = MagicMock(
+        type="llm_model", name="model_b", physical_ref="model-b",
+        config={"provider": "openai", "model": "model-b", "is_default": True},
+        is_active=True,
+    )
+    with patch(
+        "gyra_serve.workspace.materializer.WorkspaceService"
+    ) as MockWsService:
+        # 返回顺序 model_a 在前,但默认标记在 model_b,物化应选中 model_b
+        MockWsService.return_value.list_resources.return_value = [first, second]
+        result = materialize_resources(system_app, workspace_id=1)
+    assert result.dynamic_resources == []
+    cfg = ModelConfigCache.get_config("model-b")
+    assert cfg is not None
+    assert cfg["model"] == "model-b"
+    assert cfg["provider"] == "openai"
+
+    ModelConfigCache.set_space_model_config(None)  # 清理
+
+
+def test_materialize_llm_model_falls_back_to_first_when_no_default():
+    """无 is_default 标记时,取列表首个启用的模型作为空间模型覆盖。"""
+    from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+    ModelConfigCache.set_space_model_config(None)
+    system_app = MagicMock()
+    first = MagicMock(
+        type="llm_model", name="model_a", physical_ref="model-a",
+        config={"provider": "openai", "model": "model-a"},
+        is_active=True,
+    )
+    second = MagicMock(
+        type="llm_model", name="model_b", physical_ref="model-b",
+        config={"provider": "openai", "model": "model-b"},
+        is_active=True,
+    )
+    with patch(
+        "gyra_serve.workspace.materializer.WorkspaceService"
+    ) as MockWsService:
+        MockWsService.return_value.list_resources.return_value = [first, second]
+        result = materialize_resources(system_app, workspace_id=1)
+    assert result.dynamic_resources == []
+    cfg = ModelConfigCache.get_config("model-a")
+    assert cfg is not None
+    assert cfg["model"] == "model-a"
+
+    ModelConfigCache.set_space_model_config(None)  # 清理
+
+
 def test_materialize_llm_model_empty_model_returns_none():
     """llm_model 无 model/physical_ref 时不注入、不设置空间配置。"""
     from gyra.agent.util.llm.model_config_cache import ModelConfigCache
