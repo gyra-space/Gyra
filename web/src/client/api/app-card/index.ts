@@ -29,6 +29,8 @@ export interface AppCardItem {
   created_by?: string | null;
   icon?: string | null;
   permissions?: string[];
+  is_owner?: boolean;
+  can_manage?: boolean;
   gmt_created: string;
   gmt_modified: string;
 }

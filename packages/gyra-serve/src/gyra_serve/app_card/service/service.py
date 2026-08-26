@@ -8,11 +8,13 @@ semantic layer (metric) and the workspace data sources (sql), keeping the same
 「生成期 dry-run → 运行期冻结取数」契约 as the agent itself.
 """
 
+import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from gyra.component import SystemApp
 from gyra_serve.core import BaseService
+from gyra_serve.utils.auth import UserRequest
 
 from ..api.schemas import (
     AppCardCreateRequest, AppCardInvokeRequest, AppCardListFilter,
@@ -129,6 +131,75 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
     def config(self):
         return self._serve_config
 
+    # ---------------------------------------------------- 卡片级权限判定
+    @staticmethod
+    def _user_identifiers(user: UserRequest) -> List[str]:
+        """当前用户的标识字符串集合(用于与 created_by 比对开发者)。"""
+        ids = []
+        for k in ("user_id", "user_no", "user_name"):
+            v = getattr(user, k, None)
+            if v is not None:
+                ids.append(str(v))
+        return list(dict.fromkeys(ids))
+
+    @staticmethod
+    def _is_privileged(user: UserRequest) -> bool:
+        """平台/空间管理员(可查看并维护空间内所有应用卡片)。"""
+        if getattr(user, "role", None) == "admin":
+            return True
+        return any(r in ("admin", "superadmin") for r in (user.roles or []))
+
+    @staticmethod
+    def _card_permissions(card) -> List[str]:
+        """统一读取卡片权限列表(兼容 entity.permissions_json 与 response.permissions)。"""
+        perms = getattr(card, "permissions", None)
+        if perms is None:
+            raw = getattr(card, "permissions_json", None)
+            if isinstance(raw, str):
+                try:
+                    perms = json.loads(raw) or []
+                except Exception:
+                    perms = []
+            else:
+                perms = raw or []
+        return list(perms or [])
+
+    def is_developer(self, user: UserRequest, card) -> bool:
+        created_by = getattr(card, "created_by", None)
+        if not created_by:
+            return False
+        return created_by in self._user_identifiers(user)
+
+    def can_view(self, user: UserRequest, card) -> bool:
+        """判断当前用户可否查看该卡片。
+
+        - 管理员: 全部可见
+        - 开发者本人: 始终可见
+        - 显式授权(permissions 非空): all→所有人; member→空间成员(能进空间即可);
+          无授权(默认)→仅开发者
+        """
+        if self._is_privileged(user) or self.is_developer(user, card):
+            return True
+        perms = self._card_permissions(card)
+        if not perms:
+            return False
+        return "all" in perms or "member" in perms
+
+    def can_manage(self, user: UserRequest, card) -> bool:
+        """判断当前用户可否维护(改/删)该卡片。
+
+        管理员或开发者本人可维护; 显式授权 owner/admin 的卡片其可见用户同样可维护。
+        """
+        if self._is_privileged(user) or self.is_developer(user, card):
+            return True
+        perms = self._card_permissions(card)
+        return "owner" in perms or "admin" in perms
+
+    def _decorate_perms(self, resp: AppCardResponse, user: UserRequest) -> AppCardResponse:
+        resp.is_owner = self.is_developer(user, resp)
+        resp.can_manage = self.can_manage(user, resp)
+        return resp
+
     # ------------------------------------------------------------------ CRUD
     def create(self, request: AppCardCreateRequest) -> AppCardResponse:
         validate_result = self.validate_queries(request.workspace_id, request.queries) if request.dry_run else None
@@ -147,12 +218,14 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
             session.close()
         return self.dao.to_response(entity)
 
-    def update(self, request: AppCardUpdateRequest) -> Optional[AppCardResponse]:
+    def update(self, request: AppCardUpdateRequest, user: UserRequest) -> Optional[AppCardResponse]:
         session = self.dao.get_raw_session()
         try:
             entity = session.query(AppCardEntity).filter(AppCardEntity.id == request.id).first()
             if not entity:
                 return None
+            if not self.can_manage(user, entity):
+                raise PermissionError("无权维护该应用卡片(仅开发者或管理员/被授权者)")
             if request.name is not None:
                 entity.name = request.name
             if request.description is not None:
@@ -177,13 +250,17 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
             raise
         finally:
             session.close()
-        return self.dao.to_response(entity)
+        return self._decorate_perms(self.dao.to_response(entity), user)
 
-    def get_by_id(self, card_id: int) -> Optional[AppCardResponse]:
+    def get_by_id(self, card_id: int, user: UserRequest) -> Optional[AppCardResponse]:
         entity = self.dao.get_one({"id": card_id})
-        return self.dao.to_response(entity) if entity else None
+        if not entity:
+            return None
+        if not self.can_view(user, entity):
+            return None
+        return self._decorate_perms(self.dao.to_response(entity), user)
 
-    def delete(self, card_id: int, workspace_id: int) -> bool:
+    def delete(self, card_id: int, workspace_id: int, user: UserRequest) -> bool:
         session = self.dao.get_raw_session()
         try:
             entity = (
@@ -194,6 +271,8 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
             )
             if not entity:
                 return False
+            if not self.can_manage(user, entity):
+                raise PermissionError("无权删除该应用卡片(仅开发者或管理员/被授权者)")
             session.delete(entity)
             session.commit()
             return True
@@ -203,8 +282,12 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
         finally:
             session.close()
 
-    def list_by_workspace(self, f: AppCardListFilter) -> List[AppCardResponse]:
-        return self.dao.list_by_workspace(f)
+    def list_by_workspace(self, f: AppCardListFilter, user: UserRequest) -> List[AppCardResponse]:
+        visible = []
+        for resp in self.dao.list_by_workspace(f):
+            if self.can_view(user, resp):
+                visible.append(self._decorate_perms(resp, user))
+        return visible
 
     def _snapshot_version(self, session, entity: AppCardEntity, version: int, created_by: str) -> None:
         session.add(AppCardVersionEntity(
@@ -214,12 +297,14 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
         ))
 
     # ---------------------------------------------------------- invoke 协议
-    def invoke(self, card_id: int, workspace_id: int, req: AppCardInvokeRequest) -> Dict[str, Any]:
+    def invoke(self, card_id: int, workspace_id: int, req: AppCardInvokeRequest, user: UserRequest) -> Dict[str, Any]:
         entity = self.dao.get_one({"id": card_id})
         if not entity:
             return {"trust": "none", "error": f"app_card {card_id} not found"}
         if entity.workspace_id != workspace_id:
             return {"trust": "none", "error": "workspace mismatch"}
+        if not self.can_view(user, entity):
+            return {"trust": "none", "error": "无权访问该应用卡片"}
         # get_one 返回 AppCardResponse(已解析 queries), 直接用其 queries 列表
         queries = list(entity.queries or [])
         dispatch: Dict[str, Callable] = {

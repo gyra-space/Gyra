@@ -13,7 +13,7 @@
  * - 交付文件 / 回答由 feed 主视觉渲染,不在本组件职责内。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CodeOutlined,
   CompassOutlined,
@@ -113,16 +113,35 @@ function buildDurations(phases: ExecutionPhase[]): Map<string, number> {
 
 /** thinking 行:简单 icon 标记,灰字弱化,可展开,不计步骤数 */
 function ThinkingRow({ step }: { step: WorkspaceExecutionStep }) {
-  // 运行中(流式期间)默认展开,让思考过程即时可见;结束后保持用户交互状态,
-  // 已完成的历史思考行仍折叠,避免长会话被思考文本撑满。
+  // 运行中(流式期间)默认展开,让思考过程即时可见;输出结束(running→done/failed)
+  // 时自动折叠,避免长会话被思考文本撑满。历史已完成行挂载即折叠。
+  // 若用户在流式期间手动折叠/展开过该行,则以用户交互状态为准,不再自动折叠。
   const [open, setOpen] = useState(step.status === 'running');
+  const userToggledRef = useRef(false);
+  const prevStatusRef = useRef(step.status);
   const text = (step.output || '').trim();
+
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = step.status;
+    // 仅「运行中 → 结束」这一转变触发自动折叠;用户手动操作过则保持其选择
+    if (prev === 'running' && step.status !== 'running' && !userToggledRef.current) {
+      setOpen(false);
+    }
+  }, [step.status]);
+
+  const handleToggle = () => {
+    if (!text) return;
+    userToggledRef.current = true;
+    setOpen((v) => !v);
+  };
+
   return (
     <div className="ws-capsule-think">
       <button
         type="button"
         className="ws-capsule-think__head"
-        onClick={text ? () => setOpen((v) => !v) : undefined}
+        onClick={handleToggle}
         aria-expanded={open}
       >
         <img src="/icons/thinking.svg" className="ws-capsule-think__icon" alt="" />

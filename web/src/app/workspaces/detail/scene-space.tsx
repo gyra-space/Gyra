@@ -557,7 +557,7 @@ export function SceneSpace({
   const previewSubConvId = previewItem?.sub_conv_id || previewItem?.payload?.sub_conv_id;
 
   const { data: artifactsRes } = useRequest(
-    async () => (taskId ? apiInterceptors(listArtifacts({ task_id: taskId })) : null),
+    async () => (taskId ? apiInterceptors(listArtifacts({ workspace_id: workspaceId, task_id: taskId })) : null),
     { refreshDeps: [taskId] }
   );
   const artifacts = artifactsRes?.[1] || [];

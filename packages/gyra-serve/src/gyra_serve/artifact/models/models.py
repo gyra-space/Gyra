@@ -125,7 +125,7 @@ class ArtifactDao(BaseDao[ArtifactEntity, ArtifactRequest, ArtifactResponse]):
             query = session.query(ArtifactEntity).filter(
                 ArtifactEntity.workspace_id == f.workspace_id
             )
-            if f.task_id:
+            if f.task_id is not None:
                 query = query.filter(ArtifactEntity.task_id == f.task_id)
             if f.type:
                 query = query.filter(ArtifactEntity.type == f.type)

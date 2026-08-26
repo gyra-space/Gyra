@@ -89,9 +89,12 @@ export function AppCardPage({
           </span>
         </div>
         <span className="ws-app-card-page__status">{card.status}</span>
-        <Button icon={<SettingOutlined />} size="small" onClick={openMaintain}>
-          维护
-        </Button>
+        <span className="ws-app-card-page__owner-hint">{card.is_owner ? '我创建的' : ''}</span>
+        {card.can_manage && (
+          <Button icon={<SettingOutlined />} size="small" onClick={openMaintain}>
+            维护
+          </Button>
+        )}
       </div>
 
       <AppCardRenderer appCard={card} workspaceId={workspaceId} height={560} />
@@ -144,10 +147,12 @@ export function AppCardPage({
             style={{ width: '100%' }}
             value={permissions}
             options={PERMISSION_OPTIONS}
-            placeholder="选择可访问该应用的角色"
+            placeholder="选择可访问该应用的角色（不选则仅开发者可见）"
             onChange={(v) => setPermissions(v)}
           />
-          <div className="ws-app-card-page__hint">决定哪些角色能看到并用这个应用（运行期按此校验）。</div>
+          <div className="ws-app-card-page__hint">
+            默认为空 = 仅开发者可见。勾选后对应角色可见；owner/admin 同时可维护该应用。
+          </div>
         </div>
       </Drawer>
     </div>

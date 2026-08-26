@@ -146,6 +146,15 @@
   padding: 1px 8px;
   flex: none;
 }
+.ws-app-card-page__owner-hint {
+  font-size: 12px;
+  color: #722ed1;
+  background: #f9f0ff;
+  border: 1px solid #d3adf7;
+  border-radius: 6px;
+  padding: 1px 8px;
+  flex: none;
+}
 
 /* 维护抽屉 */
 .ws-app-card-page__field {

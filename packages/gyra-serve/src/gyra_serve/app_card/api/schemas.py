@@ -65,6 +65,9 @@ class AppCardResponse(BaseModel):
     created_by: Optional[str] = None
     icon: Optional[str] = None
     permissions: List[str] = Field(default_factory=list)
+    # 卡片级能力(由 service 按当前用户填充): 是否开发者本人 / 当前用户可否维护
+    is_owner: bool = Field(default=False, description="当前用户是否为卡片开发者")
+    can_manage: bool = Field(default=False, description="当前用户可否维护该卡片(改/删)")
     gmt_created: str
     gmt_modified: str
 

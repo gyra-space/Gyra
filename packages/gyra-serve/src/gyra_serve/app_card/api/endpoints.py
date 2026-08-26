@@ -8,6 +8,7 @@ from fastapi.security.http import HTTPAuthorizationCredentials, HTTPBearer
 from gyra.component import SystemApp
 from gyra_serve.core import Result
 from gyra_serve.permissions import require_space
+from gyra_serve.utils.auth import UserRequest, get_user_from_headers
 
 from .schemas import (
     AppCardCreateRequest, AppCardDeleteRequest, AppCardInvokeRequest, AppCardListFilter,
@@ -46,8 +47,12 @@ async def check_api_key(
              dependencies=[Depends(check_api_key), Depends(require_space("space.task.manage"))])
 async def create_app_card(
     request: AppCardCreateRequest, service: AppCardService = Depends(get_service),
+    user: UserRequest = Depends(get_user_from_headers),
 ) -> Result[AppCardResponse]:
     try:
+        identity = user.user_no or user.user_id or request.created_by
+        if not request.created_by and identity:
+            request.created_by = str(identity)
         return Result.succ(service.create(request))
     except Exception as e:
         logger.exception("app_card create exception!")
@@ -58,9 +63,10 @@ async def create_app_card(
              dependencies=[Depends(check_api_key), Depends(require_space("space.task.view"))])
 async def list_app_cards(
     f: AppCardListFilter, service: AppCardService = Depends(get_service),
+    user: UserRequest = Depends(get_user_from_headers),
 ) -> Result:
     try:
-        return Result.succ(service.list_by_workspace(f))
+        return Result.succ(service.list_by_workspace(f, user))
     except Exception as e:
         logger.exception("app_card list exception!")
         return Result.failed(str(e))
@@ -72,9 +78,10 @@ async def get_app_card(
     card_id: int = Query(...),
     workspace_id: int = Query(...),
     service: AppCardService = Depends(get_service),
+    user: UserRequest = Depends(get_user_from_headers),
 ) -> Result[AppCardResponse]:
     try:
-        result = service.get_by_id(card_id)
+        result = service.get_by_id(card_id, user)
         if not result:
             return Result.failed(f"app_card {card_id} not found")
         return Result.succ(result)
@@ -84,15 +91,18 @@ async def get_app_card(
 
 
 @router.post("/app_cards/update", response_model=Result[AppCardResponse],
-             dependencies=[Depends(check_api_key), Depends(require_space("space.task.manage"))])
+             dependencies=[Depends(check_api_key), Depends(require_space("space.task.view"))])
 async def update_app_card(
     request: AppCardUpdateRequest, service: AppCardService = Depends(get_service),
+    user: UserRequest = Depends(get_user_from_headers),
 ) -> Result[AppCardResponse]:
     try:
-        result = service.update(request)
+        result = service.update(request, user)
         if not result:
             return Result.failed(f"app_card {request.id} not found")
         return Result.succ(result)
+    except PermissionError as e:
+        return Result.failed(str(e))
     except Exception as e:
         logger.exception("app_card update exception!")
         return Result.failed(str(e))
@@ -105,16 +115,17 @@ async def invoke_app_card(
     request: AppCardInvokeRequest,
     workspace_id: int = Query(...),
     service: AppCardService = Depends(get_service),
+    user: UserRequest = Depends(get_user_from_headers),
 ) -> Result:
     try:
-        return Result.succ(service.invoke(card_id, workspace_id, request))
+        return Result.succ(service.invoke(card_id, workspace_id, request, user))
     except Exception as e:
         logger.exception("app_card invoke exception!")
         return Result.failed(str(e))
 
 
 @router.post("/app_cards/validate", response_model=Result[AppCardValidateResponse],
-             dependencies=[Depends(check_api_key), Depends(require_space("space.task.manage"))])
+             dependencies=[Depends(check_api_key), Depends(require_space("space.task.view"))])
 async def validate_app_card(
     request: AppCardCreateRequest, service: AppCardService = Depends(get_service),
 ) -> Result[AppCardValidateResponse]:
@@ -126,13 +137,16 @@ async def validate_app_card(
 
 
 @router.post("/app_cards/delete", response_model=Result,
-             dependencies=[Depends(check_api_key), Depends(require_space("space.task.manage"))])
+             dependencies=[Depends(check_api_key), Depends(require_space("space.task.view"))])
 async def delete_app_card(
     request: AppCardDeleteRequest, service: AppCardService = Depends(get_service),
+    user: UserRequest = Depends(get_user_from_headers),
 ) -> Result:
     try:
-        ok = service.delete(request.id, request.workspace_id)
+        ok = service.delete(request.id, request.workspace_id, user)
         return Result.succ({"deleted": ok})
+    except PermissionError as e:
+        return Result.failed(str(e))
     except Exception as e:
         logger.exception("app_card delete exception!")
         return Result.failed(str(e))

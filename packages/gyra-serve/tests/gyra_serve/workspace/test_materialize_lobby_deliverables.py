@@ -116,6 +116,43 @@ def test_materializes_with_task_id_binds_artifact(artifact_service):
     assert listed[0].task_id == 42
 
 
+def test_list_by_filter_isolates_lobby_session_from_playbook_task(artifact_service):
+    """task_id=0(大厅会话)与真实任务(>0)在 listArtifacts 上严格隔离:
+    查询 task_id=0 只返回哨兵产物,不混入剧本任务文件;查询真实任务只返回该任务文件。"""
+    from gyra_serve.artifact.api.schemas import ArtifactRequest
+    from gyra_serve.workspace.agent_tools.materialize_deliverables import (
+        LOBBY_ARTIFACT_TASK_ID,
+    )
+
+    artifact_service.create(ArtifactRequest(
+        task_id=LOBBY_ARTIFACT_TASK_ID, workspace_id=7, type="file",
+        title="lobby_a.txt", content_ref="https://x/lobby_a.txt",
+        provenance={"source": "deliverable_file", "conv_id": "conv-a"},
+    ))
+    artifact_service.create(ArtifactRequest(
+        task_id=LOBBY_ARTIFACT_TASK_ID, workspace_id=7, type="file",
+        title="lobby_b.txt", content_ref="https://x/lobby_b.txt",
+        provenance={"source": "deliverable_file", "conv_id": "conv-b"},
+    ))
+    artifact_service.create(ArtifactRequest(
+        task_id=42, workspace_id=7, type="file",
+        title="task42.txt", content_ref="https://x/task42.txt",
+    ))
+
+    lobby = artifact_service.list_artifacts(
+        ArtifactListFilter(workspace_id=7, task_id=LOBBY_ARTIFACT_TASK_ID, limit=100)
+    )
+    assert len(lobby) == 2
+    assert all(x.task_id == LOBBY_ARTIFACT_TASK_ID for x in lobby)
+    titles = {x.title for x in lobby}
+    assert "task42.txt" not in titles  # 剧本任务文件不混入大厅会话查询
+
+    task42 = artifact_service.list_artifacts(
+        ArtifactListFilter(workspace_id=7, task_id=42, limit=100)
+    )
+    assert [x.title for x in task42] == ["task42.txt"]  # 任务详情不含大厅会话文件
+
+
 def test_aggregation_chat_finally_materializes_lobby_only():
     """收尾仅在 workspace + task_id 空(大厅)时调用物化,任务模式跳过。"""
     src = (
