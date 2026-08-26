@@ -1110,14 +1110,33 @@ class ReActMasterAgent(ConversableAgent, Team):
             return {"type": "function", "function": function}
 
         functions = []
+        # 按工具名去重(保留首个出现的):all_tools() 由资源+沙箱+builtin 三来源拼接,
+        # 同名工具可能重复。DeepSeek 等 OpenAI 兼容端点对 tools 名称唯一性有严格校验,
+        # 重复会返回 400 "Tool names must be unique",Claude/其它服务虽容错但也不应重复。
+        _seen_names = set()
 
         snapshot = getattr(self, "_last_snapshot", None)
         if snapshot is not None and snapshot.all_tools():
             # S15: builtin + 资源工具统一从快照一处取(all_tools 兼容 ToolEntry/Contribution)
             for entry in snapshot.all_tools():
                 tool_item = _tool_from_entry(entry)
-                if tool_item is not None:
-                    functions.append(_tool_to_function(tool_item))
+                if tool_item is None:
+                    continue
+                func = _tool_to_function(tool_item)
+                name = (
+                    func.get("function", {}).get("name")
+                    if isinstance(func, dict)
+                    else getattr(tool_item, "name", None)
+                )
+                if name and name in _seen_names:
+                    logger.warning(
+                        f"function_calling_params: skip duplicate tool name={name!r} "
+                        f"(resource/sandbox/builtin 冲突), canonical=self-first-wins"
+                    )
+                    continue
+                if name:
+                    _seen_names.add(name)
+                functions.append(func)
             logger.info(
                 f"function_calling_params: tools from snapshot.all_tools, "
                 f"total={len(functions)} "
