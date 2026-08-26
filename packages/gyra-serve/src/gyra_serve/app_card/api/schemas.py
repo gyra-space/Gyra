@@ -40,6 +40,9 @@ class AppCardUpdateRequest(BaseModel):
     dry_run: bool = False
     share_mode: Optional[str] = Field(default=None, description="分享模式: login(登录后分享) / anonymous(匿名公开)")
     share_token_refresh: bool = Field(default=False, description="分享模式为 anonymous 时, 是否重新生成分享令牌")
+    show_in_launcher: Optional[bool] = Field(
+        default=None, description="是否在应用卡片启动条展示(默认 True; False 时不删除应用、仅从启动条隐藏)"
+    )
 
 
 class AppCardDeleteRequest(BaseModel):
@@ -73,6 +76,8 @@ class AppCardResponse(BaseModel):
     # 分享配置(由 service 按当前用户填充): share_token 仅维护者可读
     share_mode: Optional[str] = Field(default=None, description="分享模式: login(登录后分享) / anonymous(匿名公开)")
     share_token: Optional[str] = Field(default=None, description="匿名分享令牌(仅维护者可读, 用于拼公开链接)")
+    # 是否在应用卡片启动条展示(由 service 按 config.show_in_launcher 填充; False 对非维护者隐藏入口)
+    show_in_launcher: bool = Field(default=True, description="是否在应用卡片启动条展示")
     gmt_created: str
     gmt_modified: str
 
@@ -83,6 +88,18 @@ class AppCardInvokeRequest(BaseModel):
     op: str = Field(..., description="query.metric / query.sql / assets.get / preview.*")
     params: Dict[str, Any] = Field(default_factory=dict)
     query_key: Optional[str] = Field(default=None, description="引用卡片里命名的查询")
+
+
+class AppCardPreviewInvokeRequest(BaseModel):
+    """开发期预览取数: 携带编辑器里(未落库)的查询契约, 直接走运行期 dispatch,
+    不依赖已存储的卡片, 用于「JSON 写完后先看效果/取数, 再导入落库」。"""
+    workspace_id: int
+    queries: Optional[List[Dict[str, Any]]] = Field(
+        default_factory=list, description="编辑器中的命名查询契约(未落库)"
+    )
+    op: str = Field(..., description="query.metric / query.sql / assets.get / preview.*")
+    params: Dict[str, Any] = Field(default_factory=dict)
+    query_key: Optional[str] = Field(default=None, description="引用 queries 里命名的查询")
 
 
 class AppCardValidateResult(BaseModel):

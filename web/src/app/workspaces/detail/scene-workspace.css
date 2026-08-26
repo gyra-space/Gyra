@@ -1472,6 +1472,18 @@
   opacity: .6;
 }
 
+/* 导入为场景空间子应用:图标化 + 高亮显眼(默认 accent 色, hover 加深) */
+.ws-exhibit__tool--import {
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.12);
+  font-size: 15px;
+}
+
+.ws-exhibit__tool--import:hover:not(:disabled) {
+  color: #fff;
+  background: var(--ws-accent);
+}
+
 .ws-preview__head-tools {
   margin-left: auto;
   display: inline-flex;

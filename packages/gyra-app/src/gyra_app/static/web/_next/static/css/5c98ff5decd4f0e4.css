@@ -1550,6 +1550,17 @@
   opacity: .6;
 }
 
+.ws-exhibit__tool--import {
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb),.12);
+  font-size: 15px;
+}
+
+.ws-exhibit__tool--import:hover:not(:disabled) {
+  color: #fff;
+  background: var(--ws-accent);
+}
+
 .ws-preview__head-tools {
   gap: 4px;
   margin-left: auto;

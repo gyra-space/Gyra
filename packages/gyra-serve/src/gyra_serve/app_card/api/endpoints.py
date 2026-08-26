@@ -12,7 +12,7 @@ from gyra_serve.utils.auth import UserRequest, get_user_from_headers
 
 from .schemas import (
     AppCardCreateRequest, AppCardDeleteRequest, AppCardInvokeRequest, AppCardListFilter,
-    AppCardResponse, AppCardUpdateRequest, AppCardValidateResponse,
+    AppCardPreviewInvokeRequest, AppCardResponse, AppCardUpdateRequest, AppCardValidateResponse,
 )
 from ..config import ServeConfig
 from ..service.service import APP_CARD_SERVICE_COMPONENT_NAME, AppCardService
@@ -108,19 +108,18 @@ async def update_app_card(
         return Result.failed(str(e))
 
 
-@router.post("/app_cards/{card_id}/invoke", response_model=Result,
+@router.post("/app_cards/preview/invoke", response_model=Result,
              dependencies=[Depends(check_api_key), Depends(require_space("space.task.view"))])
-async def invoke_app_card(
-    card_id: int,
-    request: AppCardInvokeRequest,
-    workspace_id: int = Query(...),
-    service: AppCardService = Depends(get_service),
-    user: UserRequest = Depends(get_user_from_headers),
+async def preview_invoke_app_card(
+    request: AppCardPreviewInvokeRequest, service: AppCardService = Depends(get_service),
 ) -> Result:
+    """开发期预览取数: 用编辑器里(未落库)的查询契约走运行期 dispatch,
+    便于「JSON 写完后先看真实取数效果, 再导入落库」。"""
     try:
-        return Result.succ(service.invoke(card_id, workspace_id, request, user))
+        req = AppCardInvokeRequest(op=request.op, params=request.params, query_key=request.query_key)
+        return Result.succ(service.preview_invoke(request.workspace_id, request.queries or [], req))
     except Exception as e:
-        logger.exception("app_card invoke exception!")
+        logger.exception("app_card preview invoke exception!")
         return Result.failed(str(e))
 
 
@@ -217,6 +216,25 @@ async def invoke_app_card_login_share(
         return Result.succ(service.invoke_login(card_id, request, user))
     except Exception as e:
         logger.exception("app_card login share invoke exception!")
+        return Result.failed(str(e))
+
+
+# 动态路径路由必须注册在所有静态路径之后, 否则 `{card_id}` 会抢先吞掉
+# /app_cards/preview/invoke、/app_cards/share/invoke 等静态路径(把 "preview"/"share"
+# 当作 card_id 解析而报 not integer)。FastAPI 按注册顺序匹配。
+@router.post("/app_cards/{card_id}/invoke", response_model=Result,
+             dependencies=[Depends(check_api_key), Depends(require_space("space.task.view"))])
+async def invoke_app_card(
+    card_id: int,
+    request: AppCardInvokeRequest,
+    workspace_id: int = Query(...),
+    service: AppCardService = Depends(get_service),
+    user: UserRequest = Depends(get_user_from_headers),
+) -> Result:
+    try:
+        return Result.succ(service.invoke(card_id, workspace_id, request, user))
+    except Exception as e:
+        logger.exception("app_card invoke exception!")
         return Result.failed(str(e))
 
 

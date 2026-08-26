@@ -33,6 +33,8 @@ export interface AppCardItem {
   can_manage?: boolean;
   share_mode?: string | null;
   share_token?: string | null;
+  /** 是否在应用卡片启动条展示(False = 仅维护者可见, 便于重新开启) */
+  show_in_launcher?: boolean;
   gmt_created: string;
   gmt_modified: string;
 }
@@ -62,6 +64,18 @@ export function invokeAppCard(
     `/api/v1/serve_app_card_service/app_cards/${cardId}/invoke?workspace_id=${workspaceId}`,
     data,
   );
+}
+
+/** 开发期预览取数: 用编辑器里(未落库)的查询契约走运行期 dispatch, 不依赖已落库卡片。
+ *  供「JSON 写完 → 先预览真实取数效果 → 再导入落库」使用。 */
+export function previewInvokeAppCard(
+  workspaceId: number,
+  data: { queries: AppCardQuery[]; op: string; params?: Record<string, unknown>; query_key?: string },
+) {
+  return POST('/api/v1/serve_app_card_service/app_cards/preview/invoke', {
+    workspace_id: workspaceId,
+    ...data,
+  });
 }
 
 /** 匿名分享: 凭分享令牌加载子应用渲染信息(无需登录)。 */

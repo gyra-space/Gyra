@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { CopyOutlined, DeleteOutlined, SettingOutlined } from '@ant-design/icons';
-import { App, Button, Drawer, Input, Modal, Select, Tag } from 'antd';
+import { App, Button, Drawer, Input, Modal, Select, Switch, Tag } from 'antd';
 import { apiInterceptors } from '@/client/api';
 import { deleteAppCard, updateAppCard, type AppCardItem } from '@/client/api/app-card';
 import { ee, EVENTS } from '@/utils/event-emitter';
@@ -44,6 +44,7 @@ export function AppCardPage({
   const [shareMode, setShareMode] = useState<'login' | 'anonymous'>(
     initialCard.share_mode === 'anonymous' ? 'anonymous' : 'login',
   );
+  const [showInLauncher, setShowInLauncher] = useState(initialCard.show_in_launcher ?? true);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -51,13 +52,21 @@ export function AppCardPage({
     setIcon(card.icon || '📊');
     setPermissions(card.permissions ?? []);
     setShareMode(card.share_mode === 'anonymous' ? 'anonymous' : 'login');
+    setShowInLauncher(card.show_in_launcher ?? true);
     setMaintainOpen(true);
   };
 
   const handleSave = async () => {
     setSaving(true);
     const [err, res] = await apiInterceptors(
-      updateAppCard({ id: card.id, workspace_id: workspaceId, icon, permissions, share_mode: shareMode }),
+      updateAppCard({
+        id: card.id,
+        workspace_id: workspaceId,
+        icon,
+        permissions,
+        share_mode: shareMode,
+        show_in_launcher: showInLauncher,
+      }),
     );
     setSaving(false);
     if (err) {
@@ -202,6 +211,13 @@ export function AppCardPage({
           />
           <div className="ws-app-card-page__hint">
             默认为空 = 仅开发者可见。勾选后对应角色可见；owner/admin 同时可维护该应用。
+          </div>
+        </div>
+        <div className="ws-app-card-page__field">
+          <div className="ws-app-card-page__label">在应用卡片启动条展示</div>
+          <div className="ws-app-card-page__switch-row">
+            <Switch size="small" checked={showInLauncher} onChange={setShowInLauncher} />
+            <span className="ws-app-card-page__hint">{showInLauncher ? '当前在欢迎页/大厅启动条可见' : '已隐藏（不删除应用，维护者可再次开启）'}</span>
           </div>
         </div>
         <div className="ws-app-card-page__field">

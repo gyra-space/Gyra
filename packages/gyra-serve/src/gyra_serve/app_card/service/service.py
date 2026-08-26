@@ -167,6 +167,15 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
                 perms = raw or []
         return list(perms or [])
 
+    @staticmethod
+    def _show_in_launcher(card) -> bool:
+        """是否在应用卡片启动条展示: 读 config.show_in_launcher, 缺省为 True。"""
+        conf = getattr(card, "config", None) or {}
+        if not isinstance(conf, dict):
+            return True
+        v = conf.get("show_in_launcher")
+        return True if v is None else bool(v)
+
     def is_developer(self, user: UserRequest, card) -> bool:
         created_by = getattr(card, "created_by", None)
         if not created_by:
@@ -201,6 +210,7 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
     def _decorate_perms(self, resp: AppCardResponse, user: UserRequest) -> AppCardResponse:
         resp.is_owner = self.is_developer(user, resp)
         resp.can_manage = self.can_manage(user, resp)
+        resp.show_in_launcher = self._show_in_launcher(resp)
         return resp
 
     # ------------------------------------------------------------ 分享配置
@@ -235,17 +245,50 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
     # ------------------------------------------------------------------ CRUD
     def create(self, request: AppCardCreateRequest) -> AppCardResponse:
         validate_result = self.validate_queries(request.workspace_id, request.queries) if request.dry_run else None
-        entity = self.dao.from_request(request)
-        entity.status = "validated" if (validate_result and validate_result.ok) else "draft"
         session = self.dao.get_raw_session()
         try:
-            session.add(entity)
-            session.flush()
-            self._snapshot_version(session, entity, 1, request.created_by or "agent")
-            session.commit()
-            # 在 session 关闭前物化响应:commit 后(expire_on_commit=True)实体已过期,
-            # 若在 close 之后再访问属性会触发 detached 实体刷新报错
-            resp = self.dao.to_response(entity)
+            existing = (
+                session.query(AppCardEntity)
+                .filter(
+                    AppCardEntity.workspace_id == request.workspace_id,
+                    AppCardEntity.name == request.name,
+                    AppCardEntity.status != "archived",
+                )
+                .order_by(AppCardEntity.id.desc())
+                .first()
+            )
+            if existing is not None:
+                # 幂等更新: 同 workspace 下同名即视为同一卡片, 更新内容并快照新版本, 不产生重复记录
+                if request.description is not None:
+                    existing.description = request.description
+                if request.kind is not None:
+                    existing.kind = request.kind
+                existing.code = request.code
+                existing.config_json = _dump_json(request.config)
+                existing.queries_json = _dump_json(request.queries)
+                if request.icon is not None:
+                    existing.icon = request.icon
+                if request.permissions is not None:
+                    existing.permissions_json = _dump_json(request.permissions)
+                if request.source_task_id is not None:
+                    existing.source_task_id = request.source_task_id
+                if validate_result and validate_result.ok:
+                    existing.status = "validated"
+                existing.current_version = (existing.current_version or 1) + 1
+                self._snapshot_version(session, existing, existing.current_version, request.created_by or "agent")
+                session.commit()
+                # 在 session 关闭前物化响应:commit 后(expire_on_commit=True)实体已过期,
+                # 若在 close 之后再访问属性会触发 detached 实体刷新报错
+                resp = self.dao.to_response(existing)
+            else:
+                entity = self.dao.from_request(request)
+                entity.status = "validated" if (validate_result and validate_result.ok) else "draft"
+                session.add(entity)
+                session.flush()
+                self._snapshot_version(session, entity, 1, request.created_by or "agent")
+                session.commit()
+                # 同上:commit 后实体已过期, 需在 session 仍打开时物化响应
+                resp = self.dao.to_response(entity)
         except Exception:
             session.rollback()
             raise
@@ -289,6 +332,11 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
                 else:
                     token = None
                 conf["share"] = {"mode": mode, "token": token}
+                entity.config_json = _dump_json(conf)
+            # 展示开关: 写入 config.show_in_launcher(False 隐藏启动条入口, 不删除应用)
+            if request.show_in_launcher is not None:
+                conf = _load_json(entity.config_json) or {}
+                conf["show_in_launcher"] = bool(request.show_in_launcher)
                 entity.config_json = _dump_json(conf)
             entity.current_version = (entity.current_version or 1) + 1
             self._snapshot_version(session, entity, entity.current_version, request.created_by or "agent")
@@ -339,6 +387,10 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
         for resp in self.dao.list_by_workspace(f):
             if self.can_view(user, resp):
                 resp = self._decorate_perms(resp, user)
+                # 展示开关: 关闭的卡片对非维护者隐藏启动条入口(便于维护者随后重新开启);
+                # 分享链接/直接取数不受影响。
+                if not resp.show_in_launcher and not resp.can_manage:
+                    continue
                 visible.append(self._decorate_share(resp))
         return visible
 
@@ -350,6 +402,16 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
         ))
 
     # ---------------------------------------------------------- invoke 协议
+    def preview_invoke(self, workspace_id: int, queries: List[Dict[str, Any]],
+                       req: AppCardInvokeRequest) -> Dict[str, Any]:
+        """开发期预览取数: 用「编辑器里(未落库)的查询契约」直接走运行期 dispatch。
+
+        与运行期 invoke 走的同一派发(_invoke_*),使开发阶段「JSON 写完后先预览
+        真实效果/取数」与最终运行完全一致;不要求卡片已落库。
+        """
+        entity = {"preview": True}  # _dispatch 的三个 handler 都不读 entity, 占位即可
+        return self._dispatch(entity, workspace_id, list(queries or []), req)
+
     def invoke(self, card_id: int, workspace_id: int, req: AppCardInvokeRequest, user: UserRequest) -> Dict[str, Any]:
         entity = self.dao.get_one({"id": card_id})
         if not entity:
@@ -478,41 +540,54 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
             return {"trust": "none", "error": str(e), "rows": [], "row_count": 0}
 
     # ------------------------------------------------------ 生成期 dry-run 校验
-    def validate_queries(self, workspace_id: int, queries: List[Dict[str, Any]]) -> AppCardValidateResponse:
-        from gyra_serve.ecp.service.executor import preview_query
+    def _validate_one(self, workspace_id: int, queries: List[Dict[str, Any]], q: Dict[str, Any]) -> AppCardValidateResult:
+        """对单个声明查询做「运行时同路径」校验。
 
-        items: List[AppCardValidateResult] = []
-        ok_all = True
-        for q in queries or []:
-            key = q.get("key", "")
-            kind = q.get("kind")
-            try:
-                if kind == "metric":
-                    trust = "preview"
-                    preview = preview_query(
-                        object_id=q.get("metric_id", ""),
-                        version=int(q.get("version", 1)),
-                        workspace_id=str(workspace_id),
-                        group_by=q.get("group_by"),
-                        filters=q.get("filters"),
-                        time_range=q.get("time_range"),
-                        limit=5,
-                    )
-                    if not preview.get("ok", False):
-                        ok_all = False
-                        trust = preview.get("trust", "none")
-                    items.append(AppCardValidateResult(ok=bool(preview.get("ok")), item_key=key, kind=kind, trust=trust, error=preview.get("error")))
-                elif kind == "sql":
-                    res = run_readonly_sql(
-                        int(q.get("datasource_id", 0)), q.get("sql", ""), q.get("bind_params"), limit=5,
-                    )
-                    ok = res.get("trust") != "none"
-                    ok_all = ok_all and ok
-                    items.append(AppCardValidateResult(ok=ok, item_key=key, kind=kind, trust=res.get("trust", "none"), error=res.get("error")))
-                else:
-                    items.append(AppCardValidateResult(ok=False, item_key=key, kind=kind or "unknown", trust="none", error="未知查询类型"))
-                    ok_all = False
-            except Exception as e:  # noqa: BLE001
-                ok_all = False
-                items.append(AppCardValidateResult(ok=False, item_key=key, kind=kind or "unknown", trust="none", error=str(e)))
-        return AppCardValidateResponse(ok=ok_all, items=items)
+        复用 _dispatch → _invoke_* 派发, 使开发期校验与运行期 invoke 完全一致:
+        - sql: 走 _invoke_sql, 复现 query_key 解析 + bind 参数合并 + 只读白名单
+        - metric: 走 _invoke_metric → execute_metric_query(与运行期相同, confirmed-only)
+        - 同时复现查询体真正执行, 返回 trust / row_count。
+        全部查询校验通过, 才说明「所有数据在运行期都能正常获取」。
+        """
+        key = q.get("key", "")
+        kind = q.get("kind")
+        if kind == "metric":
+            req = AppCardInvokeRequest(
+                op="query.metric", query_key=key,
+                params={
+                    "metric_id": q.get("metric_id", ""),
+                    "group_by": q.get("group_by"),
+                    "filters": q.get("filters"),
+                    "time_range": q.get("time_range"),
+                },
+            )
+        elif kind == "sql":
+            req = AppCardInvokeRequest(
+                op="query.sql", query_key=key,
+                params={
+                    "datasource_id": q.get("datasource_id"),
+                    "sql": q.get("sql", ""),
+                    "bind_params": q.get("bind_params") or {},
+                },
+            )
+        else:
+            return AppCardValidateResult(ok=False, item_key=key, kind=kind or "unknown", trust="none", error="未知查询类型")
+        try:
+            # _dispatch 的三个 handler(_invoke_*)都不读取 entity, 传 queries 占位即可
+            res = self._dispatch(queries, workspace_id, queries, req)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("app_card validate invoke failed")
+            return AppCardValidateResult(ok=False, item_key=key, kind=kind or "unknown", trust="none", error=str(e))
+        ok = res.get("trust") not in (None, "none")
+        note = ""
+        if ok and not res.get("row_count"):
+            note = "取数成功但无返回行"
+        return AppCardValidateResult(
+            ok=ok, item_key=key, kind=kind or "unknown",
+            trust=res.get("trust", "none"),
+            error=(res.get("error") or note) or None,
+        )
+
+    def validate_queries(self, workspace_id: int, queries: List[Dict[str, Any]]) -> AppCardValidateResponse:
+        items: List[AppCardValidateResult] = [self._validate_one(workspace_id, queries, q) for q in (queries or [])]
+        return AppCardValidateResponse(ok=all(i.ok for i in items), items=items)

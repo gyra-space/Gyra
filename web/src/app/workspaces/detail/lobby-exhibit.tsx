@@ -8,11 +8,12 @@
  * 这里按 kind 分发到对应渲染器。新增内容类型 = 加一个渲染器 + 注册进
  * EXHIBIT_RENDERERS,协议本身不变。
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button, Table, Tabs, Tag, Tooltip } from 'antd';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { App, Segmented, Table, Tabs, Tag, Tooltip } from 'antd';
 // xlsx 浏览器端解析(v9 走 Web Worker 后台解析,不阻塞 UI;旧版 xls 不支持,仍引导下载)
 import readXlsxFile from 'read-excel-file/browser';
 import {
+  AppstoreAddOutlined,
   DownloadOutlined,
   ExportOutlined,
   FileOutlined,
@@ -27,11 +28,12 @@ import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
 import { GET, apiInterceptors } from '@/client/api';
-import { createAppCard } from '@/client/api/app-card';
+import { createAppCard, previewInvokeAppCard, type AppCardItem } from '@/client/api/app-card';
 import { injectLocalLibsForReport, resolveFileDownloadUrl, transformFileUrl } from '@/utils';
 import { ee, EVENTS } from '@/utils/event-emitter';
 import type { LobbyExhibit } from './agent-workspace-types';
-import { getAppCardPayloadError, extractAppCardPayload } from './app-card/AppCardImportButton';
+import { getAppCardPayloadError, extractAppCardPayload, isAppCardPayloadText } from './app-card/AppCardImportButton';
+import { AppCardRenderer } from './app-card/AppCardRenderer';
 import './app-card/app-card.css';
 
 /* ═══════════════════════════════════════════════════════════════
@@ -862,6 +864,57 @@ export function ExhibitHost({ exhibit, workspaceId }: { exhibit: LobbyExhibit; w
   const isTextKind = exhibit.kind === 'code' || exhibit.kind === 'data' || exhibit.kind === 'text';
   const canImportAppCard = workspaceId != null && isTextKind;
 
+  // —— 应用卡片识别与「应用预览 / 源码」切换 ——
+  // 交付的 .json 文件内容可能是 App Card payload;识别出来后在右侧面板直接渲染应用本体,
+  // 并可切回源码查看,作为开发阶段「先看效果 → 确认无误 → 导入落库」的通道。
+  // 仅对文本类文件(code/data/text)拉取文本检测,避免对二进制类型做无谓 fetch。
+  const { text: rawText } = useExhibitText(exhibit, !isTextKind);
+  const appCardPayload = useMemo(() => {
+    if (workspaceId == null || !rawText || !isAppCardPayloadText(rawText)) return null;
+    return extractAppCardPayload(rawText, workspaceId);
+  }, [rawText, workspaceId]);
+  const isAppCard = appCardPayload !== null;
+  const [viewMode, setViewMode] = useState<'app' | 'source'>('app');
+
+  const previewCard = useMemo(() => {
+    if (!appCardPayload) return null;
+    return {
+      id: -1, // 预览未落库; 取数走 previewInvoke(自定义 invoke 桥)
+      workspace_id: workspaceId!,
+      name: appCardPayload.name || '未命名应用',
+      description: appCardPayload.description ?? null,
+      kind: appCardPayload.kind || 'dashboard',
+      status: 'draft',
+      code: appCardPayload.code,
+      config: appCardPayload.config || {},
+      queries: (appCardPayload.queries || []) as AppCardItem['queries'],
+      current_version: 1,
+      source_task_id: null,
+      created_by: appCardPayload.created_by ?? null,
+      icon: appCardPayload.icon ?? null,
+      permissions: appCardPayload.permissions || [],
+      gmt_created: '',
+      gmt_modified: '',
+    };
+  }, [appCardPayload, workspaceId]);
+
+  // 预览取数桥: 用编辑器里(未落库)的查询契约走 preview/invoke 端点
+  const previewInvoke = useCallback(
+    async (op: string, params: Record<string, unknown>, queryKey?: string): Promise<unknown> => {
+      if (!appCardPayload || workspaceId == null) return null;
+      const [err, res] = await apiInterceptors(
+        previewInvokeAppCard(workspaceId, {
+          queries: (appCardPayload.queries || []) as AppCardItem['queries'],
+          op,
+          params,
+          query_key: queryKey,
+        }),
+      );
+      return err ? null : res;
+    },
+    [appCardPayload, workspaceId],
+  );
+
   /** 一键导入为场景空间子应用:实时拉取 inline/url 文本,校验 app card payload 后落库。
    *  用 message.open 的全局 loading 文案,让"导入中/完成/失败"全程可见。 */
   const handleImportAppCard = async () => {
@@ -1059,19 +1112,30 @@ export function ExhibitHost({ exhibit, workspaceId }: { exhibit: LobbyExhibit; w
         <span className="ws-preview__title">{exhibit.title}</span>
         <Tag color="blue">{KIND_LABEL[exhibit.kind] || exhibit.kind}</Tag>
         {size && <Tag>{size}</Tag>}
+        {isAppCard && (
+          <Segmented
+            size="small"
+            value={viewMode}
+            onChange={(v) => setViewMode(v as 'app' | 'source')}
+            options={[
+              { label: '应用', value: 'app' },
+              { label: '源码', value: 'source' },
+            ]}
+          />
+        )}
         <span className="ws-exhibit__head-actions">
           {canImportAppCard && (
-            <Button
-              type="primary"
-              size="small"
-              ghost
-              icon={appCardBusy ? <LoadingOutlined spin /> : <DownloadOutlined />}
-              loading={appCardBusy}
-              disabled={appCardBusy}
-              onClick={handleImportAppCard}
-            >
-              {appCardBusy ? '导入中…' : '导入为场景空间子应用'}
-            </Button>
+            <Tooltip title={appCardBusy ? '导入中…' : '导入为场景空间子应用'}>
+              <button
+                type="button"
+                className="ws-exhibit__tool ws-exhibit__tool--import"
+                onClick={handleImportAppCard}
+                disabled={appCardBusy}
+                aria-label="导入为场景空间子应用"
+              >
+                {appCardBusy ? <LoadingOutlined spin /> : <AppstoreAddOutlined />}
+              </button>
+            </Tooltip>
           )}
           <HeadTool tip="分享(复制链接)" icon={<ShareAltOutlined />} onClick={handleShare} disabled={!url} />
           {canPrint && (
@@ -1099,7 +1163,11 @@ export function ExhibitHost({ exhibit, workspaceId }: { exhibit: LobbyExhibit; w
         </span>
       </div>
       <div className="ws-exhibit__body" ref={bodyRef}>
-        <Renderer exhibit={exhibit} />
+        {isAppCard && viewMode === 'app' && previewCard ? (
+          <AppCardRenderer appCard={previewCard} workspaceId={workspaceId!} height={560} invoke={previewInvoke} />
+        ) : (
+          <Renderer exhibit={exhibit} />
+        )}
       </div>
     </div>
   );

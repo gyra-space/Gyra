@@ -286,6 +286,14 @@
   color: #8c8c8c;
   margin-top: 6px;
 }
+.ws-app-card-page__switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ws-app-card-page__switch-row .ws-app-card-page__hint {
+  margin-top: 0;
+}
 
 /* iframe 宿主(由 AppCardRenderer 控制高度) */
 .ws-app-card {

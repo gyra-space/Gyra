@@ -173,9 +173,51 @@ class GptsFileMetadataDao(BaseDao):
         return record_id
 
     async def save_async(self, metadata: Dict[str, Any]) -> int:
-        """异步保存文件元数据."""
-        entity = self._from_metadata(metadata)
+        """异步保存文件元数据（存在则更新，否则插入）.
+
+        去重路径下，deliver_file 对已存在文件标记交付时会以同一 file_id 再次调用
+        save_file_metadata（见 AFS.save_file_from_sandbox/save_binary_file 的交付
+        语义升级）。若此处纯 INSERT，会因 file_id 唯一约束抛 IntegrityError，升级的
+        file_type 只落在内存缓存、无法持久化到 DB；后续 vis_final 重算从 DB 读取
+        时仍是旧类型，文件只进「任务文件」、进不了「交付文件」。
+        """
+        file_id = metadata.get("file_id")
         async with self.a_session(commit=True) as session:
+            existing = None
+            if file_id:
+                result = await session.execute(
+                    select(GptsFileMetadataEntity).where(
+                        GptsFileMetadataEntity.file_id == file_id
+                    )
+                )
+                existing = result.scalar_one_or_none()
+            if existing:
+                entity = existing
+                entity.file_name = metadata.get("file_name", entity.file_name)
+                entity.file_type = metadata.get("file_type", entity.file_type)
+                entity.file_size = metadata.get("file_size", entity.file_size)
+                entity.local_path = metadata.get("local_path", entity.local_path)
+                entity.oss_url = metadata.get("oss_url", entity.oss_url)
+                entity.preview_url = metadata.get("preview_url", entity.preview_url)
+                entity.download_url = metadata.get("download_url", entity.download_url)
+                entity.content_hash = metadata.get("content_hash", entity.content_hash)
+                entity.status = metadata.get("status", entity.status)
+                entity.mime_type = metadata.get("mime_type", entity.mime_type)
+                entity.is_public = metadata.get("is_public", entity.is_public)
+                entity.created_by = metadata.get("created_by", entity.created_by)
+                entity.task_id = metadata.get("task_id", entity.task_id)
+                entity.message_id = metadata.get("message_id", entity.message_id)
+                entity.tool_name = metadata.get("tool_name", entity.tool_name)
+                if metadata.get("metadata"):
+                    entity.file_metadata = json.dumps(
+                        metadata.get("metadata"), ensure_ascii=False
+                    )
+                if metadata.get("expires_at"):
+                    entity.expires_at = datetime.fromisoformat(metadata["expires_at"])
+                await session.flush()
+                return entity.id
+
+            entity = self._from_metadata(metadata)
             session.add(entity)
             await session.flush()
             return entity.id
