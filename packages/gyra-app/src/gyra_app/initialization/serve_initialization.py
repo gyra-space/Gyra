@@ -37,6 +37,7 @@ def scan_serve_configs():
         "gyra_serve.artifact",
         "gyra_serve.workspace_asset",
         "gyra_serve.delivery",
+        "gyra_serve.app_card",
         "gyra_serve.intervention",
         "gyra_serve.trigger",
         # TODO: rewire to new knowledge module (Task #9)
@@ -547,6 +548,21 @@ def register_serve_apps(
     )
 
     # ################################ Delivery Serve Register End   ################
+
+    # ################################ AppCard Serve Register Begin ################
+    from gyra_serve.app_card.serve import Serve as AppCardServe
+
+    system_app.register(
+        AppCardServe,
+        config=get_config(
+            serve_configs,
+            AppCardServe.name,
+            gyra_serve.app_card.serve.ServeConfig,
+            api_keys=global_api_keys,
+        ),
+    )
+
+    # ################################ AppCard Serve Register End   ################
 
     # ################################ Intervention Serve Register Begin ################
     from gyra_serve.intervention.serve import Serve as InterventionServe

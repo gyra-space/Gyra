@@ -72,17 +72,17 @@ def _get_interaction_gateway():
         return None
 
 
-_confirm_store: Optional[Any] = None
+_interaction_store: Optional[Any] = None
 
 
-def _get_confirm_store():
-    """获取确认记录存取（持久化：跟随系统数据库，重启不丢）。"""
-    global _confirm_store
-    if _confirm_store is None:
+def _get_interaction_store():
+    """获取统一交互记录存取（持久化：跟随系统数据库，重启不丢）。"""
+    global _interaction_store
+    if _interaction_store is None:
         from gyra.agent.core.v2.state_store import create_state_store
 
-        _confirm_store = create_state_store()
-    return _confirm_store
+        _interaction_store = create_state_store()
+    return _interaction_store
 
 
 @router.post("/respond", response_model=InteractionRespondResponse)
@@ -122,29 +122,38 @@ async def respond_to_interaction(request: InteractionRespondRequest):
         # 先解除 Agent 阻塞（deliver_response 幂等：已响应则 no-op），再持久化确认记录。
         await gateway.deliver_response(response)
 
-        # 持久化"谁在何时确认了什么"，并拒绝重复确认。
-        confirm_store = _get_confirm_store()
+        # 持久化统一交互记录（谁在何时对什么类型交互做了什么），并拒绝重复确认。
+        interaction_store = _get_interaction_store()
         responder = request.metadata.get("responder") or request.metadata.get("user") or {}
         if not isinstance(responder, dict):
             responder = {}
         record = {
             "request_id": request.request_id,
+            "interaction_type": (
+                request.metadata.get("interaction_type")
+                or request.metadata.get("confirm_type")
+                or "interaction"
+            ),
+            "state": "responded",
             "responded_at": datetime.now(timezone.utc).isoformat(),
-            "responder": {
+            "actor": {
                 "user_no": responder.get("user_no"),
                 "nick_name": responder.get("nick_name"),
                 "avatar_url": responder.get("avatar_url"),
             },
-            "confirm_type": request.metadata.get("confirm_type") or "select",
             "question": request.metadata.get("question"),
             "header": request.metadata.get("header"),
-            "choice": request.choice,
-            "input_content": request.input_value,
-            "is_custom_input": bool(request.metadata.get("is_custom_input", False)),
+            "result": {
+                "choice": request.choice,
+                "input_content": request.input_value,
+                "is_custom_input": bool(request.metadata.get("is_custom_input", False)),
+                "grant_scope": request.grant_scope,
+                "grant_duration": request.grant_duration,
+            },
         }
-        first_save = await confirm_store.save_confirm_record(request.request_id, record)
+        first_save = await interaction_store.save_interaction_record(request.request_id, record)
         if not first_save:
-            existing = await confirm_store.get_confirm_record(request.request_id)
+            existing = await interaction_store.get_interaction_record(request.request_id)
             logger.info(
                 f"[InteractionAPI] Duplicate response rejected for request_id={request.request_id}"
             )
@@ -158,8 +167,8 @@ async def respond_to_interaction(request: InteractionRespondRequest):
             )
 
         logger.info(
-            f"[InteractionAPI] Confirm record persisted for request_id={request.request_id} "
-            f"responder={record['responder']} confirm_type={record['confirm_type']}"
+            f"[InteractionAPI] Interaction record persisted for request_id={request.request_id} "
+            f"actor={record['actor']} type={record['interaction_type']}"
         )
 
         logger.info(
@@ -210,16 +219,16 @@ async def get_pending_requests(session_id: str) -> List[PendingRequestItem]:
 
 
 @router.get("/status")
-async def get_confirm_status(request_id: str) -> Dict[str, Any]:
+async def get_interaction_status(request_id: str) -> Dict[str, Any]:
     """
-    查询确认卡片的已确认状态。
+    查询任意用户交互的状态与记录。
 
-    前端 VisConfirmCard 每次渲染据此决定交互态 / 只读态：
-    - 未确认(response.responded=False)：可交互；
-    - 已确认(response.responded=True)：只读并展示谁在何时确认了什么。
+    前端交互卡片（确认/选择/输入/工具授权）每次渲染据此决定交互态 / 只读态：
+    - 未响应(responded=False)：可用，可交互；
+    - 已响应(responded=True)：只读，并回显谁在何时对什么类型交互做了什么。
     """
-    confirm_store = _get_confirm_store()
-    record = await confirm_store.get_confirm_record(request_id)
+    interaction_store = _get_interaction_store()
+    record = await interaction_store.get_interaction_record(request_id)
     return {"responded": record is not None, "record": record}
 
 

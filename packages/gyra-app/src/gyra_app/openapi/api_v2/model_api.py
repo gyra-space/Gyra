@@ -183,6 +183,19 @@ def _is_media_model(model_conf: Dict[str, Any]) -> bool:
         )
 
 
+def _resolve_global_default(agent_llm: Dict[str, Any]) -> Optional[str]:
+    """解析全局默认模型名称。
+
+    与 api_v1 helpers.model_helper.find_default_model 口径一致：取配置中
+    is_default=true 的首个模型（按 provider 配置顺序），未配置则返回 None。
+    该模型在整个模型列表中是唯一带 is_default 标记的「全局默认模型」。
+    """
+    for item in _iter_configured_models(agent_llm):
+        if item["model_conf"].get("is_default"):
+            return item["model_name"]
+    return None
+
+
 @router.get("/models")
 async def list_models(
     user: Optional[UserRequest] = Depends(_require_model_read()),
@@ -193,6 +206,7 @@ async def list_models(
         if not agent_llm:
             return Result.succ([])
 
+        default_model_name = _resolve_global_default(agent_llm)
         responses = []
         for item in _iter_configured_models(agent_llm):
             provider_name = item["provider"]
@@ -210,6 +224,7 @@ async def list_models(
                     "name": model_name,
                     "worker_type": worker_type,
                     "model_type": model_conf.get("model_type", "llm"),
+                    "is_default": model_name == default_model_name,
                     "host": f"proxy@{provider_name}",
                     "port": 0,
                     "manager_host": "system-config",

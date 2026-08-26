@@ -52,6 +52,8 @@ from gyra_serve.ecp.models.models import (
     EcpWorkspaceConfigEntity,
 )
 
+from gyra_serve.app_card.models.models import AppCardEntity, AppCardVersionEntity
+
 _MODELS = [
     FileServeEntity,
     PromptManageEntity,
@@ -91,4 +93,6 @@ _MODELS = [
     EcpOpLogEntity,
     EcpAssetRefEntity,
     EcpWorkspaceConfigEntity,
+    AppCardEntity,
+    AppCardVersionEntity,
 ]

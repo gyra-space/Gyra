@@ -13,6 +13,26 @@ import type {
   GrantScope,
 } from '@/types/interaction';
 import { InteractionStatus as InteractionStatusEnum, GrantScope as GrantScopeEnum } from '@/types/interaction';
+import { STORAGE_USERINFO_KEY } from '@/utils/constants';
+
+function getCurrentUserMeta(): Record<string, string | undefined> {
+  try {
+    const raw = localStorage.getItem(STORAGE_USERINFO_KEY);
+    if (!raw) return {};
+    const user = JSON.parse(raw) as {
+      user_no?: string;
+      nick_name?: string;
+      avatar_url?: string;
+    };
+    return {
+      user_no: user.user_no,
+      nick_name: user.nick_name,
+      avatar_url: user.avatar_url,
+    } as Record<string, string | undefined>;
+  } catch {
+    return {};
+  }
+}
 
 // ========== Types ==========
 
@@ -220,7 +240,12 @@ export class InteractionService {
         cancel_reason: response.cancel_reason,
         grant_scope: response.grant_scope,
         grant_duration: response.grant_duration,
-        metadata: response.metadata || {},
+        metadata: {
+          ...(response.metadata || {}),
+          // 统一记录"谁提交的"：若调用方未显式传 responder，则取当前登录用户
+          responder:
+            response.metadata?.responder || getCurrentUserMeta(),
+        },
         timestamp: new Date().toISOString(),
       };
 
@@ -268,6 +293,7 @@ export class InteractionService {
       choice: allow ? 'allow' : 'deny',
       status: InteractionStatusEnum.RESPONDED,
       grant_scope: allow ? grantScope : undefined,
+      metadata: { interaction_type: 'authorize' },
     });
   }
 

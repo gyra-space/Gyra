@@ -9,6 +9,7 @@ import { getWorkspaceOverview } from '@/client/api/workspace';
 import { ObjectDetailDrawer } from '@/app/ecp/components/common';
 import { GrowthCard } from './growth-card';
 import { SpaceGuideCard } from './space-guide-card';
+import { AppCardsSection } from './app-card/AppCardsSection';
 import './lobby.css';
 
 export interface LobbyProps {
@@ -177,6 +178,9 @@ export function Lobby({
           onAsk={onAsk}
           onRunPlaybook={onRunPlaybook}
         />
+
+        {/* 应用卡片:Agent 生成的常驻交互子应用(多 tab 多指标看板等) */}
+        <AppCardsSection workspaceId={workspaceId} refreshKey={refreshKey} />
 
         {/* 今日待办:每天进空间的第一站,与 rail 收件箱同数据同视觉 */}
         <section className="ws-lobby__inbox">

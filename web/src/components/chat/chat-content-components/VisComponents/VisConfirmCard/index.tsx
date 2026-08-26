@@ -7,7 +7,7 @@ import {
 } from '../../config';
 import { GPTVis } from '@antv/gpt-vis';
 import { Button, Divider, Input, App } from 'antd';
-import { CheckCircleOutlined } from '@ant-design/icons';
+import { BellOutlined, CheckCircleFilled } from '@ant-design/icons';
 import { ChatContentContext } from '@/contexts';
 import { STORAGE_USERINFO_KEY } from '@/utils/constants';
 
@@ -181,14 +181,20 @@ const buildConfirmResponseDisplayMessage = (
 
 interface ConfirmRecordData {
   request_id?: string;
+  interaction_type?: string;
+  state?: 'pending' | 'responded' | 'cancelled' | 'timed_out';
   responded_at?: string;
-  responder?: { user_no?: string; nick_name?: string; avatar_url?: string };
+  actor?: { user_no?: string; nick_name?: string; avatar_url?: string };
   confirm_type?: 'select' | 'input' | 'confirm';
   question?: string | null;
   header?: string | null;
-  choice?: string | null;
-  input_content?: string | null;
-  is_custom_input?: boolean;
+  result?: {
+    choice?: string | null;
+    input_content?: string | null;
+    is_custom_input?: boolean;
+    grant_scope?: string | null;
+    grant_duration?: string | null;
+  };
 }
 
 const formatTime = (ts?: string) => {
@@ -206,8 +212,6 @@ const getCurrentUser = () => {
     return null;
   }
 };
-
-const confirmStorageKey = (id?: string) => (id ? `gyra_confirm:${id}` : '');
 
 const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onConfirm }) => {
   const { message } = App.useApp();
@@ -240,19 +244,6 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
       return;
     }
     let cancelled = false;
-    // 本地兜底：上次确认的缓存作为即时只读依据，避免刷新后状态未拉回前被再次确认。
-    try {
-      const cached = localStorage.getItem(confirmStorageKey(requestId));
-      if (cached) {
-        const rec = JSON.parse(cached) as ConfirmRecordData;
-        if (!cancelled && rec?.responded_at) {
-          setConfirmRecord(rec);
-          setDisabled(true);
-        }
-      }
-    } catch {
-      // 缓存损坏则忽略，交给服务端判断
-    }
     (async () => {
       try {
         const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
@@ -262,14 +253,9 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
         if (res.ok) {
           const json = await res.json();
           if (!cancelled && json?.responded && json.record) {
-            // 服务端为权威事实源：以服务端记录为准（含谁/何时），并覆盖本地缓存
+            // 服务端为唯一事实源：以服务端记录为准（谁/何时），用于渲染"已使用"态
             setConfirmRecord(json.record);
             setDisabled(true);
-            try {
-              localStorage.setItem(confirmStorageKey(requestId), JSON.stringify(json.record));
-            } catch {
-              // ignore quota/serialization errors
-            }
           }
         }
       } catch (e) {
@@ -386,14 +372,18 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
       : data.header || extra.header || '';
     const localRecord: ConfirmRecordData = {
       request_id: requestId,
+      interaction_type: actualConfirmType,
+      state: 'responded',
       responded_at: new Date().toISOString(),
-      responder,
+      actor: responder,
       confirm_type: actualConfirmType,
       question: confirmMessage,
       header: recordHeader,
-      choice: isCustomInputMode ? null : selectedOpt?.label || selectedOption,
-      input_content: finalInputValue || inputValue || undefined,
-      is_custom_input: isCustomInputMode,
+      result: {
+        choice: isCustomInputMode ? null : selectedOpt?.label || selectedOption,
+        input_content: finalInputValue || inputValue || undefined,
+        is_custom_input: isCustomInputMode,
+      },
     };
 
     try {
@@ -422,14 +412,7 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
 
           if (res.status === 409) {
             const json = await res.json().catch(() => null);
-            if (json?.record) {
-              setConfirmRecord(json.record);
-              try {
-                localStorage.setItem(confirmStorageKey(requestId), JSON.stringify(json.record));
-              } catch {
-                // ignore
-              }
-            }
+            if (json?.record) setConfirmRecord(json.record);
             setDisabled(true);
             message.info('This confirmation has already been submitted.');
             return;
@@ -472,13 +455,6 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
 
       setConfirmRecord(localRecord);
       setDisabled(true);
-      if (requestId) {
-        try {
-          localStorage.setItem(confirmStorageKey(requestId), JSON.stringify(localRecord));
-        } catch {
-          // ignore
-        }
-      }
     } catch (error) {
       console.error('Failed to submit response:', error);
       message.error('Submit failed, please try again');
@@ -489,21 +465,37 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
 
   const renderConfirmedRecord = () => {
     const rec = confirmRecord;
-    const answer = rec?.is_custom_input
-      ? rec?.input_content
-      : rec?.choice || selectedOptionData?.label || selectedOption || '';
-    const who = rec?.responder?.nick_name;
+    const answer = rec?.result?.is_custom_input
+      ? rec?.result?.input_content
+      : rec?.result?.choice || selectedOptionData?.label || selectedOption || '';
+    const who = rec?.actor?.nick_name || '';
+    const avatar = rec?.actor?.avatar_url;
+    const initial = (who.trim().charAt(0) || 'U').toUpperCase();
 
     return (
       <div className="confirm-record">
-        {confirmMessage && <div className="confirm-record-question">{confirmMessage}</div>}
-        {answer && <div className="confirm-record-answer">{answer}</div>}
-        {(who || rec?.responded_at) && (
-          <div className="confirm-record-meta">
-            {who ? `Confirmed by ${who}` : 'Confirmed'}
-            {rec?.responded_at ? ` · ${formatTime(rec.responded_at)}` : ''}
+        <div className="confirm-record-head">
+          <span className="confirm-record-avatar">
+            {avatar ? (
+              <img src={avatar} alt={who} />
+            ) : (
+              <span>{initial}</span>
+            )}
+          </span>
+          <div className="confirm-record-who">
+            <span className="confirm-record-title">Confirmed by {who || 'user'}</span>
+            {rec?.responded_at && (
+              <span className="confirm-record-time">{formatTime(rec.responded_at)}</span>
+            )}
           </div>
-        )}
+          <CheckCircleFilled className="confirm-record-check" />
+        </div>
+        <div className="confirm-record-body">
+          {confirmMessage && (
+            <div className="confirm-record-question">{confirmMessage}</div>
+          )}
+          {answer && <div className="confirm-record-answer">{answer}</div>}
+        </div>
       </div>
     );
   };
@@ -534,6 +526,9 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
                   }}
                   disabled={interactionDisabled}
                 >
+                  <span className="option-radio">
+                    {isSelected && <CheckCircleFilled />}
+                  </span>
                   <span className="option-label-wrap">
                     <span className="option-label">{opt.label}</span>
                     {opt.description && (
@@ -543,7 +538,6 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
                       <span className="option-hint">(can add notes)</span>
                     )}
                   </span>
-                  {isSelected && <CheckCircleOutlined className="option-check" />}
                 </button>
 
                 {shouldShowInput && (
@@ -572,11 +566,13 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
               }}
               disabled={interactionDisabled}
             >
+              <span className="option-radio">
+                {isCustomInputMode && <CheckCircleFilled />}
+              </span>
               <span className="option-label-wrap">
                 <span className="option-label">Custom input</span>
                 <span className="option-desc">Type your own response</span>
               </span>
-              {isCustomInputMode && <CheckCircleOutlined className="option-check" />}
             </button>
           )}
         </div>
@@ -618,7 +614,9 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
     if (isConfirmedState) {
       return (
         <div className="confirm-status">
-          <CheckCircleOutlined className="status-icon" />
+          <span className="confirm-status-dot">
+            <CheckCircleFilled />
+          </span>
           <span className="confirm-status-text">Confirmed</span>
         </div>
       );
@@ -661,7 +659,15 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
   return (
     <VisConfirmCardWrap className="VisConfirmCardClass">
       <div className="card-content">
-        <span className="confirm-title">{cardTitle}</span>
+        <div className="confirm-header">
+          <span className={`confirm-header-icon${isConfirmedState ? ' is-confirmed' : ''}`}>
+            {isConfirmedState ? <CheckCircleFilled /> : <BellOutlined />}
+          </span>
+          <span className="confirm-title">{cardTitle}</span>
+          {!isConfirmedState && (
+            <span className="confirm-pill">Awaiting your input</span>
+          )}
+        </div>
         <Divider
           style={{
             margin: '12px 0',

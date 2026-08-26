@@ -8,6 +8,9 @@ export type IModelData = {
    * 普通聊天下拉只应出现 llm（含视觉能力 LLM），媒体生成模型（image/video/audio）
    * 由后端 /api/v2/serve/model/models 过滤，前端以此字段兜底。 */
   model_type?: string;
+  /** 是否全局默认模型:模型配置中指定的唯一全局默认模型。无空间级默认模型时，
+   * 输入框回退选用该模型(而非全局列表首个)。 */
+  is_default?: boolean;
   host: string;
   port: number;
   manager_host: string;

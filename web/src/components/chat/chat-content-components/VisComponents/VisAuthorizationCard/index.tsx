@@ -1,10 +1,8 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { VisAuthorizationCardWrap } from './style';
 import {
   Button,
   Divider,
-  Tag,
-  Space,
   Checkbox,
   Collapse,
   Typography,
@@ -12,16 +10,57 @@ import {
 import {
   LockOutlined,
   ToolOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
+  CheckCircleFilled,
+  CloseCircleFilled,
   WarningOutlined,
   InfoCircleOutlined,
   ExclamationCircleOutlined,
+  CheckCircleOutlined,
 } from '@ant-design/icons';
 import { useInteraction } from '@/components/interaction';
 import { GrantScope } from '@/types/interaction';
+import { STORAGE_USERINFO_KEY } from '@/utils/constants';
 
 const { Text } = Typography;
+
+type Actor = { user_no?: string; nick_name?: string; avatar_url?: string };
+
+interface AuthRecordData {
+  request_id?: string;
+  interaction_type?: string;
+  state?: 'pending' | 'responded' | 'cancelled' | 'timed_out';
+  responded_at?: string;
+  actor?: Actor;
+  question?: string | null;
+  header?: string | null;
+  result?: {
+    choice?: string | null;
+    grant_scope?: string | null;
+    grant_duration?: string | null;
+  };
+}
+
+const getCurrentUserMeta = (): Actor => {
+  try {
+    const raw = localStorage.getItem(STORAGE_USERINFO_KEY);
+    if (!raw) return {};
+    const user = JSON.parse(raw) as Actor;
+    return {
+      user_no: user.user_no,
+      nick_name: user.nick_name,
+      avatar_url: user.avatar_url,
+    };
+  } catch {
+    return {};
+  }
+};
+
+const formatTime = (ts?: string) => {
+  if (!ts) return '';
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return ts;
+  return date.toLocaleString();
+};
 
 // ========== Types ==========
 
@@ -42,26 +81,6 @@ interface VisAuthorizationCardProps {
 }
 
 // ========== Helper Functions ==========
-
-/**
- * Get risk level color for Tag.
- */
-function getRiskLevelColor(riskLevel?: string): string {
-  switch (riskLevel?.toLowerCase()) {
-    case 'safe':
-      return 'success';
-    case 'low':
-      return 'processing';
-    case 'medium':
-      return 'warning';
-    case 'high':
-      return 'warning';
-    case 'critical':
-      return 'error';
-    default:
-      return 'default';
-  }
-}
 
 /**
  * Get risk level icon.
@@ -128,14 +147,65 @@ function formatArgumentValue(value: unknown): string {
 // ========== Component ==========
 
 const VisAuthorizationCard: React.FC<VisAuthorizationCardProps> = ({ data }) => {
-  const { authorize, cancelRequest, showRequest } = useInteraction();
+  const { authorize, showRequest } = useInteraction();
   const [disabled, setDisabled] = useState<boolean>(!!data.disabled);
+  const [record, setRecord] = useState<AuthRecordData | null>(null);
+  const [statusLoaded, setStatusLoaded] = useState(false);
   const [grantScope, setGrantScope] = useState<GrantScope>(GrantScope.ONCE);
   const [loading, setLoading] = useState(false);
 
+  const requestId = data.request_id || '';
   const toolArgs = data.arguments ?? {};
   const riskFactors = data.risk_factors ?? [];
   const allowSessionGrant = data.allow_session_grant ?? true;
+  const riskLevel = data.risk_level?.toLowerCase() || 'unknown';
+  const isDeny = record?.result?.choice === 'deny';
+  const who = record?.actor?.nick_name || '';
+  const avatar = record?.actor?.avatar_url;
+  const initial = (who.trim().charAt(0) || 'U').toUpperCase();
+
+  // 挂载即向后端读取统一交互记录：已处理则渲染只读态（含操作人/时间/决定）
+  useEffect(() => {
+    if (!requestId) {
+      setStatusLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+    (async () => {
+      try {
+        const res = await fetch(
+          `${apiBaseUrl}/api/v1/interaction/status?request_id=${encodeURIComponent(requestId)}`,
+        );
+        if (res.ok) {
+          const json = await res.json();
+          if (!cancelled && json?.responded && json.record) {
+            setRecord(json.record as AuthRecordData);
+            setDisabled(true);
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch auth status:', e);
+      } finally {
+        if (!cancelled) setStatusLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [requestId]);
+
+  const markHandled = useCallback((choice: 'allow' | 'deny') => {
+    setRecord({
+      request_id: requestId,
+      interaction_type: 'authorize',
+      state: 'responded',
+      responded_at: new Date().toISOString(),
+      actor: getCurrentUserMeta(),
+      result: { choice },
+    });
+    setDisabled(true);
+  }, [requestId]);
 
   const handleAuthorize = useCallback(async () => {
     setLoading(true);
@@ -144,33 +214,42 @@ const VisAuthorizationCard: React.FC<VisAuthorizationCardProps> = ({ data }) => 
       showRequest(data.request_id);
       const success = await authorize(true, grantScope);
       if (success) {
-        setDisabled(true);
+        markHandled('allow');
       }
     } finally {
       setLoading(false);
     }
-  }, [authorize, grantScope, data.request_id, showRequest]);
+  }, [authorize, grantScope, data.request_id, showRequest, markHandled]);
 
   const handleDeny = useCallback(async () => {
     setLoading(true);
     try {
       showRequest(data.request_id);
-      const success = await cancelRequest('User denied authorization');
+      // 拒绝 = 授权决定为 deny，走统一的 authorize(false) 记录谁在何时拒绝
+      const success = await authorize(false, grantScope);
       if (success) {
-        setDisabled(true);
+        markHandled('deny');
       }
     } finally {
       setLoading(false);
     }
-  }, [cancelRequest, data.request_id, showRequest]);
+  }, [authorize, grantScope, data.request_id, showRequest, markHandled]);
+
+  const handled = statusLoaded && !!record;
 
   return (
     <VisAuthorizationCardWrap className="VisAuthorizationCardClass">
       <div className="card-content">
         {/* Header */}
         <div className="auth-header">
-          <LockOutlined className="auth-icon" />
+          <span className="auth-icon-chip">
+            <LockOutlined />
+          </span>
           <span className="auth-title">Tool Authorization Required</span>
+          <span className={`risk-pill risk-${riskLevel}`}>
+            {getRiskLevelIcon(data.risk_level)}
+            {getRiskLevelLabel(data.risk_level)}
+          </span>
         </div>
 
         <Divider
@@ -188,23 +267,20 @@ const VisAuthorizationCard: React.FC<VisAuthorizationCardProps> = ({ data }) => 
 
         {/* Tool Info */}
         <div className="tool-info">
-          <ToolOutlined />
+          <span className="tool-icon">
+            <ToolOutlined />
+          </span>
           <span className="tool-name">{data.tool_name}</span>
-          <Tag
-            color={getRiskLevelColor(data.risk_level)}
-            icon={getRiskLevelIcon(data.risk_level)}
-          >
-            {getRiskLevelLabel(data.risk_level)}
-          </Tag>
         </div>
 
         {/* Risk Factors */}
         {riskFactors.length > 0 && (
           <div className="risk-factors">
+            <WarningOutlined className="risk-factors-icon" />
             {riskFactors.map((factor, index) => (
-              <Tag key={index} color="warning">
+              <span key={index} className="risk-factor-tag">
                 {factor}
-              </Tag>
+              </span>
             ))}
           </div>
         )}
@@ -262,27 +338,52 @@ const VisAuthorizationCard: React.FC<VisAuthorizationCardProps> = ({ data }) => 
           }}
         />
 
-        {/* Footer with Buttons */}
-        <div className="auth-footer">
-          <Button
-            disabled={disabled}
-            danger
-            icon={<CloseCircleOutlined />}
-            onClick={handleDeny}
-            loading={loading}
-          >
-            Deny
-          </Button>
-          <Button
-            disabled={disabled}
-            type="primary"
-            icon={<CheckCircleOutlined />}
-            onClick={handleAuthorize}
-            loading={loading}
-          >
-            {grantScope === GrantScope.SESSION ? 'Allow (Session)' : 'Allow Once'}
-          </Button>
-        </div>
+        {/* Footer: 已处理 → 只读记录；未处理 → 授权按钮 */}
+        {handled ? (
+          <div className={`auth-record auth-record-${isDeny ? 'deny' : 'allow'}`}>
+            <div className="record-head">
+              <span className="record-avatar">
+                {avatar ? (
+                  <img src={avatar} alt={who} />
+                ) : (
+                  <span>{initial}</span>
+                )}
+              </span>
+              <div className="record-who">
+                <span className="record-title">
+                  {isDeny ? 'Denied' : 'Allowed'} by {who || 'user'}
+                </span>
+                {record?.responded_at && (
+                  <span className="record-time">{formatTime(record.responded_at)}</span>
+                )}
+              </div>
+              <span className="record-icon">
+                {isDeny ? <CloseCircleFilled /> : <CheckCircleFilled />}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="auth-footer">
+            <Button
+              disabled={disabled || !statusLoaded}
+              danger
+              icon={<CloseCircleFilled />}
+              onClick={handleDeny}
+              loading={loading}
+            >
+              Deny
+            </Button>
+            <Button
+              disabled={disabled || !statusLoaded}
+              type="primary"
+              icon={<CheckCircleOutlined />}
+              onClick={handleAuthorize}
+              loading={loading}
+            >
+              {grantScope === GrantScope.SESSION ? 'Allow (Session)' : 'Allow Once'}
+            </Button>
+          </div>
+        )}
       </div>
     </VisAuthorizationCardWrap>
   );

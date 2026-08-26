@@ -346,10 +346,10 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
         }
         const keyInfo = llmKeyMap[provider];
 
-        // Ensure only one model is_default per provider
+        // 保留用户设定的 is_default;默认唯一性在下面的「全局」段落统一归一(跨所有 provider)
         const models = (item.models || [])
           .filter((model: any) => model?.name)
-          .map((model: any, idx: number, arr: any[]) => {
+          .map((model: any) => {
             const modelType = model.model_type || "llm";
             const capabilities = model.capabilities?.length
               ? model.capabilities
@@ -364,22 +364,9 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
               model_type: modelType,
               capabilities,
               is_multimodal: model.is_multimodal ?? capabilities.includes("vision"),
-              is_default: arr.length === 1 ? true : (model.is_default ?? false),
+              is_default: model.is_default ?? false,
             };
           });
-
-        // If multiple models have is_default=true, only keep the first one
-        const defaultCount = models.filter((m: any) => m.is_default).length;
-        if (defaultCount > 1) {
-          models.forEach((m: any, idx: number) => {
-            m.is_default = idx === 0;
-          });
-        }
-
-        // If no model is_default, set the first one as default
-        if (models.length > 0 && !models.some((m: any) => m.is_default)) {
-          models[0].is_default = true;
-        }
 
         // 解析 API Key：支持直接填实际值，或填 ${secrets.xxx} 引用
         const rawKey = (item.api_key_ref || "").trim();
@@ -413,6 +400,20 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
           api_base: item.api_base || "",
           api_key_ref: apiKeyRef,
           models,
+        });
+      }
+
+      // 全局唯一默认模型（跨所有 provider）：整个系统只允许一个模型标记为 is_default，
+      // 作为对话输入框回退全局列表时的默认模型。未指定任何默认可选择时，取第一个模型。
+      const allModels = providers.flatMap((p: any) => (p.models || []).map((m: any) => m));
+      if (allModels.length > 0) {
+        let defaultIndex = allModels.findIndex((m: any) => m.is_default);
+        if (defaultIndex < 0) {
+          defaultIndex = 0;
+          allModels[0].is_default = true;
+        }
+        allModels.forEach((m: any, i: number) => {
+          if (i !== defaultIndex) m.is_default = false;
         });
       }
 
@@ -470,7 +471,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
       <Alert
         type="info"
         showIcon
-        message="每个 Provider 只能设置一个默认模型"
+        message="全局只能指定一个默认模型（作为对话输入框回退全局模型列表时的默认选择）"
         className="mb-4"
       />
 
@@ -555,7 +556,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                   color="gold"
                                   icon={<StarOutlined />}
                                 >
-                                  {defaultModelName}
+                                  全局默认 · {defaultModelName}
                                 </Tag>
                               )}
                             </div>
@@ -887,28 +888,41 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                                 size="small"
                                                 onChange={(checked) => {
                                                   if (checked) {
-                                                    const currentModels =
+                                                    // 全局唯一默认：打开后关闭所有其他 provider/模型的 is_default
+                                                    const allProviders =
                                                       form.getFieldValue([
                                                         "agent_llm",
                                                         "providers",
-                                                        field.name,
-                                                        "models",
-                                                      ]);
-                                                    currentModels.forEach(
-                                                      (_m: unknown, idx: number) => {
-                                                        if (idx !== modelField.name) {
-                                                          form.setFieldValue(
-                                                            [
-                                                              "agent_llm",
-                                                              "providers",
-                                                              field.name,
-                                                              "models",
-                                                              idx,
-                                                              "is_default",
-                                                            ],
-                                                            false
-                                                          );
-                                                        }
+                                                      ]) || [];
+                                                    allProviders.forEach(
+                                                      (_p: unknown, pIdx: number) => {
+                                                        const ms = form.getFieldValue([
+                                                          "agent_llm",
+                                                          "providers",
+                                                          pIdx,
+                                                          "models",
+                                                        ]);
+                                                        (ms || []).forEach(
+                                                          (_m: unknown, mIdx: number) => {
+                                                            if (
+                                                              pIdx === field.name &&
+                                                              mIdx === modelField.name
+                                                            ) {
+                                                              return;
+                                                            }
+                                                            form.setFieldValue(
+                                                              [
+                                                                "agent_llm",
+                                                                "providers",
+                                                                pIdx,
+                                                                "models",
+                                                                mIdx,
+                                                                "is_default",
+                                                              ],
+                                                              false
+                                                            );
+                                                          }
+                                                        );
                                                       }
                                                     );
                                                   }

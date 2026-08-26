@@ -5,20 +5,38 @@ export const VisConfirmResponseWrap = styled.div`
   padding: 4px 6px;
 
   .response-card {
-    background: rgba(var(--mcp-success-rgb), 0.1);
-    border: 1px solid rgba(var(--mcp-success-rgb), 0.35);
-    border-radius: var(--r-md);
-    padding: 12px 16px;
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(
+      180deg,
+      rgba(var(--mcp-success-rgb), 0.07),
+      rgba(var(--mcp-success-rgb), 0.02)
+    );
+    border: 1px solid rgba(var(--mcp-success-rgb), 0.28);
+    border-radius: var(--r-lg);
+    padding: 12px 16px 12px 20px;
+
+    /* left trust accent */
+    &::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 10px;
+      bottom: 10px;
+      width: 3px;
+      border-radius: 999px;
+      background: var(--success);
+    }
 
     .response-header {
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 8px;
+      margin-bottom: 10px;
 
       .check-icon {
         color: var(--success);
-        font-size: 16px;
+        font-size: 17px;
       }
 
       .response-title {
@@ -35,12 +53,20 @@ export const VisConfirmResponseWrap = styled.div`
     }
 
     .response-question {
-      margin-bottom: 8px;
+      margin-bottom: 10px;
+      padding: 8px 10px;
       font-size: var(--fs-body);
       color: var(--ink-500);
+      background: var(--bg-elev);
+      border: 1px solid var(--line-soft);
+      border-radius: var(--r-sm);
     }
 
     .response-content {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+
       .response-selection {
         display: flex;
         align-items: center;
@@ -48,9 +74,11 @@ export const VisConfirmResponseWrap = styled.div`
 
         .selection-tag {
           font-size: var(--fs-body);
+          font-weight: 500;
           color: var(--brand) !important;
           border-color: rgba(var(--brand-rgb), 0.4) !important;
           background-color: rgba(var(--brand-rgb), 0.08) !important;
+          border-radius: 8px;
         }
 
         .selection-desc {
@@ -60,7 +88,6 @@ export const VisConfirmResponseWrap = styled.div`
       }
 
       .response-input {
-        margin-top: 4px;
         font-size: var(--fs-body);
         color: var(--ink-700);
       }

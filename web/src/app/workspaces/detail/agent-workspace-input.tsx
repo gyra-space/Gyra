@@ -439,9 +439,12 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
         // 仅在尚未选中任何模型时回填默认模型:不覆盖用户已选/外部记忆的模型
         // (修复提交后输入框重挂载导致模型回退默认的 bug)
         if (llm.length && !selectedModelRef.current) {
-          // 优先使用传入的默认模型(如空间设置模型列表首个),否则回退全局模型列表首个
+          // 优先使用传入的默认模型(如空间设置模型列表首个)；其次全局默认模型(模型配置里
+          // 指定的 is_default=全局唯一)；否则回退全局模型列表首个。避免空间默认为空时
+          // 无脑选列表首个,而是尊重用户显式指定的全局默认模型。
           systemDefaultRef.current = true;
-          updateSelectedModel(defaultModel || llm[0].model_name);
+          const globalDefault = llm.find(m => m.is_default)?.model_name || '';
+          updateSelectedModel(defaultModel || globalDefault || llm[0].model_name);
         }
       },
     });

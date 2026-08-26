@@ -74,14 +74,15 @@ class StateStore(ABC):
     async def delete_interaction_checkpoint(self, request_id: str) -> None: ...
 
     @abstractmethod
-    async def save_confirm_record(self, request_id: str, record: dict) -> bool:
-        """持久化一条用户确认记录（谁在何时确认了什么）。
+    async def save_interaction_record(self, request_id: str, record: dict) -> bool:
+        """持久化一条用户交互记录（谁在何时对什么类型交互做了什么）。
 
         幂等：同一 request_id 首次写入返回 True，已存在返回 False（用于拒绝重复确认）。
         """
 
     @abstractmethod
-    async def get_confirm_record(self, request_id: str) -> Optional[dict]: ...
+    async def get_interaction_record(self, request_id: str) -> Optional[dict]:
+        """按 request_id 读取交互记录（含 state/actor/acted_at/result 等）。"""
 
     @abstractmethod
     async def save_transcript(
@@ -443,8 +444,8 @@ class DbStateStore(StateStore):
                 pass  # 连接由 store 线程局部复用（见 _connect/close）
         await asyncio.to_thread(_do)
 
-    async def save_confirm_record(self, request_id: str, record: dict) -> bool:
-        """幂等写入确认记录；已存在返回 False（拒绝重复确认）。"""
+    async def save_interaction_record(self, request_id: str, record: dict) -> bool:
+        """幂等写入交互记录；已存在返回 False（拒绝重复确认）。"""
 
         def _do():
             conn = self._connect()
@@ -460,12 +461,12 @@ class DbStateStore(StateStore):
                 pass  # 连接由 store 线程局部复用（见 _connect/close）
         return await asyncio.to_thread(_do)
 
-    async def get_confirm_record(self, request_id: str) -> Optional[dict]:
+    async def get_interaction_record(self, request_id: str) -> Optional[dict]:
         def _do():
             conn = self._connect()
             try:
                 row = conn.execute(
-                    "SELECT record, responded_at FROM confirm_record WHERE request_id = ?",
+                    "SELECT record FROM confirm_record WHERE request_id = ?",
                     (request_id,),
                 ).fetchone()
                 if not row:
