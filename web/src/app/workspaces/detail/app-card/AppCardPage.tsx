@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { CopyOutlined, DeleteOutlined, SettingOutlined } from '@ant-design/icons';
-import { App, Button, Drawer, Input, Modal, Select, Switch, Tag } from 'antd';
+import { App, Button, Drawer, Input, Select, Switch, Tag } from 'antd';
 import { apiInterceptors } from '@/client/api';
 import { deleteAppCard, updateAppCard, type AppCardItem } from '@/client/api/app-card';
 import { ee, EVENTS } from '@/utils/event-emitter';
@@ -36,7 +36,7 @@ export function AppCardPage({
   workspaceId: number;
   onDeleted?: () => void;
 }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [card, setCard] = useState(initialCard);
   const [maintainOpen, setMaintainOpen] = useState(false);
   const [icon, setIcon] = useState(initialCard.icon || '📊');
@@ -112,7 +112,7 @@ export function AppCardPage({
   };
 
   const handleDelete = () => {
-    Modal.confirm({
+    modal.confirm({
       title: '删除应用',
       content: `确定删除「${card.name}」吗？删除后无法恢复。`,
       okText: '删除',
@@ -120,10 +120,19 @@ export function AppCardPage({
       cancelText: '取消',
       onOk: async () => {
         setDeleting(true);
-        const [err] = await apiInterceptors(deleteAppCard(card.id, workspaceId));
+        const [err, res] = await apiInterceptors(deleteAppCard(card.id, workspaceId));
         setDeleting(false);
         if (err) {
           message.error((err as Error).message || '删除失败');
+          return;
+        }
+        // 严格校验后端结果:仅当 deleted=true 才视为删除成功,
+        // 避免"找不到卡片/已删除"仍提示成功导致界面无变化(表现为点删除没反应)
+        if (res?.deleted !== true) {
+          message.warning('未找到该应用，可能已被删除');
+          setMaintainOpen(false);
+          ee.emit(EVENTS.APP_CARD_CHANGED, { workspaceId });
+          onDeleted?.();
           return;
         }
         message.success('已删除');
