@@ -188,8 +188,9 @@ export function SceneWorkspaceShell({
     return (data || []).map((p: any) => ({ playbook_id: p.id, playbook_name: p.name }));
   }, { refreshDeps: [workspaceId] });
 
-  // 空间配置模型:取「空间设置 → 空间模型」列表里第一个启用的模型作为输入框默认模型。
-  // 未配置空间模型时为空字符串,输入框内部回退到全局模型列表首个(与旧逻辑一致)。
+  // 空间配置模型:取「空间设置 → 空间模型」列表里默认(is_default)的模型作为输入框默认模型。
+  // 无默认标记时按原逻辑取第一个启用的模型;未配置空间模型时为空字符串,
+  // 输入框内部回退到全局模型列表首个(与旧逻辑一致)。
   const { data: spaceModels } = useRequest(async () => {
     if (!workspaceId) return [];
     const [, data] = await apiInterceptors(listResources({ workspace_id: workspaceId, type: 'llm_model' }));
@@ -199,7 +200,14 @@ export function SceneWorkspaceShell({
   const spaceDefaultModel = useMemo(() => {
     const list = spaceModels || [];
     if (!list.length) return '';
-    const first = list.find((m: any) => m.is_active !== false) || list[0];
+    // 优先取空间「设为默认」标记的模型(is_default);无标记时取第一个启用的模型,
+    // 避免后端按 gmt_modified 倒序返回时误选最近修改而非默认模型。
+    const isDefault = (m: any) => !!(m?.config && m.config.is_default);
+    const first =
+      list.find((m: any) => m.is_active !== false && isDefault(m)) ||
+      list.find((m: any) => isDefault(m)) ||
+      list.find((m: any) => m.is_active !== false) ||
+      list[0];
     return first?.config?.model || first?.physical_ref || first?.name || '';
   }, [spaceModels]);
 

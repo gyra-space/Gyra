@@ -336,9 +336,14 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
                   blockNode
                   treeData={rawTreeData}
                   selectedKeys={selectedRaw ? [selectedRaw] : []}
-                  onSelect={keys => {
+                  onSelect={(keys, info) => {
+                    if (info.node?.isLeaf === false) return;
                     const k = keys[0] as string | undefined;
-                    if (k && !k.endsWith('/')) setSelectedRaw(k);
+                    if (k && k.endsWith('.md')) {
+                      setSelectedRaw(k);
+                    } else if (k) {
+                      message.info('该文件暂不支持预览，仅支持 .md 原始文件');
+                    }
                   }}
                 />
               ) : (
