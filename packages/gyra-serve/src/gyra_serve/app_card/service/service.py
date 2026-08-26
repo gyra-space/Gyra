@@ -243,12 +243,15 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
             session.flush()
             self._snapshot_version(session, entity, 1, request.created_by or "agent")
             session.commit()
+            # 在 session 关闭前物化响应:commit 后(expire_on_commit=True)实体已过期,
+            # 若在 close 之后再访问属性会触发 detached 实体刷新报错
+            resp = self.dao.to_response(entity)
         except Exception:
             session.rollback()
             raise
         finally:
             session.close()
-        return self._decorate_share(self.dao.to_response(entity))
+        return self._decorate_share(resp)
 
     def update(self, request: AppCardUpdateRequest, user: UserRequest) -> Optional[AppCardResponse]:
         session = self.dao.get_raw_session()
@@ -290,12 +293,13 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
             entity.current_version = (entity.current_version or 1) + 1
             self._snapshot_version(session, entity, entity.current_version, request.created_by or "agent")
             session.commit()
+            # 同 create:commit 后实体会过期,必须在 session 仍打开时物化响应
+            resp = self.dao.to_response(entity)
         except Exception:
             session.rollback()
             raise
         finally:
             session.close()
-        resp = self.dao.to_response(entity)
         resp = self._decorate_perms(resp, user)
         return self._decorate_share(resp)
 

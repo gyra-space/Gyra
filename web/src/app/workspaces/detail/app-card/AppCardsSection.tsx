@@ -10,7 +10,7 @@ import {
 import { Button, Input, Modal, message } from 'antd';
 import { apiInterceptors } from '@/client/api';
 import { createAppCard, listAppCards, type AppCardItem } from '@/client/api/app-card';
-import { extractAppCardPayload, isAppCardPayloadText } from './AppCardImportButton';
+import { extractAppCardPayload, getAppCardPayloadError, isAppCardPayloadText } from './AppCardImportButton';
 import { ee, EVENTS } from '@/utils/event-emitter';
 import './app-card.css';
 
@@ -66,9 +66,14 @@ function AppCardImportModal({
   };
 
   const handleSubmit = async () => {
+    const errMsg = getAppCardPayloadError(rawText);
+    if (errMsg) {
+      message.error(`内容不是有效的 App Card payload：${errMsg}`);
+      return;
+    }
     const payload = extractAppCardPayload(rawText, workspaceId);
     if (!payload) {
-      message.error('内容不是有效的 App Card payload(需含 meta.schema_name 签名, 或 name 与 code 字段的 JSON)');
+      message.error('App Card 内容解析失败');
       return;
     }
     payload.name = name || payload.name;

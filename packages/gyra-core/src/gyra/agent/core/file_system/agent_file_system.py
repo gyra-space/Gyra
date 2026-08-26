@@ -752,6 +752,20 @@ class AgentFileSystem:
                 logger.info(
                     f"[AFSv3] Binary dedup: '{file_key}' matches '{existing_key}'"
                 )
+                # 交付语义升级:与 save_file_from_sandbox 一致,deliver_file 本地模式
+                # 对已存在文件标记交付时,升级 file_type 为 DELIVERABLE,否则交付面板
+                # 只会把它列入"任务文件"、进不了"交付文件"卡片。
+                if (
+                    is_deliverable
+                    or file_type == FileType.DELIVERABLE
+                    or file_type == FileType.DELIVERABLE.value
+                ):
+                    existing_metadata.file_type = FileType.DELIVERABLE.value
+                    if description:
+                        meta = dict(existing_metadata.metadata or {})
+                        meta["description"] = description
+                        existing_metadata.metadata = meta
+                    await self.metadata_storage.save_file_metadata(existing_metadata)
                 return existing_metadata
 
         # 3. 准备文件名和 MIME 类型
@@ -1606,6 +1620,23 @@ class AgentFileSystem:
                 f"[AFSv3] File already exists, skipping: sandbox_path={sandbox_path}, "
                 f"file_id={existing.file_id}"
             )
+            # 交付语义升级:若本次以 DELIVERABLE 类型保存(如 deliver_file 对已存在
+            # 文件标记交付 / create_file 的 is_deliverable=True),必须把既有元数据的
+            # file_type 升级为 DELIVERABLE 并落库。否则文件保留原类型(如 write_file),
+            # 下游交付面板按 file_type 过滤时只能进"任务文件"、进不了"交付文件",
+            # 导致交付卡片不展示。
+            if (
+                is_deliverable
+                or file_type == FileType.DELIVERABLE
+                or file_type == FileType.DELIVERABLE.value
+            ):
+                existing.file_type = FileType.DELIVERABLE.value
+                merged_meta = dict(existing.metadata or {})
+                if description:
+                    merged_meta["description"] = description
+                if metadata:
+                    merged_meta.update(metadata)
+                existing.metadata = merged_meta
             # 更新元数据中的访问时间
             existing.updated_at = datetime.utcnow()
             await self.metadata_storage.save_file_metadata(existing)

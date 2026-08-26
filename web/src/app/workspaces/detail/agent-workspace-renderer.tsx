@@ -494,12 +494,14 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
   // 流式跟随:底部哨兵,运行中每条新内容都把最新产出滚入可视区;
   // 非运行态加载历史时同样默认定位到最新一屏。只滚动最近的
   // 「overflow-y 容器」,避免连带把整页/外层壳也带滚。
+  // 用户干预(向上滚动离开底部)会暂停跟随,避免输出过程中无法操作页面;
+  // 回到底部并停留 5 秒后自动恢复跟随。
   const endRef = useRef<HTMLDivElement>(null);
-  const runningRef = useRef(running);
-  runningRef.current = running;
   // 是否跟随最新(运行中 / 初次加载 / 用户贴近底部时为 true)
   const followRef = useRef(true);
   const prevExecLenRef = useRef(0);
+  // 「回到底部并停留 5s」后恢复跟随的计时器
+  const resumeTimerRef = useRef<number | null>(null);
 
   const getScrollContainer = useCallback(() => {
     const el = endRef.current;
@@ -539,17 +541,18 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
     return () => ro.disconnect();
   }, [scrollToBottom]);
 
-  // 内容 / 运行状态变化:运行中或初次加载(0→N)强制跟随到最新;
-  // 其余情况仅在用户仍贴近底部时继续跟随。
+  // 内容 / 运行状态变化:初次加载(0→N)强制跟随到最新;
+  // 其余情况仅在用户未干预(followRef=true)且仍贴近底部时继续跟随。
   useEffect(() => {
     const len = view.execution.length;
     const fresh = prevExecLenRef.current === 0 && len > 0;
     prevExecLenRef.current = len;
-    if (runningRef.current || fresh) {
+    if (fresh) {
       followRef.current = true;
       scrollToBottom();
       return;
     }
+    if (!followRef.current) return;
     const c = getScrollContainer();
     if (!c) return;
     const distance = c.scrollHeight - c.scrollTop - c.clientHeight;
@@ -558,19 +561,40 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
     } else {
       followRef.current = false;
     }
-  }, [view.execution, view, running, scrollToBottom, getScrollContainer]);
+  }, [view.execution, view, scrollToBottom, getScrollContainer]);
 
-  // 用户手动滚动:远离底部则暂停跟随,回到底部恢复。
+  // 用户手动滚动:离开底部立即暂停跟随(并取消恢复计时);
+  // 回到底部并停留 5 秒后自动恢复跟随。
   useEffect(() => {
     const c = getScrollContainer();
     if (!c) return;
     const onScroll = () => {
-      if (runningRef.current) return;
       const distance = c.scrollHeight - c.scrollTop - c.clientHeight;
-      followRef.current = distance < 80;
+      if (distance < 80) {
+        // 停留在底部:启动 5s 计时,期间未再次离开底部则恢复跟随
+        if (resumeTimerRef.current == null) {
+          resumeTimerRef.current = window.setTimeout(() => {
+            resumeTimerRef.current = null;
+            followRef.current = true;
+          }, 5000);
+        }
+      } else {
+        // 离开底部:立即停止跟随并取消计时
+        followRef.current = false;
+        if (resumeTimerRef.current != null) {
+          window.clearTimeout(resumeTimerRef.current);
+          resumeTimerRef.current = null;
+        }
+      }
     };
     c.addEventListener('scroll', onScroll, { passive: true });
-    return () => c.removeEventListener('scroll', onScroll);
+    return () => {
+      c.removeEventListener('scroll', onScroll);
+      if (resumeTimerRef.current != null) {
+        window.clearTimeout(resumeTimerRef.current);
+        resumeTimerRef.current = null;
+      }
+    };
   }, [getScrollContainer]);
   // 已有完整回复(answer step)时,summary 不再单独渲染,避免重复
   const hasAnswer = view.execution.some((s) => s.type === 'answer');

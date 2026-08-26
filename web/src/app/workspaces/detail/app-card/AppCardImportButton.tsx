@@ -15,26 +15,34 @@ import { ee, EVENTS } from '@/utils/event-emitter';
 export const APP_CARD_SCHEMA_NAME = 'gyra_app_card';
 export const APP_CARD_SCHEMA_VERSION = 1;
 
-/** 判断文本是否为 App Card payload JSON:
- * 优先认 meta.schema_name 签名, 兼容旧格式(仅含 name+code)。 */
-export function isAppCardPayloadText(text: string): boolean {
-  if (!text) return false;
+/** 校验文本是否为 App Card payload JSON,并返回"为何不合法"的提示;合法则返回 null。
+ *  若为非法 JSON,错误信息会明确指出,便于用户定位真实原因。 */
+export function getAppCardPayloadError(text: string): string | null {
+  if (!text) return '内容为空';
   let data: unknown;
   try {
     data = JSON.parse(text);
   } catch {
-    return false;
+    return '不是合法的 JSON（可能被截断、混入说明文字，或 code/字段内引号未转义）';
   }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return 'JSON 顶层需为对象';
   const obj = data as Record<string, unknown>;
   // 签名优先: 显式标为 gyra_app_card 即可认定
   const meta = obj.meta as Record<string, unknown> | undefined;
   if (meta && typeof meta === 'object' && !Array.isArray(meta) && meta.schema_name === APP_CARD_SCHEMA_NAME) {
-    return true;
+    return null;
   }
   // 兼容旧 payload: 有 name + code 即视为 app card
-  return typeof obj.name === 'string' && obj.name.trim() !== '' &&
-    typeof obj.code === 'string' && obj.code.trim() !== '';
+  const hasName = typeof obj.name === 'string' && obj.name.trim() !== '';
+  const hasCode = typeof obj.code === 'string' && obj.code.trim() !== '';
+  if (hasName && hasCode) return null;
+  return '需含 meta.schema_name 签名，或 name 与 code 字段';
+}
+
+/** 判断文本是否为 App Card payload JSON:
+ * 优先认 meta.schema_name 签名, 兼容旧格式(仅含 name+code)。 */
+export function isAppCardPayloadText(text: string): boolean {
+  return getAppCardPayloadError(text) === null;
 }
 
 /** 从 App Card payload JSON 提取落库字段;非法输入返回 null。 */

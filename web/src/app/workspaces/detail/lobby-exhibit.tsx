@@ -31,7 +31,7 @@ import { createAppCard } from '@/client/api/app-card';
 import { injectLocalLibsForReport, resolveFileDownloadUrl, transformFileUrl } from '@/utils';
 import { ee, EVENTS } from '@/utils/event-emitter';
 import type { LobbyExhibit } from './agent-workspace-types';
-import { isAppCardPayloadText, extractAppCardPayload } from './app-card/AppCardImportButton';
+import { getAppCardPayloadError, extractAppCardPayload } from './app-card/AppCardImportButton';
 import './app-card/app-card.css';
 
 /* ═══════════════════════════════════════════════════════════════
@@ -876,8 +876,9 @@ export function ExhibitHost({ exhibit, workspaceId }: { exhibit: LobbyExhibit; w
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         raw = await res.text();
       }
-      if (!isAppCardPayloadText(raw)) {
-        message.open({ key: msgKey, type: 'warning', content: '该文件不是有效的 App Card payload（需含 meta.schema_name 或 name+code）' });
+      const errMsg = getAppCardPayloadError(raw);
+      if (errMsg) {
+        message.open({ key: msgKey, type: 'warning', content: `该文件不是有效的 App Card payload：${errMsg}` });
         return;
       }
       const payload = extractAppCardPayload(raw, workspaceId);
