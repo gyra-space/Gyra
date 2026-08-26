@@ -11,6 +11,8 @@ export const EVENTS = {
   OPEN_PANEL: 'openPanel',
   SWITCH_TAB: 'switchTab',
   SYSTEM_EVENTS: 'systemEvents',
+  // 应用卡片变更(新增/删除/更新)时广播,场景空间应用卡片列表据此刷新
+  APP_CARD_CHANGED: 'appCardChanged',
 };
 
 const DEBUG_EMITTER = false; // 调试 folder/work 联动时打开

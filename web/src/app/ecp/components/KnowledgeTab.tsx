@@ -314,7 +314,8 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
                     blockNode
                     treeData={treeData}
                     selectedKeys={selectedDoc ? [selectedDoc] : []}
-                    onSelect={keys => {
+                    onSelect={(keys, info) => {
+                      if (info.node?.isLeaf === false) return;
                       const k = keys[0] as string | undefined;
                       if (k && k.endsWith('.md')) {
                         setSelectedDoc(k);

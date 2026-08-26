@@ -29,6 +29,7 @@ import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/componen
 import { GET, apiInterceptors } from '@/client/api';
 import { createAppCard } from '@/client/api/app-card';
 import { injectLocalLibsForReport, resolveFileDownloadUrl, transformFileUrl } from '@/utils';
+import { ee, EVENTS } from '@/utils/event-emitter';
 import type { LobbyExhibit } from './agent-workspace-types';
 import { isAppCardPayloadText, extractAppCardPayload } from './app-card/AppCardImportButton';
 import './app-card/app-card.css';
@@ -890,6 +891,7 @@ export function ExhibitHost({ exhibit, workspaceId }: { exhibit: LobbyExhibit; w
         return;
       }
       message.open({ key: msgKey, type: 'success', content: `已导入子应用「${payload.name}」` });
+      ee.emit(EVENTS.APP_CARD_CHANGED, { workspaceId });
     } catch (e) {
       message.open({ key: msgKey, type: 'error', content: (e as Error).message || '内容获取失败，无法导入' });
     } finally {

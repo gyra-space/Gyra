@@ -9,6 +9,7 @@ import { App, Button } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import { apiInterceptors } from '@/client/api';
 import { createAppCard, type AppCardCreatePayload } from '@/client/api/app-card';
+import { ee, EVENTS } from '@/utils/event-emitter';
 
 /** App Card payload 的 meta 签名(用于可靠识别, 而非靠 name+code 启发式)。 */
 export const APP_CARD_SCHEMA_NAME = 'gyra_app_card';
@@ -101,6 +102,7 @@ export function AppCardImportButton({
       return;
     }
     message.open({ key: `appcard-import-${workspaceId}-${payload.name}`, type: 'success', content: `已导入子应用「${payload.name}」` });
+    ee.emit(EVENTS.APP_CARD_CHANGED, { workspaceId });
     onImported?.();
   };
 

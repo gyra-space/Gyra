@@ -2,9 +2,10 @@
 
 import { useState } from 'react';
 import { CopyOutlined, DeleteOutlined, SettingOutlined } from '@ant-design/icons';
-import { Button, Drawer, Input, Modal, Select, Tag, message } from 'antd';
+import { App, Button, Drawer, Input, Modal, Select, Tag } from 'antd';
 import { apiInterceptors } from '@/client/api';
 import { deleteAppCard, updateAppCard, type AppCardItem } from '@/client/api/app-card';
+import { ee, EVENTS } from '@/utils/event-emitter';
 import { AppCardRenderer } from './AppCardRenderer';
 
 const PRESET_ICONS = ['📊', '📈', '📉', '🧭', '🗂️', '⚙️', '🛰️', '🧮', '📋', '🔎'];
@@ -35,6 +36,7 @@ export function AppCardPage({
   workspaceId: number;
   onDeleted?: () => void;
 }) {
+  const { message } = App.useApp();
   const [card, setCard] = useState(initialCard);
   const [maintainOpen, setMaintainOpen] = useState(false);
   const [icon, setIcon] = useState(initialCard.icon || '📊');
@@ -65,6 +67,7 @@ export function AppCardPage({
     if (res) setCard((prev) => ({ ...prev, ...res }));
     message.success('已保存');
     setMaintainOpen(false);
+    ee.emit(EVENTS.APP_CARD_CHANGED, { workspaceId });
   };
 
   const handleCopyShare = async () => {
@@ -116,6 +119,7 @@ export function AppCardPage({
         }
         message.success('已删除');
         setMaintainOpen(false);
+        ee.emit(EVENTS.APP_CARD_CHANGED, { workspaceId });
         onDeleted?.();
       },
     });

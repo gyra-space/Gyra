@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRequest } from 'ahooks';
 import {
   AppstoreOutlined,
@@ -11,6 +11,7 @@ import { Button, Input, Modal, message } from 'antd';
 import { apiInterceptors } from '@/client/api';
 import { createAppCard, listAppCards, type AppCardItem } from '@/client/api/app-card';
 import { extractAppCardPayload, isAppCardPayloadText } from './AppCardImportButton';
+import { ee, EVENTS } from '@/utils/event-emitter';
 import './app-card.css';
 
 export interface AppCardsSectionProps {
@@ -144,6 +145,15 @@ export function AppCardsSection({ workspaceId, refreshKey, onSelectAppCard }: Ap
     const [err, res] = await apiInterceptors(listAppCards(workspaceId));
     return err ? [] : (res ?? []);
   }, { refreshDeps: [workspaceId, refreshKey] });
+
+  // 应用卡片变更(导入/删除/更新)广播后自动刷新,无需手动刷新
+  useEffect(() => {
+    const handler = () => refresh();
+    ee.on(EVENTS.APP_CARD_CHANGED, handler);
+    return () => {
+      ee.off(EVENTS.APP_CARD_CHANGED, handler);
+    };
+  }, [refresh]);
 
   return (
     <section className="ws-lobby__app-cards">
