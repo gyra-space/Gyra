@@ -15,7 +15,15 @@ const BASE_CSS = `
 `;
 
 /** 沙箱化 iframe 宿主:注入 SDK + 卡片代码,并桥接 postMessage → HTTP invoke。 */
-export function AppCardRenderer({ appCard, workspaceId }: { appCard: AppCardItem; workspaceId: number }) {
+export function AppCardRenderer({
+  appCard,
+  workspaceId,
+  height = 520,
+}: {
+  appCard: AppCardItem;
+  workspaceId: number;
+  height?: number;
+}) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [loaded, setLoaded] = useState(false);
   const [booting, setBooting] = useState(true);
@@ -46,7 +54,7 @@ export function AppCardRenderer({ appCard, workspaceId }: { appCard: AppCardItem
   }, [workspaceId]);
 
   return (
-    <div className="ws-app-card">
+    <div className="ws-app-card" style={{ height: `${height}px` }}>
       {booting && (
         <div className="ws-app-card__loading">
           <LoadingOutlined spin style={{ fontSize: 18 }} />

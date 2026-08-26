@@ -128,6 +128,9 @@ def _iter_configured_models(agent_llm: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not isinstance(p_conf, dict):
             continue
         provider_name = p_conf.get("provider", "unknown")
+        # 关闭的提供商不参与全局模型列表（配置保留，仅隐藏）
+        if p_conf.get("enabled", True) is False:
+            continue
         p_defaults = {k: v for k, v in p_conf.items() if k not in ("model", "provider")}
         p_defaults["provider"] = provider_name
 

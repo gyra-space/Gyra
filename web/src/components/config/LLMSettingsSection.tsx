@@ -166,6 +166,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
             return {
               provider: providerName,
               protocol,
+              enabled: provider.enabled ?? true,
               api_base: provider.api_base,
               api_key_ref: provider.api_key_ref,
               models:
@@ -397,6 +398,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
         providers.push({
           provider,
           protocol: item.protocol || inferProtocol(provider),
+          enabled: item.enabled ?? true,
           api_base: item.api_base || "",
           api_key_ref: apiKeyRef,
           models,
@@ -533,13 +535,23 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                       (m: { is_default?: boolean }) => m.is_default
                     );
                     const defaultModelName = defaultModel?.name;
+                    const inlineEnabled = form.getFieldValue([
+                      "agent_llm",
+                      "providers",
+                      field.name,
+                      "enabled",
+                    ]) ?? true;
 
                     return {
                       key: field.key,
                       label: (
                           <div className="flex items-center justify-between w-full pr-4">
                             <div className="flex items-center gap-2">
-                              <span className="text-sm font-semibold text-gray-800">
+                              <span
+                                className={`text-sm font-semibold ${
+                                  inlineEnabled ? "text-gray-800" : "text-gray-400 line-through"
+                                }`}
+                              >
                                 {providerName || "未命名 Provider"}
                               </span>
                               {providerName && (
@@ -560,20 +572,35 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                 </Tag>
                               )}
                             </div>
-                            <Popconfirm
-                              title="确定删除该 Provider？"
-                              onConfirm={() => remove(field.name)}
-                            >
-                              <Button
-                                type="text"
-                                danger
-                                size="small"
-                                icon={<DeleteOutlined />}
-                                onClick={(e) => e.stopPropagation()}
+                            <div className="flex items-center gap-2">
+                              <Form.Item
+                                name={[field.name, "enabled"]}
+                                valuePropName="checked"
+                                noStyle
                               >
-                                删除
-                              </Button>
-                            </Popconfirm>
+                                <Switch
+                                  size="small"
+                                  checkedChildren="启用"
+                                  unCheckedChildren="停用"
+                                  tooltip="关闭后全局模型列表不再展示该提供商（配置保留，不删除）"
+                                  onClick={(_, e) => e.stopPropagation()}
+                                />
+                              </Form.Item>
+                              <Popconfirm
+                                title="确定删除该 Provider？"
+                                onConfirm={() => remove(field.name)}
+                              >
+                                <Button
+                                  type="text"
+                                  danger
+                                  size="small"
+                                  icon={<DeleteOutlined />}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  删除
+                                </Button>
+                              </Popconfirm>
+                            </div>
                           </div>
                         ),
                       children: (
@@ -964,6 +991,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                   add({
                     provider: "",
                     protocol: "openai",
+                    enabled: true,
                     api_base: "",
                     api_key_ref: "",
                     models: [

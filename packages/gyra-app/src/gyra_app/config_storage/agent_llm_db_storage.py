@@ -53,6 +53,9 @@ def load_agent_llm_model_names(exclude_media: bool = True) -> list:
     for p in providers or []:
         if not isinstance(p, dict):
             continue
+        # 关闭的提供商不参与全局模型名列表（配置保留，仅隐藏）
+        if p.get("enabled", True) is False:
+            continue
         models = p.get("models")
         if not isinstance(models, list):
             models = p.get("model")

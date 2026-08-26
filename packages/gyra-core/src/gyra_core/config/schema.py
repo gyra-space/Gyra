@@ -236,6 +236,9 @@ class LLMProviderConfig(BaseModel):
     protocol: Optional[str] = None
     api_base: str = "https://api.openai.com/v1"
     api_key_ref: str = ""  # 引用 secrets 中的 key 名称
+    # 是否启用该提供商。关闭后全局不再展示该提供商的模型列表（但不删除配置），
+    # 便于临时停用某个供应商而不丢失其 key/模型配置。
+    enabled: bool = Field(True, description="是否启用该提供商；关闭后全局隐藏其模型列表")
     models: List[LLMProviderModelConfig] = Field(
         default_factory=lambda: [
             LLMProviderModelConfig(name="gpt-4"),

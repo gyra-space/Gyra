@@ -34,4 +34,5 @@ export type DetailContext =
   | 'flywheel'
   | 'subagent'
   | 'triggers'
-  | 'data-assets';
+  | 'data-assets'
+  | 'app-card';

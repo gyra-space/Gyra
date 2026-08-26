@@ -10,6 +10,7 @@ import { ObjectDetailDrawer } from '@/app/ecp/components/common';
 import { GrowthCard } from './growth-card';
 import { SpaceGuideCard } from './space-guide-card';
 import { AppCardsSection } from './app-card/AppCardsSection';
+import { type AppCardItem } from '@/client/api/app-card';
 import './lobby.css';
 
 export interface LobbyProps {
@@ -21,6 +22,8 @@ export interface LobbyProps {
   onSelectTask?: (taskId: number) => void;
   onSelectArtifact?: (artifact: any) => void;
   onSelectDelivery?: (delivery: any) => void;
+  /** 应用卡片:点击大厅应用图标 → 场景空间打开完整应用页 */
+  onSelectAppCard?: (card: AppCardItem) => void;
   /** 进入飞轮工作台 */
   onEnterFlywheel?: () => void;
   /** 导览卡动作(壳内切换,不整页跳转) */
@@ -83,6 +86,7 @@ export function Lobby({
   refreshKey,
   onSelectArtifact,
   onSelectDelivery,
+  onSelectAppCard,
   onEnterFlywheel,
   onGuide,
   onSelectInbox,
@@ -180,7 +184,7 @@ export function Lobby({
         />
 
         {/* 应用卡片:Agent 生成的常驻交互子应用(多 tab 多指标看板等) */}
-        <AppCardsSection workspaceId={workspaceId} refreshKey={refreshKey} />
+        <AppCardsSection workspaceId={workspaceId} refreshKey={refreshKey} onSelectAppCard={onSelectAppCard} />
 
         {/* 今日待办:每天进空间的第一站,与 rail 收件箱同数据同视觉 */}
         <section className="ws-lobby__inbox">

@@ -951,6 +951,13 @@ export function SceneWorkspaceShell({
                 setFocusDismissed(false);
                 expandSpace();
               }}
+              onSelectAppCard={(card) => {
+                setPreviewItem({ payload: { card } });
+                setDetailContext('app-card');
+                setFocusDismissed(false);
+                expandSpace();
+                setMobilePane('space');
+              }}
             />
           </div>
           <div className="ws-scene-shell__agent">

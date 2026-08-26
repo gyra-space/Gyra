@@ -45,22 +45,44 @@ _space_model_config: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = (
 )
 
 
+def _find_global_model_config(model: str) -> Optional[Dict[str, Any]]:
+    """按模型名在全局注册表中找配置,用于空间覆盖继承全局 provider/协议/base_url。
+
+    空间绑定语义 = 对全局同名模型的配置覆盖:空间未显式给出的连接字段
+    (provider/protocol/base_url/api_key)继承全局配置,保证绑定的是一个「可用」的
+    全局模型,而不是用一个残缺配置把它覆盖坏(导致 provider 建不出来)。
+    返回 None 表示全局没有该模型(此时空间配置必须自带完整连接字段)。
+    """
+    for key, cfg in ModelConfigCache._model_configs.items():
+        if (cfg.get("model") == model) or (key.split("/")[-1] == model):
+            return cfg
+    return None
+
+
 def _normalize_space_model(config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """归一化空间级模型配置,补全 protocol/model 等派生字段。无效配置返回 None。
 
     空间配置只存 api_key_ref(引用加密 secrets),不落明文 token;运行时经
     ConfigReferenceResolver 解析。若显式给了 api_key 也透传(仍以 secrets 优先)。
+
+    空间绑定语义 = 对全局同名模型的配置覆盖:provider/protocol/base_url/api_key
+    未在空间显式给出时,继承全局同名模型配置(而非兜底成 openai),避免把本来可用的
+    全局模型覆盖坏。
     """
     if not config:
         return None
     model = (config.get("model") or "").strip()
     if not model:
         return None
-    provider = (config.get("provider") or "openai").strip()
-    protocol = (config.get("protocol") or "").strip() or infer_protocol(provider)
-    base_url = config.get("base_url") or config.get("api_base")
+    gcfg = _find_global_model_config(model)
+    provider = (config.get("provider") or (gcfg or {}).get("provider") or "openai").strip()
+    protocol = (
+        (config.get("protocol") or (gcfg or {}).get("protocol") or "").strip()
+        or infer_protocol(provider)
+    )
+    base_url = config.get("base_url") or config.get("api_base") or (gcfg or {}).get("base_url")
     api_key_ref = (config.get("api_key_ref") or "").strip()
-    api_key = config.get("api_key")
+    api_key = config.get("api_key") or (gcfg or {}).get("api_key")
     # 空间配置只存 api_key_ref(引用加密 secrets)。运行时解析成 api_key,
     # 使 get_config 返回的合并配置能被 llm_client 直接用作 provider 凭据。
     if api_key_ref and not api_key:
@@ -508,6 +530,13 @@ def parse_provider_configs(
 
         provider_name = provider_conf.get("provider", "default")
         logger.info(f"[parse_provider_configs] Processing provider '{provider_name}'")
+
+        # 关闭的提供商不注册其模型，使得全局模型列表/选择器中均不可见（但配置保留）
+        if provider_conf.get("enabled", True) is False:
+            logger.info(
+                f"[parse_provider_configs] Provider '{provider_name}' disabled, skipping"
+            )
+            continue
 
         p_defaults = {
             k: v for k, v in provider_conf.items() if k not in ["model", "provider"]

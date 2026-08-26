@@ -1,4 +1,4 @@
-/* 应用卡片(Agent 生成的常驻子应用) */
+/* 应用卡片(Agent 生成的常驻子应用) —— 大厅=图标启动器, 点击进场景空间全屏页 */
 .ws-lobby__app-cards {
   margin-bottom: 16px;
 }
@@ -21,54 +21,78 @@
   color: #1f2328;
 }
 
-.ws-app-card__grid {
+/* 图标启动器: 一排小 tile, 点击打开完整应用页 */
+.ws-app-card__launcher {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
 }
 
-.ws-app-card__item {
+.ws-app-card__tile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
   border: 1px solid #eef0f3;
   border-radius: 12px;
   background: #fff;
-  overflow: hidden;
-  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
-
-.ws-app-card__head {
-  display: flex;
+.ws-app-card__tile:hover {
+  border-color: #d0d5dd;
+  box-shadow: 0 2px 6px rgba(31, 35, 40, 0.06);
+}
+.ws-app-card__tile-icon {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px 4px;
+  justify-content: center;
+  border-radius: 10px;
+  background: #f0f5ff;
+  color: #0069fe;
+  font-size: 18px;
 }
-.ws-app-card__name {
-  font-size: 12px;
+.ws-app-card__tile-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ws-app-card__tile-name {
+  font-size: 13px;
   font-weight: 600;
   color: #1f2328;
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ws-app-card__status {
+.ws-app-card__tile-status {
   font-size: 11px;
   color: #389e0d;
-  background: #f6ffed;
-  border: 1px solid #b7eb8f;
-  border-radius: 6px;
-  padding: 0 5px;
-  line-height: 1.5;
+  width: max-content;
 }
 
+/* 场景空间全屏应用页 */
+.ws-app-card-page {
+  padding: 12px;
+  background: #f7f8fa;
+  border-radius: 12px;
+}
+
+/* iframe 宿主(由 AppCardRenderer 控制高度) */
 .ws-app-card {
   position: relative;
   width: 100%;
-  height: 220px;
 }
 .ws-app-card__frame {
   width: 100%;
   height: 100%;
-  border: none;
+  border: 1px solid #eef0f3;
+  border-radius: 10px;
   display: block;
   background: #fff;
 }
@@ -85,5 +109,6 @@
   color: #8c8c8c;
   font-size: 13px;
   background: #fff;
+  border-radius: 10px;
   z-index: 2;
 }

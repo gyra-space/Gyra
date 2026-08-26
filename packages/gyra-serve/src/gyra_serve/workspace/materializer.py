@@ -157,7 +157,10 @@ def _materialize_llm_model(
         return None
     ModelConfigCache.set_space_model_config(
         {
-            "provider": config.get("provider") or "openai",
+            # provider 不在覆盖里硬编码成 openai:空间绑定语义是「对全局同名模型的
+            # 配置覆盖」,缺省时由 _normalize_space_model 继承全局 provider/protocol/
+            # base_url/api_key,避免把本来可用的全局模型覆盖坏(不重新注册)。
+            "provider": config.get("provider"),
             "model": model,
             "base_url": config.get("base_url") or config.get("api_base"),
             "api_key_ref": config.get("api_key_ref") or "",

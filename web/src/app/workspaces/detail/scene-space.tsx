@@ -11,6 +11,8 @@ import ChatSession from '@/components/chat/chat-session';
 import { apiInterceptors, getArtifactInfo, getDeliveryInfo, listArtifacts } from '@/client/api';
 import { resolveFileDownloadUrl, transformFileUrl } from '@/utils';
 import { Lobby } from './lobby';
+import { AppCardPage } from './app-card/AppCardPage';
+import { type AppCardItem } from '@/client/api/app-card';
 import { FlywheelWorkspace } from './flywheel';
 import { AgentWorkspaceRenderer } from './agent-workspace-renderer';
 import { extractAskUserData } from './scene-ask-user-card';
@@ -40,6 +42,8 @@ export interface SceneSpaceProps {
   onSelectTask?: (taskId: number) => void;
   onSelectArtifact?: (artifact: any) => void;
   onSelectDelivery?: (delivery: any) => void;
+  /** 应用卡片:点击大厅应用图标 → 打开完整应用页 */
+  onSelectAppCard?: (card: AppCardItem) => void;
   onProposalResolved?: () => void;
   /** 进入飞轮工作台 */
   onEnterFlywheel?: () => void;
@@ -536,6 +540,7 @@ export function SceneSpace({
   onSelectTask,
   onSelectArtifact,
   onSelectDelivery,
+  onSelectAppCard,
   onProposalResolved,
   onEnterFlywheel,
   onGuide,
@@ -567,6 +572,7 @@ export function SceneSpace({
           onSelectTask={onSelectTask || (() => {})}
           onSelectArtifact={onSelectArtifact}
           onSelectDelivery={onSelectDelivery}
+          onSelectAppCard={onSelectAppCard}
           onEnterFlywheel={onEnterFlywheel}
           onGuide={onGuide}
           onSelectInbox={onSelectInbox}
@@ -589,6 +595,7 @@ export function SceneSpace({
     'subagent': '子任务对话',
     'triggers': '订阅提醒',
     'data-assets': '数据资产',
+    'app-card': '应用卡片',
   };
 
   return (
@@ -714,6 +721,16 @@ export function SceneSpace({
             />
           ) : (
             <div className="ws-preview__empty">暂无子任务对话</div>
+          )}
+        </div>
+      )}
+      {/* 应用卡片:在场景空间渲染完整应用页 */}
+      {context === 'app-card' && (
+        <div className="ws-scene-space__body ws-scene-space__body--app-card">
+          {previewItem?.payload?.card ? (
+            <AppCardPage card={previewItem.payload.card} workspaceId={workspaceId} />
+          ) : (
+            <div className="ws-preview__empty">暂无应用卡片</div>
           )}
         </div>
       )}

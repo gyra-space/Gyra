@@ -71,6 +71,8 @@ export interface LLMProviderConfig {
   protocol: string;
   api_base: string;
   api_key_ref: string;
+  // 是否启用该提供商；关闭后全局隐藏其模型列表（配置保留，不删除）
+  enabled?: boolean;
   models: LLMModelConfig[];
 }
 

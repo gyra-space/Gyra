@@ -66,21 +66,6 @@ function AnswerBlock({ step }: { step: WorkspaceExecutionStep }) {
   );
 }
 
-/**
- * thinking 内容分流:短的推理过程进胶囊思考块(折叠);
- * 长文本/含 markdown 结构(标题/列表/代码块)的「阶段回复」是结果性内容,
- * 必须完整渲染在 feed 主视觉,不允许折叠进过程容器。
- * 运行中(running)的 thinking 一律留在批内当思考块 —— 流式期间内容会
- * 持续增长,若动态判定会造成步骤从批内跳到批外的位置跳变;等步骤落定后
- * 再按内容分流,时序位置才稳定。
- */
-function isSubstantialThinking(step: WorkspaceExecutionStep): boolean {
-  if (step.status === 'running') return false;
-  const text = (step.output || '').trim();
-  if (text.length > 280) return true;
-  return /^#{1,4}\s|^\s*[-*]\s|\|.*\||```/m.test(text);
-}
-
 /** 空态引导:图标 tile + 标题 + 提示 */
 function EmptyState() {
   return (
@@ -548,10 +533,8 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
     c.addEventListener('scroll', onScroll, { passive: true });
     return () => c.removeEventListener('scroll', onScroll);
   }, [getScrollContainer]);
-  // 已有完整回复(answer step 或实质内容的「阶段回复」)时,summary 不再单独渲染,避免重复
-  const hasAnswer = view.execution.some(
-    (s) => s.type === 'answer' || (s.type === 'thinking' && isSubstantialThinking(s)),
-  );
+  // 已有完整回复(answer step)时,summary 不再单独渲染,避免重复
+  const hasAnswer = view.execution.some((s) => s.type === 'answer');
   // 任务文件含交付文件,过滤掉已在交付卡片中展示的,避免重复
   const extraTaskFiles = task_files.filter(
     (f) => !deliverable_files.some((d) => d.file_id === f.file_id),
@@ -626,12 +609,6 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
           );
         };
         for (const step of round.steps) {
-          // 「阶段回复」分流:含实质结论内容的 thinking 以回复块完整渲染在主流
-          if (step.type === 'thinking' && isSubstantialThinking(step)) {
-            flushBatch();
-            nodes.push(<AnswerBlock key={step.id} step={step} />);
-            continue;
-          }
           // ask_user 步骤本身是 tool_call,必须先于胶囊归组判定:
           // 否则会被当作普通工具步骤压进 StepFlow,无法渲染可交互的确认卡片。
           if (extractAskUserData(step.output || step.vis)) {
