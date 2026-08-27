@@ -194,6 +194,25 @@ def test_tolerate_duplicate_statements(tmp_path):
     assert ("upgrade_0.3.0_20260802_to_0.3.0_20260803.sql", "upgrade") in rows
 
 
+def test_tolerate_missing_table_statements():
+    """存量库缺少后加业务表时，ALTER/MODIFY 属无可修改 no-op，应被容忍而非中断。"""
+    pymysql_1146 = (
+        "(pymysql.err.ProgrammingError) (1146, "
+        "\"Table 'gyra.app_card_kv' doesn't exist\")"
+    )
+    assert sm._is_tolerable_error(Exception(pymysql_1146)) is True
+
+    sqlite_no_table = "sqlite3.OperationalError: no such table: app_card_kv"
+    assert sm._is_tolerable_error(Exception(sqlite_no_table)) is True
+
+    # 真正的语法错误不应被容忍
+    syntax_error = (
+        "(pymysql.err.ProgrammingError) (1064, "
+        "'You have an error in your SQL syntax')"
+    )
+    assert sm._is_tolerable_error(Exception(syntax_error)) is False
+
+
 def test_on_error_abort_raises(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path}/test.db")
     create_sqlite_ledger(engine)

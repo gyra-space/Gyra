@@ -89,7 +89,9 @@ _UPGRADE_FILE_RE = re.compile(
 # 版本签名头：-- Gyra-Schema-Version: N（生成器写入，便于运行器直接按单调序号排序）
 _VERSION_HEADER_RE = re.compile(r"^--\s*Gyra-Schema-Version:\s*(\d+)\s*$", re.MULTILINE)
 
-# 容忍的"已存在"错误关键字（MySQL 错误码 + 跨方言文案）
+# 容忍的"已存在/缺失"错误关键字（MySQL 错误码 + 跨方言文案）。
+# 存量库可能缺少某些后来才加入全量 DDL 的业务表，对这类表做 ALTER
+# （MODIFY/ADD/DROP）属于"无可修改"的 no-op，应跳过而非阻断启动。
 _TOLERABLE_MARKERS = (
     "already exists",
     "duplicate column",
@@ -98,6 +100,9 @@ _TOLERABLE_MARKERS = (
     "check that column/key exists",
     "no such column",
     "no such index",
+    "no such table",
+    "doesn't exist",
+    "unknown table",
 )
 
 
@@ -531,8 +536,8 @@ def _is_tolerable_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     if any(marker in msg for marker in _TOLERABLE_MARKERS):
         return True
-    # MySQL 错误码 "(1050", "(1060", "(1061", "(1091"
-    return any(code in msg for code in ("(1050", "(1060", "(1061", "(1091"))
+    # MySQL 错误码 "(1050", "(1060", "(1061", "(1091", "(1146"
+    return any(code in msg for code in ("(1050", "(1060", "(1061", "(1091", "(1146"))
 
 
 def _run_sql_text(

@@ -398,12 +398,18 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         self._scene_items[key] = (step, ts)
 
     def _ingest_assistant_text(
-        self, message_id: Optional[str], content: Any, ts: Any = None, append: bool = False
+        self,
+        message_id: Optional[str],
+        content: Any,
+        ts: Any = None,
+        append: bool = False,
+        final_ts: Any = None,
     ) -> None:
         """登记 assistant 文本(阶段回复/最终回答候选,最新一条进 summary)。
 
         append=True 用于 LLM 流式:stream_msg.content 是增量 delta,需追加;
         来自持久化消息的全量文本则整体替换。
+        final_ts 为该消息最终回答的锚点(落在全部工具之后),供最新一条 narration 沉底。
         """
         if not isinstance(content, str) or not content:
             return
@@ -411,6 +417,8 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         prev_text, prev_ts = self._scene_narrations.get(mid, ("", ""))
         text = (prev_text + content) if append else content
         self._scene_narrations[mid] = (text.strip() if not append else text, self._ts_str(ts) or prev_ts)
+        if final_ts:
+            self._narr_final_ts[mid] = self._ts_str(final_ts) or final_ts
 
     def _ingest_thinking(self, message_id: Optional[str], thinking: Any, live: bool, ts: Any = None) -> None:
         if not isinstance(thinking, str) or not thinking.strip():
