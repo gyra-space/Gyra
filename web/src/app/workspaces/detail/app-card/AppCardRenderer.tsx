@@ -14,6 +14,13 @@ const BASE_CSS = `
   .gyra-ac-err { padding: 32px; color: #b91c1c; font-size: 13px; line-height: 1.6; }
 `;
 
+/** 标准模板辅助函数: 沙箱内始终注入, 保证 el/take/setH 可用, 避免 "xxx is not defined"。 */
+const CARD_HELPER_PRELUDE = [
+  'function el(id){return document.getElementById(id);}',
+  'function take(id,fn){var e=el(id);if(e)fn(e);}',
+  'function setH(id,html){take(id,function(e){e.innerHTML=html;});}',
+].join('');
+
 /** 沙箱化 iframe 宿主:注入 SDK + 卡片代码,并桥接 postMessage → HTTP invoke。 */
 export function AppCardRenderer({
   appCard,
@@ -111,6 +118,7 @@ function useSrcDoc(appCard: AppCardItem, workspaceId: number): string {
     APP_CARD_SDK_SOURCE,
     '</script>',
     '<script>try{(function(){',
+    CARD_HELPER_PRELUDE,
     code,
     '})();}catch(e){var r=document.getElementById("root");if(r){r.innerHTML=\'<div class="gyra-ac-err">子应用渲染失败: \'+e.message+\'</div>\';}}</script>',
     '</body></html>',
