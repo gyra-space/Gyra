@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 import logging
@@ -34,6 +35,7 @@ class OpenAIProvider(LLMProvider):
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         storage_client: Optional[Any] = None,
+        stream_idle_timeout: Optional[float] = None,
         **kwargs,
     ):
         from openai import AsyncOpenAI
@@ -42,6 +44,10 @@ class OpenAIProvider(LLMProvider):
         self._configured_model = model
         self._storage_client = storage_client
         self._replace_url_func = None
+        if stream_idle_timeout is None:
+            _env_timeout = os.getenv("GYRA_LLM_STREAM_IDLE_TIMEOUT")
+            stream_idle_timeout = float(_env_timeout) if _env_timeout else 300.0
+        self._stream_idle_timeout = float(stream_idle_timeout)
 
     async def generate(self, request: ModelRequest) -> ModelOutput:
         """Generate a response from the model."""
@@ -196,11 +202,46 @@ class OpenAIProvider(LLMProvider):
 
             accumulated_tool_calls = {}
             accumulated_content = ""
+            accumulated_thinking = ""
             output_tool_calls = None
             _last_progress_time = time.time()
+            _stream_start = time.time()
+            _last_meaningful_time = time.time()
+            _chunk_count = 0
             last_usage = None
 
-            async for chunk in stream:
+            chunk_iter = stream.__aiter__()
+
+            def _stall_error() -> RuntimeError:
+                _stalled_for = time.time() - _last_meaningful_time
+                return RuntimeError(
+                    f"LLM stream stalled: no content/thinking/tool_calls delta for "
+                    f"{_stalled_for:.1f}s, model={request.model}, "
+                    f"total_elapsed={time.time() - _stream_start:.0f}s, "
+                    f"chunks={_chunk_count}, content_len={len(accumulated_content)}"
+                )
+
+            while True:
+                if self._stream_idle_timeout and self._stream_idle_timeout > 0:
+                    _idle_budget = self._stream_idle_timeout - (
+                        time.time() - _last_meaningful_time
+                    )
+                    if _idle_budget <= 0:
+                        raise _stall_error()
+                    try:
+                        chunk = await asyncio.wait_for(
+                            chunk_iter.__anext__(), timeout=_idle_budget
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        raise _stall_error()
+                else:
+                    try:
+                        chunk = await chunk_iter.__anext__()
+                    except StopAsyncIteration:
+                        break
+                _chunk_count += 1
                 if getattr(chunk, "usage", None):
                     last_usage = chunk.usage.model_dump()
                 if not chunk.choices:
@@ -212,7 +253,9 @@ class OpenAIProvider(LLMProvider):
                 # 'The reasoning_content in the thinking mode must be passed back to the API'
                 chunk_thinking = ""
                 if delta is not None:
-                    _rc = getattr(delta, "reasoning_content", None)
+                    _rc = getattr(delta, "reasoning_content", None) or getattr(
+                        delta, "reasoning", None
+                    )
                     if _rc:
                         chunk_thinking = _rc
                 content = delta.content if delta else None
@@ -220,6 +263,11 @@ class OpenAIProvider(LLMProvider):
 
                 if content:
                     accumulated_content += content
+                if chunk_thinking:
+                    accumulated_thinking += chunk_thinking
+
+                if chunk_thinking or content or tool_calls or choice.finish_reason:
+                    _last_meaningful_time = time.time()
 
                 # Progress log every 10s
                 _now = time.time()
@@ -231,8 +279,10 @@ class OpenAIProvider(LLMProvider):
                     logger.info(
                         f"OpenAIProvider stream progress: "
                         f"content_len={len(accumulated_content)}, "
+                        f"thinking_len={len(accumulated_thinking)}, "
                         f"tool_args_len={_tc_lens}, "
-                        f"elapsed={_now - _last_progress_time:.1f}s"
+                        f"chunks={_chunk_count}, "
+                        f"elapsed={_now - _stream_start:.1f}s"
                     )
                     _last_progress_time = _now
 

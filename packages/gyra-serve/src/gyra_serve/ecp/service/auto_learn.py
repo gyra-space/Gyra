@@ -24,8 +24,10 @@ _AUTO_LEARN_MESSAGE = """[自动 miss 学习] 工作空间 {ws}:
 1. 调用 get_miss_report(min_count=2, workspace_id={ws}) 查看按频次聚类的未覆盖查询
 2. 用 search_semantics(query, workspace_id={ws}) 对照已确认目录,结合收件箱已有提案,
    只为"高频且目录确实没有的概念"用 propose_semantic(..., workspace_id={ws}) 提案
-3. 已有概念不要重复提案;没有值得提案的内容就直接结束
-4. 提案只进收件箱,不影响任何查询(人工 confirm 后生效)"""
+3. 你成功为某个聚类提案后,用 mark_miss_learned(clusters=[{{kind, datasource_id, pattern}}], workspace_id={ws})
+   把这些聚类标记为已学习,避免每日重复曝光
+4. 已有概念不要重复提案;没有值得提案的内容就直接结束
+5. 提案只进收件箱,不影响任何查询(人工 confirm 后生效)"""
 
 
 async def ensure_auto_learn_cron(workspace_id: Optional[str] = None) -> None:

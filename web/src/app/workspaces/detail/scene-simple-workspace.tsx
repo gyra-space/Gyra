@@ -51,6 +51,9 @@ export interface SceneSimpleWorkspaceProps {
   running: boolean;
   error?: string | null;
   switchingTask?: boolean;
+  /** 会话切换后首次历史(vis_final)拉取中:切换任务的第一段(getTaskInfo)之后,
+   * 拉取会话历史期间 UI 不能空白,需显示"会话加载中…" */
+  convLoading?: boolean;
   convLoadError?: string | null;
   retryLoadConv?: () => void;
   agentIcon?: string | null;
@@ -504,6 +507,7 @@ export function SceneSimpleWorkspace({
   running,
   error,
   switchingTask,
+  convLoading,
   convLoadError,
   retryLoadConv,
   agentIcon,
@@ -726,6 +730,8 @@ export function SceneSimpleWorkspace({
           )}
           {switchingTask ? (
             <div className="ws-simple-chat__loading"><Spin tip="切换任务对话中…" /></div>
+          ) : convLoading ? (
+            <div className="ws-simple-chat__loading"><Spin tip="会话加载中…" /></div>
           ) : convLoadError ? (
             <div className="ws-simple-chat__error">
               <span>会话加载失败:{convLoadError}</span>

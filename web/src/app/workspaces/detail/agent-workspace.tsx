@@ -73,7 +73,7 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps) {
   const inputRefInner = useRef<AgentWorkspaceInputHandle>(null);
   const inputRef = inputRefProp ?? inputRefInner;
-  const { steps, workspaceView, loading, error, lastInput, modelName, recovering, retryRecover, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView } = useSceneAgentChat({
+  const { steps, workspaceView, loading, error, lastInput, modelName, recovering, retryRecover, convState, convLoading, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView } = useSceneAgentChat({
     convUid,
     appCode,
     workspaceId,
@@ -178,6 +178,10 @@ export function AgentWorkspace({
           {switchingTask ? (
             <div className="ws-agent-workspace__loading">
               <Spin tip="切换任务对话中..." />
+            </div>
+          ) : convLoading ? (
+            <div className="ws-agent-workspace__loading">
+              <Spin tip="会话加载中..." />
             </div>
           ) : convLoadError && !convUid ? (
             <div className="ws-agent-workspace__error-card">

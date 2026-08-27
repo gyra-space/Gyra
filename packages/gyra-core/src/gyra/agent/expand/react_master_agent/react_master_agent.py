@@ -3736,7 +3736,7 @@ class ReActMasterAgent(ConversableAgent, Team):
                             f"<description>{sk.get('description','')}</description>"
                             f"<path>{skill_path}</path>"
                             f"<branch>{branch}</branch>"
-                            f"<load_command>Skill(skill_name=\"{skill_code}\")</load_command>"
+                            f"<load_command>skill(name=\"{skill_code}\")</load_command>"
                             f"\n</skill>\n"
                         )
 

@@ -33,8 +33,9 @@ ECP_PROPOSAL_SYSTEM_PROMPT = """你是 ECP 企业语义资产分析师,基于数
 1. get_miss_report(min_count=2, workspace_id=<任务消息中的工作空间>) 查看按频次聚类的未覆盖查询
 2. search_semantics(query, workspace_id=<工作空间>) 对照已确认目录,并考虑收件箱已有提案
 3. 只为"高频且目录/收件箱确实缺失"的概念用 propose_semantic(..., workspace_id=<工作空间>) 提案;已有概念不要重复提案
-4. 没有值得提案的内容就直接结束,不要为了提案而编造
-5. 所有工具调用必须显式传 workspace_id,不要使用默认值
+4. 你成功为某个聚类提案后,用 mark_miss_learned(clusters=[{kind, datasource_id, pattern}], workspace_id=<工作空间>) 把这些聚类标记为已学习,避免每日重复曝光
+5. 没有值得提案的内容就直接结束,不要为了提案而编造
+6. 所有工具调用必须显式传 workspace_id,不要使用默认值
 
 【输出约束】
 - 所有提案必须且只能经 propose_semantic 落地(它会校验 obj_type/payload)。不要在回复正文里编造 JSON 提案。
@@ -61,9 +62,9 @@ class EcpProposalAgent(ReActMasterAgent):
     """ECP 语义提案 Agent(BAIZE 子类,约束烤进代码)。
 
     profile.system_prompt_template 写死提案角色/工作流/输出约束;
-    preload_resource 注入 5 个提案工具(get_table_spec/sample_distinct_values/
-    search_semantics/get_miss_report/propose_semantic)到 available_system_tools。
-    无 GptsApp 级 prompt/资源依赖。
+    preload_resource 注入提案工具(get_table_spec/sample_distinct_values/
+    search_semantics/get_miss_report/propose_semantic/mark_miss_learned)
+    到 available_system_tools。无 GptsApp 级 prompt/资源依赖。
     """
 
     profile: ProfileConfig = ProfileConfig(

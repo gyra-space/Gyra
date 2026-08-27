@@ -15,3 +15,5 @@ CREATE INDEX "ix_app_card_record_workspace_id" ON "app_card_record" ("workspace_
 CREATE UNIQUE INDEX "uk_app_card_record_dedupe" ON "app_card_record" ("workspace_id", "app_card_id", "collection", "dedupe_key");
 CREATE INDEX "ix_app_card_record_app_card_id" ON "app_card_record" ("app_card_id");
 CREATE UNIQUE INDEX "uk_app_card_record_rid" ON "app_card_record" ("workspace_id", "app_card_id", "collection", "record_id");
+CREATE INDEX "idx_ecp_miss_learn_ws" ON "gyra_serve_ecp_miss_learn" ("workspace_id");
+ALTER TABLE "app_card_kv" ALTER COLUMN "value_json" TEXT NOT NULL DEFAULT NULL;

@@ -251,7 +251,15 @@ def render_workspace_context_summary(
         dynamic = getattr(materialized, "dynamic_resources", []) or []
         extra = getattr(materialized, "extra_agents", []) or []
         if dynamic:
-            lines.append(f"已挂载动态资源：{len(dynamic)}")
+            # 按类型计数(如 "skill(gyra)×4、datasource×1"),比裸数字更有信息量
+            type_counts: dict = {}
+            for r in dynamic:
+                tp = getattr(r, "type", "") or "?"
+                type_counts[tp] = type_counts.get(tp, 0) + 1
+            summary = "、".join(
+                f"{tp}×{n}" if n > 1 else tp for tp, n in type_counts.items()
+            )
+            lines.append(f"已挂载能力资源：{summary}")
         if extra:
             lines.append(f"已挂载子 Agent：{len(extra)}")
 

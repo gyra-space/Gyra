@@ -946,6 +946,8 @@ class MissLearnDao(BaseDao[EcpMissLearnEntity, Any, Any]):
         normalized cluster key so future fallback records of the same query
         still map to the same learned marker.
         """
+        pattern = (pattern or "")[:512]
+        example = (example or "")[:1024] if example else None
         with self.session() as session:
             entity = (
                 session.query(EcpMissLearnEntity)
@@ -1015,8 +1017,13 @@ class MissLearnDao(BaseDao[EcpMissLearnEntity, Any, Any]):
         workspace_id: str,
         kind: Optional[str] = None,
         pattern: Optional[str] = None,
+        datasource_id: Optional[int] = None,
     ) -> int:
-        """Remove learned markers so the clusters can be re-surfaced. Returns count."""
+        """Remove learned markers so the clusters can be re-surfaced. Returns count.
+
+        ``datasource_id`` 是聚类唯一键的一部分: None 精确匹配 doc 聚类
+        (datasource_id IS NULL),避免误删同 pattern 其他数据源的标记。
+        """
         with self.session() as session:
             query = session.query(EcpMissLearnEntity).filter(
                 EcpMissLearnEntity.workspace_id == workspace_id
@@ -1025,10 +1032,32 @@ class MissLearnDao(BaseDao[EcpMissLearnEntity, Any, Any]):
                 query = query.filter(EcpMissLearnEntity.kind == kind)
             if pattern:
                 query = query.filter(EcpMissLearnEntity.pattern == pattern)
+            query = query.filter(EcpMissLearnEntity.datasource_id == datasource_id)
             rows = query.all()
             for r in rows:
                 session.delete(r)
             return len(rows)
+
+    def get(
+        self,
+        workspace_id: str,
+        kind: str,
+        pattern: str,
+        datasource_id: Optional[int] = None,
+    ) -> Optional[MissLearnVO]:
+        """Exact lookup of a learned marker by cluster key (detail views)."""
+        with self.session(commit=False) as session:
+            entity = (
+                session.query(EcpMissLearnEntity)
+                .filter(
+                    EcpMissLearnEntity.workspace_id == workspace_id,
+                    EcpMissLearnEntity.kind == kind,
+                    EcpMissLearnEntity.pattern == pattern,
+                    EcpMissLearnEntity.datasource_id == datasource_id,
+                )
+                .first()
+            )
+        return _to_miss_learn_vo(entity) if entity else None
 
 
 class AssetRefDao(BaseDao[EcpAssetRefEntity, Any, Any]):

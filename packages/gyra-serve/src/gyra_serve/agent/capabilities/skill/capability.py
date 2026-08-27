@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # 模板对齐 identity/workflow/catalog_consumer(标签统一为 available_skills)
 _SKILL_PROMPT_TEMPLATE = """<available_skills>
-这是你可使用的技能目录。开始任务前，必须先浏览此目录，选择最相关的技能，然后调用 `skill({ name })` 工具加载它的完整指令，再按指令执行。
+可用技能目录。仅当技能与当前任务相关时，用 `skill` 工具加载其完整指令后按指令执行（如 skill(name="data-analysis")）。
 {% for item in skills %}\
 <{{loop.index }}>\
 <name>{{item.name }}</name>
@@ -163,6 +163,34 @@ class SkillCapability(Capability):
 
     def requires(self, config: Any = None) -> List[str]:
         return []
+
+    def merge(self, other: Any) -> bool:
+        """后续 skill 资源实例并入本实例:多个技能共享一份 <available_skills> 目录。
+
+        工作空间常同时挂载多个技能,build_pack 为每个 skill 资源各产一个
+        SkillCapability;若各自 declare,system prompt 会出现 N 份重复的目录
+        块(含 N 遍加载指令)。在此吸收 other 的技能列表(按 name 去重),
+        declare 时渲染单一目录块。
+        """
+        if not isinstance(other, SkillCapability):
+            return False
+        if other._skills:
+            if self._skills is None:
+                self._skills = []
+            existing_names = {
+                s.get("name") for s in self._skills if isinstance(s, dict)
+            }
+            for s in other._skills:
+                name = s.get("name") if isinstance(s, dict) else None
+                if name and name in existing_names:
+                    continue
+                self._skills.append(s)
+                if name:
+                    existing_names.add(name)
+        self._inject_system_catalog = (
+            self._inject_system_catalog or other._inject_system_catalog
+        )
+        return True
 
     # ----------------------------- 生命周期(无 I/O) ----------------------- #
     async def prepare(self) -> None:

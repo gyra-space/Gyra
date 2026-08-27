@@ -118,6 +118,16 @@ class Capability(ABC):
             f"capability {self.capability_id} does not support fetch"
         )
 
+    def merge(self, other: "Capability") -> bool:
+        """【可选】把同 capability_id 的后续实例并入本实例。
+
+        构造期 build_pack 对同 type 的多个资源逐一产实例;声明面适合合并的
+        能力(如多个 skill 资源共享一份 <available_skills> 目录)覆写此方法,
+        吸收 other 的状态后返回 True,调用方(CapabilityPack.add)随即丢弃
+        other。默认不合并(多实例并存,如多 DB/Knowledge)。
+        """
+        return False
+
     # ----------------------------- 自描述(辅助) -------------------------- #
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return f"<Capability {self.capability_id}>"
@@ -147,6 +157,17 @@ class CapabilityPack:
         return self._capabilities
 
     def add(self, capability: "Capability") -> None:
+        # 同 capability_id 且支持 merge 的能力(如 skill 共享一份目录)自动吸收,
+        # 避免同型资源各自声明导致提示词出现重复块;merge 失败退回并存行为。
+        for existing in self._capabilities:
+            if existing is capability:
+                return
+            if existing.capability_id == capability.capability_id:
+                try:
+                    if existing.merge(capability):
+                        return
+                except Exception:  # noqa: BLE001
+                    pass
         self._capabilities.append(capability)
 
     async def preload_resource(self) -> None:

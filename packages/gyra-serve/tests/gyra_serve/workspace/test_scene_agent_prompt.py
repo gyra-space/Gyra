@@ -1,15 +1,9 @@
 from unittest.mock import MagicMock
 
 from gyra_serve.workspace.agent_prompts.scene_agent_prompt import (
-    SCENE_AGENT_STATIC_PROMPT,
     render_scene_dynamic_context,
 )
 from gyra_serve.workspace.agent_tools.context_builder import WorkspaceContextSnapshot
-
-
-def test_static_prompt_contains_identity():
-    assert "场景空间助手" in SCENE_AGENT_STATIC_PROMPT
-    assert "当前工作空间的协作者" in SCENE_AGENT_STATIC_PROMPT
 
 
 def _make_workspace(name: str, workspace_id: int = 1):
@@ -18,7 +12,7 @@ def _make_workspace(name: str, workspace_id: int = 1):
     return ws
 
 
-def test_render_lobby_includes_playbooks_and_active_tasks():
+def test_render_lobby_includes_active_tasks():
     ws = _make_workspace("Ops空间")
     fake_playbook = MagicMock(id=7, scenario_type="report")
     fake_playbook.name = "报告生成"
@@ -35,10 +29,9 @@ def test_render_lobby_includes_playbooks_and_active_tasks():
     result = render_scene_dynamic_context(ctx, mode="lobby")
     assert "进行中任务" in result
     assert "修复告警" in result
-    assert "get_playbook_detail" in result
-    assert "start_task" in result
-    assert "list_triggers" in result
-    assert "fire_trigger" in result
+    # 动态块只渲染事实：不重复身份模板的执行规则，也不重复工具清单
+    assert "start_task" not in result
+    assert "执行方式" not in result
 
 
 def test_render_workbench_includes_current_task():
@@ -56,9 +49,7 @@ def test_render_workbench_includes_current_task():
     result = render_scene_dynamic_context(ctx, mode="workbench")
     assert "Fix bug" in result
     assert "当前任务详情" in result
-    assert "create_playbook" in result
-    assert "update_trigger" in result
-    assert "list_interventions" in result
+    assert "desc" in result
 
 
 def test_render_focus_block_with_meta_and_snippet():

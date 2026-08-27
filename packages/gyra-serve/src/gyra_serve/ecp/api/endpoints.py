@@ -29,6 +29,7 @@ from ..api.schemas import (
     GenerateProposalsTaskVO,
     GenerateProposalsVO,
     GraphVO,
+    MissDetailVO,
     OpLogVO,
     ProposeRequest,
     ReadinessVO,
@@ -369,6 +370,74 @@ async def miss_report(
     return Result.succ(service.miss_report(workspace_id=workspace_id, limit=limit))
 
 
+@router.get("/admin/miss_detail", response_model=Result[MissDetailVO])
+async def miss_detail(
+    kind: str = Query(...),
+    pattern: str = Query(...),
+    datasource_id: Optional[int] = Query(default=None),
+    workspace_id: Optional[str] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[MissDetailVO]:
+    """单个 miss 聚类的学习档案(飞轮视图点击聚类行展开 Drawer 用)。
+
+    聚合聚类摘要、原始兜底记录、已学习标记与标记生命周期事件,
+    前端据此渲染"这条问题从兜底到沉淀"的学习轨迹时间线。
+    """
+    return Result.succ(
+        service.miss_detail(
+            kind=kind,
+            pattern=pattern,
+            datasource_id=datasource_id,
+            workspace_id=workspace_id,
+        )
+    )
+
+
+@router.get("/admin/miss_learned", response_model=Result[list])
+async def miss_learned(
+    workspace_id: Optional[str] = Query(default=None),
+    kind: Optional[str] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[list]:
+    """列出工作空间已学习的 miss 标记(落盘回写表,按学习时间倒序)。
+
+    用于观察飞轮学习侧记住了哪些聚类,以及核对是否应清除(clear)后重新曝光。
+    """
+    items = service.list_miss_learned(workspace_id=workspace_id, kind=kind)
+    return Result.succ(
+        [
+            {
+                "id": it.id,
+                "workspace_id": it.workspace_id,
+                "kind": it.kind,
+                "datasource_id": it.datasource_id,
+                "pattern": it.pattern,
+                "example": it.example,
+                "proposal_ids": it.proposal_ids,
+                "trigger": it.trigger,
+                "learned_at": it.learned_at,
+            }
+            for it in items
+        ]
+    )
+
+
+@router.delete("/admin/miss_learned", response_model=Result[int])
+async def clear_miss_learned(
+    workspace_id: Optional[str] = Query(default=None),
+    kind: Optional[str] = Query(default=None),
+    pattern: Optional[str] = Query(default=None),
+    datasource_id: Optional[int] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[int]:
+    """清除已学习标记,允许对应 miss 聚类重新曝光(重新进入 miss 报告)。"""
+    removed = service.clear_miss_learned(
+        workspace_id=workspace_id, kind=kind, pattern=pattern,
+        datasource_id=datasource_id,
+    )
+    return Result.succ(removed)
+
+
 @router.post("/admin/learn_from_misses", response_model=Result[GenerateProposalsVO])
 async def learn_from_misses(
     workspace_id: Optional[str] = Query(default=None),
@@ -396,7 +465,8 @@ async def learn_from_misses(
     report = service.miss_report(workspace_id=ws, limit=top)
     if not report["clusters"]:
         return Result.failed(msg="暂无 fallback miss 记录,无需学习")
-    miss_context = Service.build_miss_context(report["clusters"], max_items=top)
+    fed_clusters = report["clusters"]
+    miss_context = Service.build_miss_context(fed_clusters, max_items=top)
 
     from ..service.proposal_runner import run_proposal_agent
 
@@ -406,6 +476,14 @@ async def learn_from_misses(
         workspace_id=ws,
         domain_hint=miss_context,
     )
+    # 落盘回写:本次喂给 agent 学习的聚类标记为"已学习",避免每日重复曝光。
+    # 若运行失败且无任何产出则跳过(允许下次重试);否则记录学习,已覆盖的
+    # 概念不再反复出现。触发来源记为 learn_from_misses。
+    if result.proposals_created > 0 or not result.errors:
+        service.mark_miss_learned(
+            fed_clusters, workspace_id=ws,
+            proposal_ids=result.proposal_ids, trigger="learn_from_misses",
+        )
     return Result.succ(result)
 
 

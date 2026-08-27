@@ -74,6 +74,8 @@ class WorkspaceSceneResource(ResourceProtocol):
 
     @staticmethod
     def _render_system_framework(config: WorkspaceSceneConfig) -> str:
+        # 唯一的工具速查表:身份与执行规则在 app 的 system_prompt_template,
+        # 此块只按用途分组列出工具用法,不重复身份声明与行为规则。
         # Tool names below MUST exist in build_scene_management_tools output
         # (reads: list_tasks, get_task_info, list_artifacts, list_deliveries,
         # list_assets, get_workspace_memory, list_workspace_members,
@@ -84,14 +86,13 @@ class WorkspaceSceneResource(ResourceProtocol):
         # update_trigger, delete_trigger, fire_trigger).
         # Do NOT reference tools the agent doesn't have (e.g. create_task).
         return (
-            f"# 场景空间:{config.workspace_name}\n"
-            "你是场景空间助手。可管理任务、剧本、触发规则、介入、产物/交付/资产。\n"
-            "- 看任务:list_tasks(可按状态过滤);细节 get_task_info。发起:start_task;关闭:close_task。\n"
-            "- 触发规则(定时/条件执行):list_triggers 查看;start_task 传 trigger_type+cron 创建;update_trigger/delete_trigger 管理;fire_trigger 立即跑一次。\n"
-            "- 看剧本:list_playbooks;细节 get_playbook_detail。管理:create_playbook/update_playbook/delete_playbook。\n"
-            "- 介入:list_interventions 看待介入;处理:resolve_intervention/abort_intervention。\n"
-            "- 产物/交付/资产:list_artifacts/list_deliveries/list_assets。\n"
-            "实时数量与详情通过上述工具按需查找,不在此列出。\n"
+            f"# 场景空间工具速查（{config.workspace_name}）\n"
+            "以当前会话实际挂载的工具为准，实时数据一律用工具按需查询：\n"
+            "- 任务：list_tasks / get_task_info / start_task / close_task\n"
+            "- 剧本：list_playbooks / get_playbook_detail / create_playbook / update_playbook / delete_playbook（删除需确认）\n"
+            "- 触发规则：list_triggers / update_trigger / fire_trigger / delete_trigger（删除需确认）\n"
+            "- 交付与资产：list_artifacts / list_deliveries / list_assets / publish_asset / create_delivery\n"
+            "- 协作与空间：list_interventions / resolve_intervention / abort_intervention / list_workspace_members / get_workspace_memory / update_workspace\n"
         )
 
     @staticmethod

@@ -86,10 +86,12 @@ class TestNormalizeSqlPattern:
 
 
 class TestMissReport:
-    def _svc(self, entries):
+    def _svc(self, entries, learned=None):
         svc = Service.__new__(Service)
         svc._oplog_dao = MagicMock()
         svc._oplog_dao.list.return_value = entries
+        svc._miss_learn_dao = MagicMock()
+        svc._miss_learn_dao.learned_keys.return_value = learned or set()
         return svc
 
     def test_clusters_by_pattern(self):
@@ -123,6 +125,29 @@ class TestMissReport:
         assert report["total_fallbacks"] == 0
         assert report["clusters"] == []
 
+    def test_learned_clusters_excluded(self):
+        entries = [
+            SimpleNamespace(ts="2026-08-01", detail={
+                "datasource_id": 1,
+                "sql": "SELECT Store, SUM(sales) FROM t WHERE year = 2024",
+                "reasoning": "缺指标",
+            }),
+            SimpleNamespace(ts="2026-08-01", detail={
+                "datasource_id": 1,
+                "sql": "SELECT Store, SUM(sales) FROM t WHERE year = 2025",
+                "reasoning": "缺指标",
+            }),
+        ]
+        # 该聚类(同 pattern)已被标记学习 → 被排除,learned_count=1
+        pattern = _normalize_sql_pattern(
+            "SELECT Store, SUM(sales) FROM t WHERE year = 2024"
+        )
+        learned = {("db", 1, pattern)}
+        svc = self._svc(entries, learned=learned)
+        report = svc.miss_report()
+        assert report["clusters"] == []
+        assert report["learned_count"] == 1
+
 
 class TestBuildMissContext:
     def test_format(self):
@@ -138,6 +163,117 @@ class TestBuildMissContext:
 
     def test_empty(self):
         assert Service.build_miss_context([]) == ""
+
+
+class TestMissDetail:
+    SQL_A = "SELECT Store, SUM(sales) FROM t WHERE year = 2024"
+    SQL_B = "SELECT Store, SUM(sales) FROM t WHERE year = 2025"
+    SQL_C = "SELECT AVG(temp) FROM t2"
+
+    def _svc(self, fallbacks, oplog_extra=None, learned_get=None):
+        svc = Service.__new__(Service)
+        calls = {"fallback": fallbacks}
+        calls.update(oplog_extra or {})
+
+        def list_op(ws, op=None, page=1, page_size=50):
+            return calls.get(op, [])
+
+        svc._oplog_dao = MagicMock()
+        svc._oplog_dao.list.side_effect = list_op
+        svc._miss_learn_dao = MagicMock()
+        svc._miss_learn_dao.get.return_value = learned_get
+        return svc
+
+    def test_records_filtered_and_summary(self):
+        pattern = _normalize_sql_pattern(self.SQL_A)
+        entries = [
+            SimpleNamespace(ts="2026-08-03", detail={
+                "datasource_id": 1, "sql": self.SQL_C, "reasoning": "缺温度",
+            }),
+            SimpleNamespace(ts="2026-08-01", detail={
+                "datasource_id": 1, "sql": self.SQL_A, "reasoning": "缺指标",
+            }),
+            SimpleNamespace(ts="2026-08-02", detail={
+                "datasource_id": 1, "sql": self.SQL_A, "reasoning": "缺指标v2",
+            }),
+            # 同一聚类、其他数据源 → 排除
+            SimpleNamespace(ts="2026-08-02", detail={
+                "datasource_id": 2, "sql": self.SQL_A, "reasoning": "缺指标",
+            }),
+        ]
+        svc = self._svc(entries)
+        detail = svc.miss_detail(kind="db", pattern=pattern, datasource_id=1)
+        # 同 pattern(字面值不同)的两条聚为一类,其余排除
+        assert detail.cluster.count == 2
+        assert detail.cluster.first_seen == "2026-08-01"
+        assert detail.cluster.last_seen == "2026-08-02"
+        assert detail.cluster.reasonings == ["缺指标v2", "缺指标"]
+        assert [r.ts for r in detail.records] == ["2026-08-02", "2026-08-01"]
+        assert detail.learned is None
+
+    def test_learned_marker_and_events(self):
+        from gyra_serve.ecp.api.schemas import MissLearnVO
+
+        pattern = _normalize_sql_pattern(self.SQL_A)
+        other = _normalize_sql_pattern(self.SQL_C)
+        entries = [
+            SimpleNamespace(ts="2026-08-01", detail={
+                "datasource_id": 1, "sql": self.SQL_A, "reasoning": "缺指标",
+            }),
+        ]
+        learned = MissLearnVO(
+            id=7, workspace_id="default", kind="db", datasource_id=1,
+            pattern=pattern, example=self.SQL_A, proposal_ids=["obj.x"],
+            trigger="agent", learned_at="2026-08-05T04:00:00",
+        )
+        oplog_extra = {
+            "miss_learned": [
+                SimpleNamespace(ts="2026-08-05", detail={
+                    "trigger": "agent",
+                    "proposals": ["obj.x"],
+                    "mark": [
+                        {"kind": "db", "pattern": pattern, "datasource_id": 1},
+                        {"kind": "db", "pattern": other, "datasource_id": 1},
+                    ],
+                }),
+            ],
+            "miss_learn_clear": [
+                SimpleNamespace(ts="2026-08-06", detail={
+                    "removed": 1, "kind": "db", "pattern": pattern,
+                    "datasource_id": 1,
+                }),
+                # 其他聚类的清除事件不混入
+                SimpleNamespace(ts="2026-08-06", detail={
+                    "removed": 1, "kind": "db", "pattern": other,
+                    "datasource_id": 1,
+                }),
+            ],
+        }
+        svc = self._svc(entries, oplog_extra=oplog_extra, learned_get=learned)
+        detail = svc.miss_detail(kind="db", pattern=pattern, datasource_id=1)
+        assert detail.learned is learned
+        assert [e.op for e in detail.learn_events] == [
+            "miss_learned",
+            "miss_learn_clear",
+        ]
+        assert detail.learn_events[0].proposals == ["obj.x"]
+
+    def test_doc_question_key(self):
+        from gyra_serve.ecp.service.resolver import normalize_question
+
+        q = "各门店 2024 年销售额是多少"
+        entries = [
+            SimpleNamespace(ts="2026-08-01", detail={
+                "kind": "doc", "question": q, "spaces": ["kb1"],
+            }),
+        ]
+        svc = self._svc(entries)
+        detail = svc.miss_detail(
+            kind="doc", pattern=normalize_question(q), datasource_id=None
+        )
+        assert detail.cluster.count == 1
+        assert detail.cluster.spaces == ["kb1"]
+        assert detail.cluster.example_sql == q
 
 
 # ------------------------------------------------------- execute_raw_sql 只读校验

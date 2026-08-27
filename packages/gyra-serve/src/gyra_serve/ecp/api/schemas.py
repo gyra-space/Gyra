@@ -191,6 +191,58 @@ class MissLearnVO(BaseModel):
     learned_at: Optional[str] = None
 
 
+class MissRecordVO(BaseModel):
+    """一条原始兜底(fallback)记录——聚类详情里的明细行。"""
+
+    model_config = ConfigDict(title="EcpMissRecord")
+
+    ts: Optional[str] = None
+    sql: Optional[str] = None
+    question: Optional[str] = None
+    reasoning: Optional[str] = None
+    datasource_id: Optional[int] = None
+    spaces: Optional[List[str]] = None
+
+
+class MissLearnEventVO(BaseModel):
+    """学习标记生命周期事件(标记/清除),来自 op_log。"""
+
+    model_config = ConfigDict(title="EcpMissLearnEvent")
+
+    ts: Optional[str] = None
+    op: str
+    trigger: Optional[str] = None
+    proposals: List[str] = Field(default_factory=list)
+
+
+class MissClusterSummaryVO(BaseModel):
+    """miss 聚类摘要(miss_report.clusters 同构,补充首末时间)。"""
+
+    model_config = ConfigDict(title="EcpMissClusterSummary")
+
+    kind: str
+    datasource_id: Optional[int] = None
+    pattern: str
+    count: int
+    example_sql: Optional[str] = None
+    reasonings: List[str] = Field(default_factory=list)
+    spaces: Optional[List[str]] = None
+    first_seen: Optional[str] = None
+    last_seen: Optional[str] = None
+
+
+class MissDetailVO(BaseModel):
+    """单个 miss 聚类的学习档案:摘要+原始记录+已学习标记+生命周期事件。"""
+
+    model_config = ConfigDict(title="EcpMissDetail")
+
+    workspace_id: str
+    cluster: MissClusterSummaryVO
+    records: List[MissRecordVO] = Field(default_factory=list)
+    learned: Optional[MissLearnVO] = None
+    learn_events: List[MissLearnEventVO] = Field(default_factory=list)
+
+
 class GenerateProposalsRequest(BaseModel):
     """Trigger proposal generation for a datasource (batch) or workspace (agent)."""
 

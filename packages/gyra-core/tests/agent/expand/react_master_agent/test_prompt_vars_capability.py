@@ -3,7 +3,7 @@
 v1 格式(从 resource_map 渲染,见 git 历史):
 - available_agents:    - <agent><code>{code}</code><name>{name}</name><description>{desc}</description>\n</agent>\n
 - available_knowledges: - <knowledge><id>{id}</id><name>{name}</name><description>{desc}</description></knowledge>\n
-- available_skills:    - <skill><name>..</name><description>..</description><path>..</path><branch>..</branch><load_command>Skill(skill_name="..")</load_command>\n</skill>\n
+- available_skills:    - <skill><name>..</name><description>..</description><path>..</path><branch>..</branch><load_command>skill(name="..")</load_command>\n</skill>\n
 - other_resources(DB): v1 为 schema I/O 文本;v2 为 DBCapability 基本信息(无 I/O),
   包装格式 - <database><name>..</name><prompt>..</prompt>\n</database>\n 保持一致。
 
@@ -134,7 +134,7 @@ async def test_available_skills_format_parity():
     assert out == (
         f'- <skill><name>data-viz</name><description>图表技能</description>'
         f'<path>{expected_path}</path><branch>master</branch>'
-        f'<load_command>Skill(skill_name="sc-1")</load_command>\n</skill>\n'
+        f'<load_command>skill(name="sc-1")</load_command>\n</skill>\n'
     )
 
 

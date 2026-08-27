@@ -554,6 +554,114 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
     def _learned_cluster_keys(self, workspace_id: str) -> set:
         return self._miss_learn_dao.learned_keys(self._ws(workspace_id))
 
+    def miss_detail(
+        self,
+        kind: str,
+        pattern: str,
+        datasource_id: Optional[int] = None,
+        workspace_id: Optional[str] = None,
+        scan_size: int = 500,
+    ) -> "MissDetailVO":
+        """单个 miss 聚类的学习档案(飞轮视图点击聚类行展开详情)。
+
+        聚合四类数据,还原"这条问题从兜底到沉淀"的完整轨迹:
+        - cluster: 摘要(频次/首末时间/未命中原因)
+        - records: 原始兜底记录(op_log fallback 按同一归一化键过滤,时间倒序)
+        - learned: 已学习标记(ecp_miss_learn,可为空=待学习)
+        - learn_events: 标记生命周期事件(op_log miss_learned/miss_learn_clear)
+        """
+        from .resolver import normalize_question
+        from ..api.schemas import (
+            MissClusterSummaryVO,
+            MissDetailVO,
+            MissLearnEventVO,
+            MissRecordVO,
+        )
+
+        ws = self._ws(workspace_id)
+        key = (kind, datasource_id, pattern)
+
+        def entry_key(detail: dict) -> tuple:
+            if detail.get("kind") == "doc" or "question" in detail:
+                return ("doc", detail.get("datasource_id"),
+                        normalize_question(detail.get("question") or ""))
+            return ("db", detail.get("datasource_id"),
+                    _normalize_sql_pattern(detail.get("sql") or ""))
+
+        records: List[MissRecordVO] = []
+        for e in self._oplog_dao.list(ws, op="fallback", page=1, page_size=scan_size):
+            detail = e.detail or {}
+            if entry_key(detail) != key:
+                continue
+            records.append(
+                MissRecordVO(
+                    ts=e.ts,
+                    sql=detail.get("sql"),
+                    question=detail.get("question"),
+                    reasoning=detail.get("reasoning"),
+                    datasource_id=detail.get("datasource_id"),
+                    spaces=detail.get("spaces"),
+                )
+            )
+        records.sort(key=lambda r: r.ts or "", reverse=True)
+
+        reasonings: List[str] = []
+        for r in records:
+            if r.reasoning and r.reasoning not in reasonings:
+                reasonings.append(r.reasoning)
+        newest = records[0] if records else None
+        cluster = MissClusterSummaryVO(
+            kind=kind,
+            datasource_id=datasource_id,
+            pattern=pattern,
+            count=len(records),
+            example_sql=(
+                (newest.question if kind == "doc" else newest.sql) if newest else None
+            ),
+            reasonings=reasonings,
+            spaces=newest.spaces if newest else None,
+            first_seen=records[-1].ts if records else None,
+            last_seen=newest.ts if newest else None,
+        )
+
+        learned = self._miss_learn_dao.get(ws, kind, pattern, datasource_id)
+
+        events: List[MissLearnEventVO] = []
+        for op in ("miss_learned", "miss_learn_clear"):
+            for e in self._oplog_dao.list(ws, op=op, page=1, page_size=50):
+                d = e.detail or {}
+                if op == "miss_learned":
+                    marks = d.get("mark") or []
+                    if any(
+                        m.get("kind") == kind
+                        and m.get("pattern") == pattern
+                        and m.get("datasource_id") == datasource_id
+                        for m in marks
+                    ):
+                        events.append(
+                            MissLearnEventVO(
+                                ts=e.ts,
+                                op=op,
+                                trigger=d.get("trigger"),
+                                proposals=d.get("proposals") or [],
+                            )
+                        )
+                elif (
+                    d.get("kind") == kind
+                    and d.get("pattern") == pattern
+                    and d.get("datasource_id") == datasource_id
+                ):
+                    events.append(MissLearnEventVO(ts=e.ts, op=op))
+        events.sort(key=lambda x: x.ts or "")
+
+        return MissDetailVO(
+            workspace_id=ws,
+            cluster=cluster,
+            records=records,
+            learned=learned,
+            learn_events=events,
+        )
+
     def mark_miss_learned(
         self,
         clusters: List[dict],
@@ -609,15 +717,21 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         workspace_id: Optional[str] = None,
         kind: Optional[str] = None,
         pattern: Optional[str] = None,
+        datasource_id: Optional[int] = None,
     ) -> int:
         """清除已学习标记(允许对应 miss 重新曝光)。返回清除数。"""
         ws = self._ws(workspace_id)
-        removed = self._miss_learn_dao.clear(ws, kind, pattern)
+        removed = self._miss_learn_dao.clear(ws, kind, pattern, datasource_id)
         if removed:
             self._oplog_dao.append(
                 "miss_learn_clear",
                 ws,
-                {"removed": removed, "kind": kind, "pattern": pattern},
+                {
+                    "removed": removed,
+                    "kind": kind,
+                    "pattern": pattern,
+                    "datasource_id": datasource_id,
+                },
             )
         return removed
 

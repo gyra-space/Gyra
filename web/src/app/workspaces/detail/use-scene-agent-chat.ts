@@ -82,6 +82,8 @@ interface UseSceneAgentChatResult {
   retryRecover: () => void;
   /** 后端会话运行状态:RUNNING 表示后台仍在执行(可关闭页面后恢复) */
   convState: ConversationState;
+  /** 会话切换后首次历史(vis_final)拉取中,供 UI 显示"会话加载中…" */
+  convLoading: boolean;
   /** SSE usage_metric 事件推送的上下文消耗(实时) */
   usageMetrics: UsageMetrics | null;
   /** Composer Dock 协议:输入框上方固定区域 widget map(by id),由 SSE onDock/轮询 dock 帧合并而来 */
@@ -398,7 +400,7 @@ export function useSceneAgentChat({
     [effectiveConvUid],
   );
 
-  const { state: convState, checkStatus } = useChatPolling({
+  const { state: convState, checkStatus, initialLoading: convLoading } = useChatPolling({
     convId: effectiveConvUid ?? null,
     enabled: enabled && !loading && !!effectiveConvUid,
     visRender: 'scene_agent_workspace',
@@ -595,5 +597,5 @@ export function useSceneAgentChat({
     }
   }, [effectiveConvUid]);
 
-  return { steps, workspaceView, loading, error, lastInput, modelName: lastInput?.model, recovering, retryRecover, convState, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
+  return { steps, workspaceView, loading, error, lastInput, modelName: lastInput?.model, recovering, retryRecover, convState, convLoading: !!effectiveConvUid && convLoading, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
 }

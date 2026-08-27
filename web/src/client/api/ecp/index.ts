@@ -411,7 +411,60 @@ export interface EcpMissReport {
   workspace_id: string;
   total_fallbacks: number;
   cluster_count: number;
+  /** 已被标记为"已学习"、从 clusters 中排除掉的聚类数 */
+  learned_count?: number;
   clusters: EcpMissCluster[];
+}
+
+export interface EcpMissLearn {
+  id: number;
+  workspace_id: string;
+  kind: string;
+  datasource_id?: number | null;
+  pattern: string;
+  example?: string | null;
+  proposal_ids: string[];
+  /** agent=自动学习(每日 cron 由提案 Agent 调用 mark_miss_learned)；learn_from_misses=手动触发 */
+  trigger: string;
+  learned_at?: string | null;
+}
+
+export interface EcpMissRecord {
+  ts?: string | null;
+  sql?: string | null;
+  question?: string | null;
+  reasoning?: string | null;
+  datasource_id?: number | null;
+  spaces?: string[] | null;
+}
+
+export interface EcpMissLearnEvent {
+  ts?: string | null;
+  /** miss_learned=标记已学习；miss_learn_clear=清除标记(重新曝光) */
+  op: string;
+  trigger?: string | null;
+  proposals: string[];
+}
+
+export interface EcpMissClusterSummary {
+  kind: string;
+  datasource_id?: number | null;
+  pattern: string;
+  count: number;
+  example_sql?: string | null;
+  reasonings: string[];
+  spaces?: string[] | null;
+  first_seen?: string | null;
+  last_seen?: string | null;
+}
+
+/** 单个 miss 聚类的学习档案(点击聚类行展开 Drawer) */
+export interface EcpMissDetail {
+  workspace_id: string;
+  cluster: EcpMissClusterSummary;
+  records: EcpMissRecord[];
+  learned?: EcpMissLearn | null;
+  learn_events: EcpMissLearnEvent[];
 }
 
 export interface EcpContractCheck {
@@ -429,6 +482,13 @@ export interface EcpContractCheck {
 export const getEcpMissReport = (params?: { workspace_id?: string; limit?: number }) =>
   GET<typeof params, EcpMissReport>(`${API_PREFIX}/admin/miss_report`, params);
 
+export const getEcpMissDetail = (params: {
+  workspace_id?: string;
+  kind: string;
+  pattern: string;
+  datasource_id?: number;
+}) => GET<typeof params, EcpMissDetail>(`${API_PREFIX}/admin/miss_detail`, params);
+
 export const learnEcpFromMisses = (params?: { workspace_id?: string; top?: number }) =>
   POST<Record<string, never>, {
     datasource_id: number;
@@ -440,6 +500,16 @@ export const learnEcpFromMisses = (params?: { workspace_id?: string; top?: numbe
     `${API_PREFIX}/admin/learn_from_misses${params?.workspace_id ? `?workspace_id=${encodeURIComponent(params.workspace_id)}` : ''}${params?.top ? `${params?.workspace_id ? '&' : '?'}top=${params.top}` : ''}`,
     {},
   );
+
+export const listEcpMissLearned = (params?: { workspace_id?: string; kind?: string }) =>
+  GET<typeof params, EcpMissLearn[]>(`${API_PREFIX}/admin/miss_learned`, params);
+
+export const clearEcpMissLearned = (params?: {
+  workspace_id?: string;
+  kind?: string;
+  pattern?: string;
+  datasource_id?: number;
+}) => DELETE<typeof params, number>(`${API_PREFIX}/admin/miss_learned`, params);
 
 export const getEcpContractCheck = (workspace_id?: string) =>
   GET<{ workspace_id?: string }, EcpContractCheck>(`${API_PREFIX}/admin/contract_check`, {

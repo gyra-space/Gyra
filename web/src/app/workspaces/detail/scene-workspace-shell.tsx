@@ -16,6 +16,7 @@ import type { WorkspaceEvent } from '@/hooks/use-chat';
 import type { AgentStep, DetailContext } from './agent-types';
 import { AgentWorkspace } from './agent-workspace';
 import { AgentWorkspaceInput } from './agent-workspace-input';
+import DockPanel from '@/components/chat/dock/dock-panel';
 import { CallDetailProvider } from '@/components/chat/call-detail/CallDetailProvider';
 import { SceneSpace } from './scene-space';
 import { SceneTaskRail, statusLabel } from './scene-task-rail';
@@ -399,11 +400,16 @@ export function SceneWorkspaceShell({
       handleEnterConversation(taskId);
       return;
     }
-    await apiInterceptors(setCurrentConversation(workspaceId, convUid));
+    // 乐观切换:先切 UI(onConvChanged 仅上层 setState,零耗时),右侧立即出现
+    // "会话加载中…";setCurrentConversation 持久化放后台,不再阻塞等待网络往返
+    // (失败仅影响"最近会话"记忆,不回滚 UI)。
     setActiveTaskId(null);
     setDetailContext('dashboard');
     setPreviewItem(null);
     onConvChanged?.(convUid, null);
+    if (workspaceId != null) {
+      await apiInterceptors(setCurrentConversation(workspaceId, convUid));
+    }
   };
 
   const handleStepClick = (step: AgentStep) => {
@@ -777,7 +783,7 @@ export function SceneWorkspaceShell({
                     onSend={handleSimpleSend}
                     loading={isRunning}
                     onStop={simpleChat.abort}
-                    disabled={switchingTask}
+                    disabled={switchingTask || simpleChat.convLoading}
                     readOnly={chatReadOnly}
                     playbooks={playbooks || []}
                     focus={focus}
@@ -822,6 +828,7 @@ export function SceneWorkspaceShell({
                   running={isRunning}
                   error={simpleChat.error}
                   switchingTask={switchingTask}
+                  convLoading={simpleChat.convLoading}
                   convLoadError={convLoadError}
                   retryLoadConv={retryLoadConv}
                   agentIcon={appInfo?.icon}
@@ -834,24 +841,28 @@ export function SceneWorkspaceShell({
                     setActiveTaskId(null);
                   }}
                   inputSlot={
-                    <AgentWorkspaceInput
-                    ref={agentInputRef}
-                    convUid={rightConvUid}
-                    appInfo={appInfo}
-                    model={simpleInputModel}
-                    defaultModel={spaceDefaultModel}
-                    onModelChange={setSimpleInputModel}
-                    onSend={handleSimpleSend}
-                    loading={isRunning}
-                    onStop={simpleChat.abort}
-                    disabled={switchingTask}
-                    readOnly={chatReadOnly}
-                    playbooks={playbooks || []}
-                    focus={focus}
-                    onClearFocus={() => setFocusDismissed(true)}
-                    onClearContext={() => handleNewConversation('已清空上下文')}
-                    usageMetrics={simpleChat.usageMetrics}
-                  />
+                    <div className="ws-agent-workspace__input">
+                      {/* Composer Dock:独立卡片贴合在输入框上方,与运维模式同一组件/协议 */}
+                      <DockPanel widgets={simpleChat.dockWidgets} />
+                      <AgentWorkspaceInput
+                        ref={agentInputRef}
+                        convUid={rightConvUid}
+                        appInfo={appInfo}
+                        model={simpleInputModel}
+                        defaultModel={spaceDefaultModel}
+                        onModelChange={setSimpleInputModel}
+                        onSend={handleSimpleSend}
+                        loading={isRunning}
+                        onStop={simpleChat.abort}
+                        disabled={switchingTask}
+                        readOnly={chatReadOnly}
+                        playbooks={playbooks || []}
+                        focus={focus}
+                        onClearFocus={() => setFocusDismissed(true)}
+                        onClearContext={() => handleNewConversation('已清空上下文')}
+                        usageMetrics={simpleChat.usageMetrics}
+                      />
+                    </div>
                   }
                 />
               </div>

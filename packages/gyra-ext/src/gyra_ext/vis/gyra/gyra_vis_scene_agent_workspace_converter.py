@@ -73,6 +73,8 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         self._scene_items: Dict[str, Tuple[Dict[str, Any], str]] = {}
         # message_id -> (assistant 文本, ts_str);最新一条进 summary,其余凝固为步骤
         self._scene_narrations: Dict[str, Tuple[str, str]] = {}
+        # message_id -> 最终回答时序锚点(该消息全部工具之后);仅最新一条 narration 采用
+        self._narr_final_ts: Dict[str, str] = {}
         # 交付文件 / 任务文件(类似 vis manus,任务结束时从 gpts_memory 或 messages 收集)
         self._deliverable_files: List[Dict[str, Any]] = []
         self._task_files: List[Dict[str, Any]] = []
@@ -474,10 +476,11 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         ts = self._ts_str(getattr(msg, "created_at", None))
 
         reports = getattr(msg, "action_report", None)
-        # 计算该消息 assistant 文本(最终回答)的时序锚点。
-        # V2 消息的 created_at 是轮次开始时间(早于工具执行),直接作为回答时序会把最终
-        # 回答排到工具步骤之前(先结果后工具)。取动作报告里最新的 start_time 作为回答时序,
-        # 使其落在该消息所有工具之后;无报告时回退 created_at。
+        # 计算该消息文本(最终回答)的时序锚点。V2 消息的 created_at 是轮次开始时间
+        # (早于工具执行),若最终回答也用它,会被排到工具之前(先结果后工具)。
+        # answer_ts 取动作报告里最新的 start_time,落在该消息所有工具之后;
+        # 但仅最新一条 narration(最终结论)采用它 —— 中间旁白是 LLM 在调用工具前的
+        # 真实输出,时序应为 thinking → 旁白 → 工具,故仍锚 created_at(ts)。
         answer_ts = ts
         if isinstance(reports, (list, tuple)):
             for report in reports:
@@ -487,7 +490,7 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                 self._upsert_tool_step(report)
 
         self._ingest_thinking(message_id, getattr(msg, "thinking", None), live=False, ts=ts)
-        self._ingest_assistant_text(message_id, getattr(msg, "content", None), ts=answer_ts)
+        self._ingest_assistant_text(message_id, getattr(msg, "content", None), ts=ts, final_ts=answer_ts)
 
     def _ingest_stream_msg(self, stream_msg: Union[Dict, str]) -> None:
         if not isinstance(stream_msg, dict):
@@ -545,16 +548,22 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         # 不再重复渲染 summary,避免同文本两份。
         narr_ids = list(self._scene_narrations.keys())
         summary: Optional[str] = None
+        final_mid: Optional[str] = None
         if narr_ids:
             # 取时序最新的一条 narration;若全部无 ts(如离线重建的消息无 created_at),
             # 回退为插入序最后一条 —— 保持「最新一条进 summary」的既有语义。
-            with_ts = [v for v in self._scene_narrations.values() if v[1]]
-            latest = max(with_ts, key=lambda it: it[1]) if with_ts else self._scene_narrations[narr_ids[-1]]
+            with_ts = [(mid, v) for mid, v in self._scene_narrations.items() if v[1]]
+            final_mid, latest = (
+                max(with_ts, key=lambda it: it[1][1]) if with_ts else (narr_ids[-1], self._scene_narrations[narr_ids[-1]])
+            )
             summary = latest[0]
 
         execution: List[Tuple[Dict[str, Any], str]] = list(self._scene_items.values())
         for mid in narr_ids:
             text, ts = self._scene_narrations[mid]
+            if mid == final_mid:
+                # 仅最终回答沉到该消息全部工具之后;中间旁白保持 created_at(思考后、工具前)
+                ts = self._narr_final_ts.get(mid) or ts
             execution.append(({
                 "id": f"narr-{mid}",
                 "type": "answer",

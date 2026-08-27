@@ -21,7 +21,7 @@ from gyra.agent.resource.tool.base import FunctionTool
 from gyra.vis import Vis
 
 from ..config import DEFAULT_WORKSPACE_ID
-from ..models.models import OpLogDao, SemanticObjectDao
+from ..models.models import MissLearnDao, OpLogDao, SemanticObjectDao
 
 logger = logging.getLogger(__name__)
 
@@ -490,7 +490,6 @@ async def get_miss_report(
     workspace_id: Optional[str] = None,
     **kwargs,
 ) -> str:
-    from ..models.models import MissLearnDao
     from ..service.service import cluster_fallbacks
 
     ws = _ws(workspace_id)
@@ -554,8 +553,6 @@ async def mark_miss_learned(
     workspace_id: Optional[str] = None,
     **kwargs,
 ) -> str:
-    from ..models.models import MissLearnDao
-
     ws = _ws(workspace_id)
     dao = MissLearnDao()
     marked, skipped = [], []

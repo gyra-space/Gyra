@@ -37,6 +37,8 @@ interface UseChatPollingReturn {
   state: ConversationState;
   isPolling: boolean;
   data: ChatQueryResponse | null;
+  /** 会话切换后首次历史(vis_final)拉取中,供 UI 显示"会话加载中…" */
+  initialLoading: boolean;
   startPolling: () => void;
   stopPolling: () => void;
   checkStatus: () => Promise<ChatQueryResponse | null>;
@@ -54,6 +56,7 @@ export function useChatPolling({
   const [state, setState] = useState<ConversationState>('UNKNOWN');
   const [isPolling, setIsPolling] = useState(false);
   const [data, setData] = useState<ChatQueryResponse | null>(null);
+  const [initialLoading, setInitialLoading] = useState(false);
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
@@ -218,8 +221,17 @@ export function useChatPolling({
         prevConvIdRef.current = convId;
         setState('UNKNOWN');
         setIsPolling(false);
+        // 仅在会话真正切换时置位:effect 会因 checkStatus/startPolling 依赖变化重跑,
+        // 若无条件置位,重跑会闪一下"加载中"
+        setInitialLoading(true);
       }
+      const effectConvId = convId;
       checkStatus().then(result => {
+        // 竞态防御:异步期间 convId 又变了,则由新一轮 effect 负责清除
+        if (prevConvIdRef.current === effectConvId) {
+          // result 为 null(新空会话后端暂无数据/请求失败)也要清除,否则永久 loading
+          setInitialLoading(false);
+        }
         if (result && isInProgress(result.state)) {
           startPolling();
         }
@@ -234,6 +246,8 @@ export function useChatPolling({
         setState('UNKNOWN');
         setIsPolling(false);
       }
+      // 无会话/禁用态一律清除加载中,避免 enabled 翻转时残留 true
+      setInitialLoading(false);
     }
     
     return () => {
@@ -245,6 +259,7 @@ export function useChatPolling({
     state,
     isPolling,
     data,
+    initialLoading,
     startPolling,
     stopPolling,
     checkStatus,

@@ -2872,65 +2872,162 @@
   box-shadow: var(--ws-shadow-sm);
 }
 
-/* 简洁模式欢迎态:「应用卡片」启动条 —— 极简图标启动器,点击进入全屏使用态 */
+/* 简洁模式欢迎态:「应用卡片」启动区 —— 方形大卡片网格(App 图标+名称+描述)。
+   与「试试这些」文字胶囊刻意拉开层级:预设问题是"一句话",应用是"一个实体",
+   用大尺寸/独立色相/实体感阴影承载 App 心智 */
 .ws-simple-apps {
-  margin-top: 30px;
+  margin-top: 34px;
   width: 100%;
   max-width: 680px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 16px;
 }
 .ws-simple-apps__label {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 11px;
+  letter-spacing: 0.08em;
   color: var(--ws-ink-2);
 }
-.ws-simple-apps__label .anticon { font-size: 12px; }
+/* 标签两侧渐隐细线:与「试试这些」的裸文字标签拉开仪式感 */
+.ws-simple-apps__label::before,
+.ws-simple-apps__label::after {
+  content: '';
+  width: 32px;
+  height: 1px;
+}
+.ws-simple-apps__label::before { background: linear-gradient(to right, transparent, var(--ws-border)); }
+.ws-simple-apps__label::after { background: linear-gradient(to left, transparent, var(--ws-border)); }
+.ws-simple-apps__count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: rgba(var(--ws-accent-rgb), 0.1);
+  color: var(--ws-accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
 .ws-simple-apps__row {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 10px;
+  gap: 14px;
 }
 .ws-simple-apps__item {
-  display: inline-flex;
+  position: relative;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  width: 172px;
+  padding: 22px 14px 18px;
   border: 1px solid var(--ws-border);
+  border-radius: 16px;
   background: var(--ws-surface);
-  border-radius: 12px;
-  padding: 8px 14px 8px 10px;
   cursor: pointer;
-  transition: all .18s;
+  transition: transform 0.22s cubic-bezier(0.22, 0.8, 0.36, 1), border-color 0.2s, box-shadow 0.22s;
+  animation: ws-simple-apps-in 0.42s cubic-bezier(0.22, 0.8, 0.36, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 55ms);
+}
+@keyframes ws-simple-apps-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
 }
 .ws-simple-apps__item:hover {
-  border-color: var(--ws-accent);
-  box-shadow: var(--ws-shadow-sm);
-  transform: translateY(-1px);
+  transform: translateY(-3px);
+  border-color: rgba(var(--ws-accent-rgb), 0.45);
+  box-shadow: 0 4px 10px -2px rgba(16, 24, 40, 0.08), 0 18px 32px -16px rgba(var(--ws-accent-rgb), 0.4);
+}
+/* 右上角「打开」箭头:hover 浮现,暗示进入全屏应用 */
+.ws-simple-apps__item::after {
+  content: '';
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 7px;
+  height: 7px;
+  border-top: 1.5px solid var(--ws-accent);
+  border-right: 1.5px solid var(--ws-accent);
+  border-top-right-radius: 2px;
+  transform: translate(-4px, 4px) rotate(45deg);
+  opacity: 0;
+  transition: opacity 0.2s, transform 0.22s cubic-bezier(0.22, 0.8, 0.36, 1);
+}
+.ws-simple-apps__item:hover::after {
+  opacity: 1;
+  transform: rotate(45deg);
+}
+.ws-simple-apps__item:focus-visible {
+  outline: 2px solid var(--ws-accent);
+  outline-offset: 2px;
 }
 .ws-simple-apps__icon {
-  width: 28px;
-  height: 28px;
-  flex: none;
+  width: 52px;
+  height: 52px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
-  background: var(--ws-accent-light, rgba(var(--ws-accent-rgb), .1));
-  font-size: 16px;
+  border-radius: 15px;
+  font-size: 26px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.55);
+  transition: transform 0.22s cubic-bezier(0.22, 0.8, 0.36, 1);
+}
+.ws-simple-apps__item:hover .ws-simple-apps__icon { transform: scale(1.07); }
+/* 莫兰迪色板:每卡独立色相(light=粉彩渐变底+深前景;dark=低透明底+亮前景),呼应 Genspark 彩色应用图标 */
+.ws-simple-apps__icon--c0 { background: linear-gradient(135deg, #eef2ff, #e0e7ff); color: #4f46e5; }
+.ws-simple-apps__icon--c1 { background: linear-gradient(135deg, #f0f9ff, #e0f2fe); color: #0369a1; }
+.ws-simple-apps__icon--c2 { background: linear-gradient(135deg, #ecfdf5, #d1fae5); color: #047857; }
+.ws-simple-apps__icon--c3 { background: linear-gradient(135deg, #fffbeb, #fef3c7); color: #b45309; }
+.ws-simple-apps__icon--c4 { background: linear-gradient(135deg, #f5f3ff, #ede9fe); color: #6d28d9; }
+.ws-simple-apps__icon--c5 { background: linear-gradient(135deg, #fff1f2, #ffe4e6); color: #be123c; }
+.dark .ws-simple-apps__icon--c0 { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; }
+.dark .ws-simple-apps__icon--c1 { background: rgba(14, 165, 233, 0.18); color: #7dd3fc; }
+.dark .ws-simple-apps__icon--c2 { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; }
+.dark .ws-simple-apps__icon--c3 { background: rgba(245, 158, 11, 0.16); color: #fcd34d; }
+.dark .ws-simple-apps__icon--c4 { background: rgba(139, 92, 246, 0.2); color: #c4b5fd; }
+.dark .ws-simple-apps__icon--c5 { background: rgba(244, 63, 94, 0.16); color: #fda4af; }
+.dark .ws-simple-apps__icon {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.ws-simple-apps__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
 }
 .ws-simple-apps__name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ws-ink);
-  max-width: 160px;
+  max-width: 144px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ws-ink);
+  line-height: 1.35;
+  text-align: center;
+}
+.ws-simple-apps__desc {
+  max-width: 144px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--ws-ink-2);
+  line-height: 1.4;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-simple-apps__item { animation: none; }
+  .ws-simple-apps__item,
+  .ws-simple-apps__item::after,
+  .ws-simple-apps__icon { transition: none; }
 }
 
 /* 简洁模式应用使用态:全屏常驻子应用(不创建会话),底部轻提示返回欢迎态 */

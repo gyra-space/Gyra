@@ -148,6 +148,14 @@ def build_proposal_tools() -> List[FunctionTool]:
             min_count=min_count, limit=limit, workspace_id=workspace_id
         )
 
+    async def _mark_miss_learned(
+        clusters: List[Dict[str, Any]],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> str:
+        from ..tools.ecp_tools import mark_miss_learned as _impl
+
+        return await _impl(clusters=clusters, workspace_id=workspace_id)
+
     return [
         FunctionTool(
             "sample_distinct_values",
@@ -209,6 +217,30 @@ def build_proposal_tools() -> List[FunctionTool]:
                     "type": "number",
                     "description": "置信度 0-1",
                     "required": False,
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "ECP 工作空间 id(默认 default)",
+                    "required": False,
+                },
+            },
+        ),
+        FunctionTool(
+            "mark_miss_learned",
+            _mark_miss_learned,
+            description="把成功提案的 miss 聚类标记为已学习(传回 get_miss_report 的聚类对象)。标记后每日 miss 学习不再重复曝光这些聚类。",
+            args={
+                "clusters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "datasource_id": {"type": "integer"},
+                            "pattern": {"type": "string"},
+                        },
+                    },
+                    "description": "要标记的 miss 聚类(取自 get_miss_report 输出)",
                 },
                 "workspace_id": {
                     "type": "string",

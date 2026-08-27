@@ -30,6 +30,16 @@ class TestClusterFallbacksShared:
 
 
 class TestGetMissReportTool:
+    @staticmethod
+    def _patch_daos(monkeypatch, entries, learned=None):
+        dao = MagicMock()
+        dao.list.return_value = entries
+        monkeypatch.setattr(ecp_tools, "OpLogDao", lambda: dao)
+        miss_dao = MagicMock()
+        miss_dao.learned_keys.return_value = learned or set()
+        monkeypatch.setattr(ecp_tools, "MissLearnDao", lambda: miss_dao)
+        return dao, miss_dao
+
     @pytest.mark.asyncio
     async def test_min_count_filter(self, monkeypatch):
         entries = [
@@ -37,9 +47,7 @@ class TestGetMissReportTool:
             _entry("select a from t where x=2"),
             _entry("SELECT b FROM t2", reasoning="单次"),
         ]
-        dao = MagicMock()
-        dao.list.return_value = entries
-        monkeypatch.setattr(ecp_tools, "OpLogDao", lambda: dao)
+        self._patch_daos(monkeypatch, entries)
         out = json.loads(await ecp_tools.get_miss_report(min_count=2, limit=20))
         assert out["total_fallbacks"] == 3
         assert len(out["clusters"]) == 1  # 单次的被 min_count=2 过滤
@@ -48,11 +56,59 @@ class TestGetMissReportTool:
 
     @pytest.mark.asyncio
     async def test_empty(self, monkeypatch):
-        dao = MagicMock()
-        dao.list.return_value = []
-        monkeypatch.setattr(ecp_tools, "OpLogDao", lambda: dao)
+        self._patch_daos(monkeypatch, [])
         out = json.loads(await ecp_tools.get_miss_report())
         assert out["clusters"] == []
+
+    @pytest.mark.asyncio
+    async def test_learned_clusters_excluded(self, monkeypatch):
+        entries = [
+            _entry("SELECT a FROM t WHERE x = 1"),
+            _entry("select a from t where x=2"),
+            _entry("SELECT b FROM t2", reasoning="已覆盖"),
+        ]
+        from gyra_serve.ecp.service.service import _normalize_sql_pattern
+
+        pattern = _normalize_sql_pattern("SELECT a FROM t WHERE x = 1")
+        self._patch_daos(monkeypatch, entries, learned={("db", 1, pattern)})
+        out = json.loads(await ecp_tools.get_miss_report(min_count=2, limit=20))
+        # 该聚类已被学习 → 排除;剩余 b(t2) 出现 1 次被 min_count 过滤 → 空
+        assert out["clusters"] == []
+        assert out["learned_count"] == 1
+
+
+class TestMarkMissLearnedTool:
+    @pytest.mark.asyncio
+    async def test_marks_clusters(self, monkeypatch):
+        dao = MagicMock()
+        vo = SimpleNamespace(
+            kind="db", pattern="select a from t where x=?",
+            datasource_id=1, learned_at="2026-08-27",
+        )
+        dao.mark_learned.return_value = vo
+        monkeypatch.setattr(ecp_tools, "MissLearnDao", lambda: dao)
+        out = json.loads(
+            await ecp_tools.mark_miss_learned(
+                clusters=[
+                    {"kind": "db", "datasource_id": 1,
+                     "pattern": "select a from t where x=?", "example_sql": "SELECT a"},
+                ]
+            )
+        )
+        assert out["marked"]
+        assert out["marked"][0]["pattern"] == "select a from t where x=?"
+        assert out["skipped"] == []
+
+    @pytest.mark.asyncio
+    async def test_skips_incomplete(self, monkeypatch):
+        dao = MagicMock()
+        monkeypatch.setattr(ecp_tools, "MissLearnDao", lambda: dao)
+        out = json.loads(
+            await ecp_tools.mark_miss_learned(clusters=[{"kind": "db"}])
+        )
+        assert out["marked"] == []
+        assert len(out["skipped"]) == 1
+        dao.mark_learned.assert_not_called()
 
 
 class TestEnsureAutoLearnCron:

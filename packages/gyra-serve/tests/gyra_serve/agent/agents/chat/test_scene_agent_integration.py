@@ -166,7 +166,7 @@ async def test_real_renderer_produces_one_summary():
             app_code="scene-workspace-agent",
         )
 
-    assert len(system_prompt) >= 2, f"Expected at least 2 blocks, got {len(system_prompt)}: {system_prompt}"
+    assert len(system_prompt) >= 1, f"Expected at least 1 block, got {len(system_prompt)}: {system_prompt}"
 
     # The workspace summary should appear exactly once
     full_prompt = "\n\n".join(system_prompt)
@@ -176,8 +176,8 @@ async def test_real_renderer_produces_one_summary():
         f"but found {summary_count} occurrences in:\n{full_prompt}"
     )
 
-    # The dynamic block should contain the tool list
-    assert "当前可用工具" in full_prompt
+    # The dynamic block should contain mode info from the workspace summary
+    assert "模式：lobby" in full_prompt
 
 
 def test_merge_scene_dynamic_context_appends():
