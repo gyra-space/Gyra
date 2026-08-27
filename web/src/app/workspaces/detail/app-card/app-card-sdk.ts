@@ -4,6 +4,8 @@
  * 子应用代码里通过 `window.GyraAppCard` 取数与交互:
  *   - GyraAppCard.op(op, params, queryKey)  通用能力调用(后端 invoke 协议)
  *   - GyraAppCard.assets(params)            等同 op('assets.get', params)
+ *   - GyraAppCard.store.insert/query/update/remove  子应用自身数据空间(store.*)
+ *   - GyraAppCard.kv.get/put/del            KV 点数据(kv.*)
  *   - GyraAppCard.params()                  读取宿主注入的初始参数(default_params)
  *   - GyraAppCard.onParamChange(fn)         宿主切参数时回调(如切 tab/选时间)
  *
@@ -42,6 +44,17 @@ export const APP_CARD_SDK_SOURCE = `
   window.GyraAppCard = {
     op: call,
     assets: function (p) { return call('assets.get', p || {}); },
+    store: {
+      insert: function (p) { return call('store.insert', p || {}); },
+      query: function (p) { return call('store.query', p || {}); },
+      update: function (p) { return call('store.update', p || {}); },
+      remove: function (p) { return call('store.delete', p || {}); }
+    },
+    kv: {
+      get: function (p) { return call('kv.get', p || {}); },
+      put: function (p) { return call('kv.put', p || {}); },
+      del: function (p) { return call('kv.del', p || {}); }
+    },
     params: function () { return (CFG.initialParams || {}); },
     getParam: function (k) { return (CFG.initialParams || {})[k]; },
     onParamChange: function (fn) { window.__gyraOnParamChange = fn; }
@@ -51,10 +64,23 @@ export const APP_CARD_SDK_SOURCE = `
 
 /** SDK 类型声明, 供子应用作者/生成 skill 参考(不进 iframe)。 */
 export interface GyraAppCardSdk {
-  /** 通用能力调用: query.metric / query.sql / assets.get / preview.* */
+  /** 通用能力调用: query.metric / query.sql / assets.get / store.* / kv.* / preview.* */
   op(op: string, params?: Record<string, unknown>, queryKey?: string): Promise<unknown>;
   /** 读取空间资产 */
   assets(params?: Record<string, unknown>): Promise<unknown>;
+  /** 子应用自身数据空间(记录集合, 字段自定义) */
+  store: {
+    insert(params?: Record<string, unknown>): Promise<unknown>;
+    query(params?: Record<string, unknown>): Promise<unknown>;
+    update(params?: Record<string, unknown>): Promise<unknown>;
+    remove(params?: Record<string, unknown>): Promise<unknown>;
+  };
+  /** KV 点数据(卡片级配置/草稿/进度) */
+  kv: {
+    get(params?: Record<string, unknown>): Promise<unknown>;
+    put(params?: Record<string, unknown>): Promise<unknown>;
+    del(params?: Record<string, unknown>): Promise<unknown>;
+  };
   /** 宿主注入的初始参数(default_params) */
   params(): Record<string, unknown>;
   getParam(key: string): unknown;

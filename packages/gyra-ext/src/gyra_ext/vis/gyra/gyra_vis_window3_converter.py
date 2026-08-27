@@ -175,12 +175,8 @@ class GyraIncrVisWindow3Converter(GyraVisIncrConverter):
 
     @property
     def reuse_name(self):
-        ## 复用下面转换器的前端布局
-        from gyra_ext.vis.gyra.gyra_vis_window_converter import (
-            GyraIncrVisWindowConverter,
-        )
-
-        return GyraIncrVisWindowConverter().render_name
+        ## 复用下方窗口布局的前端渲染（原 GyraIncrVisWindowConverter 已移除，固定字面量）
+        return "gyra_vis_window"
 
     @property
     def render_name(self):

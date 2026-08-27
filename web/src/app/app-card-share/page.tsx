@@ -81,7 +81,17 @@ function ShareContent() {
   );
 
   return (
-    <div style={{ padding: 16, background: '#f7f8fa', minHeight: '100vh', boxSizing: 'border-box' }}>
+    <div
+      style={{
+        padding: 16,
+        background: '#f7f8fa',
+        height: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        boxSizing: 'border-box',
+        overflow: 'hidden',
+      }}
+    >
       {card && (
         <div
           style={{
@@ -93,6 +103,7 @@ function ShareContent() {
             border: '1px solid #eef0f3',
             borderRadius: 12,
             marginBottom: 12,
+            flexShrink: 0,
           }}
         >
           <span style={{ fontSize: 22 }}>{card.icon || '📊'}</span>
@@ -111,12 +122,23 @@ function ShareContent() {
       )}
 
       {loading && (
-        <div style={{ textAlign: 'center', padding: 80 }}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Spin />
         </div>
       )}
       {!loading && error && (
-        <div style={{ textAlign: 'center', padding: 80, color: '#b91c1c', fontSize: 13, lineHeight: 1.8 }}>
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#b91c1c',
+            fontSize: 13,
+            lineHeight: 1.8,
+          }}
+        >
           {error}
           <div style={{ marginTop: 16 }}>
             {anonymous ? (
@@ -132,12 +154,15 @@ function ShareContent() {
         </div>
       )}
       {!loading && !error && card && (
-        <AppCardRenderer
-          appCard={card}
-          workspaceId={card.workspace_id}
-          height={720}
-          invoke={anonymous ? anonymousInvoke : loginInvoke}
-        />
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <AppCardRenderer
+            appCard={card}
+            workspaceId={card.workspace_id}
+            height={720}
+            fill
+            invoke={anonymous ? anonymousInvoke : loginInvoke}
+          />
+        </div>
       )}
     </div>
   );

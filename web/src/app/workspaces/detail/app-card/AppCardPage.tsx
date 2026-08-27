@@ -165,7 +165,7 @@ export function AppCardPage({
         )}
       </div>
 
-      <AppCardRenderer appCard={card} workspaceId={workspaceId} height={560} />
+      <AppCardRenderer appCard={card} workspaceId={workspaceId} height={560} fill />
 
       <Drawer
         title="维护应用"

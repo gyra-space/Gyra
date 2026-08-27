@@ -11,7 +11,7 @@ semantic layer (metric) and the workspace data sources (sql), keeping the same
 import json
 import logging
 import secrets
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from gyra.component import SystemApp
 from gyra_serve.core import BaseService
@@ -25,6 +25,8 @@ from ..api.schemas import (
 from ..models.models import (
     AppCardDao, AppCardEntity, AppCardVersionEntity, _dump_json, _load_json,
 )
+from ..ops import register_app_card_op, resolve_app_card_op
+from ..store.store_service import AppCardStoreService
 
 logger = logging.getLogger(__name__)
 
@@ -119,12 +121,14 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
         self._system_app = None
         self._serve_config = config
         self._dao: AppCardDao = dao or AppCardDao()
+        self._store_service: Optional[AppCardStoreService] = None
         super().__init__(system_app)
 
     def init_app(self, system_app: SystemApp) -> None:
         super().init_app(system_app)
         self._system_app = system_app
         self._dao = self._dao or AppCardDao()
+        self._store_service = AppCardStoreService(system_app)
 
     @property
     def dao(self) -> AppCardDao:
@@ -407,10 +411,17 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
         """开发期预览取数: 用「编辑器里(未落库)的查询契约」直接走运行期 dispatch。
 
         与运行期 invoke 走的同一派发(_invoke_*),使开发阶段「JSON 写完后先预览
-        真实效果/取数」与最终运行完全一致;不要求卡片已落库。
+        真实效果/取数」与最终运行完全一致;不要求卡片已落库。补 ``elapsed_ms``
+        供 agent 在开发期评估查询性能。
         """
+        import time as _time
+        started = _time.perf_counter()
         entity = {"preview": True}  # _dispatch 的三个 handler 都不读 entity, 占位即可
-        return self._dispatch(entity, workspace_id, list(queries or []), req)
+        result = self._dispatch(entity, workspace_id, list(queries or []), req)
+        if isinstance(result, dict):
+            result.setdefault("row_count", len(result.get("rows") or []))
+            result["elapsed_ms"] = int((_time.perf_counter() - started) * 1000)
+        return result
 
     def invoke(self, card_id: int, workspace_id: int, req: AppCardInvokeRequest, user: UserRequest) -> Dict[str, Any]:
         entity = self.dao.get_one({"id": card_id})
@@ -425,17 +436,10 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
     def _dispatch(self, entity, workspace_id, queries, req: AppCardInvokeRequest) -> Dict[str, Any]:
         # queries: get_one 返回 AppCardResponse(已解析); 程序化取数尽量用已声明的查询契约
         queries = list(queries or [])
-        dispatch: Dict[str, Callable] = {
-            "query.metric": self._invoke_metric,
-            "query.sql": self._invoke_sql,
-            "assets.get": self._invoke_assets,
-            "metric.preview": self._invoke_metric,
-            "sql.preview": self._invoke_sql,
-        }
-        handler = dispatch.get(req.op)
+        handler = resolve_app_card_op(req.op)
         if handler is None:
             return {"trust": "none", "error": f"不支持的能力 {req.op}"}
-        return handler(entity, workspace_id, queries, req.params or {}, req.query_key)
+        return handler(self, entity, workspace_id, queries, req.params or {}, req.query_key)
 
     # ------------------------------------------------------ 匿名公开分享
     def get_render_anonymous(self, card_id: int, token: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -591,3 +595,74 @@ class AppCardService(BaseService[AppCardEntity, AppCardCreateRequest, AppCardRes
     def validate_queries(self, workspace_id: int, queries: List[Dict[str, Any]]) -> AppCardValidateResponse:
         items: List[AppCardValidateResult] = [self._validate_one(workspace_id, queries, q) for q in (queries or [])]
         return AppCardValidateResponse(ok=all(i.ok for i in items), items=items)
+
+
+# --------------------------------------------------------------------------- #
+# invoke 协议 op 注册(Option B: 各资源模块贡献自己的 op, 零改核心)
+# --------------------------------------------------------------------------- #
+def _entity_id(entity) -> Optional[int]:
+    """读取卡片 id:兼容 entity 为对象或 dict(preview 占位 dict 无 id)。"""
+    if isinstance(entity, dict):
+        return entity.get("id")
+    return getattr(entity, "id", None)
+
+
+def _entity_config(entity) -> Dict[str, Any]:
+    """读取卡片 config:兼容对象或 dict。"""
+    raw = entity.get("config") if isinstance(entity, dict) else getattr(entity, "config", None)
+    return raw or {}
+
+
+def _make_store_handler(method: str):
+    """构造一个 store 能力 handler: 校验 store 服务就绪 + 卡片已落库, 再委派给 store_service。"""
+
+    def _handler(svc, entity, workspace_id, queries, params, query_key) -> Dict[str, Any]:
+        if getattr(svc, "_store_service", None) is None:
+            return {"trust": "none", "error": "store 服务未初始化"}
+        app_card_id = _entity_id(entity)
+        if app_card_id is None:
+            return {"trust": "none", "error": "store 能力需要已落库的卡片, 预览模式不可用"}
+        method_fn = getattr(svc._store_service, method)
+        return method_fn(app_card_id, workspace_id, params, _entity_config(entity))
+
+    return _handler
+
+
+def _make_kv_handler(method: str):
+    """构造一个 kv 能力 handler(KV 不需要 config, 只需卡片 id)。"""
+
+    def _handler(svc, entity, workspace_id, queries, params, query_key) -> Dict[str, Any]:
+        if getattr(svc, "_store_service", None) is None:
+            return {"trust": "none", "error": "store 服务未初始化"}
+        app_card_id = _entity_id(entity)
+        if app_card_id is None:
+            return {"trust": "none", "error": "kv 能力需要已落库的卡片, 预览模式不可用"}
+        method_fn = getattr(svc._store_service, method)
+        return method_fn(app_card_id, workspace_id, params)
+
+    return _handler
+
+
+def _register_app_card_ops() -> None:
+    """注册统一 invoke 协议的全部 op。
+
+    内置取数(query.metric / query.sql / assets.get / preview.*)迁移到注册表;
+    store.* / kv.*(子应用自身数据空间读写)作为新能力接入。
+    """
+    register_app_card_op("query.metric", lambda svc, entity, ws, qs, params, qk: svc._invoke_metric(entity, ws, qs, params, qk))
+    register_app_card_op("metric.preview", lambda svc, entity, ws, qs, params, qk: svc._invoke_metric(entity, ws, qs, params, qk))
+    register_app_card_op("query.sql", lambda svc, entity, ws, qs, params, qk: svc._invoke_sql(entity, ws, qs, params, qk))
+    register_app_card_op("sql.preview", lambda svc, entity, ws, qs, params, qk: svc._invoke_sql(entity, ws, qs, params, qk))
+    register_app_card_op("assets.get", lambda svc, entity, ws, qs, params, qk: svc._invoke_assets(entity, ws, qs, params, qk))
+
+    register_app_card_op("store.insert", _make_store_handler("insert_record"))
+    register_app_card_op("store.query", _make_store_handler("query_records"))
+    register_app_card_op("store.update", _make_store_handler("update_record"))
+    register_app_card_op("store.delete", _make_store_handler("delete_record"))
+    register_app_card_op("kv.get", _make_kv_handler("kv_get"))
+    register_app_card_op("kv.put", _make_kv_handler("kv_put"))
+    register_app_card_op("kv.del", _make_kv_handler("kv_del"))
+
+
+_register_app_card_ops()
+

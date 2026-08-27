@@ -658,8 +658,8 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
       )}
       {rounds.map((round, roundIdx) => {
         const isLastRound = roundIdx === rounds.length - 1;
-        // 轮内节点:连续过程步骤攒批成 StepFlow。文本(旁白/阶段 reply)先于其
-        // 工具步骤展示(answer 先渲染再冲刷前置工具批次),运行中与完成后同一套顺序。
+        // 轮内节点:连续过程步骤攒批成 StepFlow。answer 按时间序排在对应工具批次之后
+        // (先冲刷前置工具批次,再渲染答案),运行中与完成后同一套顺序。
         const nodes: ReactNode[] = [];
         let batch: WorkspaceExecutionStep[] = [];
         let batchKey = '';
@@ -700,11 +700,12 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
             batch.push(step);
             continue;
           }
-          // answer 文本先于其前置工具批次展示(工具调用前的 narration/阶段回复语义),
-          // 其余非胶囊步骤(如任务卡片)仍保持「先冲刷工具批次再原地渲染」的原序。
+          // answer 步骤在时间序上位于其前置工具批次之后:先冲刷此前累积的工具批次,
+          // 再渲染答案,保证「工具步骤在前、最终回答在后」的 feed 时序(与 ask_user/
+          // task_created 分支一致),否则最后一组工具调用会被排到答案之后。
           if (step.type === 'answer') {
-            nodes.push(<AnswerBlock key={step.id} step={step} />);
             flushBatch();
+            nodes.push(<AnswerBlock key={step.id} step={step} />);
           } else {
             flushBatch();
             if (step.type === 'task_created') {

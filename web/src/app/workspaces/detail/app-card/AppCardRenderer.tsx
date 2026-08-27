@@ -19,11 +19,14 @@ export function AppCardRenderer({
   appCard,
   workspaceId,
   height = 520,
+  fill = false,
   invoke,
 }: {
   appCard: AppCardItem;
   workspaceId: number;
   height?: number;
+  /** 撑满父容器(父需为 flex 容器);默认按固定 px 高度渲染。 */
+  fill?: boolean;
   /** 自定 invoke 桥(如匿名分享走 token 端点);默认用登录鉴权的 invokeAppCard。 */
   invoke?: (op: string, params: Record<string, unknown>, queryKey?: string) => Promise<unknown>;
 }) {
@@ -65,7 +68,10 @@ export function AppCardRenderer({
   }, [workspaceId]);
 
   return (
-    <div className="ws-app-card" style={{ height: `${height}px` }}>
+    <div
+      className={`ws-app-card${fill ? ' ws-app-card--fill' : ''}`}
+      style={fill ? undefined : { height: `${height}px` }}
+    >
       {booting && (
         <div className="ws-app-card__loading">
           <LoadingOutlined spin style={{ fontSize: 18 }} />

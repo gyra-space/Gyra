@@ -7,6 +7,7 @@
   - ``db({ action: "describe_tables", db_name, table_names, ... })``
   - ``db({ action: "search", db_name, question, ... })``
   - ``db({ action: "execute_sql", db_name, sql, ... })``
+  - ``db({ action: "app_card_preview", op, params, query_key?, queries?, workspace_id? })``
 
 设计动机（对齐 DSH tool-db + DSH tool-skill 风格）：
   1. **不在 system prompt 拼 schema**：DB schema 是运行时数据，DSH 一致把
@@ -40,7 +41,9 @@ DB_TOOL_DESCRIPTION = (
     '  - "list_tables" (args: db_name, group?, page?, page_size?)\n'
     '  - "describe_tables" (args: db_name, table_names?, question?)\n'
     '  - "search" (args: db_name, question) - Schema Linking recommend mode\n'
-    '  - "execute_sql" (args: db_name, sql, page?, page_size?, output_to_file?)\n\n'
+    '  - "execute_sql" (args: db_name, sql, page?, page_size?, output_to_file?)\n'
+    '  - "app_card_preview" (args: op, params, query_key?, queries?, workspace_id?) - '
+    "AppCard 开发期取数预览，返回运行期同款对象数组 rows + row_count + elapsed_ms\n\n"
     "Notes:\n"
     "  - Use the database names from the available-databases reminder in the system prompt.\n"
     "  - Use describe_tables / list_tables first to discover schema before writing SQL.\n"
@@ -48,8 +51,7 @@ DB_TOOL_DESCRIPTION = (
     "  - Set output_to_file=true on execute_sql to spill large results to a sandbox file."
 )
 
-
-_DB_ACTIONS = ("list_tables", "describe_tables", "search", "execute_sql")
+_DB_ACTIONS = ("list_tables", "describe_tables", "search", "execute_sql", "app_card_preview")
 
 
 def _xml_escape(s: str) -> str:
@@ -123,6 +125,29 @@ class DbTool(ToolBase):
                     "type": "boolean",
                     "description": "Spill large results to a sandbox file (execute_sql).",
                     "default": False,
+                },
+                "op": {
+                    "type": "string",
+                    "description": "app_card_preview 的 op: query.sql / sql.preview / query.metric / metric.preview / sql.explain",
+                },
+                "params": {
+                    "type": "object",
+                    "description": (
+                        "app_card_preview 参数：query.sql 传 {sql, datasource_id, bind_params?, limit?}；"
+                        "query.metric 传 {metric_id, group_by?, filters?, time_range?}"
+                    ),
+                },
+                "query_key": {
+                    "type": "string",
+                    "description": "app_card_preview：引用 queries 里已声明的命名查询 key(可选，与 params 二选一)",
+                },
+                "queries": {
+                    "type": "array",
+                    "description": "app_card_preview：命名查询契约(未落库也可)，配合 query_key 引用",
+                },
+                "workspace_id": {
+                    "type": "integer",
+                    "description": "app_card_preview：工作空间 id(指标执行必需)",
                 },
             },
             "required": ["action"],
@@ -231,6 +256,30 @@ class DbTool(ToolBase):
                     page_size=int(args.get("page_size", 50) or 50),
                     output_to_file=bool(args.get("output_to_file", False)),
                     **v1_kwargs,
+                )
+            elif action == "app_card_preview":
+                # AppCard 开发期取数预览：复用运行期同派发路径，返回对象数组 rows + 性能基线。
+                try:
+                    from gyra_serve.app_card.agent_tools import app_card_preview
+                except Exception as e:  # noqa: BLE001
+                    return ToolResult.fail(
+                        error=(
+                            f"app_card_preview unavailable (serve-layer import failed: {e}). "
+                            "Make sure gyra-serve is installed."
+                        ),
+                        tool_name=self.name,
+                    )
+                params = dict(args.get("params") or {})
+                if args.get("datasource_id") is not None and "datasource_id" not in params:
+                    params["datasource_id"] = args.get("datasource_id")
+                if args.get("sql") and "sql" not in params:
+                    params["sql"] = args.get("sql")
+                output = await app_card_preview(
+                    op=args.get("op", "query.sql"),
+                    params=params,
+                    query_key=args.get("query_key"),
+                    queries=args.get("queries"),
+                    workspace_id=args.get("workspace_id"),
                 )
             else:  # pragma: no cover - guarded above
                 return ToolResult.fail(

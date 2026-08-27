@@ -72,9 +72,10 @@ def test_db_tool_parameters_required_fields():
     params = tool.parameters
     # action 必填
     assert "action" in params["required"]
-    # 4 个合法 action
+    # 5 个合法 action
     assert set(params["properties"]["action"]["enum"]) == {
         "list_tables", "describe_tables", "search", "execute_sql",
+        "app_card_preview",
     }
 
 

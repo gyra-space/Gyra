@@ -26,6 +26,7 @@ from ..api.schemas import (
     GraphLinkVO,
     GraphNodeVO,
     GraphVO,
+    MissLearnVO,
     OpLogVO,
     ReadinessCheckVO,
     ReadinessVO,
@@ -47,6 +48,7 @@ from ..models.models import (
     AssetRefDao,
     ConfirmerDao,
     EcpSemanticObjectEntity,
+    MissLearnDao,
     OpLogDao,
     ResolutionCacheDao,
     SemanticEdgeDao,
@@ -129,6 +131,7 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         self._oplog_dao = OpLogDao()
         self._asset_dao = AssetRefDao()
         self._ws_config_dao = WorkspaceConfigDao()
+        self._miss_learn_dao = MissLearnDao()
 
     @property
     def config(self) -> ServeConfig:
@@ -527,16 +530,96 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
 
         按归一化 SQL 模式分组(忽略字面值/空白差异),按频次排序——
         "大家在裸查什么"的可见化,learn_from_misses 的输入。
+
+        已学习的聚类(ecp_miss_learn 中有对应标记)会被排除,避免每天重复
+        喂给提案 agent 已经覆盖过的概念;learned 字段返回被过滤的标记数量。
         """
         ws = self._ws(workspace_id)
         entries = self._oplog_dao.list(ws, op="fallback", page=1, page_size=scan_size)
         all_clusters = cluster_fallbacks(entries)
+        learned = self._miss_learn_dao.learned_keys(ws)
+        open_clusters = [
+            c
+            for c in all_clusters
+            if (c.get("kind"), c.get("datasource_id"), c.get("pattern")) not in learned
+        ]
         return {
             "workspace_id": ws,
             "total_fallbacks": len(entries),
-            "cluster_count": len(all_clusters),
-            "clusters": all_clusters[:limit],
+            "cluster_count": len(open_clusters),
+            "learned_count": len(all_clusters) - len(open_clusters),
+            "clusters": open_clusters[:limit],
         }
+
+    def _learned_cluster_keys(self, workspace_id: str) -> set:
+        return self._miss_learn_dao.learned_keys(self._ws(workspace_id))
+
+    def mark_miss_learned(
+        self,
+        clusters: List[dict],
+        workspace_id: Optional[str] = None,
+        proposal_ids: Optional[List[str]] = None,
+        trigger: str = "agent",
+    ) -> List[MissLearnVO]:
+        """把 miss 聚类标记为"已学习"(幂等),下一次报告不再曝光。
+
+        ``clusters`` 是 miss_report/get_miss_report 返回的聚类对象列表(含
+        kind/pattern/datasource_id)。提案 agent 在成功为某个 miss 聚类提案后
+        调用 mark_miss_learned 落盘,飞轮的学习侧才有持久记忆。
+        """
+        ws = self._ws(workspace_id)
+        marked: List[MissLearnVO] = []
+        for c in clusters or []:
+            kind = c.get("kind")
+            pattern = c.get("pattern")
+            if not kind or not pattern:
+                continue
+            vo = self._miss_learn_dao.mark_learned(
+                ws,
+                kind,
+                pattern,
+                datasource_id=c.get("datasource_id"),
+                example=(c.get("example_sql") or c.get("example")),
+                proposal_ids=proposal_ids,
+                trigger=trigger,
+            )
+            marked.append(vo)
+        if marked:
+            self._oplog_dao.append(
+                "miss_learned",
+                ws,
+                {
+                    "mark": [{"kind": v.kind, "pattern": v.pattern,
+                              "datasource_id": v.datasource_id}
+                             for v in marked],
+                    "trigger": trigger,
+                    "proposals": proposal_ids or [],
+                },
+            )
+        return marked
+
+    def list_miss_learned(
+        self, workspace_id: Optional[str] = None, kind: Optional[str] = None
+    ) -> List[MissLearnVO]:
+        """列出工作空间所有已学习的 miss 标记(按学习时间倒序)。"""
+        return self._miss_learn_dao.list(self._ws(workspace_id), kind)
+
+    def clear_miss_learned(
+        self,
+        workspace_id: Optional[str] = None,
+        kind: Optional[str] = None,
+        pattern: Optional[str] = None,
+    ) -> int:
+        """清除已学习标记(允许对应 miss 重新曝光)。返回清除数。"""
+        ws = self._ws(workspace_id)
+        removed = self._miss_learn_dao.clear(ws, kind, pattern)
+        if removed:
+            self._oplog_dao.append(
+                "miss_learn_clear",
+                ws,
+                {"removed": removed, "kind": kind, "pattern": pattern},
+            )
+        return removed
 
     @staticmethod
     def build_miss_context(clusters: List[dict], max_items: int = 10) -> str:
@@ -697,16 +780,22 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                     .all()
                 )
                 names = {u.id: u.name for u in rows}
-        return [
-            ConfirmerVO(
-                id=v.id,
-                workspace_id=v.workspace_id,
-                user_id=v.user_id,
-                scope=v.scope,
-                user_name=names.get(int(v.user_id)),
+        resolved: List[ConfirmerVO] = []
+        for v in vos:
+            try:
+                user_name = names.get(int(v.user_id))
+            except (TypeError, ValueError):
+                user_name = None
+            resolved.append(
+                ConfirmerVO(
+                    id=v.id,
+                    workspace_id=v.workspace_id,
+                    user_id=v.user_id,
+                    scope=v.scope,
+                    user_name=user_name,
+                )
             )
-            for v in vos
-        ]
+        return resolved
 
     def add_confirmer(
         self, user_id: str, workspace_id: Optional[str] = None,

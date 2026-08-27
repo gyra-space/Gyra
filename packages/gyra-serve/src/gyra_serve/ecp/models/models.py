@@ -36,6 +36,7 @@ from ..api.schemas import (
     AssetRefVO,
     CatalogEntryVO,
     ConfirmerVO,
+    MissLearnVO,
     OpLogVO,
     SemanticObjectListVO,
     SemanticObjectVO,
@@ -48,6 +49,7 @@ from ..config import (
     STATUS_SUPERSEDED,
     TABLE_ASSET_REF,
     TABLE_CONFIRMER,
+    TABLE_MISS_LEARN,
     TABLE_OP_LOG,
     TABLE_RESOLUTION_CACHE,
     TABLE_SEMANTIC_EDGE,
@@ -178,6 +180,36 @@ class EcpAssetRefEntity(Model):
     __table_args__ = (
         UniqueConstraint("workspace_id", "kind", "ref_id", name="uk_ecp_asset_ref"),
     )
+
+
+class EcpMissLearnEntity(Model):
+    """Record that a miss cluster has been learned (a proposal was generated).
+
+    The ``pattern`` is the normalized cluster key from ``cluster_fallbacks``; the
+    unique identity is ``(workspace_id, kind, datasource_id, pattern)``. Once a
+    cluster is recorded here, ``get_miss_report``/``miss_report`` exclude it so the
+    daily miss-learning cron does not re-surface already-covered concepts
+    (flywheel's learned marker). Dedup is enforced in the DAO (datasource_id is
+    NULL-able for doc clusters, so a DB unique index would not coalesce NULLs).
+    """
+
+    __tablename__ = TABLE_MISS_LEARN
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(String(128), nullable=False, default=DEFAULT_WORKSPACE_ID)
+    kind = Column(String(32), nullable=False)
+    datasource_id = Column(Integer, nullable=True)
+    pattern = Column(String(512), nullable=False)
+    example = Column(String(1024), nullable=True)
+    proposal_ids = Column(JSON, nullable=True)
+    trigger = Column(String(32), nullable=False, default="agent")
+    learned_at = Column(DateTime, default=datetime.now, nullable=False)
+    gmt_create = Column(DateTime, default=datetime.now, nullable=False)
+    gmt_modify = Column(
+        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+    )
+
+    __table_args__ = (Index("idx_ecp_miss_learn_ws", "workspace_id"),)
 
 
 class EcpWorkspaceConfigEntity(Model):
@@ -893,6 +925,112 @@ class OpLogDao(BaseDao[EcpOpLogEntity, Any, Any]):
         ]
 
 
+class MissLearnDao(BaseDao[EcpMissLearnEntity, Any, Any]):
+    """DAO for miss-cluster learned markers (append-idempotent)."""
+
+    def mark_learned(
+        self,
+        workspace_id: str,
+        kind: str,
+        pattern: str,
+        datasource_id: Optional[int] = None,
+        example: Optional[str] = None,
+        proposal_ids: Optional[List[str]] = None,
+        trigger: str = "agent",
+    ) -> MissLearnVO:
+        """Idempotently record that a miss cluster was learned.
+
+        Unique identity is ``(workspace_id, kind, datasource_id, pattern)``;
+        on collision we refresh the existing row (update proposal_ids/example/
+        learned_at/trigger) rather than insert a duplicate. ``pattern`` is the
+        normalized cluster key so future fallback records of the same query
+        still map to the same learned marker.
+        """
+        with self.session() as session:
+            entity = (
+                session.query(EcpMissLearnEntity)
+                .filter(
+                    EcpMissLearnEntity.workspace_id == workspace_id,
+                    EcpMissLearnEntity.kind == kind,
+                    EcpMissLearnEntity.datasource_id == datasource_id,
+                    EcpMissLearnEntity.pattern == pattern,
+                )
+                .first()
+            )
+            if entity:
+                entity.learned_at = datetime.now()
+                entity.trigger = trigger
+                entity.example = example or entity.example
+                if proposal_ids:
+                    entity.proposal_ids = proposal_ids
+                session.flush()
+                session.refresh(entity)
+            else:
+                entity = EcpMissLearnEntity(
+                    workspace_id=workspace_id,
+                    kind=kind,
+                    datasource_id=datasource_id,
+                    pattern=pattern,
+                    example=example,
+                    proposal_ids=proposal_ids or [],
+                    trigger=trigger,
+                )
+                session.add(entity)
+                session.flush()
+                session.refresh(entity)
+            return _to_miss_learn_vo(entity)
+
+    def list(
+        self, workspace_id: str, kind: Optional[str] = None
+    ) -> List[MissLearnVO]:
+        with self.session(commit=False) as session:
+            query = session.query(EcpMissLearnEntity).filter(
+                EcpMissLearnEntity.workspace_id == workspace_id
+            )
+            if kind:
+                query = query.filter(EcpMissLearnEntity.kind == kind)
+            rows = query.order_by(desc(EcpMissLearnEntity.learned_at)).all()
+        return [_to_miss_learn_vo(r) for r in rows]
+
+    def learned_keys(self, workspace_id: str) -> set:
+        """Return ``{(kind, datasource_id, pattern)}`` already learned.
+
+        Used to filter clusters out of ``get_miss_report``/``miss_report`` so the
+        daily cron stops re-proposing already-covered concepts.
+        """
+        with self.session(commit=False) as session:
+            rows = (
+                session.query(
+                    EcpMissLearnEntity.kind,
+                    EcpMissLearnEntity.datasource_id,
+                    EcpMissLearnEntity.pattern,
+                )
+                .filter(EcpMissLearnEntity.workspace_id == workspace_id)
+                .all()
+            )
+        return {(r.kind, r.datasource_id, r.pattern) for r in rows}
+
+    def clear(
+        self,
+        workspace_id: str,
+        kind: Optional[str] = None,
+        pattern: Optional[str] = None,
+    ) -> int:
+        """Remove learned markers so the clusters can be re-surfaced. Returns count."""
+        with self.session() as session:
+            query = session.query(EcpMissLearnEntity).filter(
+                EcpMissLearnEntity.workspace_id == workspace_id
+            )
+            if kind:
+                query = query.filter(EcpMissLearnEntity.kind == kind)
+            if pattern:
+                query = query.filter(EcpMissLearnEntity.pattern == pattern)
+            rows = query.all()
+            for r in rows:
+                session.delete(r)
+            return len(rows)
+
+
 class AssetRefDao(BaseDao[EcpAssetRefEntity, Any, Any]):
     """DAO for the original-asset reference registry."""
 
@@ -1062,6 +1200,20 @@ def _to_asset_ref_vo(e: EcpAssetRefEntity) -> AssetRefVO:
         ref_meta=e.ref_meta or {},
         status=e.status,
         last_checked_at=_iso(e.last_checked_at),
+    )
+
+
+def _to_miss_learn_vo(e: EcpMissLearnEntity) -> MissLearnVO:
+    return MissLearnVO(
+        id=e.id,
+        workspace_id=e.workspace_id,
+        kind=e.kind,
+        datasource_id=e.datasource_id,
+        pattern=e.pattern,
+        example=e.example,
+        proposal_ids=e.proposal_ids or [],
+        trigger=e.trigger,
+        learned_at=_iso(e.learned_at),
     )
 
 

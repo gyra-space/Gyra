@@ -169,6 +169,28 @@ class OpLogVO(BaseModel):
     detail: Optional[Dict[str, Any]] = None
 
 
+class MissLearnVO(BaseModel):
+    """A miss cluster that has been learned (a proposal was generated for it).
+
+    Persisted so the daily miss-learning cron stops re-surfacing the same high-
+    frequency cluster once a proposal has been created for it — the flywheel's
+    "learned" marker. ``pattern`` is the normalized cluster key produced by
+    ``cluster_fallbacks`` (normalized SQL or question).
+    """
+
+    model_config = ConfigDict(title="EcpMissLearn")
+
+    id: int
+    workspace_id: str
+    kind: str
+    datasource_id: Optional[int] = None
+    pattern: str
+    example: Optional[str] = None
+    proposal_ids: List[str] = Field(default_factory=list)
+    trigger: str = "agent"
+    learned_at: Optional[str] = None
+
+
 class GenerateProposalsRequest(BaseModel):
     """Trigger proposal generation for a datasource (batch) or workspace (agent)."""
 

@@ -104,7 +104,6 @@ class Vis:
         vis_map = {
             "code": ("gyra_ext.vis.common.tags.gyra_code", "CodeSpace"),
             "text": ("gyra_ext.vis.gyra.tags.drsk_content", "DrskContent"),
-            "chart": ("gyra_ext.vis.gptvis.tags.vis_chart", "VisChart"),
             "thinking": (
                 "gyra_ext.vis.common.tags.gyra_thinking",
                 "GyraThinking",

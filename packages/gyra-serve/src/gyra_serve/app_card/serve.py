@@ -45,10 +45,19 @@ class Serve(BaseServe):
 
     def on_init(self):
         from .models.models import AppCardEntity, AppCardVersionEntity  # noqa: F401
-        _ = [AppCardEntity.__tablename__, AppCardVersionEntity.__tablename__]
+        from .store.models import AppCardKvEntity, AppCardRecordEntity  # noqa: F401
+
+        _ = [
+            AppCardEntity.__tablename__,
+            AppCardVersionEntity.__tablename__,
+            AppCardRecordEntity.__tablename__,
+            AppCardKvEntity.__tablename__,
+        ]
 
     def before_start(self):
         from .models.models import AppCardEntity, AppCardVersionEntity  # noqa: F401
+        from .store.models import AppCardKvEntity, AppCardRecordEntity  # noqa: F401
+
         init_db = self.create_or_get_db_manager()
         try:
             init_db.create_all()

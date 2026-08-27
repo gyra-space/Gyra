@@ -18,6 +18,11 @@ import sys
 SCHEMA_NAME = "gyra_app_card"
 SQL_PREFIXES = ("SELECT", "WITH", "SHOW", "DESC", "DESCRIBE", "EXPLAIN")
 
+# 交付文件名格式: app_card_<slug>_v<version>_<YYYYMMDDTHHMMSSZ>.json
+FILE_RE = re.compile(
+    r"^app_card_[a-z0-9_]+_v(\d+\.\d+\.\d+)_(\d{8})T\d{6}Z\.json$"
+)
+
 _FAILS = []
 
 
@@ -25,9 +30,14 @@ def _fail(msg: str) -> None:
     _FAILS.append(msg)
 
 
+SRC_FILE = None  # 记录输入文件的 basename，用于文件名版本/时间戳校验
+
+
 def _load_text() -> str:
+    global SRC_FILE
     if len(sys.argv) > 1:
         path = sys.argv[1]
+        SRC_FILE = os.path.basename(path)
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return f.read()
@@ -35,6 +45,7 @@ def _load_text() -> str:
             print(f"[FAIL] 无法读取文件 {path}: {e}")
             sys.exit(2)
     if os.path.exists("app_card_payload.json"):
+        SRC_FILE = "app_card_payload.json"
         with open("app_card_payload.json", "r", encoding="utf-8") as f:
             return f.read()
     raw = sys.stdin.read()
@@ -112,6 +123,33 @@ def _check_queries(queries: list) -> None:
             _fail(f"query {key!r}: kind 应为 metric/sql，实际为 {kind!r}")
 
 
+def _check_file_header(meta: dict) -> None:
+    """校验交付文件名带版本+时间戳，并与 meta.version / meta.generated_at 对齐。"""
+    if SRC_FILE is None or SRC_FILE.endswith(".json"):
+        base = None
+        if SRC_FILE:
+            base = os.path.splitext(SRC_FILE)[0]
+        if base:
+            m = FILE_RE.match(base + ".json")
+            if not m:
+                _fail(
+                    f"交付文件名为 {SRC_FILE!r}，不符合 app_card_<slug>_v<version>_<YYYYMMDDTHHMMSSZ>.json"
+                    "（请携带版本+时间戳，不要用通用名 app_card_payload.json）"
+                )
+                return
+            f_ver, f_date = m.group(1), m.group(2)
+            meta_ver = meta.get("version")
+            if meta_ver and f_ver != meta_ver:
+                _fail(f"文件名版本 {f_ver} 与 meta.version {meta_ver} 不一致")
+            gen = meta.get("generated_at", "")
+            if gen:
+                gen_date = gen[:10].replace("-", "")
+                if gen_date and f_date != gen_date:
+                    _fail(
+                        f"文件名日期 {f_date} 与 meta.generated_at 日期 {gen_date} 不一致"
+                    )
+
+
 def main() -> int:
     raw = _load_text()
     if not raw or not raw.strip():
@@ -138,6 +176,12 @@ def main() -> int:
         for k in ("schema_version", "generated_by", "generated_at"):
             if k not in meta:
                 _fail(f"meta 缺少 {k}")
+        if "version" not in meta:
+            _fail("meta 缺少 version（卡片语义版本，如 1.0.0）")
+        else:
+            v = meta["version"]
+            if not isinstance(v, str) or not re.fullmatch(r"\d+\.\d+\.\d+", v):
+                _fail(f"meta.version 应为 x.y.z 格式，实际为 {v!r}")
 
     name = data.get("name")
     if not isinstance(name, str) or not name.strip():
@@ -165,6 +209,9 @@ def main() -> int:
         _fail("icon 应为字符串或省略")
     if not isinstance(data.get("permissions", []), list):
         _fail("permissions 应为数组")
+
+    if isinstance(meta, dict):
+        _check_file_header(meta)
 
     if _FAILS:
         print(f"[FAIL] 共 {len(_FAILS)} 处问题：")

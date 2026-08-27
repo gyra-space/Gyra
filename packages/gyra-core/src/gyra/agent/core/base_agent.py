@@ -879,10 +879,10 @@ class ConversableAgent(Role, Agent):
             self._inject_database_tools()
 
     def _inject_database_tools(self):
-        """注入数据库相关工具（get_table_spec, execute_sql, list_tables）"""
+        """注入数据库相关工具（get_table_spec, execute_sql, list_tables, app_card_preview）"""
         from ..tools.registry import tool_registry
 
-        db_tool_names = ["get_table_spec", "execute_sql", "list_tables"]
+        db_tool_names = ["get_table_spec", "execute_sql", "list_tables", "app_card_preview"]
 
         # 尝试导入 db_tools 模块以触发 @tool 装饰器自动注册
         # (实现迁移自 gyra_serve.agent.resource.db_tools → capabilities/db/tools/_db_tools_impl)
@@ -891,6 +891,14 @@ class ConversableAgent(Role, Agent):
         except ImportError:
             logger.debug(
                 "[_inject_database_tools] _db_tools_impl "
+                "not available, skipping import"
+            )
+        # 尝试导入 app_card 取数工具以触发 @tool 注册(随数据库资源一起注入)
+        try:
+            import gyra_serve.app_card.agent_tools  # noqa: F401
+        except ImportError:
+            logger.debug(
+                "[_inject_database_tools] app_card.agent_tools "
                 "not available, skipping import"
             )
 

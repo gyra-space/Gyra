@@ -1,5 +1,5 @@
 {
-  "current_version": "0.6.0_20260826",
+  "current_version": "0.6.0_20260827",
   "scripts": [
     {
       "name": "upgrade_0.3.0_20260730_to_0.3.0_20260823.sql",
@@ -14,9 +14,9 @@
     {
       "name": "upgrade_0.6.0_20260826_to_0.6.0_20260826.sql",
       "from_version": "0.6.0",
-      "from_timestamp": "20260826",
+      "from_timestamp": "20260827",
       "to_version": "0.6.0",
-      "to_timestamp": "20260826",
+      "to_timestamp": "20260827",
       "seq": 0,
       "checksum": "1562661fec23f3a8eb8a4cd8190ea996de7e0c6bef0808aacfd7d486c7dc5e39",
       "version": 2

@@ -25,6 +25,7 @@ TABLE_CONFIRMER = "gyra_serve_ecp_confirmer"
 TABLE_OP_LOG = "gyra_serve_ecp_op_log"
 TABLE_ASSET_REF = "gyra_serve_ecp_asset_ref"
 TABLE_WORKSPACE_CONFIG = "gyra_serve_ecp_workspace_config"
+TABLE_MISS_LEARN = "gyra_serve_ecp_miss_learn"
 
 # Semantic object types
 # 结构化(DB): entity/metric/relation/dimension

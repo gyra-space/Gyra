@@ -45,6 +45,7 @@ from gyra_app.feature_plugins.system_config_model import SystemConfigEntity
 from gyra_serve.ecp.models.models import (
     EcpAssetRefEntity,
     EcpConfirmerEntity,
+    EcpMissLearnEntity,
     EcpOpLogEntity,
     EcpResolutionCacheEntity,
     EcpSemanticEdgeEntity,
@@ -93,6 +94,7 @@ _MODELS = [
     EcpOpLogEntity,
     EcpAssetRefEntity,
     EcpWorkspaceConfigEntity,
+    EcpMissLearnEntity,
     AppCardEntity,
     AppCardVersionEntity,
 ]

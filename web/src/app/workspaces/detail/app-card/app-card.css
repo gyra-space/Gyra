@@ -171,6 +171,11 @@
   padding: 12px;
   background: #f7f8fa;
   border-radius: 12px;
+  /* 撑满场景空间 body, header 固定在顶部, 子应用占满剩余高度 */
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 应用页固定 header: 应用信息 + 维护入口 */
@@ -178,6 +183,7 @@
   position: sticky;
   top: 0;
   z-index: 3;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -299,6 +305,11 @@
 .ws-app-card {
   position: relative;
   width: 100%;
+}
+/* 撑满父容器(stretch 模式): 父需为 flex 容器, 使子应用占满可用高度 */
+.ws-app-card--fill {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .ws-app-card__frame {
   width: 100%;

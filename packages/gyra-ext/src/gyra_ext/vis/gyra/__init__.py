@@ -2,14 +2,12 @@ import importlib
 from typing import Any
 
 __all__ = [
-    "GyraIncrVisWindow2Converter",
     "GyraIncrVisWindow3Converter",
     "GyraVisIncrConverter",
     "GyraVisConverter",
 ]
 
 _LAZY_IMPORTS = {
-    "GyraIncrVisWindow2Converter": ".gyra_vis_window2_converter",
     "GyraIncrVisWindow3Converter": ".gyra_vis_window3_converter",
     "GyraVisIncrConverter": ".gyra_vis_incr_converter",
     "GyraVisConverter": ".gyra_vis_converter",

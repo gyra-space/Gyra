@@ -490,21 +490,95 @@ async def get_miss_report(
     workspace_id: Optional[str] = None,
     **kwargs,
 ) -> str:
+    from ..models.models import MissLearnDao
     from ..service.service import cluster_fallbacks
 
     ws = _ws(workspace_id)
     entries = OpLogDao().list(ws, op="fallback", page=1, page_size=500)
+    learned = MissLearnDao().learned_keys(ws)
     clusters = [
-        c for c in cluster_fallbacks(entries) if c["count"] >= max(1, min_count)
+        c
+        for c in cluster_fallbacks(entries)
+        if c["count"] >= max(1, min_count)
+        and (c.get("kind"), c.get("datasource_id"), c.get("pattern")) not in learned
     ][:limit]
     return json.dumps(
         {
             "workspace_id": ws,
             "total_fallbacks": len(entries),
+            "learned_count": len(learned),
             "clusters": clusters,
             "hint": "对照已确认目录与收件箱,只为真正未覆盖且高频的概念用 "
-            "propose_semantic 提案;已有概念不要重复提案",
+            "propose_semantic 提案;已有概念不要重复提案。成功提案后请用 "
+            "mark_miss_learned 标记这些聚类已学习,避免每天重复。",
         },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+@tool(
+    "mark_miss_learned",
+    description=(
+        "Mark miss clusters as LEARNED (a proposal was generated for them). "
+        "Call after propose_semantic succeeds for a cluster, passing back the "
+        "same cluster objects from get_miss_report (kind/datasource_id/pattern). "
+        "Once marked, the daily miss-learning cron excludes them so it never "
+        "re-proposes already-covered concepts."
+    ),
+    args={
+        "clusters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"},
+                    "datasource_id": {"type": "integer"},
+                    "pattern": {"type": "string"},
+                    "example_sql": {"type": "string"},
+                },
+            },
+            "description": "要标记为已学习的 miss 聚类对象(取自 get_miss_report 输出)",
+        },
+        "workspace_id": {
+            "type": "string",
+            "description": "工作空间 id，默认 default",
+            "required": False,
+        },
+    },
+    category=ToolCategory.SEARCH,
+    risk_level=ToolRiskLevel.SAFE,
+)
+async def mark_miss_learned(
+    clusters: List[Dict[str, Any]],
+    workspace_id: Optional[str] = None,
+    **kwargs,
+) -> str:
+    from ..models.models import MissLearnDao
+
+    ws = _ws(workspace_id)
+    dao = MissLearnDao()
+    marked, skipped = [], []
+    for c in clusters or []:
+        kind = c.get("kind")
+        pattern = c.get("pattern")
+        if not kind or not pattern:
+            skipped.append(c)
+            continue
+        vo = dao.mark_learned(
+            ws,
+            kind,
+            pattern,
+            datasource_id=c.get("datasource_id"),
+            example=c.get("example_sql") or c.get("example"),
+            trigger="agent",
+        )
+        marked.append(
+            {"kind": vo.kind, "pattern": vo.pattern,
+             "datasource_id": vo.datasource_id, "learned_at": vo.learned_at}
+        )
+    return json.dumps(
+        {"workspace_id": ws, "marked": marked, "skipped": skipped},
         ensure_ascii=False,
         default=str,
     )
