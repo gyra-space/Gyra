@@ -50,7 +50,7 @@ export function buildSkillLoadedExecutionSteps(
 }
 
 interface UseSceneAgentChatOptions {
-  convUid?: string;
+  conversationId?: string;
   appCode?: string;
   workspaceId?: number | string;
   taskId?: number | string;
@@ -64,8 +64,8 @@ interface UseSceneAgentChatOptions {
   onConversationStart?: () => void;
   /** 是否启用轮询/连接:简洁模式与运维模式共用同一会话时,只让一个实例接管 */
   enabled?: boolean;
-  /** 会话创建回调:convUid 为空时由外层在首次发送前创建并注入 */
-  onConvCreated?: (convUid: string) => Promise<string | null>;
+  /** 会话创建回调:conversationId 为空时由外层在首次发送前创建并注入 */
+  onConvCreated?: (conversationId: string) => Promise<string | null>;
 }
 
 interface UseSceneAgentChatResult {
@@ -131,7 +131,7 @@ export function taskToCreatedStep(
   };
 }
 
-/** 把绑定到当前会话(conv_session_id === convUid)的任务重注入执行记录。
+/** 把绑定到当前会话(conv_session_id === conversationId)的任务重注入执行记录。
  *
  * 任务卡片由 SSE task_created 事件在客户端注入,不落在后端 vis 数据里,
  * 刷新(vis_final 恢复)后卡片会消失。这里依据任务列表按会话维度重新注入,
@@ -140,11 +140,11 @@ export function taskToCreatedStep(
 export function mergeTaskCards(
   prev: WorkspaceView,
   tasks: any[] | undefined,
-  convUid: string | undefined,
+  conversationId: string | undefined,
   playbooks?: { playbook_id: number; playbook_name: string }[],
 ): WorkspaceView {
-  if (!convUid || !Array.isArray(tasks)) return prev;
-  const convTasks = tasks.filter((t) => t && t.conv_session_id === convUid);
+  if (!conversationId || !Array.isArray(tasks)) return prev;
+  const convTasks = tasks.filter((t) => t && t.conv_session_id === conversationId);
   if (!convTasks.length) return prev;
   const byId = new Map(prev.execution.map((s) => [s.id, s]));
   for (const task of convTasks) {
@@ -165,7 +165,7 @@ export function mergeTaskCards(
 export { parseSceneAgentWorkspaceString } from './parse-scene-agent-workspace-string';
 
 export function useSceneAgentChat({
-  convUid,
+  conversationId,
   appCode,
   workspaceId,
   taskId,
@@ -188,13 +188,13 @@ export function useSceneAgentChat({
   // 避免切换会话后旧流迟到的消息、结束事件污染当前视图。
   const streamEpochRef = useRef(0);
   const { chat, usageMetrics, resetUsageMetrics } = useChat({ app_code: appCode || '' });
-  // convUid 内部态:外部未提供时(简洁模式延迟创建会话)由 ensureConvUid 填充,
+  // conversationId 内部态:外部未提供时(简洁模式延迟创建会话)由 ensureConvUid 填充,
   // 提供时跟随外部 prop;这样 send 不依赖外层 re-render。
   const [internalConvUid, setInternalConvUid] = useState<string | undefined>(undefined);
-  const effectiveConvUid = convUid ?? internalConvUid;
+  const effectiveConvUid = conversationId ?? internalConvUid;
 
   const ensureConvUid = useCallback(async (): Promise<string | null> => {
-    if (convUid) return convUid;
+    if (conversationId) return conversationId;
     if (internalConvUid) return internalConvUid;
     if (onConvCreated) {
       const newUid = await onConvCreated('');
@@ -204,13 +204,13 @@ export function useSceneAgentChat({
       }
     }
     return null;
-  }, [convUid, internalConvUid, onConvCreated]);
+  }, [conversationId, internalConvUid, onConvCreated]);
 
-  // 外部 convUid 回到 undefined(简洁模式返回欢迎态)时清掉内部会话:
+  // 外部 conversationId 回到 undefined(简洁模式返回欢迎态)时清掉内部会话:
   // 否则下次发送会复用上一轮 ensureConvUid 创建的旧会话,而不是新建。
   useEffect(() => {
-    if (convUid === undefined) setInternalConvUid(undefined);
-  }, [convUid]);
+    if (conversationId === undefined) setInternalConvUid(undefined);
+  }, [conversationId]);
 
   // 会话/任务切换(effectiveConvUid 变化)时清空上一会话的视图与执行记录:
   // workspaceView 是会话级累积状态(步骤按 id 合并、旧条目保留),若不重置,
@@ -251,9 +251,9 @@ export function useSceneAgentChat({
   // 把绑定到当前会话的任务按 task-created-{id} 去重/更新回执行记录,
   // 保证刷新后卡片仍可见且反映最新状态。
   useEffect(() => {
-    if (!convUid) return;
-    setWorkspaceView((prev) => mergeTaskCards(prev, tasks, convUid, playbooks));
-  }, [tasks, convUid, playbooks]);
+    if (!conversationId) return;
+    setWorkspaceView((prev) => mergeTaskCards(prev, tasks, conversationId, playbooks));
+  }, [tasks, conversationId, playbooks]);
 
   // 拦截 task_created workspace 事件:把任务卡片注入对话执行记录,
   // 用户可在对话中直接看到任务已创建并点击进入任务对话。
@@ -382,7 +382,7 @@ export function useSceneAgentChat({
   // - SSE 结束 loading=false → enabled true,convId effect 自动 checkStatus 恢复
   const handlePoll = useCallback(
     (res: ChatQueryResponse) => {
-      // 过滤 convUid 快速切换时滞后的旧会话响应,避免脏合并
+      // 过滤 conversationId 快速切换时滞后的旧会话响应,避免脏合并
       if (res.conv_id && effectiveConvUid && res.conv_id !== effectiveConvUid) return;
       // 轮询链路:回放 dock 帧,与 SSE onDock 共用同一份合并逻辑
       if (res.dock) {
@@ -466,7 +466,7 @@ export function useSceneAgentChat({
     async (payload: SceneAgentSendPayload) => {
       const { text } = payload;
       if (!text.trim()) return;
-      // 简洁模式:无 convUid 时先创建会话再发送
+      // 简洁模式:无 conversationId 时先创建会话再发送
       const uid = await ensureConvUid();
       if (!uid) return;
       abortRef.current?.abort();

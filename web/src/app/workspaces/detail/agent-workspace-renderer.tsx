@@ -28,7 +28,7 @@ import { SceneAskUserCard, extractAskUserData } from './scene-ask-user-card';
 import { statusLabel } from './scene-task-rail';
 import { StepFlow } from './step-flow';
 import { buildExecutionPhases, usePlanningTimeline } from './use-execution-phases';
-import { splitRounds } from './deliverable-rounds';
+import { groupDeliverablesByRound, groupTaskFilesByRound, splitRounds } from './deliverable-rounds';
 import type {
   WorkspaceDeliverableFile,
   WorkspaceExecutionStep,
@@ -38,6 +38,10 @@ import type {
 
 /** 进入执行胶囊归组的步骤类型(user/answer/task_created 等由 feed 直接渲染) */
 const CAPSULE_STEP_TYPES = new Set(['tool_call', 'thinking', 'artifact', 'delivery', 'skill_loaded']);
+
+/** 轮次无归属文件时复用同一空数组,避免每次渲染新建数组触发子组件无谓更新 */
+const NO_DELIVERABLES: WorkspaceDeliverableFile[] = [];
+const NO_TASK_FILES: WorkspaceTaskFile[] = [];
 
 /** 用户消息气泡(manus left panel 风格):气泡 + 用户头像(右侧) */
 function UserBubble({ text, avatarUrl, name }: { text: string; avatarUrl?: string | null; name?: string | null }) {
@@ -599,8 +603,9 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
   // 已有完整回复(answer step)时,summary 不再单独渲染,避免重复
   const hasAnswer = view.execution.some((s) => s.type === 'answer');
   // 任务文件含交付文件,过滤掉已在交付卡片中展示的,避免重复
-  const extraTaskFiles = task_files.filter(
-    (f) => !deliverable_files.some((d) => d.file_id === f.file_id),
+  const extraTaskFiles = useMemo(
+    () => task_files.filter((f) => !deliverable_files.some((d) => d.file_id === f.file_id)),
+    [task_files, deliverable_files],
   );
 
   // 上下文注入:默认注入的协议文件(skill / agents.md 等 preload 内容)抽离到
@@ -629,9 +634,18 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
     return idx >= 0 ? idx : 0;
   }, [rounds]);
 
-  // 交付文件统一沉底展示:不按轮次内联(追问/多轮场景下按轮次归属会把上一轮交付物
-  // 埋在上方,用户在底部结论/任务文件附近看不到)。始终在 feed 底部、任务文件条之前
-  // 集中展示,保证「交付文件」组件稳定可见。
+  // 交付文件 / 任务文件按轮次归属:一轮提问产出的文件跟在该轮回复末尾,
+  // 而不是会话级全局组件把所有轮次的文件堆在 feed 底部(追问 N 轮后无法区分
+  // 哪个文件属于哪次提问)。归属依据是后端下发的文件产出时间戳(交付文件 ts /
+  // 任务文件 created_at)落在哪一轮的时间区间内。
+  const { byRound: deliverablesByRound, leftover: leftoverDeliverables } = useMemo(
+    () => groupDeliverablesByRound(rounds, deliverable_files),
+    [rounds, deliverable_files],
+  );
+  const { byRound: taskFilesByRound, leftover: leftoverTaskFiles } = useMemo(
+    () => groupTaskFilesByRound(rounds, extraTaskFiles),
+    [rounds, extraTaskFiles],
+  );
 
   // 任务文件点击 → 适配为交付文件形状,在中间容器预览
   const handleTaskFileOpen = onDeliverableClick
@@ -658,6 +672,9 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
       )}
       {rounds.map((round, roundIdx) => {
         const isLastRound = roundIdx === rounds.length - 1;
+        // 本轮产出的文件(按产出时间戳归属到本轮)
+        const roundDeliverables = deliverablesByRound.get(round.key) ?? NO_DELIVERABLES;
+        const roundTaskFiles = taskFilesByRound.get(round.key) ?? NO_TASK_FILES;
         // 轮内节点:连续过程步骤攒批成 StepFlow。answer 按时间序排在对应工具批次之后
         // (先冲刷前置工具批次,再渲染答案),运行中与完成后同一套顺序。
         const nodes: ReactNode[] = [];
@@ -752,6 +769,13 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
               </div>
             )}
             {nodes}
+            {/* 本轮产出的文件:跟在该轮回复末尾,随对话滚动而非会话级固定组件 */}
+            {roundDeliverables.length > 0 && onDeliverableClick && (
+              <DeliverablesBlock files={roundDeliverables} onDeliverableClick={onDeliverableClick} />
+            )}
+            {roundTaskFiles.length > 0 && (
+              <TaskFilesStrip files={roundTaskFiles} onOpen={handleTaskFileOpen} />
+            )}
           </Fragment>
         );
       })}
@@ -765,13 +789,13 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
           </div>
         </div>
       )}
-      {/* 交付文件统一沉底展示:在任务文件条之前,始终可见 */}
-      {deliverable_files.length > 0 && onDeliverableClick && (
-        <DeliverablesBlock files={deliverable_files} onDeliverableClick={onDeliverableClick} />
+      {/* 兜底:无产出时间戳 / 早于所有轮次而无法归属的文件仍在 feed 底部展示,
+          避免文件丢失;能归属的文件都已内联到对应轮次末尾。 */}
+      {leftoverDeliverables.length > 0 && onDeliverableClick && (
+        <DeliverablesBlock files={leftoverDeliverables} onDeliverableClick={onDeliverableClick} />
       )}
-      {/* 其余任务文件:一行折叠开关,零视觉噪音 */}
-      {extraTaskFiles.length > 0 && (
-        <TaskFilesStrip files={extraTaskFiles} onOpen={handleTaskFileOpen} />
+      {leftoverTaskFiles.length > 0 && (
+        <TaskFilesStrip files={leftoverTaskFiles} onOpen={handleTaskFileOpen} />
       )}
       {/* 运行中:底部 loading 指示 + 自动滚动哨兵 */}
       <div ref={endRef} className="ws-agent-renderer__end" aria-hidden />

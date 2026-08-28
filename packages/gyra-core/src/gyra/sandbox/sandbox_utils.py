@@ -6,7 +6,25 @@ import os
 import posixpath
 import re
 import shlex
-from typing import List, Optional, Tuple, TYPE_CHECKING, Set
+from typing import Any, List, Optional, Tuple, TYPE_CHECKING, Set
+
+
+def resolve_session_work_dir(client: Any, default: str = "/workspace") -> str:
+    """解析沙箱的当前工作目录:会话目录优先,否则回退 ``work_dir``。
+
+    场景空间下会话目录为 ``<work_dir>/sessions/<conv_uid>/``,相对路径落进
+    会话私有区,同名文件不会跨会话覆盖;未启用会话隔离时(非场景空间、E2B)
+    与 ``work_dir`` 完全一致,行为不变。
+
+    对未实现 ``session_work_dir`` 的对象(尤其是测试里的 MagicMock)做防御性
+    回退:只有**非空字符串**才采用,否则 MagicMock 属性会被当成路径拼进文件
+    系统,在项目根目录造出 ``<MagicMock ...>/uploads`` 这类垃圾目录。
+    """
+    for attr in ("session_work_dir", "work_dir"):
+        value = getattr(client, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -328,13 +346,20 @@ def normalize_sandbox_path(client: "SandboxBase", raw_path: str) -> str:
     """
     Normalise user supplied path to an absolute path anchored at sandbox work_dir.
 
+    场景空间下锚点是**会话目录**(``session_work_dir``,即
+    ``<work_dir>/sessions/<conv_uid>/``),相对路径落进会话私有区;
+    空间公共层(``work_dir``)仍然放行,这样 ``../files/`` 之类的相对路径
+    与公共资产绝对路径都可用(读数据集、promote 共享文件)。
+
     Raises:
         ValueError: 当路径逃离 sandbox 工作目录时抛出。
     """
     if not isinstance(raw_path, str) or not raw_path.strip():
         raise ValueError("path 必须是非空字符串")
 
-    base = posixpath.normpath(client.work_dir.rstrip("/")) or "/"
+    # 未配置会话目录的沙箱(E2B / 非场景空间)回退到 work_dir,行为不变。
+    session_dir = resolve_session_work_dir(client)
+    base = posixpath.normpath(session_dir.rstrip("/")) or "/"
 
     if raw_path.startswith("/"):
         combined = raw_path
@@ -352,7 +377,14 @@ def normalize_sandbox_path(client: "SandboxBase", raw_path: str) -> str:
     prefix = "" if base == "/" else f"{base}/"
 
     if normalized != base and not normalized.startswith(prefix):
-        raise ValueError(f"路径 {normalized} 不在沙箱工作目录 {client.work_dir} 范围内")
+        # 会话目录之外,但仍在空间公共层之内 —— 允许访问公共资产。
+        workspace_base = posixpath.normpath(client.work_dir.rstrip("/")) or "/"
+        ws_prefix = "" if workspace_base == "/" else f"{workspace_base}/"
+        if normalized == workspace_base or normalized.startswith(ws_prefix):
+            return normalized
+        raise ValueError(
+            f"路径 {normalized} 不在沙箱工作目录 {session_dir} 范围内"
+        )
 
     return normalized
 
@@ -364,7 +396,10 @@ async def ensure_directory(client: "SandboxBase", abs_path: str) -> None:
         return
 
     command = f"mkdir -p {shlex.quote(directory)}"
-    result = await client.shell.exec_command(command=command, work_dir=client.work_dir)
+    result = await client.shell.exec_command(
+        command=command,
+        work_dir=resolve_session_work_dir(client),
+    )
     status = getattr(result, "status", None)
     if status != "completed":
         output = collect_shell_output(result)
@@ -384,7 +419,10 @@ async def detect_path_kind(client: "SandboxBase", abs_path: str) -> str:
         "else echo NONE; fi"
     ).format(shlex.quote(abs_path))
 
-    result = await client.shell.exec_command(command=command, work_dir=client.work_dir)
+    result = await client.shell.exec_command(
+        command=command,
+        work_dir=resolve_session_work_dir(client),
+    )
     if getattr(result, "status", None) != "completed":
         return "none"
 

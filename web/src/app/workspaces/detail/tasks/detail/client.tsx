@@ -179,7 +179,7 @@ export default function TaskDetailPage() {
           <div className="flex-1 relative bg-gray-50/30">
             {task?.conv_session_id ? (
               <ChatSession
-                convUid={task.conv_session_id}
+                conversationId={task.conv_session_id}
                 appCode={appCode}
                 workspaceId={workspaceId}
                 taskId={taskId}

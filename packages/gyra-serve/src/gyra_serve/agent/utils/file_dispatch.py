@@ -186,7 +186,11 @@ async def dispatch_file_to_sandbox(
         return None
 
     try:
-        work_dir = sandbox_client.work_dir or "/home/ubuntu"
+        # 上传附件落进会话目录(与 sandbox_file_ref 的读取路径保持一致);
+        # 未配置会话目录时回退到 work_dir,行为不变。
+        from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
+        work_dir = resolve_session_work_dir(sandbox_client, default="/home/ubuntu")
         sandbox_path = f"{work_dir}/uploads/{file_name}"
 
         if sandbox_client.file:

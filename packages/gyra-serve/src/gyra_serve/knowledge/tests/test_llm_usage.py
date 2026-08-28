@@ -173,6 +173,98 @@ async def test_query_filter_by_task(vault):
     assert only_wiki[0]["task_name"] == "wiki_generate"
 
 
+class _MetricsResult:
+    """Stand-in for `AgentLLMOut`: token counts live on `metrics`, not `usage`.
+
+    This is the frame shape gyra-core's llm_client actually yields — it has no
+    `usage` attribute at all. Reading `result.usage` therefore always produced
+    None and every ledger row was written with 0 tokens.
+    """
+    def __init__(self, text: str, metrics: object = None, error_code: int = 0):
+        self.content = text
+        self.metrics = metrics
+        self.error_code = error_code
+
+
+class _Metrics:
+    def __init__(self, prompt_tokens: int, completion_tokens: int, total_tokens: int):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+
+
+def test_usage_from_result_reads_usage_then_metrics():
+    """Usage must be recovered from `metrics` when there is no `usage` attr."""
+    from gyra_serve.knowledge.ingest import IngestOrchestrator
+
+    extract = IngestOrchestrator._usage_from_result
+
+    # Legacy shape: a plain `usage` dict still wins.
+    assert extract(_FakeResult(
+        "x", {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+    )) == {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+
+    # AgentLLMOut shape: `metrics` object, no `usage` attribute.
+    assert extract(_MetricsResult("x", _Metrics(7, 8, 15))) == {
+        "prompt_tokens": 7, "completion_tokens": 8, "total_tokens": 15,
+    }
+
+    # Dict-shaped metrics, missing total → derived from prompt + completion.
+    partial = extract(_MetricsResult(
+        "x", {"prompt_tokens": 4, "completion_tokens": 6},
+    ))
+    assert partial["total_tokens"] == 10
+
+    # Nothing reportable → None, so the caller keeps usage unset.
+    assert extract(_MetricsResult("x")) is None
+
+
+@pytest.mark.asyncio
+async def test_ingest_records_usage_from_metrics_frames(vault, space, tmp_path, monkeypatch):
+    """End-to-end: `AgentLLMOut`-shaped frames must land with real token counts."""
+    async def _fake_create(self, **config):
+        msgs = config.get("messages", [])
+        sys_prompt = ""
+        for m in msgs:
+            if isinstance(m, dict) and m.get("role") == "system":
+                sys_prompt = m.get("content", "")
+                break
+        if "实体归并" in sys_prompt:
+            yield _MetricsResult('{"entities": []}', _Metrics(400, 60, 460))
+        else:
+            yield _MetricsResult(
+                _wiki_md("D3", "metrics shaped usage"), _Metrics(900, 120, 1020),
+            )
+
+    from gyra.agent.util.llm.llm_client import AIWrapper
+    monkeypatch.setattr(AIWrapper, "create", _fake_create)
+    from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+    if not ModelConfigCache.has_model("test-model"):
+        ModelConfigCache.register_configs({
+            "stub/test-model": {
+                "provider": "openai", "model": "test-model", "api_key": "sk-x",
+                "base_url": "http://x", "protocol": "openai",
+            }
+        })
+
+    from gyra_serve.knowledge.ingest import IngestOrchestrator
+    orch = IngestOrchestrator(system_app=None)
+    f = tmp_path / "in3.txt"
+    f.write_text("metrics shaped raw content", encoding="utf-8")
+    job = await orch.ingest_file(
+        space=space, vault=vault, file_path=f, original_filename="in3.txt"
+    )
+    finished = await _wait(orch, job.id)
+    assert finished.status == "done", finished.error
+
+    rows = await vault.llm_call_log_query(limit=100)
+    wiki_row = next(r for r in rows if r["task_name"] == "wiki_generate")
+    # Non-zero: this is what "the model was actually called" looks like.
+    assert wiki_row["prompt_tokens"] == 900
+    assert wiki_row["completion_tokens"] == 120
+    assert wiki_row["total_tokens"] == 1020
+
+
 @pytest.mark.asyncio
 async def test_persists_across_reopen(vault, tmp_path):
     root = vault.root

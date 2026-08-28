@@ -850,7 +850,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     try {
       const [err, res] = await apiInterceptors(
         postChatModeParamsFileLoad({
-          convUid: chatId || '',
+          conversationId: chatId || '',
           chatMode: scene || 'chat_normal',
           data: formData,
           model: currentModel,

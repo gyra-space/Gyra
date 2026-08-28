@@ -25,7 +25,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
       />,
@@ -39,7 +39,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
       />,
@@ -57,7 +57,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         playbooks={[
           { playbook_id: 1, playbook_name: '营收分析' },
@@ -75,7 +75,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
       />,
@@ -93,7 +93,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
       />,
@@ -110,7 +110,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
       />,
@@ -124,7 +124,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
       />,
@@ -148,7 +148,7 @@ describe('AgentWorkspaceInput', () => {
     const onClearFocus = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         focus={{ id: 42, title: '周报' }}
         onClearFocus={onClearFocus}
@@ -163,7 +163,7 @@ describe('AgentWorkspaceInput', () => {
   test('focus 为 null 时不渲染关注 chip', () => {
     const onSend = jest.fn();
     render(
-      <AgentWorkspaceInput convUid="c1" onSend={onSend} focus={null} />,
+      <AgentWorkspaceInput conversationId="c1" onSend={onSend} focus={null} />,
     );
     expect(screen.queryByText('当前关注')).not.toBeInTheDocument();
   });
@@ -172,7 +172,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
       />,
@@ -187,7 +187,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
       />,
@@ -212,7 +212,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
       />,
@@ -229,7 +229,7 @@ describe('AgentWorkspaceInput', () => {
   test('选中技能 chip 带「技能」前缀,发送时携带 skills', () => {
     const onSend = jest.fn();
     render(
-      <AgentWorkspaceInput convUid="c1" onSend={onSend} playbooks={[]} />,
+      <AgentWorkspaceInput conversationId="c1" onSend={onSend} playbooks={[]} />,
     );
     // + 菜单 → 技能面板 → 选中技能(数据来自被 mock 的 useRequest)
     fireEvent.click(screen.getByTitle('添加文件 / 剧本 / 技能 / MCP / 命令'));
@@ -253,7 +253,7 @@ describe('AgentWorkspaceInput', () => {
 
   test('/ 菜单展示会话命令分组(压缩上下文/清理会话/规划模式)', () => {
     const onSend = jest.fn();
-    render(<AgentWorkspaceInput convUid="c1" onSend={onSend} playbooks={[]} />);
+    render(<AgentWorkspaceInput conversationId="c1" onSend={onSend} playbooks={[]} />);
     const textarea = screen.getByPlaceholderText(/输入指令给 Agent/) as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '/' } });
     // 命令组
@@ -265,7 +265,7 @@ describe('AgentWorkspaceInput', () => {
 
   test('/规划模式 选中后生成「规划」chip,发送携带 plan 权限', () => {
     const onSend = jest.fn();
-    render(<AgentWorkspaceInput convUid="c1" onSend={onSend} playbooks={[]} />);
+    render(<AgentWorkspaceInput conversationId="c1" onSend={onSend} playbooks={[]} />);
     const textarea = screen.getByPlaceholderText(/输入指令给 Agent/) as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '/' } });
     fireEvent.click(screen.getByText('/规划模式'));
@@ -284,7 +284,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     const onClearContext = jest.fn();
     render(
-      <AgentWorkspaceInput convUid="c1" onSend={onSend} playbooks={[]} onClearContext={onClearContext} />,
+      <AgentWorkspaceInput conversationId="c1" onSend={onSend} playbooks={[]} onClearContext={onClearContext} />,
     );
     const textarea = screen.getByPlaceholderText(/输入指令给 Agent/) as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '/' } });
@@ -294,7 +294,7 @@ describe('AgentWorkspaceInput', () => {
 
   test('/压缩上下文 选中后生成「压缩」chip,发送携带 forceCompress', () => {
     const onSend = jest.fn();
-    render(<AgentWorkspaceInput convUid="c1" onSend={onSend} playbooks={[]} />);
+    render(<AgentWorkspaceInput conversationId="c1" onSend={onSend} playbooks={[]} />);
     const textarea = screen.getByPlaceholderText(/输入指令给 Agent/) as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '/' } });
     fireEvent.click(screen.getByText('/压缩上下文'));
@@ -313,7 +313,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         usageMetrics={{ total: 12300, prompt: 12000, completion: 300, context_window: 128000, ratio: 0.096 }}
       />,
@@ -323,7 +323,7 @@ describe('AgentWorkspaceInput', () => {
 
   test('无 usageMetrics 时不渲染环形图', () => {
     const onSend = jest.fn();
-    render(<AgentWorkspaceInput convUid="c1" onSend={onSend} usageMetrics={null} />);
+    render(<AgentWorkspaceInput conversationId="c1" onSend={onSend} usageMetrics={null} />);
     expect(screen.queryByRole('img', { name: /上下文空间使用率/ })).not.toBeInTheDocument();
   });
 
@@ -331,7 +331,7 @@ describe('AgentWorkspaceInput', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
-        convUid="c1"
+        conversationId="c1"
         onSend={onSend}
         usageMetrics={{ total: 12300, prompt: 12000, completion: 300, context_window: 128000, ratio: 0.096 }}
       />,

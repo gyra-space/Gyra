@@ -317,7 +317,7 @@ export const getCompressionSegments = (convId: string) => {
   return GET<null, CompressionSegmentVo[]>(`/api/v1/chat/dialogue/compression/segments?con_uid=${convId}`);
 };
 export const postChatModeParamsFileLoad = ({
-  convUid,
+  conversationId,
   chatMode,
   data,
   config,
@@ -327,7 +327,7 @@ export const postChatModeParamsFileLoad = ({
   userName,
   sysCode,
 }: {
-  convUid: string;
+  conversationId: string;
   chatMode: string;
   data: FormData;
   model: string;
@@ -339,7 +339,7 @@ export const postChatModeParamsFileLoad = ({
 }) => {
   const baseUrl = `/api/v1/resource/file/upload`;
   const params = {
-    conv_uid: convUid,
+    conv_uid: conversationId,
     chat_mode: chatMode,
     model_name: model,
     user_name: userName,

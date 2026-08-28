@@ -31,28 +31,87 @@ DEFAULT_SANDBOX_ROOT = "pilot/data/workspaces"
 
 SANDBOX_SUBDIRS = ("files", "db", "runtime")
 
+# 会话级工作目录:位于公共层之下,目录名固定为 sessions/<conv_uid>。
+SESSION_DIR_NAME = "sessions"
+SESSION_SUBDIRS = ("files", "runtime")
+
+# 空间级共享目录:会话通过 promote 提升到此处的资产,跨会话可见。
+SHARED_DIR_NAME = "shared"
+
 __all__ = [
     "WorkspaceDatasetService",
     "sanitize_asset_name",
     "DEFAULT_SANDBOX_ROOT",
     "SANDBOX_SUBDIRS",
+    "SESSION_DIR_NAME",
+    "SESSION_SUBDIRS",
+    "SHARED_DIR_NAME",
     "workspace_sandbox_root",
+    "session_sandbox_root",
+    "workspace_shared_dir",
 ]
 
 
 def workspace_sandbox_root(workspace_id: int) -> str:
     """场景空间沙箱根目录(绝对路径,含 files/db/runtime 子目录)。
 
-    与数据集目录同源(DEFAULT_SANDBOX_ROOT / GYRA_WORKSPACE_SANDBOX_ROOT),
-    供 agent 沙箱的 host_work_dir 使用:大厅/任务模式共享此持久目录,
-    agent 可直接读写 files/ 中的上传数据集。沙箱侧要求绝对路径
-    (macOS sandbox-exec profile 只放行绝对路径)。
+    这是**公共层**,同时也是沙箱的访问边界(allowed root):
+    大厅/任务模式共享此持久目录,agent 可直接读写 files/ 中的上传数据集。
+    沙箱侧要求绝对路径(macOS sandbox-exec profile 只放行绝对路径)。
+
+    注意:此函数只负责公共层。agent 的当前工作目录(cwd)请使用
+    :func:`session_sandbox_root`,后者位于本目录下,因此权限与隔离
+    边界仍由本层决定——沙箱实例数、cleanup 规则均不受影响。
     """
     root = os.environ.get("GYRA_WORKSPACE_SANDBOX_ROOT", DEFAULT_SANDBOX_ROOT)
     root = os.path.abspath(os.path.join(root, str(workspace_id)))
     for sub in SANDBOX_SUBDIRS:
         os.makedirs(os.path.join(root, sub), exist_ok=True)
     return root
+
+
+def session_sandbox_root(workspace_id: int, conv_session_id: str) -> str:
+    """会话级沙箱工作目录(绝对路径)。
+
+    只把 agent 的**当前工作目录(cwd)**下移到
+    ``<公共层>/sessions/<conv_session_id>/``,公共层本身不变:
+
+    - 沙箱实例仍按 workspace 复用(见 ``agent_chat._sandbox_key``),
+      实例数量、资源占用、``_cleanup_sandbox_manager`` 规则全部不变;
+    - 会话目录都在公共层之下,而 ``allowed_roots`` 覆盖公共层,
+      所以主子 agent(同一实例、不同 cwd)与跨会话之间物理上互相可达,
+      绝对路径仍能访问空间级公共资产,无需软链。
+
+    Args:
+        workspace_id: 场景空间 ID。
+        conv_session_id: **会话标识**,必须是 ``AgentContext.conv_session_id``。
+
+            切勿传 ``AgentContext.conv_id`` —— 它是
+            ``{conv_session_id}_{round}``,每提一次问就变(带 ``_1``/``_2``
+            轮次后缀),用它建目录会导致同一会话的每一轮各占一个目录,
+            上一轮写的文件下一轮就读不到。
+
+    Returns:
+        会话目录绝对路径,已创建 files/runtime 子目录。
+    """
+    root = workspace_sandbox_root(workspace_id)
+    # 顺带确保公共层的 shared/ 存在,agent 随时可以把文件 promote 上去。
+    workspace_shared_dir(workspace_id)
+    safe = sanitize_asset_name(str(conv_session_id), fallback="default")
+    session_root = os.path.join(root, SESSION_DIR_NAME, safe)
+    for sub in SESSION_SUBDIRS:
+        os.makedirs(os.path.join(session_root, sub), exist_ok=True)
+    return session_root
+
+
+def workspace_shared_dir(workspace_id: int) -> str:
+    """空间级共享目录(绝对路径):会话 promote 出来的公共资产存放于此。
+
+    位于公共层之下,因此对所有会话可见(通过 ``../shared/`` 或绝对路径)。
+    """
+    shared = os.path.join(workspace_sandbox_root(workspace_id), SHARED_DIR_NAME)
+    os.makedirs(shared, exist_ok=True)
+    return shared
 
 
 class WorkspaceDatasetService:

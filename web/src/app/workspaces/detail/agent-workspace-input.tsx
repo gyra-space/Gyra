@@ -353,7 +353,7 @@ interface ResourceItem {
 interface UploadingFile { id: string; file: File; status: 'uploading' | 'success' | 'error'; error?: string }
 
 interface AgentWorkspaceInputProps {
-  convUid?: string;
+  conversationId?: string;
   onSend: (payload: { text: string; resources?: ResourceItem[]; model?: string; playbookCommand?: PlaybookCommand; skills?: SkillRef[]; mcps?: PlusMenuMcpRef[]; permission?: string; media?: MediaParams; forceCompress?: boolean }) => void;
   loading?: boolean;
   /** 运行中且无新内容时,按钮转为"进行中·可停止"状态,点击终止当前生成 */
@@ -380,7 +380,7 @@ interface AgentWorkspaceInputProps {
 }
 
 export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWorkspaceInputProps>(
-  function AgentWorkspaceInput({ convUid, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, model, onModelChange, defaultModel }, ref) {
+  function AgentWorkspaceInput({ conversationId, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, model, onModelChange, defaultModel }, ref) {
     const [text, setText] = useState('');
     const [resources, setResources] = useState<ResourceItem[]>([]);
     const [uploading, setUploading] = useState<UploadingFile[]>([]);
@@ -544,13 +544,13 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     }, [modelList]);
 
     const handleFileUpload = async (file: File) => {
-      if (!convUid) return;
+      if (!conversationId) return;
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       setUploading(prev => [...prev, { id, file, status: 'uploading' }]);
       const formData = new FormData();
       formData.append('doc_files', file);
       const [err, res] = await apiInterceptors(
-        postChatModeParamsFileLoad({ convUid, chatMode: 'chat_normal', data: formData, model: selectedModel, config: { timeout: 1000 * 60 * 60 } }),
+        postChatModeParamsFileLoad({ conversationId, chatMode: 'chat_normal', data: formData, model: selectedModel, config: { timeout: 1000 * 60 * 60 } }),
       );
       setUploading(prev => prev.filter(u => u.id !== id));
       if (err) {
@@ -933,7 +933,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                 type="button"
                 className="absolute top-2 right-2 z-10 h-7 w-7 rounded-full flex items-center justify-center border border-gray-200/70 dark:border-gray-600/60 bg-white/70 dark:bg-[#232734]/70 backdrop-blur-sm text-gray-300 dark:text-gray-500 shadow-sm hover:text-red-500 hover:border-red-200 dark:hover:border-red-700 hover:bg-red-50/90 dark:hover:bg-red-900/30 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed"
                 onClick={onClearContext}
-                disabled={!convUid || disabled || loading}
+                disabled={!conversationId || disabled || loading}
                 title="清理上下文(新开会话)"
               >
                 <ClearOutlined className="text-xs" />
@@ -957,7 +957,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                 mcpsLoading={mcpLoading}
                 selectedMcps={selectedMcps}
                 onMcpsChange={setSelectedMcps}
-                disabled={!convUid || inputDisabled || loading}
+                disabled={!conversationId || inputDisabled || loading}
               />
               <input
                 ref={fileInputRef}

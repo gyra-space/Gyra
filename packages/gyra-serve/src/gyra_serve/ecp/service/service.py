@@ -1347,7 +1347,35 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
 
         vo = GraphVO(nodes=nodes, links=links)
         if entity:
-            return self._graph_focus(vo, entity, semantic_index)
+            vo = self._graph_focus(vo, entity, semantic_index)
+            # 检索增强:命中的 kn 实体附图上下文证据(一跳关联 + 来源
+            # 文档片段),与对齐推理共用同一套收集——纯图查询+文档读取,
+            # 零 LLM,前端详情面板与下游 LLM 复用同一份证据。
+            hits = [
+                (n.id, n.name)
+                for n in vo.nodes
+                if n.obj_type == "entity"
+                and n.node_kind == "kn"
+                and (
+                    n.id == entity
+                    or (n.name and align_key(n.name) == align_key(entity))
+                )
+            ]
+            slug_names: Dict[str, List[str]] = {}
+            for nid, name in hits:
+                # kn:<slug>:entity:<name>(maxsplit 保实体名完整)
+                parts = nid.split(":", 3)
+                if len(parts) == 4 and name:
+                    slug_names.setdefault(parts[1], []).append(name)
+            if slug_names:
+                try:
+                    grouped = await self._entity_graph_context(slug_names)
+                except Exception:  # noqa: BLE001
+                    grouped = {}
+                flat = {k: v for m in grouped.values() for k, v in m.items()}
+                if flat:
+                    vo.entity_context = flat
+            return vo
         return vo
 
     @staticmethod
@@ -1361,6 +1389,8 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         可同时拉进对齐的另一侧(如 kn 实体 → ent.order),实现一次
         检索取回「对象 ↔ 知识实体 ↔ wiki 文档」完整关系链。
         """
+        from .graph_projection import align_key
+
         key = align_key(entity)
         matched = set(semantic_index.get(key, ()))
         for n in vo.nodes:
@@ -1381,6 +1411,71 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         )
 
     # ------------------------------------------------- semantic alignment
+    async def _entity_graph_context(
+        self, slug_entities: Dict[str, List[str]]
+    ) -> Dict[str, Dict[str, str]]:
+        """实体 → 图上下文证据(一跳关联 + 来源文档片段),对齐/检索共用。
+
+        对每个实体 vault.graph_query 一跳:收集邻居实体名(消歧)与边的
+        source_verbat_id,反查原文片段(业务含义证据主体)。**纯图查询
+        + 文档读取,零 LLM**;全部 best-effort——空间不可达/实体无图/
+        读文失败都降级为无上下文,不阻塞对齐与检索主流程。
+        """
+        from .alignment import fold_context
+
+        try:
+            from gyra_serve.knowledge.config import (
+                SERVE_SERVICE_COMPONENT_NAME as KNOWLEDGE_SERVICE,
+            )
+            from gyra_serve.knowledge.service.service import (
+                Service as KnowledgeService,
+            )
+
+            ks = self._system_app.get_component(KNOWLEDGE_SERVICE, KnowledgeService)
+        except Exception:  # noqa: BLE001
+            return {}
+
+        out: Dict[str, Dict[str, str]] = {}
+        for slug, names in slug_entities.items():
+            try:
+                vault = await ks.get_vault(slug)
+            except Exception:  # noqa: BLE001
+                continue
+            for name in names:
+                try:
+                    sub = await vault.graph_query(name, hop=1)
+                except Exception:  # noqa: BLE001
+                    continue
+                neighbors: List[str] = []
+                verbat_ids: List[str] = []
+                for e in sub.edges:
+                    for ep in (e.subject, e.object):
+                        if (
+                            ep
+                            and ep != name
+                            and not ep.startswith(("doc:", "verbat:"))
+                            and ep not in neighbors
+                        ):
+                            neighbors.append(ep)
+                    vid = getattr(e, "source_verbat_id", None)
+                    if vid and vid not in verbat_ids:
+                        verbat_ids.append(vid)
+                snippets: List[str] = []
+                for vid in verbat_ids[:2]:
+                    try:
+                        v = await vault.verbat_get(vid)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    text = str(
+                        getattr(v, "content", None) or getattr(v, "text", None) or ""
+                    ).strip()
+                    if text:
+                        snippets.append(text)
+                ctx = fold_context(neighbors, snippets)
+                if ctx:
+                    out.setdefault(slug, {})[name] = ctx
+        return out
+
     async def _kn_entity_names(self, ws: str) -> Dict[str, List[str]]:
         """收集各知识空间的实体名(裸标识端点)——LLM 对齐的输入。
 
@@ -1444,8 +1539,9 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
     ) -> dict:
         """LLM 语义对齐 runner:知识实体 × 硬层对象 → 推理候选固化(写路径)。
 
-        对齐关系是推理产物:LLM 基于对象 name/description/aliases 与实体
-        名做语义判断(覆盖字面匹配够不着的映射),候选过确定性校验闸门
+        对齐关系是推理产物:LLM 基于对象 name/description/aliases 与
+        实体的**图上下文证据**(一跳关联 + 来源文档片段,见
+        _entity_graph_context)做语义判断,候选过确定性校验闸门
         (object_id 白名单 + 实体归属)后入库为 proposed,等人工确认——
         与对象提案同一状态机哲学。人工已决定的(confirmed/rejected)实体
         不再推理;proposed 复跑只刷新置信度与理由(幂等)。
@@ -1492,9 +1588,13 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         aligner = EntityAligner()
         candidates: List[SemanticAlignmentVO] = []
         errors: List[str] = []
+        # 图上下文证据:LLM 推理的输入增强(查询时收集,失败降级为裸实体名)
+        entity_ctx = await self._entity_graph_context(todo)
         for slug, names in sorted(todo.items()):
             try:
-                cands = await aligner.align(names, objects)
+                cands = await aligner.align(
+                    names, objects, context=entity_ctx.get(slug)
+                )
             except Exception as e:  # noqa: BLE001
                 errors.append(f"{slug}: {e}")
                 continue

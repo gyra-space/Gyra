@@ -55,6 +55,11 @@ class LocalSandboxConfig:
     # 宿主机绝对工作目录(场景空间独立沙箱):设置后 session 直接使用该真实
     # 路径,不再嵌套 /tmp session 目录;跨会话/进程持久。None = 原有嵌套行为。
     host_work_dir: Optional[str] = None
+    # 会话级当前工作目录(cwd):场景空间下为 <host_work_dir>/sessions/<conv_uid>/。
+    # 只改变 agent 的相对路径解析基准与 shell 默认 cwd;
+    # 沙箱实例、访问边界(allowed_roots)仍由 host_work_dir 决定,因此沙箱
+    # 数量、缓存 key、cleanup 规则均不受影响。None = 与 host_work_dir/work_dir 一致。
+    session_work_dir: Optional[str] = None
 
     # Execution settings
     default_timeout: int = 300  # seconds
@@ -103,6 +108,7 @@ class LocalSandboxConfig:
             skill_dir=config_dict.get("skill_dir", DEFAULT_LOCAL_SANDBOX_SKILL_DIR),
             runtime_id=config_dict.get("runtime_id", "improved_local_runtime"),
             host_work_dir=config_dict.get("host_work_dir"),
+            session_work_dir=config_dict.get("session_work_dir"),
             default_timeout=config_dict.get("default_timeout", 300),
             max_memory=config_dict.get("max_memory", 256 * 1024 * 1024),
             max_cpus=config_dict.get("max_cpus", 1),
@@ -130,6 +136,7 @@ class LocalSandboxConfig:
             working_dir=self.work_dir,
             network_disabled=self.network_disabled or not self.allow_network,
             host_working_dir=self.host_work_dir,
+            host_session_working_dir=self.session_work_dir,
         )
 
 
@@ -166,6 +173,7 @@ class ImprovedLocalSandbox(SandboxBase):
             enable_skill=kwargs.get("enable_skill", True),
             skill_dir=kwargs.get("skill_dir", self._config.skill_dir),
             connection_config=None,
+            session_work_dir=self._config.session_work_dir,
         )
 
         self._runtime: Optional[ImprovedLocalSandboxRuntime] = None
@@ -231,6 +239,12 @@ class ImprovedLocalSandbox(SandboxBase):
         # Set host_work_dir (scene-workspace persistent sandbox dir) if provided
         if "host_work_dir" in kwargs and kwargs["host_work_dir"] is not None:
             kwargs["local_sandbox_config"]["host_work_dir"] = kwargs["host_work_dir"]
+
+        # Set session_work_dir (per-conversation cwd under host_work_dir) if provided
+        if "session_work_dir" in kwargs and kwargs["session_work_dir"] is not None:
+            kwargs["local_sandbox_config"]["session_work_dir"] = kwargs[
+                "session_work_dir"
+            ]
 
         # Set skill_dir if provided and not None (from kwargs)
         if "skill_dir" in kwargs and kwargs["skill_dir"] is not None:
@@ -307,6 +321,7 @@ class ImprovedLocalSandbox(SandboxBase):
             skill_dir=skill_dir,
             file_storage_client=self._file_storage_client,
             host_work_dir=self._config.host_work_dir,
+            session_work_dir=self._config.session_work_dir,
         )
 
         # Shell client
@@ -316,6 +331,7 @@ class ImprovedLocalSandbox(SandboxBase):
             runtime=self._runtime,
             skill_dir=skill_dir,
             host_work_dir=self._config.host_work_dir,
+            session_work_dir=self._config.session_work_dir,
         )
 
         # Browser client (if enabled)

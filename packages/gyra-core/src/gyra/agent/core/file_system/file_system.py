@@ -83,9 +83,11 @@ class FileSystem:
 
         # 根据是否使用沙箱选择存储路径
         if self.sandbox:
-            self.base_path = Path(
-                f"{self.sandbox.work_dir}/{self.session_id}/{self.goal_id}"
-            )
+            # 场景空间下落进会话目录;未配置时回退到 work_dir,行为不变。
+            from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
+            work_dir = resolve_session_work_dir(self.sandbox)
+            self.base_path = Path(f"{work_dir}/{self.session_id}/{self.goal_id}")
         else:
             self.base_path = Path(base_working_dir) / self.session_id / self.goal_id
 

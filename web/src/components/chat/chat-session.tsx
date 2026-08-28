@@ -49,7 +49,7 @@ const mergeVisFinalPreservingLeftPanel = (existing: unknown, visFinal: string): 
 };
 
 export interface ChatSessionProps {
-  convUid?: string;
+  conversationId?: string;
   appCode?: string;
   modelName?: string;
   knowledgeId?: string;
@@ -70,7 +70,7 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
   const { message } = App.useApp();
 
   const searchParams = useSearchParams();
-  const chatId = props.convUid ?? (searchParams?.get('conv_uid') || searchParams?.get('chatId')) ?? '';
+  const chatId = props.conversationId ?? (searchParams?.get('conv_uid') || searchParams?.get('chatId')) ?? '';
   const app_code = props.appCode ?? searchParams?.get('app_code') ?? '';
   const modelName = props.modelName ?? searchParams?.get('model') ?? '';
   const knowledgeId = props.knowledgeId ?? searchParams?.get('knowledge') ?? '';

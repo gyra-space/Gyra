@@ -221,9 +221,21 @@ class Agent(ABC):
 
 @dataclasses.dataclass
 class AgentContext:
-    """A class to represent the context of an Agent."""
+    """A class to represent the context of an Agent.
 
+    会话标识有两个维度（统一术语，见 ``docs/naming-conversation-ids.md``）：
+
+    - **会话** ``conv_session_id``：纯 uuid，跨轮次不变（前端 ``conversationId``）。
+      它同时就是 DB 列名，直接使用即可。
+    - **轮次** ``conv_turn_id``：形如 ``{会话 uuid}_{n}``，每提一次问 +1（前端 ``turnId``）。
+      只读别名，底层字段是 ``conv_id``（DB 列名，Deprecated）。
+
+    误用 ``conv_id`` 当会话维度是最常见的坑：会让同一会话每轮各建一份目录/台账。
+    """
+
+    # Deprecated: 轮次 id，请用 ``conv_turn_id``。名字看不出它是轮次维度。
     conv_id: str
+    # 会话 id（标准名，与 DB 列名一致），跨轮次不变。
     conv_session_id: str
     staff_no: Optional[str] = None
     user_id: Optional[str] = None
@@ -263,6 +275,16 @@ class AgentContext:
     #     recipient.agent_context.extra。
     extra: dict[str, Any] = None
     env_context: dict[str, Any] = None
+
+    @property
+    def conv_turn_id(self) -> str:
+        """轮次 id —— 每提一次问 +1，形如 ``{会话 uuid}_{n}``（等价于 ``conv_id``）。
+
+        会话维度请直接用 ``conv_session_id``（字段本身就是标准名）。
+        凡是要按「会话」维度做持久化的（工作目录、任务台账、用量聚合等），
+        **不要用本属性**，用 ``conv_session_id``。
+        """
+        return self.conv_id
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a dictionary representation of the AgentContext."""

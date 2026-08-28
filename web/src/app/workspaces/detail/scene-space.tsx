@@ -741,7 +741,7 @@ export function SceneSpace({
         <div className="ws-scene-space__body ws-scene-space__body--subagent">
           {previewSubConvId ? (
             <ChatSession
-              convUid={previewSubConvId}
+              conversationId={previewSubConvId}
               appCode={previewItem?.payload?.app_code || appCode || 'chat_normal'}
               workspaceId={workspaceId}
               minimal

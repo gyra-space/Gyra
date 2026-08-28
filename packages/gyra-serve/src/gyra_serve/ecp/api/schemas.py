@@ -417,6 +417,10 @@ class GraphVO(BaseModel):
 
     nodes: List[GraphNodeVO] = Field(default_factory=list)
     links: List[GraphLinkVO] = Field(default_factory=list)
+    # entity 检索视图附加:命中 kn 实体名 → 图上下文证据(一跳关联实体
+    # + 来源文档片段,vault 图查询确定性收集,零 LLM)——前端展示与
+    # 下游 LLM 复用同一份证据
+    entity_context: Optional[Dict[str, str]] = None
 
 
 class SpaceInfoVO(BaseModel):

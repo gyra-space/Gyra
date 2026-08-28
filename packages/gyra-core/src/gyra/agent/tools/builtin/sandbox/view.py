@@ -26,6 +26,13 @@ _MAX_FILE_CHARS = 16000
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _RANGE_SPLIT_RE = re.compile(r"[\s,\-~:]+")
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def _session_work_dir(client: Any) -> str:
+    """当前会话工作目录(场景空间下为 sessions/<conv_uid>/)。"""
+    from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
+    return resolve_session_work_dir(client)
 _PROMPT_LINE_RE = re.compile(r"^[\w.-]+@[\w.-]+:[^\n]*\$\s?.*$")
 
 _VIEW_PROMPT = """沙箱文件系统探索器。
@@ -315,7 +322,9 @@ async def _render_directory_listing(client, abs_path: str) -> str:
 
     command = f"python3 - <<'PY' {shlex.quote(abs_path)}\n{script}\nPY"
     result = await client.shell.exec_command(
-        command=command, work_dir=client.work_dir, timeout=60.0
+        command=command,
+        work_dir=_session_work_dir(client),
+        timeout=60.0,
     )
     if getattr(result, "status", None) != "completed":
         return f"[错误: 目录读取失败，状态: {getattr(result, 'status', None)}]"
@@ -383,7 +392,9 @@ async def _read_image_base64(client, abs_path: str) -> Dict[str, Union[str, int]
 
     command = f"python3 - <<'PY' {shlex.quote(abs_path)}\n{script}\nPY"
     result = await client.shell.exec_command(
-        command=command, work_dir=client.work_dir, timeout=60.0
+        command=command,
+        work_dir=_session_work_dir(client),
+        timeout=60.0,
     )
     if getattr(result, "status", None) != "completed":
         return {

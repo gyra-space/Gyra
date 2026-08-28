@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Dropdown, Form, Input, Modal } from 'antd';
-import { CheckOutlined, CommentOutlined, DeleteOutlined, DownOutlined, LinkOutlined, MoreOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
+import { CheckOutlined, CommentOutlined, DeleteOutlined, DownOutlined, EditOutlined, LinkOutlined, MoreOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { apiInterceptors, createAsset, resolveAndExecuteIntervention, abortIntervention, terminateTask, deleteTask, reassignTask, deleteConversation } from '@/client/api';
+import { apiInterceptors, createAsset, resolveAndExecuteIntervention, abortIntervention, terminateTask, deleteTask, reassignTask, deleteConversation, renameConversation } from '@/client/api';
 import { listInbox, updateInboxStatus, listMembers, type InboxItem } from '@/client/api/workspace';
 import { confirmEcpObject } from '@/client/api/ecp';
 import { getUserId } from '@/utils';
@@ -170,7 +170,7 @@ export interface SceneTaskRailProps {
   /** 当前会话 conv_uid(大厅=workspaceConvUid,任务=taskConvUid),用于列表高亮。 */
   currentConvUid?: string;
   /** 点击会话卡片进入对应对话:taskId 非空进任务对话,空进大厅会话(回 dashboard)。 */
-  onOpenConversation?: (convUid: string, taskId: number | null) => void;
+  onOpenConversation?: (conversationId: string, taskId: number | null) => void;
 }
 
 export function SceneTaskRail({
@@ -527,7 +527,7 @@ export function SceneTaskRail({
     });
   };
 
-  const handleDeleteConversation = (convUid: string) => {
+  const handleDeleteConversation = (conversationId: string) => {
     if (!workspaceId) return;
     modal.confirm({
       title: '删除会话',
@@ -535,12 +535,35 @@ export function SceneTaskRail({
       okText: '删除',
       okButtonProps: { danger: true },
       onOk: async () => {
-        const [err] = await apiInterceptors(deleteConversation({ workspace_id: workspaceId, conv_uid: convUid }));
+        const [err] = await apiInterceptors(deleteConversation({ workspace_id: workspaceId, conv_uid: conversationId }));
         if (err) { message.error(err.message); return; }
         message.success('已删除');
         onRefreshLists?.();
       },
     });
+  };
+
+  // ---------------- 会话重命名 ----------------
+  const [renameConv, setRenameConv] = useState<{ conv_uid: string; title?: string | null } | null>(null);
+  const [renameTitle, setRenameTitle] = useState('');
+  const [renaming, setRenaming] = useState(false);
+
+  const openRenameConversation = (c: { conv_uid: string; title?: string | null }) => {
+    setRenameConv(c);
+    setRenameTitle(c.title || '');
+  };
+
+  const handleRenameSubmit = async () => {
+    if (!renameConv) return;
+    const title = renameTitle.trim();
+    if (!title) { message.warning('请输入会话名称'); return; }
+    setRenaming(true);
+    const [err] = await apiInterceptors(renameConversation(renameConv.conv_uid, title));
+    setRenaming(false);
+    if (err) { message.error(err.message); return; }
+    message.success('已重命名');
+    setRenameConv(null);
+    onRefreshLists?.();
   };
 
   const handleAbort = async (id: number) => {
@@ -663,6 +686,16 @@ export function SceneTaskRail({
             <span className="ws-rail-src">大厅会话</span>
             {canDeleteConversation && !disabled && (
               <div className="ws-rail-card-actions">
+                <span
+                  className="ws-rail-card-act"
+                  title="重命名会话"
+                  role="button"
+                  tabIndex={-1}
+                  onClick={(e) => { e.stopPropagation(); openRenameConversation(c); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); openRenameConversation(c); } }}
+                >
+                  <EditOutlined />
+                </span>
                 <span
                   className="ws-rail-card-act"
                   title="删除会话"
@@ -995,6 +1028,25 @@ export function SceneTaskRail({
             </Button>
           ))}
         </div>
+      </Modal>
+
+      <Modal
+        open={!!renameConv}
+        title="重命名会话"
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={renaming}
+        onCancel={() => setRenameConv(null)}
+        onOk={handleRenameSubmit}
+      >
+        <Input
+          value={renameTitle}
+          maxLength={255}
+          placeholder="输入新的会话名称"
+          autoFocus
+          onChange={(e) => setRenameTitle(e.target.value)}
+          onPressEnter={handleRenameSubmit}
+        />
       </Modal>
     </div>
   );

@@ -19,6 +19,9 @@ list_tables 一起,随 ``DBResource`` 一起注入 agent 的 TOOLS 槽),无需�
 
 工具输出为**干净 JSON**(非 VIS 包裹),agent 可直接用返回的 ``columns`` / ``rows``
 作为写渲染逻辑与核对字段名的依据,并用 ``elapsed_ms`` / ``row_count`` 评估性能。
+
+取数走应用卡片**专用有界线程池**(run_bounded): 并发+排队满时抛 AppCardBusyError
+快速失败,避免大量慢 SQL 把全局线程池和事件循环拖死。
 """
 from __future__ import annotations
 
@@ -30,6 +33,7 @@ from gyra.agent.tools.base import ToolCategory, ToolRiskLevel
 from gyra.agent.tools.decorators import tool
 
 from gyra_serve.app_card.service.service import _find_query, run_readonly_sql
+from gyra_serve.app_card.sql_runtime import AppCardBusyError, run_bounded
 
 _SQL_OPS = {"query.sql", "sql.preview"}
 _METRIC_OPS = {"query.metric", "metric.preview"}
@@ -43,6 +47,12 @@ def _finish(result: Dict[str, Any], started: float) -> Dict[str, Any]:
     result.setdefault("row_count", len(result.get("rows") or []))
     result["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
     return result
+
+
+def _busy_result(e: BaseException) -> Dict[str, Any]:
+    """排队已满的快速失败结果: 不占线程等待, 提示稍后重试。"""
+    return {"trust": "none", "error": str(e), "code": "APP_CARD_BUSY",
+            "columns": [], "rows": [], "row_count": 0}
 
 
 def _resolve_sql_args(
@@ -150,9 +160,16 @@ async def app_card_preview(
             result = {"trust": "none", "error": "缺少 sql 或 datasource_id",
                       "columns": [], "rows": [], "row_count": 0}
             return json.dumps(_finish(result, started), ensure_ascii=False)
-        result = run_readonly_sql(
-            int(args["datasource_id"]), args["sql"], args["bind_params"], args["limit"]
-        )
+        try:
+            result = await run_bounded(
+                run_readonly_sql,
+                int(args["datasource_id"]),
+                args["sql"],
+                args["bind_params"],
+                args["limit"],
+            )
+        except AppCardBusyError as e:
+            result = _busy_result(e)
         return json.dumps(_finish(result, started), ensure_ascii=False, default=str)
 
     if op in _EXPLAIN_OPS:
@@ -161,9 +178,15 @@ async def app_card_preview(
             result = {"trust": "none", "error": "缺少 sql 或 datasource_id",
                       "columns": [], "rows": [], "row_count": 0}
             return json.dumps(_finish(result, started), ensure_ascii=False)
-        result = _run_sql_explain(
-            int(args["datasource_id"]), args["sql"], args["bind_params"]
-        )
+        try:
+            result = await run_bounded(
+                _run_sql_explain,
+                int(args["datasource_id"]),
+                args["sql"],
+                args["bind_params"],
+            )
+        except AppCardBusyError as e:
+            result = _busy_result(e)
         return json.dumps(_finish(result, started), ensure_ascii=False, default=str)
 
     if op in _METRIC_OPS:
@@ -182,7 +205,8 @@ async def app_card_preview(
                       "columns": [], "rows": [], "row_count": 0}
             return json.dumps(_finish(result, started), ensure_ascii=False)
         try:
-            result = execute_metric_query(
+            result = await run_bounded(
+                execute_metric_query,
                 metric_id=metric_id,
                 workspace_id=str(workspace_id),
                 group_by=params.get("group_by"),
@@ -193,6 +217,8 @@ async def app_card_preview(
             result = {"trust": "none", "error": str(e),
                       "code": getattr(e, "code", "GATE_REJECTED"),
                       "columns": [], "rows": [], "row_count": 0}
+        except AppCardBusyError as e:
+            result = _busy_result(e)
         return json.dumps(_finish(result, started), ensure_ascii=False, default=str)
 
     result = {"trust": "none", "error": f"不支持的能力 {op}",

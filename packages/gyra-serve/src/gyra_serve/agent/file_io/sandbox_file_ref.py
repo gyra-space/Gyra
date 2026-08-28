@@ -32,6 +32,19 @@ def _is_uuid_like(filename: str) -> bool:
     return bool(uuid_pattern.match(name_without_ext))
 
 
+def _sandbox_work_dir(sandbox: Optional["SandboxBase"]) -> Optional[str]:
+    """沙箱当前工作目录:场景空间下为会话目录,否则回退 ``work_dir``。
+
+    上传附件的落盘(file_dispatch)与读取(本模块)必须走同一个 helper,
+    否则写入和读取会指向不同目录。
+    """
+    if sandbox is None:
+        return None
+    from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
+    return resolve_session_work_dir(sandbox)
+
+
 def get_default_upload_dir(sandbox: Optional["SandboxBase"] = None) -> str:
     """Get default upload directory based on sandbox work_dir.
 
@@ -41,8 +54,10 @@ def get_default_upload_dir(sandbox: Optional["SandboxBase"] = None) -> str:
     Returns:
         Upload directory path
     """
-    if sandbox and hasattr(sandbox, "work_dir") and sandbox.work_dir:
-        return f"{sandbox.work_dir}/uploads"
+    # 与 file_dispatch 的落盘路径保持一致:场景空间下用会话目录。
+    work_dir = _sandbox_work_dir(sandbox)
+    if work_dir:
+        return f"{work_dir}/uploads"
     return "/home/user/uploads"
 
 
@@ -99,8 +114,9 @@ class SandboxFileRef:
         if self.sandbox_path:
             return self.sandbox_path
 
-        if sandbox and hasattr(sandbox, "work_dir") and sandbox.work_dir:
-            return f"{sandbox.work_dir}/uploads/{self.file_name}"
+        work_dir = _sandbox_work_dir(sandbox)
+        if work_dir:
+            return f"{work_dir}/uploads/{self.file_name}"
 
         # Fallback: use relative path (tools will resolve based on work_dir)
         logger.warning(

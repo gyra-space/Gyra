@@ -41,6 +41,7 @@ class LocalFileClient(FileClient):
         skill_dir: str = None,
         file_storage_client=None,
         host_work_dir: Optional[str] = None,
+        session_work_dir: Optional[str] = None,
         **kwargs,
     ):
         super().__init__(
@@ -68,10 +69,29 @@ class LocalFileClient(FileClient):
                 os.path.join(self._session_root, logical_rel)
             )
 
+        # 会话级 cwd:场景空间下为 <_work_dir_physical>/sessions/<conv_uid>/。
+        # 只改变相对路径的解析基准,**不改变访问边界**——_allowed_roots 仍以
+        # _work_dir_physical 为根,所以 ../files/ 之类仍可访问空间级公共资产,
+        # 主子 agent(同一沙箱实例、不同 cwd)之间物理上也互相可达。
+        self._cwd_physical = (
+            os.path.abspath(session_work_dir)
+            if session_work_dir
+            else self._work_dir_physical
+        )
+        os.makedirs(self._cwd_physical, exist_ok=True)
+
         self._allowed_roots = [self._session_root, self._work_dir_physical]
         if skill_dir:
             self._allowed_roots.append(os.path.realpath(skill_dir))
         self._allowed_roots.append("/mnt")
+
+    @property
+    def session_work_dir(self) -> str:
+        """当前会话工作目录(cwd),相对路径的解析基准。
+
+        场景空间下为公共层之下的 sessions/<conv_uid>/;未配置时与 work_dir 一致。
+        """
+        return self._cwd_physical
 
     def _get_physical_path(self, path: str) -> str:
         """Resolve logical path to physical path in local sandbox.
@@ -101,8 +121,8 @@ class LocalFileClient(FileClient):
                 f"Absolute path {path} is outside the sandbox work directory"
             )
 
-        # Relative paths resolve against the physical work directory.
-        physical = os.path.abspath(os.path.join(self._work_dir_physical, path))
+        # 相对路径以会话 cwd 为基准;未配置会话目录时回退到物理工作目录。
+        physical = os.path.abspath(os.path.join(self._cwd_physical, path))
         return self._ensure_inside_allowed(physical)
 
     def _ensure_inside_allowed(self, physical_path: str) -> str:

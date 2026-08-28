@@ -239,7 +239,7 @@ class AgentFileSystem:
                 safe_key = self._sanitize_filename(file_key)
                 if "." not in safe_key:
                     safe_key = f"{safe_key}.{extension}"
-                work_dir = getattr(self.sandbox, "work_dir", "/home/ubuntu")
+                work_dir = self.sandbox_work_dir()
                 sandbox_path = f"{work_dir}/{self.goal_id}/{safe_key}"
                 try:
                     # 用 write 直接写 bytes，避免 decode 编码异常损坏压缩包/视频等二进制文件
@@ -288,7 +288,7 @@ class AgentFileSystem:
         local_path = self.base_path / safe_key
 
         if self.sandbox:
-            work_dir = getattr(self.sandbox, "work_dir", "/home/ubuntu")
+            work_dir = self.sandbox_work_dir()
             sandbox_path = f"{work_dir}/{self.goal_id}/{safe_key}"
             try:
                 # 用 write 直接写 bytes，避免 decode 编码异常损坏压缩包/视频等二进制文件
@@ -309,7 +309,8 @@ class AgentFileSystem:
                 temp_dir.mkdir(parents=True, exist_ok=True)
                 temp_file = temp_dir / local_path.name
 
-                work_dir = getattr(self.sandbox, "work_dir", "/home/ubuntu")
+                # 必须与上面写入的路径一致,否则 OSS 兼容模式读不到刚写的文件
+                work_dir = self.sandbox_work_dir()
                 sandbox_path = f"{work_dir}/{self.goal_id}/{safe_key}"
                 try:
                     file_info = await self.sandbox.file.read(
@@ -361,7 +362,7 @@ class AgentFileSystem:
         local_path = self.base_path / safe_key
 
         if self.sandbox:
-            work_dir = getattr(self.sandbox, "work_dir", "/home/ubuntu")
+            work_dir = self.sandbox_work_dir()
             sandbox_path = f"{work_dir}/{self.goal_id}/{safe_key}"
             try:
                 # 用 write 直接写 bytes，避免 decode 编码异常损坏压缩包/视频等二进制文件
@@ -1228,7 +1229,9 @@ class AgentFileSystem:
             logger.warning("[AFSv3] sync_sandbox_to_afs skipped: no sandbox")
             return []
 
-        work_dir = work_dir or getattr(self.sandbox, "work_dir", "/home/ubuntu")
+        # 默认同步会话目录而非整个空间公共层:避免把其他会话的过程文件一并
+        # 收进 AFS。需要全量同步时调用方可显式传入 work_dir。
+        work_dir = work_dir or self.sandbox_work_dir()
 
         # 1. 递归收集沙箱文件路径
         file_paths = await self._walk_sandbox(work_dir)
@@ -1366,6 +1369,17 @@ class AgentFileSystem:
         return restored
 
     # ==================== 工具方法 ====================
+
+    def sandbox_work_dir(self) -> str:
+        """沙箱当前工作目录:优先会话目录,未配置时回退到 ``work_dir``。
+
+        场景空间下会话目录为 ``<work_dir>/sessions/<conv_uid>/``,交付文件落到
+        会话私有区,不再全空间堆在 ``default/`` 下。未配置会话目录时(非场景
+        空间链路、E2B)行为与改动前完全一致。
+        """
+        from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
+        return resolve_session_work_dir(self.sandbox, default="/home/ubuntu")
 
     def get_storage_type(self) -> str:
         """获取当前使用的存储类型.

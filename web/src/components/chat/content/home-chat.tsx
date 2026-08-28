@@ -1077,20 +1077,20 @@ const [recommendedMcps, setRecommendedMcps] = useState<any[]>([]);
     const appCode = selectedApp?.app_code || 'chat_normal';
     const currentModel = selectedModel || '';
     
-    let convUid = pendingConvUid;
+    let conversationId = pendingConvUid;
     
-    if (!convUid) {
+    if (!conversationId) {
       const wsIdParam = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('workspace_id') : null;
       const [, dialogueRes] = await apiInterceptors(
         newDialogue({ app_code: appCode, model: currentModel, workspace_id: wsIdParam ? Number(wsIdParam) : undefined }),
       );
       if (dialogueRes) {
-        convUid = dialogueRes.conv_uid;
-        setPendingConvUid(convUid);
+        conversationId = dialogueRes.conv_uid;
+        setPendingConvUid(conversationId);
       }
     }
     
-    if (!convUid) {
+    if (!conversationId) {
       setUploadingFiles(prev => prev.map(f => f.id === uploadId ? { ...f, status: 'error' } : f));
       return;
     }
@@ -1100,7 +1100,7 @@ const [recommendedMcps, setRecommendedMcps] = useState<any[]>([]);
     
     const [uploadErr, uploadRes] = await apiInterceptors(
       postChatModeParamsFileLoad({
-        convUid: convUid,
+        conversationId: conversationId,
         chatMode: appCode,
         data: formData,
         model: currentModel,
@@ -1166,24 +1166,24 @@ const [recommendedMcps, setRecommendedMcps] = useState<any[]>([]);
     }
     
     const appCode = selectedApp?.app_code || 'chat_normal';
-    let convUid = pendingConvUid;
+    let conversationId = pendingConvUid;
     
-    if (!convUid) {
+    if (!conversationId) {
       const wsIdParam2 = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('workspace_id') : null;
       const [, res] = await apiInterceptors(
         newDialogue({ app_code: appCode, model: selectedModel, workspace_id: wsIdParam2 ? Number(wsIdParam2) : undefined }),
       );
       if (res) {
-        convUid = res.conv_uid;
-        setPendingConvUid(convUid);
+        conversationId = res.conv_uid;
+        setPendingConvUid(conversationId);
       }
     }
     
-    if (convUid) {
+    if (conversationId) {
       localStorage.setItem(
         STORAGE_INIT_MESSAGE_KET,
         JSON.stringify({
-          id: convUid,
+          id: conversationId,
           message: userInput,
           resources: uploadedResources.length > 0 ? uploadedResources : undefined,
           model: selectedModel, 
@@ -1193,7 +1193,7 @@ const [recommendedMcps, setRecommendedMcps] = useState<any[]>([]);
           knowledgeBases: selectedKnowledgeBases.length > 0 ? selectedKnowledgeBases : undefined,
         }),
       );
-      router.push(`/chat/?app_code=${appCode}&conv_uid=${convUid}`);
+      router.push(`/chat/?app_code=${appCode}&conv_uid=${conversationId}`);
     }
     setUserInput('');
     setUploadingFiles([]);

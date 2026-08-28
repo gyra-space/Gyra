@@ -326,11 +326,10 @@ async def get_compression_segments(con_uid: str):
     try:
         from gyra_serve.agent.db.gpts_cold_segment_db import GptsColdSegmentDao
 
-        # conv_uid 可能是 conv_id (uuid_N) 或 conv_session_id (uuid)，剥离 _N
-        if "_" in con_uid and con_uid.split("_")[-1].isdigit():
-            conv_session_id = con_uid.rsplit("_", 1)[0]
-        else:
-            conv_session_id = con_uid
+        # conv_uid 可能是 turn_id (uuid_N) 或 conversation_id (uuid)，归一化掉 _N
+        from gyra_serve.conversation.ids import to_conversation_id
+
+        conv_session_id = to_conversation_id(con_uid)
         segments = GptsColdSegmentDao().get_all_by_session(conv_session_id)
         return Result.succ(segments)
     except Exception as e:

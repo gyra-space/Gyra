@@ -57,6 +57,10 @@ class SessionConfig:
     # 宿主机绝对工作目录:设置后 session 直接使用该真实路径作为工作目录
     # (不再嵌套进 /tmp session 目录),供场景空间级持久沙箱目录使用。
     host_working_dir: Optional[str] = None
+    # 会话级当前工作目录(cwd):位于 host_working_dir 之下
+    # (如 <host_working_dir>/sessions/<conv_uid>/),只影响进程 cwd 与相对路径
+    # 解析基准,不改变沙箱访问边界。None = 与 host_working_dir 一致。
+    host_session_working_dir: Optional[str] = None
 
     def __post_init__(self):
         if self.environment_vars is None:

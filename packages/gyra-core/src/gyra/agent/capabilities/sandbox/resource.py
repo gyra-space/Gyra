@@ -48,8 +48,11 @@ class SandboxResource(ResourceProtocol):
         """sandbox_client: SandboxBase 实例(只读其静态属性)。
         work_dir: 工作目录(可选,来自 sandbox_manager)。
         """
+        from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
         self.sandbox_client = sandbox_client
-        self.work_dir = work_dir or "/workspace"
+        # 场景空间下 work_dir 传进来的是会话目录;未传入时依次回退。
+        self.work_dir = work_dir or resolve_session_work_dir(sandbox_client)
 
     @classmethod
     def declare(cls, config: Any) -> List[Contribution]:

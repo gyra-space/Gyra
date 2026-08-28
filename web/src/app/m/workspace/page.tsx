@@ -81,7 +81,7 @@ export default function MobileWorkspace() {
   const { message } = App.useApp();
 
   const [tab, setTab] = useState<MobileTab>('overview');
-  const [convUid, setConvUid] = useState<string>('');
+  const [conversationId, setConvUid] = useState<string>('');
   const [approveItem, setApproveItem] = useState<InboxItem | null>(null);
   const [proposalItem, setProposalItem] = useState<InboxItem | null>(null);
   const [comment, setComment] = useState('');
@@ -280,7 +280,7 @@ export default function MobileWorkspace() {
       return (
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <MobileAgentView
-            convUid={convUid}
+            conversationId={conversationId}
             workspaceId={workspaceId}
             appCode={appCode}
             onNewSession={handleNewSession}
@@ -491,7 +491,7 @@ export default function MobileWorkspace() {
           <div className="ms-header__title">{ws.name}</div>
           <div className="ms-header__sub">{ws.workspace_code} · {scenario}</div>
         </div>
-        <span className="ms-chip ms-chip--neutral">{convUid ? '就绪' : '同步中'}</span>
+        <span className="ms-chip ms-chip--neutral">{conversationId ? '就绪' : '同步中'}</span>
       </header>
 
       <div className="ms-frame__body" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>

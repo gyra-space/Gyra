@@ -78,7 +78,7 @@ describe('mergeTaskCards', () => {
     expect(cards[0].ts).toBe('2026-01-01T00:00:00Z'); // 保留已有 ts
   });
 
-  test('无 convUid 或无任务时原样返回', () => {
+  test('无 conversationId 或无任务时原样返回', () => {
     const prev: WorkspaceView = { ...EMPTY_VIEW, execution: [{ id: 'a', type: 'tool_call', title: 'a', status: 'done', ts: null }] };
     expect(mergeTaskCards(prev, undefined, 'c1')).toBe(prev);
     expect(mergeTaskCards(prev, [], 'c1')).toBe(prev);

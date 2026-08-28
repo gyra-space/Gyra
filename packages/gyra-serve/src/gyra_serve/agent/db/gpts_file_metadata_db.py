@@ -42,6 +42,16 @@ class GptsFileMetadataEntity(Model):
     conv_session_id = Column(
         String(255), nullable=False, comment="The session id within conversation"
     )
+
+    @property
+    def conv_turn_id(self) -> str:
+        """轮次 id（统一术语）。DB 列名 ``conv_id`` 不变，只加读别名。
+
+        会话维度用 ``conv_session_id``（列名即标准名）。
+        查询构造（``GptsFileMetadataEntity.conv_id == x``）仍需用列对象。
+        """
+        return self.conv_id
+
     file_id = Column(
         String(255), nullable=False, unique=True, comment="The unique id of the file"
     )

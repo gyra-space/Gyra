@@ -20,6 +20,9 @@ _BATCH_SIZE = 20
 
 _DESC_MAX = 160
 
+# 单实体图上下文(来源文档片段)截断长度
+_CTX_MAX = 400
+
 
 def _loads(raw: Any) -> Any:
     """LLM 返回解析:截掉偶尔出现的 markdown 代码围栏后 json.loads。"""
@@ -34,6 +37,24 @@ def _loads(raw: Any) -> Any:
         except (json.JSONDecodeError, TypeError):
             return None
     return raw
+
+
+def fold_context(
+    neighbors: List[str], snippets: List[str], max_chars: int = _CTX_MAX
+) -> str:
+    """实体图上下文 → 一段紧凑 prompt 文本(纯函数,异步收集在调用方)。
+
+    neighbors:一跳关联实体名;snippets:来源文档原文片段。证据主体是
+    片段(业务含义所在),邻居实体名辅助消歧(同名不同义)。
+    """
+    parts = []
+    if snippets:
+        parts.append(
+            "关联文档片段:" + " / ".join(s[:max_chars] for s in snippets[:2])
+        )
+    if neighbors:
+        parts.append("关联实体:" + "、".join(neighbors[:5]))
+    return "; ".join(parts)
 
 
 class EntityAligner:
@@ -56,6 +77,9 @@ class EntityAligner:
    而非"名字相似"这类字面理由)。
 4. confidence ∈ (0,1]:1.0=同一概念的不同说法,0.6~0.9=强语义指向。
 5. 一个实体可以对齐多个对象,一个对象也可以被多个实体指向。
+6. 实体名后附带的「上下文」来自其在知识图中的关联文档片段与关联实体,是
+   判断语义指向的关键证据,优先依据它推理;无上下文的实体按名称谨慎判断,
+   宁可漏对齐不可错对齐。
 
 只输出 JSON 数组,不要 markdown 代码块,不要解释文字:
 [{"entity_name": "知识实体名", "object_id": "对象id", "confidence": 0.9,
@@ -188,28 +212,42 @@ class EntityAligner:
         return out
 
     async def align_batch(
-        self, entities: List[str], objects: List[Any]
+        self,
+        entities: List[str],
+        objects: List[Any],
+        context: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         """一批实体 × 对象清单 → 校验后的对齐候选。
 
         objects 是语义对象 entity 列表(需 id/obj_type/name/payload 属性)。
+        context:实体名 → 图上下文证据(一跳邻居 + 来源文档片段,见
+        Service._entity_graph_context);缺省或无该实体时按裸实体名推理。
         """
         if not entities or not objects:
             return []
         object_ids = {o.id for o in objects}
+        ctx = context or {}
+        lines = []
+        for name in entities:
+            extra = (ctx.get(name) or "").strip()
+            lines.append(f"- {name}(上下文:{extra})" if extra else f"- {name}")
         prompt = (
-            f"## 知识实体\n" + "\n".join(entities) + "\n\n"
+            f"## 知识实体\n" + "\n".join(lines) + "\n\n"
             f"## 语义层对象\n" + self._object_catalog(objects)
         )
         raw = await self._call_llm(prompt)
         return self._validate(raw, entities, object_ids)
 
     async def align(
-        self, entities: List[str], objects: List[Any]
+        self,
+        entities: List[str],
+        objects: List[Any],
+        context: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         """全量对齐:实体按批分组,逐批调用(对象清单每批完整提供)。"""
         out: List[Dict[str, Any]] = []
+        ctx = context or {}
         for i in range(0, len(entities), _BATCH_SIZE):
             batch = entities[i : i + _BATCH_SIZE]
-            out.extend(await self.align_batch(batch, objects))
+            out.extend(await self.align_batch(batch, objects, context=ctx))
         return out

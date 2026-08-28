@@ -77,11 +77,11 @@ function makeFence(stepId: string, stepTitle: string): string {
   })}\n\`\`\``;
 }
 
-describe('useSceneAgentChat convUid 切换重置', () => {
+describe('useSceneAgentChat conversationId 切换重置', () => {
   test('从任务1切到任务2时清空上一会话视图,新会话只展示自己的步骤', async () => {
     const { result, rerender } = renderHook(
-      (props: { convUid?: string }) => useSceneAgentChat({ ...props, enabled: true }),
-      { initialProps: { convUid: 'c1' } },
+      (props: { conversationId?: string }) => useSceneAgentChat({ ...props, enabled: true }),
+      { initialProps: { conversationId: 'c1' } },
     );
 
     // 任务1 历史合并进视图
@@ -93,7 +93,7 @@ describe('useSceneAgentChat convUid 切换重置', () => {
     });
 
     // 切到任务2:视图必须被清空,而不是把任务1步骤残留并继续累积
-    rerender({ convUid: 'c2' });
+    rerender({ conversationId: 'c2' });
     await waitFor(() => {
       expect(result.current.workspaceView.execution).toEqual([]);
     });
@@ -119,25 +119,25 @@ describe('useSceneAgentChat convUid 切换重置', () => {
     }));
 
     const { rerender } = renderHook(
-      (props: { convUid?: string }) => useSceneAgentChat({ ...props, enabled: true }),
-      { initialProps: { convUid: 'c1' } },
+      (props: { conversationId?: string }) => useSceneAgentChat({ ...props, enabled: true }),
+      { initialProps: { conversationId: 'c1' } },
     );
     expect(resetUsageMetrics).not.toHaveBeenCalled();
 
     // 切到任务2:会话切换必须触发用量清空
-    rerender({ convUid: 'c2' });
+    rerender({ conversationId: 'c2' });
     await waitFor(() => {
       expect(resetUsageMetrics).toHaveBeenCalled();
     });
     // 同会话内 re-render 不再重复清空
-    rerender({ convUid: 'c2' });
+    rerender({ conversationId: 'c2' });
     expect(resetUsageMetrics).toHaveBeenCalledTimes(1);
   });
 
   test('运行中切换会话:abort 旧 SSE 流、重置 loading,旧流迟到回调不污染新视图', async () => {
     const { result, rerender } = renderHook(
-      (props: { convUid?: string }) => useSceneAgentChat({ ...props, enabled: true }),
-      { initialProps: { convUid: 'c1' } },
+      (props: { conversationId?: string }) => useSceneAgentChat({ ...props, enabled: true }),
+      { initialProps: { conversationId: 'c1' } },
     );
 
     // 发起一轮对话:chat mock 捕获 ctrl 与各回调,loading 进入 true
@@ -152,7 +152,7 @@ describe('useSceneAgentChat convUid 切换重置', () => {
 
     // 切到任务2:旧流必须被 abort(后端 agent 继续后台运行),loading 重置,
     // 轮询重新启用 → 新会话降级为轮询渲染
-    rerender({ convUid: 'c2' });
+    rerender({ conversationId: 'c2' });
     await waitFor(() => {
       expect(c1.ctrl!.signal.aborted).toBe(true);
       expect(result.current.loading).toBe(false);

@@ -220,9 +220,19 @@ class ShellExecTool(SandboxToolBase):
             allowed_roots = list(
                 get_sandbox_whitelist(getattr(client, "skill_dir", None))
             )
+            # 命令默认在会话目录(session_work_dir)执行,同名文件不再跨会话覆盖;
+            # 空间公共层(work_dir)同样放行进 allowed_roots,这样用绝对路径读
+            # files/ 下的公共数据集不会被路径栅栏拦下。
+            # 注意:命令参数中的 ".." 本来就一律禁止(见 _validate_tokens),
+            # 因此访问公共层只能走绝对路径,promote 共享文件同理。
+            from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
+            work_dir = resolve_session_work_dir(client)
+            if work_dir != client.work_dir:
+                allowed_roots.append(client.work_dir)
             validate_shell_command(
                 command,
-                client.work_dir,
+                work_dir,
                 sandbox_type,
                 allowed_roots=allowed_roots,
             )
@@ -240,7 +250,7 @@ class ShellExecTool(SandboxToolBase):
 
         try:
             result = await client.shell.exec_command(
-                command=command, timeout=float(timeout), work_dir=client.work_dir
+                command=command, timeout=float(timeout), work_dir=work_dir
             )
         except Exception as exc:
             return ToolResult.ok(

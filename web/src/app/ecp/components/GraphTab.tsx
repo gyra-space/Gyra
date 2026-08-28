@@ -291,6 +291,8 @@ function AssetDetailContent({
  * 三层的连通点:claim ─ref─▶ 文档资产 ◀─derived-from─ wiki 页。
  * 知识实体与硬层对象之间是 aligns_to 语义对齐边:由 LLM 推理产出候选、
  * 人工确认后生效,查询时从对齐表投影——渲染零 LLM 依赖。
+ * entity 检索命中的 kn 实体,详情面板展示其图上下文证据(一跳关联 +
+ * 来源文档片段,vault 确定性图查询收集,与对齐推理共用)。
  * 边为查询时实时投影——存量数据零物化冷启动即有连线。
  */
 export default function GraphTab({ workspaceId }: { workspaceId: string }) {

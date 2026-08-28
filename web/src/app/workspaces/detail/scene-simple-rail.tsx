@@ -10,6 +10,7 @@ import { useMemo, useState } from 'react';
 import { Input } from 'antd';
 import {
   DeleteOutlined,
+  EditOutlined,
   InboxOutlined,
   PlusOutlined,
   RightOutlined,
@@ -18,7 +19,7 @@ import {
 import dayjs from 'dayjs';
 import { ConversationUsageChip } from '@/components/chat/ConversationUsageChip';
 import type { ConversationUsageSummary } from '@/client/api/usage';
-import { convIdBase } from '@/types/context-metrics';
+import { toConversationId } from '@/types/context-metrics';
 
 export interface SimpleHistoryItem {
   key: string;
@@ -28,9 +29,9 @@ export interface SimpleHistoryItem {
   status: 'running' | 'done' | 'failed' | 'waiting';
   statusLabel: string;
   updatedAt: string;
-  convUid?: string;
+  conversationId?: string;
   taskId?: number | null;
-  /** 是否当前已选中的会话/任务(由外层按 convUid/taskId 判定) */
+  /** 是否当前已选中的会话/任务(由外层按 conversationId/taskId 判定) */
   active?: boolean;
 }
 
@@ -46,14 +47,18 @@ interface SceneSimpleRailProps {
   onOpenItem?: (item: SimpleHistoryItem) => void;
   onNewConversation?: () => void;
   onOpenInbox?: () => void;
-  /** 会话级用量（模型 + token）map，key=convUid，用于列表 chip 展示 */
+  /** 会话级用量（模型 + token）map，key=conversationId，用于列表 chip 展示 */
   usageMap?: Record<string, ConversationUsageSummary>;
   /** 删除单个历史项(任务/会话)。按 kind 由外层决定调用任务/会话删除接口。 */
   onDeleteItem?: (item: SimpleHistoryItem) => void;
+  /** 重命名会话项(lobby)。由外层弹窗收集新名称并调用重命名接口。 */
+  onRenameItem?: (item: SimpleHistoryItem) => void;
   /** 是否允许删除任务项(space.task.manage) */
   canDeleteTask?: boolean;
   /** 是否允许删除会话项(space.chat.use) */
   canDeleteConversation?: boolean;
+  /** 是否允许重命名会话项(space.chat.use) */
+  canRenameConversation?: boolean;
 }
 
 function StatusDot({ status }: { status: SimpleHistoryItem['status'] }) {
@@ -92,8 +97,10 @@ export function SceneSimpleRail({
   onOpenInbox,
   usageMap = {},
   onDeleteItem,
+  onRenameItem,
   canDeleteTask,
   canDeleteConversation,
+  canRenameConversation,
 }: SceneSimpleRailProps) {
   const [filter, setFilter] = useState('');
   const [collapsedSegs, setCollapsedSegs] = useState<Set<string>>(() => new Set());
@@ -105,7 +112,7 @@ export function SceneSimpleRail({
       (it) =>
         it.title.toLowerCase().includes(q) ||
         String(it.id).toLowerCase().includes(q) ||
-        (it.convUid || '').toLowerCase().includes(q),
+        (it.conversationId || '').toLowerCase().includes(q),
     );
   }, [items, filter]);
 
@@ -191,7 +198,7 @@ export function SceneSimpleRail({
                   const isActive =
                     it.active ||
                     (it.kind === 'task' && it.taskId != null && it.taskId === currentTaskId) ||
-                    (it.convUid != null && it.convUid === currentConvUid);
+                    (it.conversationId != null && it.conversationId === currentConvUid);
                   return (
                     <div
                       key={it.key}
@@ -213,12 +220,25 @@ export function SceneSimpleRail({
                         <div className="ws-simple-item__tm">
                           {fmtTime(it.updatedAt)} · {it.statusLabel}
                         </div>
-                        {it.convUid && usageMap[convIdBase(it.convUid)] && (
+                        {it.conversationId && usageMap[toConversationId(it.conversationId)] && (
                           <div className="ws-simple-item__usage">
-                            <ConversationUsageChip summary={usageMap[convIdBase(it.convUid)]} />
+                            <ConversationUsageChip summary={usageMap[toConversationId(it.conversationId)]} />
                           </div>
                         )}
                       </div>
+                      {!disabled && onRenameItem && it.kind === 'lobby' && canRenameConversation && (
+                        <span
+                          className="ws-simple-item__act"
+                          role="button"
+                          tabIndex={-1}
+                          title="重命名"
+                          aria-label="重命名"
+                          onClick={(e) => { e.stopPropagation(); onRenameItem?.(it); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onRenameItem?.(it); } }}
+                        >
+                          <EditOutlined />
+                        </span>
+                      )}
                       {!disabled && onDeleteItem && (
                         (it.kind === 'task' && canDeleteTask) ||
                         (it.kind === 'lobby' && canDeleteConversation)

@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
+import inspect
 import logging
 import mimetypes
 import os
@@ -202,9 +203,14 @@ class IngestOrchestrator:
                     Path(file_path).unlink(missing_ok=True)
             except OSError:
                 pass
-            return IngestJob(
-                id=job_id, space_slug=space.slug, source_file=original_filename,
+            # Mirror into the space's own ingest_jobs ledger so the UI
+            # (GET /spaces/{slug}/ingest-jobs) can see the job from the
+            # moment it is submitted — the job engine's table is a separate
+            # system and the knowledge UI does not read it.
+            job = await self._ensure_job_record(
+                vault, job_id, space.slug, original_filename
             )
+            return job
 
         job = IngestJob(
             id=f"ij_{uuid.uuid4().hex[:12]}",
@@ -234,6 +240,29 @@ class IngestOrchestrator:
     # ------------------------------------------------------------------
     # Job ledger persistence
     # ------------------------------------------------------------------
+
+    async def _ensure_job_record(
+        self,
+        vault: Any,
+        job_id: str,
+        space_slug: str,
+        source_file: str,
+    ) -> IngestJob:
+        """Get-or-create an IngestJob row and persist it to the space ledger.
+
+        Used by the job-engine path, where the job id comes from the external
+        JobService (``job_…``). The row may not exist yet in this process
+        (worker picked up a job submitted elsewhere), so create it on demand
+        before persisting — otherwise ``_persist_job`` would silently no-op.
+        """
+        job = self.jobs.get(job_id)
+        if job is None:
+            job = IngestJob(
+                id=job_id, space_slug=space_slug, source_file=source_file
+            )
+            self.jobs.add(job)
+        await self._persist_job(vault, job_id)
+        return job
 
     async def _persist_job(self, vault: Any, job_id: str) -> None:
         """Mirror the in-memory job row to the space's job ledger.
@@ -630,10 +659,25 @@ class IngestOrchestrator:
 
         Shared by ``_run_pipeline`` (in-memory tracking) and the job-engine
         handler (DB-backed). The optional callbacks let each caller record
-        progress where it likes. Returns ``(verbat_ids, wiki_doc_ids)``.
+        progress where it likes. Callbacks may be sync or async — they are
+        always awaited when awaitable. Returns ``(verbat_ids, wiki_doc_ids)``.
         """
         def _noop(*args, **kwargs):
             pass
+
+        async def _emit(cb: Any, *args: Any) -> None:
+            """Invoke a progress callback, awaiting it when it's a coroutine.
+
+            Some callers pass cheap sync callbacks (in-memory updates), others
+            pass async ones (SQLite ledger writes). Calling an async callback
+            without awaiting would silently drop the update and only surface
+            as a "coroutine was never awaited" RuntimeWarning, so every
+            callback goes through here.
+            """
+            res = cb(*args)
+            if inspect.isawaitable(res):
+                await res
+
         on_status = on_status or _noop
         on_verbat_ids = on_verbat_ids or _noop
         on_wiki_doc_id = on_wiki_doc_id or _noop
@@ -659,7 +703,7 @@ class IngestOrchestrator:
         asset_store = self._make_asset_store(vault)
 
         # 5. Extract
-        on_status("extracting")
+        await _emit(on_status, "extracting")
         specs: List[VerbatimSpec] = await extractor.extract(
             path=file_path,
             mime=mime,
@@ -691,8 +735,8 @@ class IngestOrchestrator:
             )
             vid = await vault.verbat_add(v)
             verbat_ids.append(vid)
-        on_status("generating_wiki")
-        on_verbat_ids(verbat_ids)
+        await _emit(on_status, "generating_wiki")
+        await _emit(on_verbat_ids, verbat_ids)
 
         # 7. Generate wiki for each verbat (sequential to avoid LLM hammering)
         wiki_doc_ids: List[DocId] = []
@@ -705,7 +749,7 @@ class IngestOrchestrator:
                 )
                 if doc_id:
                     wiki_doc_ids.append(doc_id)
-                    on_wiki_doc_id(doc_id)
+                    await _emit(on_wiki_doc_id, doc_id)
             except Exception:
                 logger.exception(
                     "Wiki generation failed for verbat %s in space %s",
@@ -767,16 +811,59 @@ class IngestOrchestrator:
                 f"raw file not found for ingest job: {file_path}"
             )
 
-        verbat_ids, wiki_doc_ids = await self._extract_and_wiki(
-            space=space,
-            vault=vault,
-            file_path=file_path,
-            original_filename=filename,
-            extract_mode=extract_mode,
-            model_override=payload.get("model_override"),
-            agent_id_override=payload.get("agent_id_override"),
-            llm_model_override=payload.get("llm_model_override"),
-            job_id=getattr(job, "id", None),
+        job_id = getattr(job, "id", None)
+        # Mirror progress into the space's own ingest_jobs ledger. Without
+        # this the knowledge UI (GET /spaces/{slug}/ingest-jobs) never shows
+        # job-engine-driven ingests, which look like "no processing record"
+        # even though the docs were generated.
+        await self._ensure_job_record(vault, job_id, space_slug, filename)
+
+        collected_wiki: List[DocId] = []
+
+        async def _on_status(status: str) -> None:
+            await self._job_update(vault, job_id, status=status)
+
+        async def _on_verbat_ids(vids: List[VerbatId]) -> None:
+            await self._job_update(vault, job_id, verbat_ids=list(vids))
+
+        async def _on_wiki_doc_id(doc_id: DocId) -> None:
+            collected_wiki.append(doc_id)
+            await self._job_update(
+                vault, job_id, wiki_doc_ids=list(collected_wiki)
+            )
+
+        try:
+            verbat_ids, wiki_doc_ids = await self._extract_and_wiki(
+                space=space,
+                vault=vault,
+                file_path=file_path,
+                original_filename=filename,
+                extract_mode=extract_mode,
+                model_override=payload.get("model_override"),
+                agent_id_override=payload.get("agent_id_override"),
+                llm_model_override=payload.get("llm_model_override"),
+                job_id=job_id,
+                on_status=_on_status,
+                on_verbat_ids=_on_verbat_ids,
+                on_wiki_doc_id=_on_wiki_doc_id,
+            )
+        except Exception as e:
+            await self._job_update(
+                vault,
+                job_id,
+                status="failed",
+                error=str(e),
+                wiki_doc_ids=list(collected_wiki),
+                finished_at=datetime.utcnow().isoformat(),
+            )
+            raise
+        await self._job_update(
+            vault,
+            job_id,
+            status="done",
+            verbat_ids=list(verbat_ids),
+            wiki_doc_ids=list(wiki_doc_ids),
+            finished_at=datetime.utcnow().isoformat(),
         )
         return {
             "space_slug": space_slug,
@@ -933,6 +1020,7 @@ class IngestOrchestrator:
         )
 
         # Call the LLM
+        used_model: List[str] = []
         markdown = await self._call_llm(
             model=llm_model,
             system_prompt=self.WIKI_SYSTEM_PROMPT,
@@ -940,18 +1028,22 @@ class IngestOrchestrator:
             vault=vault,
             job_id=job_id,
             task_name="wiki_generate",
+            model_out=used_model,
         )
         if not markdown or not markdown.strip():
             logger.warning("LLM returned empty markdown for verbat %s", verbat_id)
             return None
 
-        # Ensure frontmatter has source_verbat (LLM may forget)
+        # Ensure frontmatter has source_verbat (LLM may forget).
+        # provenance records WHO WROTE THIS PAGE, not what kind of space it
+        # lives in: the wiki text is generated by the LLM even in personal
+        # spaces, so stamping "human" here attributed machine-written prose
+        # to the person who merely uploaded the source file. The human
+        # contribution stays traceable via source_verbat -> verbat.source_file.
         markdown = self._ensure_frontmatter(
             markdown, verbat_id, verbat.source_file,
-            provenance=(
-                "agent" if getattr(space, "space_type", "personal") == "agent_memory"
-                else "human"
-            ),
+            provenance="agent",
+            author_model=llm_model or (used_model[0] if used_model else None),
         )
 
         # Derive a path: wiki/sources/<slug>.md
@@ -1015,12 +1107,14 @@ class IngestOrchestrator:
     def _ensure_frontmatter(
         self, markdown: str, verbat_id: VerbatId, source_file: str,
         provenance: Optional[str] = None,
+        author_model: Optional[str] = None,
     ) -> str:
         """Guarantee the markdown has a frontmatter block with source_verbat set.
 
-        RFC-005 Phase 1: also stamps the provenance convention key
-        ("human" for personal spaces, "agent" for agent_memory spaces)
-        when the LLM didn't write one.
+        Stamps the RFC-005 provenance convention key (``human`` | ``agent``)
+        plus ``author_model`` (which model actually wrote the page) when the
+        LLM didn't emit them itself. Callers pass the *actual author*, not a
+        value derived from space_type.
         """
         if not markdown.startswith("---"):
             # Inject a minimal frontmatter
@@ -1030,6 +1124,7 @@ class IngestOrchestrator:
                 f"title: {source_file}\n"
                 f"source_verbat: {verbat_id}\n"
                 + (f"provenance: {provenance}\n" if provenance else "")
+                + (f"author_model: {author_model}\n" if author_model else "")
                 + f"---\n\n"
             )
             return fm + markdown
@@ -1040,6 +1135,8 @@ class IngestOrchestrator:
                 fm_block = fm_block.rstrip() + f"\nsource_verbat: {verbat_id}\n"
             if provenance and "provenance:" not in fm_block:
                 fm_block = fm_block.rstrip() + f"\nprovenance: {provenance}\n"
+            if author_model and "author_model:" not in fm_block:
+                fm_block = fm_block.rstrip() + f"\nauthor_model: {author_model}\n"
             return "---" + fm_block + "---" + parts[2]
         return markdown
 
@@ -1137,6 +1234,7 @@ class IngestOrchestrator:
             f"现有实体页索引（path | title | description）：\n{entity_index}\n\n"
             f"刚生成的 wiki 文档（path: {doc.path}）：\n\n{doc.raw_content[:12000]}"
         )
+        used_model: List[str] = []
         resp = await self._call_llm(
             model=llm_model,
             system_prompt=self.ENTITY_CURATE_PROMPT,
@@ -1144,10 +1242,14 @@ class IngestOrchestrator:
             vault=vault,
             job_id=job_id,
             task_name="entity_curate",
+            model_out=used_model,
         )
         entities = self._parse_curation_json(resp)
         if not entities:
             return
+        # Resolved model (llm_model may be None → _call_llm picks a default);
+        # used to stamp author_model on the entity pages it produces.
+        model_used = llm_model or (used_model[0] if used_model else None)
 
         for ent in entities[:8]:  # hard cap, matches the prompt's 3-8 limit
             if not isinstance(ent, dict):
@@ -1158,11 +1260,17 @@ class IngestOrchestrator:
                 continue
             try:
                 if action == "merge":
-                    await self._curate_merge(vault, ent, doc_id)
+                    await self._curate_merge(
+                        vault, ent, doc_id, llm_model=model_used
+                    )
                 elif action == "supersede":
-                    await self._curate_supersede(vault, ent, name, doc_id)
+                    await self._curate_supersede(
+                        vault, ent, name, doc_id, llm_model=model_used
+                    )
                 else:  # default: new
-                    await self._curate_new(space, vault, ent, name, doc_id)
+                    await self._curate_new(
+                        space, vault, ent, name, doc_id, llm_model=model_used
+                    )
             except Exception:
                 logger.exception(
                     "Entity curation action=%s failed for '%s' in space %s",
@@ -1197,19 +1305,38 @@ class IngestOrchestrator:
         return entities if isinstance(entities, list) else []
 
     @staticmethod
-    def _ensure_entity_frontmatter(markdown: str, name: str) -> str:
-        """Guarantee an entity page has frontmatter with type: entity."""
+    def _ensure_entity_frontmatter(
+        markdown: str,
+        name: Optional[str] = None,
+        provenance: Optional[str] = None,
+        author_model: Optional[str] = None,
+    ) -> str:
+        """Guarantee an entity page has frontmatter with type: entity.
+
+        Entity pages are authored by the curation LLM, so they are stamped
+        ``provenance: agent`` (plus ``author_model`` when known) rather than
+        inheriting the space type — the writer is the model, not the human
+        who uploaded the source file.
+        """
+        extra = (f"provenance: {provenance}\n" if provenance else "") + (
+            f"author_model: {author_model}\n" if author_model else ""
+        )
         if markdown.startswith("---"):
             parts = markdown.split("---", 2)
             if len(parts) >= 3:
                 fm_block = parts[1]
                 if "type:" not in fm_block:
                     fm_block = fm_block.rstrip() + "\ntype: entity\n"
-                if "title:" not in fm_block:
+                if name and "title:" not in fm_block:
                     fm_block = fm_block.rstrip() + f"\ntitle: {name}\n"
+                if provenance and "provenance:" not in fm_block:
+                    fm_block = fm_block.rstrip() + f"\nprovenance: {provenance}\n"
+                if author_model and "author_model:" not in fm_block:
+                    fm_block = fm_block.rstrip() + f"\nauthor_model: {author_model}\n"
                 return "---" + fm_block + "---" + parts[2]
             return markdown
-        return f"---\ntype: entity\ntitle: {name}\n---\n\n" + markdown
+        title_line = f"title: {name}\n" if name else ""
+        return f"---\ntype: entity\n{title_line}{extra}---\n\n" + markdown
 
     async def _entity_doc_id_by_path(self, vault: Any, path: str) -> Optional[DocId]:
         docs = await vault.doc_list(type="entity", limit=10000)
@@ -1252,12 +1379,20 @@ class IngestOrchestrator:
         return f"entities/{base_slug}-{uuid.uuid4().hex[:6]}.md"
 
     async def _curate_new(
-        self, space: Space, vault: Any, ent: dict, name: str, source_doc_id: DocId
+        self,
+        space: Space,
+        vault: Any,
+        ent: dict,
+        name: str,
+        source_doc_id: DocId,
+        llm_model: Optional[str] = None,
     ) -> None:
         body = str(ent.get("new_body") or "").strip()
         if not body:
             body = f"# {name}\n\n{ent.get('summary') or ''}\n"
-        body = self._ensure_entity_frontmatter(body, name)
+        body = self._ensure_entity_frontmatter(
+            body, name, provenance="agent", author_model=llm_model
+        )
         path = await self._free_entity_path(vault, self._slugify_unicode(name))
         entity_doc_id = await vault.doc_create(path=path, content=body)
         await self._add_about_edge(vault, entity_doc_id, source_doc_id)
@@ -1276,7 +1411,11 @@ class IngestOrchestrator:
             )
 
     async def _curate_merge(
-        self, vault: Any, ent: dict, source_doc_id: DocId
+        self,
+        vault: Any,
+        ent: dict,
+        source_doc_id: DocId,
+        llm_model: Optional[str] = None,
     ) -> None:
         existing_path = str(ent.get("existing_path") or "").strip()
         merged = str(ent.get("merged_body") or "").strip()
@@ -1285,6 +1424,9 @@ class IngestOrchestrator:
                 "merge action missing existing_path/merged_body: %s", ent
             )
             return
+        merged = self._ensure_entity_frontmatter(
+            merged, provenance="agent", author_model=llm_model
+        )
         # doc_edit's drift guard is safe here: the entity page was written
         # through the vault, so file hash and DB hash are in sync.
         await vault.doc_edit(path=existing_path, content=merged)
@@ -1293,7 +1435,12 @@ class IngestOrchestrator:
             await self._add_about_edge(vault, entity_doc_id, source_doc_id)
 
     async def _curate_supersede(
-        self, vault: Any, ent: dict, name: str, source_doc_id: DocId
+        self,
+        vault: Any,
+        ent: dict,
+        name: str,
+        source_doc_id: DocId,
+        llm_model: Optional[str] = None,
     ) -> None:
         existing_path = str(ent.get("existing_path") or "").strip()
         new_body = str(ent.get("new_body") or "").strip()
@@ -1317,7 +1464,10 @@ class IngestOrchestrator:
             new_path = f"entities/{base_slug}-v{uuid.uuid4().hex[:6]}.md"
 
         new_doc_id = await vault.doc_create(
-            path=new_path, content=self._ensure_entity_frontmatter(new_body, name)
+            path=new_path,
+            content=self._ensure_entity_frontmatter(
+                new_body, name, provenance="agent", author_model=llm_model
+            ),
         )
         if old_doc_id:
             # Invalidate the old version's active edges FIRST (kept in
@@ -1379,6 +1529,43 @@ class IngestOrchestrator:
 
         return caller
 
+    @staticmethod
+    def _usage_from_result(result: Any) -> Optional[Dict[str, Any]]:
+        """Extract a usage dict from one AIWrapper output frame.
+
+        ``AgentLLMOut`` carries token counts on ``metrics``
+        (a ``ModelInferenceMetrics``), **not** on a ``usage`` attribute —
+        reading ``result.usage`` always yielded None, so every row in
+        llm_call_log was recorded with 0 tokens and the usage views looked
+        like "the model was never called".
+
+        Accepts either shape so both provider styles keep working:
+        a plain ``usage`` dict, or a ``metrics`` object/dict with
+        prompt_tokens / completion_tokens / total_tokens.
+        """
+        raw = getattr(result, "usage", None)
+        if raw:
+            return raw
+        metrics = getattr(result, "metrics", None)
+        if metrics is None:
+            return None
+
+        def _get(obj: Any, key: str) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key)
+            return getattr(obj, key, None)
+
+        prompt = _get(metrics, "prompt_tokens") or 0
+        completion = _get(metrics, "completion_tokens") or 0
+        total = _get(metrics, "total_tokens") or (prompt + completion)
+        if not (prompt or completion or total):
+            return None
+        return {
+            "prompt_tokens": int(prompt),
+            "completion_tokens": int(completion),
+            "total_tokens": int(total),
+        }
+
     async def _call_llm(
         self,
         model: Optional[str],
@@ -1389,12 +1576,18 @@ class IngestOrchestrator:
         vault: Any = None,
         job_id: Optional[str] = None,
         task_name: str = "extract",
+        model_out: Optional[List[str]] = None,
     ) -> str:
         """Call the LLM via the Agent's ModelConfigCache + AIWrapper.
 
         Returns the model's text output. Returns "" on failure.
         When `vault` is provided, the call's token usage is recorded in the
         vault's llm_call_log ledger under `task_name`.
+
+        `model_out`, when given, receives the model actually used. Callers
+        pass an empty list: the requested model may be None, in which case
+        we fall back to the first registered one, and callers need the
+        resolved value to stamp `author_model` on the generated page.
         """
         try:
             from gyra.agent.util.llm.llm_client import AIWrapper
@@ -1413,6 +1606,8 @@ class IngestOrchestrator:
                     "No LLM models registered. Configure agent.llm.provider first."
                 )
             model = all_models[0]
+        if model_out is not None:
+            model_out.append(model)
 
         model_config = ModelConfigCache.get_config(model)
         agent_llm_config = None
@@ -1473,7 +1668,7 @@ class IngestOrchestrator:
             if result and result.content:
                 result_text += result.content
             if result is not None:
-                result_usage = getattr(result, "usage", None)
+                result_usage = self._usage_from_result(result)
                 if result_usage:
                     usage = result_usage
                 result_error = getattr(result, "error_code", 0) or 0

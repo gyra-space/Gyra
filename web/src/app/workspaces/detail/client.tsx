@@ -46,7 +46,7 @@ export default function WorkspaceDetailPage() {
   // 资产页内部 tab:数据/能力/交付统一在「资产」导航下切换
   const isAssetsPage = !!pathname?.includes('/workspaces/detail/assets');
   const { t } = useTranslation();
-  const [convUid, setConvUid] = useState<string>('');
+  const [conversationId, setConvUid] = useState<string>('');
   const [convLoadError, setConvLoadError] = useState<string | null>(null);
   const [convLoadKey, setConvLoadKey] = useState(0);
   const [listsRefreshKey, setListsRefreshKey] = useState(0);
@@ -184,7 +184,7 @@ export default function WorkspaceDetailPage() {
   const scenario = ws.scenario_type || ws.type || 'scenario';
 
   return (
-    <CallDetailProvider convId={convUid}>
+    <CallDetailProvider convId={conversationId}>
       <div className="ws-page" style={{ height: '100%', minHeight: 0, overflow: 'hidden' }}>
       <div className="ws-page-bg" />
       <div
@@ -245,7 +245,7 @@ export default function WorkspaceDetailPage() {
           workspace={ws}
           tasks={tasks || []}
           interventions={interventions || []}
-          workspaceConvUid={convUid}
+          workspaceConvUid={conversationId}
           appCode={appCode}
           onRefreshLists={handleRefreshLists}
           listsRefreshKey={listsRefreshKey}

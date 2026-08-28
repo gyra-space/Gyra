@@ -3,7 +3,7 @@ import { apiInterceptors, delDialogue } from '@/client/api';
 import { IChatDialogueSchema } from '@/types/chat';
 import { getUsageConversationSummary, type ConversationUsageSummary } from '@/client/api/usage';
 import { ConversationUsageChip } from '@/components/chat/ConversationUsageChip';
-import { convIdBase } from '@/types/context-metrics';
+import { toConversationId } from '@/types/context-metrics';
 import { CaretLeftOutlined, CaretRightOutlined, DeleteOutlined, ShareAltOutlined, SyncOutlined, CheckCircleOutlined, ExclamationCircleOutlined, LoadingOutlined, BarChartOutlined } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import {App, Flex, Layout, Spin, Tooltip, Typography, Badge } from 'antd';
@@ -289,7 +289,7 @@ const ChatSider: React.FC<{
       if (err) return {};
       const map: Record<string, ConversationUsageSummary> = {};
       (res || []).forEach(s => {
-        map[convIdBase(s.conv_id)] = s;
+        map[toConversationId(s.conv_id)] = s;
       });
       return map;
     },
@@ -325,7 +325,7 @@ const ChatSider: React.FC<{
           <Spin spinning={listLoading} className='mt-2'>
             {!!items?.length &&
               items.map(item => (
-                <MenuItem key={item?.key} item={item} refresh={refresh} historyLoading={historyLoading} order={order} usageSummary={usageMap[convIdBase(item?.conv_uid)]} />
+                <MenuItem key={item?.key} item={item} refresh={refresh} historyLoading={historyLoading} order={order} usageSummary={usageMap[toConversationId(item?.conv_uid)]} />
               ))}
           </Spin>
         </Flex>

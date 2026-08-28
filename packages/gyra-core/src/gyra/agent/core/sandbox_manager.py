@@ -9,7 +9,7 @@ from typing import Optional
 from gyra._private.config import Config
 from gyra.sandbox.base import SandboxBase, DEFAULT_SKILL_DIR
 from gyra.sandbox.sandbox_client import AutoSandbox
-from gyra.sandbox.sandbox_utils import collect_shell_output
+from gyra.sandbox.sandbox_utils import collect_shell_output, resolve_session_work_dir
 from gyra.sandbox.watchdog_manager import (
     WatchdogManager,
     WatchdogClient,
@@ -199,7 +199,9 @@ class SandboxManager:
             SandboxRuntimeState: 包含初始化完成的状态
         """
         # 1. 从 sandbox 获取工作目录
-        self._work_dir = sandbox.work_dir
+        # 场景空间下取会话目录(sessions/<conv_uid>/);未配置时回退到 work_dir,
+        # 因此对非场景空间链路与 E2B 完全不变。
+        self._work_dir = resolve_session_work_dir(sandbox)
 
         # 2. 确保工作目录存在 (local sandbox 不需要，runtime 会自动处理)
         provider = getattr(sandbox, "provider", lambda: None)()

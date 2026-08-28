@@ -65,7 +65,7 @@ export interface SceneAgentSendData {
 export function buildSceneAgentSendData(
   payload: SceneAgentSendPayload,
   options: SendDataOptions,
-  convUid: string,
+  conversationId: string,
 ): SceneAgentSendData {
   const { text, resources = [], model, playbookCommand, skills, mcps, media, permission, forceCompress } = payload;
   const { workspaceId, taskId, focusArtifactId } = options;
@@ -123,7 +123,7 @@ export function buildSceneAgentSendData(
   }
 
   return {
-    conv_uid: convUid,
+    conv_uid: conversationId,
     user_input: userInput,
     workspace_id: workspaceId,
     task_id: taskId,

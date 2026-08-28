@@ -210,10 +210,12 @@ export function formatTokens(tokens: number): string {
 }
 
 /**
- * 提取会话的基础 uuid（去掉末尾的 _N 分段号）。
- * 兼容前端传 conv_id(uuid_N) 或 conv_session_id(纯 uuid) 两种来源。
+ * 轮次 id 归一化为会话 id（幂等）—— 与后端
+ * `gyra_serve/conversation/ids.py::to_conversation_id` 同语义。
+ * 兼容前端传 conv_id(uuid_N，轮次) 或 conv_session_id(纯 uuid，会话) 两种来源。
+ * 术语见 docs/naming-conversation-ids.md：会话 conversationId / 轮次 turnId。
  */
-export function convIdBase(id?: string | null): string {
+export function toConversationId(id?: string | null): string {
   if (!id) return '';
   const parts = id.split('_');
   if (parts.length > 1 && /^\d+$/.test(parts[parts.length - 1])) {

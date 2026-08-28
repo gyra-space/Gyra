@@ -164,3 +164,45 @@ async def test_ingest_jobs_survives_restart(env, monkeypatch):
     rows = await asyncio.to_thread(job_svc.dao.list_for_space, "eng-3", 50)
     assert any(r.id == job.id for r in rows)
     assert all(r.status == "done" for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_job_engine_ingest_mirrors_to_space_ledger(env, monkeypatch):
+    """Job-engine ingests must also land in the space's own ingest_jobs ledger.
+
+    The knowledge UI reads GET /spaces/{slug}/ingest-jobs, which queries the
+    space ledger — not the job engine's table. Without this mirror an ingest
+    driven by JobService produced wiki docs and edges while the UI showed "no
+    processing record", which reads as "the model never ran".
+    """
+    _, ksvc, job_svc = env
+    _stub_llm(monkeypatch, _wiki_md("LedgerDoc", "ledger mirror"), '{"entities": []}')
+
+    await ksvc.create_space(slug="eng-4", backend="local")
+    vault = await ksvc.get_vault("eng-4")
+    space = await ksvc.get_space_config("eng-4")
+
+    raw_path = vault.root / "raw" / "ledger.txt"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_text("ledger raw content", encoding="utf-8")
+    tmp = Path(str(raw_path) + ".tmp")
+    shutil.copy2(raw_path, tmp)
+
+    job = await ksvc.orchestrator.ingest_file(
+        space=space, vault=vault, file_path=tmp, original_filename="ledger.txt",
+    )
+    assert job.id.startswith("job_"), f"expected a DB job id, got {job.id}"
+
+    # Visible as soon as it is submitted, before the worker picks it up.
+    assert await vault.ingest_job_get(job.id) is not None
+
+    row = await _wait_job_done(job_svc, job.id)
+    assert row.status == "done", f"job failed: {row.last_error}"
+
+    # Terminal state and the ids it produced are mirrored too — the async
+    # progress callbacks must actually be awaited for this to hold.
+    entry = await vault.ingest_job_get(job.id)
+    assert entry["status"] == "done"
+    assert entry["verbat_ids"], "verbat ids never reached the ledger"
+    assert entry["wiki_doc_ids"], "wiki doc ids never reached the ledger"
+    assert entry["finished_at"] is not None

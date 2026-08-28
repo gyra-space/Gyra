@@ -473,18 +473,12 @@ async def _fetch_room_entries(store: Any, room: str, wing: str) -> List[Any]:
 def _is_agents_md_placeholder(content: str) -> bool:
     """判断 AGENTS.md 是否仍是播种占位内容（没有实质事实）。
 
-    占位特征：全文去掉标题、`<...>` 模板占位符后没有实质文字。
-    管线未写过实质内容前，不注入 system prompt，避免模板噪音。
+    实现已收敛到 ``gyra.agent.agents_md_context``（V1/V2 共用），
+    此处保留私有别名兼容既有引用。
     """
-    import re as _re
-    text = (content or "").strip()
-    if not text:
-        return True
-    # 去掉标题行（# / ## / ###）与 `---` frontmatter
-    body = _re.sub(r"^\s*(#{1,6}\s.*|---+)\s*$", "", text, flags=_re.MULTILINE)
-    # 去掉 <...> 模板占位符
-    body = _re.sub(r"<[^>]*>", "", body)
-    return not body.strip()
+    from gyra.agent.agents_md_context import is_agents_md_placeholder
+
+    return is_agents_md_placeholder(content)
 
 
 __all__ = [

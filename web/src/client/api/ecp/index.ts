@@ -312,6 +312,8 @@ export interface EcpGraphLink {
 export interface EcpGraph {
   nodes: EcpGraphNode[];
   links: EcpGraphLink[];
+  /** entity 检索视图附加:命中 kn 实体名 → 图上下文证据(一跳关联 + 来源文档片段) */
+  entity_context?: Record<string, string> | null;
 }
 
 export interface EcpGraphRebuildResult {

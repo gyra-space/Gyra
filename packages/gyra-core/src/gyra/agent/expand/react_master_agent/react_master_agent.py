@@ -156,29 +156,63 @@ def _get_sandbox_system_info(sandbox_client: SandboxBase) -> str:
         return "Ubuntu 24.04 linux/amd64（已联网），用户：ubuntu（拥有免密 sudo 权限）"
 
 
+async def _build_agents_md_section(instance: Any) -> str:
+    """显式配置的 AGENTS.md（ext_config.agents_md = {enabled, path}）。
+
+    三路来源中优先级最高的一路：相对路径基于 project_ecosystem.project_dir
+    （未配置则要求绝对路径），规则与 gyra.agent.agents_md_context 一致。
+    """
+    from gyra.agent.agents_md_context import (
+        is_agents_md_placeholder,
+        parse_agents_md_config,
+        read_agents_md_file,
+        render_agents_md_block,
+    )
+
+    try:
+        ext_config = getattr(instance, "ext_config", None) or {}
+        enabled, path = parse_agents_md_config(ext_config)
+        if not enabled or not path:
+            return ""
+        base_dir = (
+            (ext_config.get("project_ecosystem") or {}).get("project_dir") or None
+        )
+        content = await asyncio.to_thread(read_agents_md_file, path, base_dir)
+        if not content or is_agents_md_placeholder(content):
+            return ""
+        return render_agents_md_block([("explicit-config", content)]) or ""
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[agents-md] build explicit agents_md section failed: {e}")
+        return ""
+
+
 async def _build_project_context(instance: Any) -> str:
     """构建工程目录生态上下文（项目记忆 + 项目技能），供 system 身份层注入。
 
     数据源：``instance.ext_config.project_ecosystem``（agent 编辑里配置的
     project_dir + 兼容类型）。探测缓存于 ``ProjectEcosystemLoader``。
+    另：``ext_config.agents_md = {enabled, path}`` 指定的 AGENTS.md 显式
+    文件优先级最高，单独成段拼在最前。
     """
+    agents_md_part = await _build_agents_md_section(instance)
+    eco_part = ""
     try:
         ext_config = getattr(instance, "ext_config", None) or {}
         # app.ext_config.project_ecosystem = {project_dir, type}
         eco_cfg = ext_config.get("project_ecosystem") or {}
         project_dir = (eco_cfg.get("project_dir") or "").strip()
         if not project_dir or not os.path.isdir(project_dir):
-            return ""
+            return agents_md_part
         eco_type = (eco_cfg.get("type") or ECOSYSTEM_AUTO).strip() or ECOSYSTEM_AUTO
         loaded = await asyncio.to_thread(
             ProjectEcosystemLoader.load, project_dir, eco_type
         )
         if not loaded or not loaded.has_content:
-            return ""
-        return await asyncio.to_thread(_render_project_context, loaded)
+            return agents_md_part
+        eco_part = await asyncio.to_thread(_render_project_context, loaded)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[project-ecosystem] build project_context failed: {e}")
-        return ""
+    return "\n\n".join(part for part in (agents_md_part, eco_part) if part)
 
 
 def _render_project_context(eco: ProjectEcosystem) -> str:
@@ -3793,9 +3827,14 @@ class ReActMasterAgent(ConversableAgent, Team):
                     sandbox_prompt,
                 )
 
+                from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
                 env_param = {
                     "sandbox": {
-                        "work_dir": sandbox_client.work_dir,
+                        # 会话工作目录:场景空间下为 <公共层>/sessions/<conv_uid>/
+                        "work_dir": resolve_session_work_dir(sandbox_client),
+                        # 空间公共层(数据集等公共资产,以及 shared/ 共享目录)
+                        "shared_dir": sandbox_client.work_dir,
                         "skill_dir": sandbox_client.skill_dir,
                         "system_info": _get_sandbox_system_info(sandbox_client),
                     }

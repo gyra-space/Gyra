@@ -15,7 +15,7 @@ import { useRequest } from 'ahooks';
 import { apiInterceptors, getAppInfo, listResources } from '@/client/api';
 
 export interface AgentWorkspaceProps {
-  convUid?: string;
+  conversationId?: string;
   appCode?: string;
   workspaceId?: number | string;
   taskId?: number | string;
@@ -48,7 +48,7 @@ export interface AgentWorkspaceProps {
 }
 
 export function AgentWorkspace({
-  convUid,
+  conversationId,
   appCode,
   workspaceId,
   taskId,
@@ -74,7 +74,7 @@ export function AgentWorkspace({
   const inputRefInner = useRef<AgentWorkspaceInputHandle>(null);
   const inputRef = inputRefProp ?? inputRefInner;
   const { steps, workspaceView, loading, error, lastInput, modelName, recovering, retryRecover, convState, convLoading, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView } = useSceneAgentChat({
-    convUid,
+    conversationId,
     appCode,
     workspaceId,
     taskId,
@@ -88,12 +88,12 @@ export function AgentWorkspace({
   useEffect(() => {
     clearSteps();
     clearWorkspaceView();
-  }, [convUid, clearSteps, clearWorkspaceView]);
+  }, [conversationId, clearSteps, clearWorkspaceView]);
 
   // loading(SSE 进行中) 或后端会话仍 RUNNING(关闭页面后重开,轮询恢复中)均视为运行中
   const running = loading || convState === 'RUNNING';
   // 运行中提交作为"补充输入"投递到后端队列(不开新 SSE 流,不中止当前生成)
-  const { submitUserInput } = useUserInput(convUid);
+  const { submitUserInput } = useUserInput(conversationId);
   // Agent 头像数据:appCode 对应 app 的 icon/name(与通用聊天页同源)
   const { data: appInfoTuple } = useRequest(
     async () => (appCode ? apiInterceptors(getAppInfo({ app_code: appCode })) : ([null, null] as any)),
@@ -130,7 +130,7 @@ export function AgentWorkspace({
       onInteractionResumeProp(userMessage);
       return;
     }
-    if (!convUid || !userMessage.trim()) return;
+    if (!conversationId || !userMessage.trim()) return;
     send({ text: userMessage });
   };
 
@@ -183,7 +183,7 @@ export function AgentWorkspace({
             <div className="ws-agent-workspace__loading">
               <Spin tip="会话加载中..." />
             </div>
-          ) : convLoadError && !convUid ? (
+          ) : convLoadError && !conversationId ? (
             <div className="ws-agent-workspace__error-card">
               <Alert
                 message="会话加载失败"
@@ -197,7 +197,7 @@ export function AgentWorkspace({
                 }
               />
             </div>
-          ) : !convUid ? (
+          ) : !conversationId ? (
             <div className="ws-agent-workspace__loading"><Spin /></div>
           ) : (
             <AgentWorkspaceRenderer
@@ -232,7 +232,7 @@ export function AgentWorkspace({
           <DockPanel widgets={dockWidgets} />
           <AgentWorkspaceInput
             ref={inputRef}
-            convUid={convUid}
+            conversationId={conversationId}
             appInfo={appInfo}
             defaultModel={spaceDefaultModel}
             onSend={async (p) => {
@@ -252,7 +252,7 @@ export function AgentWorkspace({
             }}
             loading={running}
             onStop={abort}
-            disabled={!convUid || switchingTask}
+            disabled={!conversationId || switchingTask}
             readOnly={chatReadOnly}
             lastInput={lastInput ? { text: typeof lastInput.text === 'string' ? lastInput.text : '' } : null}
             onRetry={lastInput ? () => send(lastInput) : undefined}

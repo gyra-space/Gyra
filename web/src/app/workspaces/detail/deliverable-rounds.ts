@@ -1,4 +1,8 @@
-import type { WorkspaceDeliverableFile, WorkspaceExecutionStep } from './agent-workspace-types';
+import type {
+  WorkspaceDeliverableFile,
+  WorkspaceExecutionStep,
+  WorkspaceTaskFile,
+} from './agent-workspace-types';
 
 /** 一轮对话:user 步骤(可无,恢复场景) + 后续步骤序列 */
 export interface ConversationRound {
@@ -37,23 +41,33 @@ export function roundStartMs(round: ConversationRound): number | null {
   return ts ? tsToMsLocal(ts) : null;
 }
 
-/** 把交付文件按时间归属到轮次:文件落在「最近一个起始时间 <= 文件时间」的轮次。
- *  无时间戳或找不到归属轮次(如穿插在轮间)的文件进 leftover,在 feed 底部兜底展示。
- *  使得一轮产生的交付文件跟在那一轮答复后面,而非全部堆在 feed 底部。 */
-export function groupDeliverablesByRound(
+export interface RoundFileGroups<T> {
+  /** 轮次 key → 归属该轮的文件 */
+  byRound: Map<string, T[]>;
+  /** 无时间戳 / 早于所有轮次起始时间,无法归属的文件(由调用方在 feed 底部兜底) */
+  leftover: T[];
+}
+
+/** 通用:把「带产出时间戳的文件」按时间归属到对话轮次。
+ *  文件落在「最近一个起始时间 <= 文件时间」的轮次;无时间戳或早于所有轮次
+ *  (穿插在轮间等)的文件进 leftover。
+ *  交付文件与任务文件只是时间戳字段名不同(ts / created_at),共用同一套归属逻辑。 */
+function groupFilesByRound<T>(
   rounds: ConversationRound[],
-  deliverables: WorkspaceDeliverableFile[],
-): { byRound: Map<string, WorkspaceDeliverableFile[]>; leftover: WorkspaceDeliverableFile[] } {
-  const byRound = new Map<string, WorkspaceDeliverableFile[]>();
-  const leftover: WorkspaceDeliverableFile[] = [];
+  files: T[],
+  getTs: (file: T) => string | null | undefined,
+): RoundFileGroups<T> {
+  const byRound = new Map<string, T[]>();
+  const leftover: T[] = [];
   const starts: { key: string; ms: number }[] = [];
   for (const round of rounds) {
     const ms = roundStartMs(round);
     if (ms !== null) starts.push({ key: round.key, ms });
   }
   starts.sort((a, b) => a.ms - b.ms);
-  for (const f of deliverables) {
-    const fMs = f.ts ? tsToMsLocal(f.ts) : null;
+  for (const f of files) {
+    const ts = getTs(f);
+    const fMs = ts ? tsToMsLocal(ts) : null;
     if (fMs === null) {
       leftover.push(f);
       continue;
@@ -73,4 +87,20 @@ export function groupDeliverablesByRound(
     byRound.set(target, arr);
   }
   return { byRound, leftover };
+}
+
+/** 交付文件按轮次归属:一轮产出的交付文件跟在那一轮答复后面,而非全部堆在 feed 底部。 */
+export function groupDeliverablesByRound(
+  rounds: ConversationRound[],
+  deliverables: WorkspaceDeliverableFile[],
+): RoundFileGroups<WorkspaceDeliverableFile> {
+  return groupFilesByRound(rounds, deliverables, (f) => f.ts);
+}
+
+/** 任务文件按轮次归属(时间戳字段为 created_at),与交付文件同一套归属逻辑。 */
+export function groupTaskFilesByRound(
+  rounds: ConversationRound[],
+  taskFiles: WorkspaceTaskFile[],
+): RoundFileGroups<WorkspaceTaskFile> {
+  return groupFilesByRound(rounds, taskFiles, (f) => f.created_at);
 }

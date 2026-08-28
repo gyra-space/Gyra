@@ -27,6 +27,7 @@ class LocalShellClient(ShellClient):
         runtime,
         skill_dir: str = None,
         host_work_dir: Optional[str] = None,
+        session_work_dir: Optional[str] = None,
         **kwargs,
     ):
         super().__init__(sandbox_id, work_dir, connection_config=None, **kwargs)
@@ -48,23 +49,45 @@ class LocalShellClient(ShellClient):
                 os.path.join(self._session_root, logical_rel)
             )
 
+        # 会话级 cwd:场景空间下为 <_work_dir_physical>/sessions/<conv_uid>/。
+        # 只改变命令执行的默认目录,**不改变访问边界**——_allowed_roots 仍以
+        # _work_dir_physical 为根,所以脚本用 ../files/ 或绝对路径照样能读
+        # 空间级公共资产,不同会话(同一沙箱实例、不同 cwd)之间也互相可达。
+        self._cwd_physical = (
+            os.path.abspath(session_work_dir)
+            if session_work_dir
+            else self._work_dir_physical
+        )
+        os.makedirs(self._cwd_physical, exist_ok=True)
+
         self._allowed_roots = [self._session_root, self._work_dir_physical]
         if skill_dir:
             self._allowed_roots.append(os.path.realpath(skill_dir))
         self._allowed_roots.append("/mnt")
 
+    @property
+    def session_work_dir(self) -> str:
+        """当前会话工作目录(cwd),命令的默认执行目录。
+
+        场景空间下为公共层之下的 sessions/<conv_uid>/;未配置时与 work_dir 一致。
+        """
+        return self._cwd_physical
+
     def _resolve_cwd(self, work_dir: Any) -> str:
         """Resolve a logical cwd to a physical path inside the sandbox."""
-        target_cwd = self._work_dir_physical
+        target_cwd = self._cwd_physical
         if work_dir is not OMIT and work_dir is not None:
             target_cwd = work_dir
 
         if not target_cwd:
-            return self._work_dir_physical
+            return self._cwd_physical
 
-        # The physical work directory itself is always valid.
+        # The physical work directory and the session cwd are always valid.
         real_target = os.path.realpath(target_cwd)
-        if real_target == os.path.realpath(self._work_dir_physical):
+        if real_target in (
+            os.path.realpath(self._work_dir_physical),
+            os.path.realpath(self._cwd_physical),
+        ):
             return real_target
 
         # Whitelisted host paths: /mnt and skill_dir are accessed directly.
@@ -88,8 +111,8 @@ class LocalShellClient(ShellClient):
                 f"Absolute cwd {target_cwd} is outside the sandbox work directory"
             )
 
-        # Relative paths resolve against the physical work directory.
-        physical = os.path.abspath(os.path.join(self._work_dir_physical, target_cwd))
+        # 相对路径以会话 cwd 为基准;未配置会话目录时回退到物理工作目录。
+        physical = os.path.abspath(os.path.join(self._cwd_physical, target_cwd))
         return self._ensure_inside_allowed(physical)
 
     def _ensure_inside_allowed(self, physical_path: str) -> str:
@@ -159,7 +182,7 @@ class LocalShellClient(ShellClient):
             try:
                 os.makedirs(cwd, exist_ok=True)
             except Exception:
-                cwd = self._work_dir_physical
+                cwd = self._cwd_physical
 
         timeout_val = 60.0
         if timeout is not OMIT and timeout is not None:

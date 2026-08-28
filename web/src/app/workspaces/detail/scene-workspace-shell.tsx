@@ -2,12 +2,12 @@
 
 import './scene-workspace.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button, Modal, Drawer } from 'antd';
+import { App, Button, Input, Modal, Drawer } from 'antd';
 import { CloseOutlined, LeftOutlined, MenuFoldOutlined, MenuUnfoldOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation, getAppInfo, listResources, deleteTask, deleteConversation } from '@/client/api';
+import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation, getAppInfo, listResources, deleteTask, deleteConversation, renameConversation } from '@/client/api';
 import { getUsageConversationSummary, type ConversationUsageSummary } from '@/client/api/usage';
-import { convIdBase } from '@/types/context-metrics';
+import { toConversationId } from '@/types/context-metrics';
 import { getUserId } from '@/utils';
 import { useSpaceRole } from '@/hooks/use-space-role';
 import { useUserInput } from '@/hooks/use-user-input';
@@ -47,7 +47,7 @@ interface SceneWorkspaceShellProps {
   onRefreshLists?: () => void;
   /** 任务/介入列表刷新信号(lobby 最近产出/交付/待办据此同步刷新) */
   listsRefreshKey?: number;
-  onConvChanged?: (convUid: string, taskId?: number | null) => void;
+  onConvChanged?: (conversationId: string, taskId?: number | null) => void;
   convLoadError?: string | null;
   retryLoadConv?: () => void;
   /** 从会话列表选中会话时携带的 task_id:number=进 task 对话,null=workspace 级会话,
@@ -162,7 +162,7 @@ export function SceneWorkspaceShell({
     message.success(tip);
   };
 
-  // 简洁模式:convUid 为空时,首次发送前创建会话并注入
+  // 简洁模式:conversationId 为空时,首次发送前创建会话并注入
   const ensureConversation = async (): Promise<string | null> => {
     if (!workspaceId) return null;
     const [, newConv] = await apiInterceptors(createConversation({ workspace_id: workspaceId }));
@@ -395,7 +395,7 @@ export function SceneWorkspaceShell({
 
   // 从「会话」视图进入对应对话:剧本任务会话(有 task_id)进任务对话,
   // 大厅会话(无 task_id)切回 workspace 级会话并回到 dashboard。
-  const handleOpenConversation = async (convUid: string, taskId: number | null) => {
+  const handleOpenConversation = async (conversationId: string, taskId: number | null) => {
     if (taskId) {
       handleEnterConversation(taskId);
       return;
@@ -406,9 +406,9 @@ export function SceneWorkspaceShell({
     setActiveTaskId(null);
     setDetailContext('dashboard');
     setPreviewItem(null);
-    onConvChanged?.(convUid, null);
+    onConvChanged?.(conversationId, null);
     if (workspaceId != null) {
-      await apiInterceptors(setCurrentConversation(workspaceId, convUid));
+      await apiInterceptors(setCurrentConversation(workspaceId, conversationId));
     }
   };
 
@@ -503,10 +503,10 @@ export function SceneWorkspaceShell({
 
   // 简洁模式复用同一份会话(chat hook),保证与运维模式零数据孤岛;
   // enabled 仅在简洁模式开启(运维模式由 AgentWorkspace 自己接管,避免双轮询)。
-  // 欢迎态不传 convUid:首页输入框提交即新建会话(onConvCreated -> ensureConversation),
+  // 欢迎态不传 conversationId:首页输入框提交即新建会话(onConvCreated -> ensureConversation),
   // 而不是续写页面加载时恢复的旧 current conversation。
   const simpleChat = useSceneAgentChat({
-    convUid: simpleWelcome ? undefined : rightConvUid,
+    conversationId: simpleWelcome ? undefined : rightConvUid,
     appCode,
     workspaceId,
     taskId: rightTaskId,
@@ -562,7 +562,7 @@ export function SceneWorkspaceShell({
               : 'done',
       statusLabel: statusLabel(t.status),
       updatedAt: t.gmt_created || t.started_at || t.gmt_modified || '',
-      convUid: t.conv_session_id || undefined,
+      conversationId: t.conv_session_id || undefined,
       taskId: t.id,
     }));
     const lobbyItems: SimpleHistoryItem[] = (conversations || [])
@@ -577,7 +577,7 @@ export function SceneWorkspaceShell({
           status: running ? 'running' : 'done',
           statusLabel: running ? '运行中' : '大厅会话',
           updatedAt: c.gmt_created || c.gmt_modified || '',
-          convUid: c.conv_uid,
+          conversationId: c.conv_uid,
           taskId: null,
         };
       });
@@ -590,7 +590,7 @@ export function SceneWorkspaceShell({
 
   // 批量拉取会话级用量（模型 + token），供左栏历史列表 chip 展示，避免 N+1
   const simpleConvUids = useMemo(
-    () => simpleItems.map((it) => it.convUid).filter(Boolean) as string[],
+    () => simpleItems.map((it) => it.conversationId).filter(Boolean) as string[],
     [simpleItems],
   );
   const { data: convUsageMap = {} } = useRequest(
@@ -600,7 +600,7 @@ export function SceneWorkspaceShell({
       if (err) return {};
       const map: Record<string, ConversationUsageSummary> = {};
       (res || []).forEach((s) => {
-        map[convIdBase(s.conv_id)] = s;
+        map[toConversationId(s.conv_id)] = s;
       });
       return map;
     },
@@ -615,18 +615,18 @@ export function SceneWorkspaceShell({
     setSimpleShowWelcome(false);
     if (item.kind === 'task' && item.taskId) {
       handleEnterConversation(item.taskId);
-      if (item.convUid && item.convUid !== workspaceConvUid) {
-        onConvChanged?.(item.convUid, item.taskId);
+      if (item.conversationId && item.conversationId !== workspaceConvUid) {
+        onConvChanged?.(item.conversationId, item.taskId);
       }
       return;
     }
-    if (item.convUid) {
-      handleOpenConversation(item.convUid, null);
+    if (item.conversationId) {
+      handleOpenConversation(item.conversationId, null);
     }
   };
 
   // 简洁模式:点击「新任务」回到欢迎态,等待输入;不立刻创建会话,
-  // 首次发送时才新建(convUid 未传入 -> ensureConversation),避免遗留空会话
+  // 首次发送时才新建(conversationId 未传入 -> ensureConversation),避免遗留空会话
   const handleSimpleNew = () => {
     setSimpleShowWelcome(true);
     setActiveTaskId(null);
@@ -666,21 +666,44 @@ export function SceneWorkspaceShell({
       });
       return;
     }
-    if (item.convUid) {
-      const convUid = item.convUid;
+    if (item.conversationId) {
+      const conversationId = item.conversationId;
       modal.confirm({
         title: '删除会话',
         content: '删除后该会话将从空间任务列表移除,不可恢复。',
         okText: '删除',
         okButtonProps: { danger: true },
         onOk: async () => {
-          const [err] = await apiInterceptors(deleteConversation({ workspace_id: wsId, conv_uid: convUid }));
+          const [err] = await apiInterceptors(deleteConversation({ workspace_id: wsId, conv_uid: conversationId }));
           if (err) { message.error(err.message); return; }
           message.success('已删除');
           onRefreshLists?.();
         },
       });
     }
+  };
+
+  // 简洁模式:重命名会话(lobby 项)。弹窗收集新名称 -> renameConversation -> 刷新列表。
+  const [renameItem, setRenameItem] = useState<SimpleHistoryItem | null>(null);
+  const [renameTitle, setRenameTitle] = useState('');
+  const [renaming, setRenaming] = useState(false);
+
+  const handleSimpleRename = (item: SimpleHistoryItem) => {
+    setRenameItem(item);
+    setRenameTitle(item.title);
+  };
+
+  const handleSimpleRenameSubmit = async () => {
+    if (!renameItem?.conversationId) return;
+    const title = renameTitle.trim();
+    if (!title) { message.warning('请输入会话名称'); return; }
+    setRenaming(true);
+    const [err] = await apiInterceptors(renameConversation(renameItem.conversationId, title));
+    setRenaming(false);
+    if (err) { message.error(err.message); return; }
+    message.success('已重命名');
+    setRenameItem(null);
+    onRefreshLists?.();
   };
 
   // 简洁模式:推荐问题 → 填入输入框并聚焦
@@ -706,7 +729,7 @@ export function SceneWorkspaceShell({
     } else {
       // 首次发送(欢迎态):不要在 send 前关闭欢迎页 —— 新建会话是异步的
       // (ensureConversation 内 createConversation/link/setCurrent 多次网络请求),
-      // 提前关闭会让运行态先以「最后一次会话」的 convUid 渲染并拉取其历史(闪烁跳转)。
+      // 提前关闭会让运行态先以「最后一次会话」的 conversationId 渲染并拉取其历史(闪烁跳转)。
       // 欢迎页统一由 send 内部的 onConversationStart 在 ensureConversation 完成、
       // 新会话已写回 workspaceConvUid 之后关闭,一次渲染直达当前新会话。
       await simpleChat.send(payload);
@@ -746,8 +769,10 @@ export function SceneWorkspaceShell({
               onOpenInbox={handleSimpleOpenInbox}
               usageMap={convUsageMap}
               onDeleteItem={handleSimpleDelete}
+              onRenameItem={handleSimpleRename}
               canDeleteTask={canManageTask}
               canDeleteConversation={canUseChat}
+              canRenameConversation={canUseChat}
             />
           </div>
           {/* 中间:欢迎态 或 运行态双栏(输入条在左侧步骤流卡片内底部) */}
@@ -775,7 +800,7 @@ export function SceneWorkspaceShell({
                 <div className="ws-simple-welcome__composer">
                   <AgentWorkspaceInput
                     ref={agentInputRef}
-                    convUid={rightConvUid}
+                    conversationId={rightConvUid}
                     appInfo={appInfo}
                     model={simpleInputModel}
                     defaultModel={spaceDefaultModel}
@@ -846,7 +871,7 @@ export function SceneWorkspaceShell({
                       <DockPanel widgets={simpleChat.dockWidgets} />
                       <AgentWorkspaceInput
                         ref={agentInputRef}
-                        convUid={rightConvUid}
+                        conversationId={rightConvUid}
                         appInfo={appInfo}
                         model={simpleInputModel}
                         defaultModel={spaceDefaultModel}
@@ -958,8 +983,8 @@ export function SceneWorkspaceShell({
               onReference={handleReference}
               conversations={conversations || []}
               currentConvUid={rightConvUid}
-              onOpenConversation={(convUid, taskId) => {
-                handleOpenConversation(convUid, taskId);
+              onOpenConversation={(conversationId, taskId) => {
+                handleOpenConversation(conversationId, taskId);
                 setMobilePane(taskId ? 'agent' : 'space');
                 if (window.matchMedia('(max-width: 1279px)').matches) setRailOpen(false);
               }}
@@ -1017,7 +1042,7 @@ export function SceneWorkspaceShell({
               </div>
             )}
             <AgentWorkspace
-              convUid={rightConvUid}
+              conversationId={rightConvUid}
               appCode={appCode}
               workspaceId={workspaceId}
               taskId={rightTaskId}
@@ -1094,6 +1119,26 @@ export function SceneWorkspaceShell({
             </div>
           ))}
         </div>
+      </Modal>
+
+      {/* 简洁模式:重命名会话弹窗 */}
+      <Modal
+        open={!!renameItem}
+        title="重命名会话"
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={renaming}
+        onCancel={() => setRenameItem(null)}
+        onOk={handleSimpleRenameSubmit}
+      >
+        <Input
+          value={renameTitle}
+          maxLength={255}
+          placeholder="输入新的会话名称"
+          autoFocus
+          onChange={(e) => setRenameTitle(e.target.value)}
+          onPressEnter={handleSimpleRenameSubmit}
+        />
       </Modal>
       </div>
     </CallDetailProvider>

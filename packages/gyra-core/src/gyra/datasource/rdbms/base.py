@@ -579,7 +579,12 @@ class RDBMSConnector(BaseConnector):
             return result
 
     def query_ex(
-        self, query: str, fetch: str = "all", timeout: Optional[float] = None
+        self,
+        query: str,
+        fetch: str = "all",
+        timeout: Optional[float] = None,
+        params: Optional[Dict[str, Any]] = None,
+        max_rows: Optional[int] = None,
     ) -> Tuple[List[str], Optional[List]]:
         """Execute a SQL command and return the results with optional timeout.
 
@@ -590,6 +595,12 @@ class RDBMSConnector(BaseConnector):
             fetch (str): fetch type, either 'all' or 'one'
             timeout (Optional[float]): Query timeout in seconds. If None, no timeout is
                 applied.
+            params (Optional[Dict[str, Any]]): Bound parameters of the query
+                (injection-safe). None means no bound parameters.
+            max_rows (Optional[int]): Max rows to fetch when fetch='all'. Rows are
+                fetched incrementally (fetchmany) and capped at max_rows to protect
+                memory from unbounded result sets. Pass max_rows + 1 as a sentinel
+                to detect truncation.
 
         Returns:
             Tuple[List[str], Optional[List]]: (field_names, results)
@@ -604,15 +615,29 @@ class RDBMSConnector(BaseConnector):
         query = self._format_sql(query)
 
         def _execute_query(session, sql_text):
-            cursor = session.execute(sql_text)
+            if params is not None:
+                cursor = session.execute(sql_text, params)
+            else:
+                cursor = session.execute(sql_text)
             if cursor.returns_rows:
+                field_names = list(cursor.keys())
+                if max_rows is not None and fetch == "all":
+                    # 分批流式读取, 最多 max_rows 行, 防止无上界结果集撑爆内存
+                    rows: List[Any] = []
+                    remaining = max_rows
+                    while remaining > 0:
+                        batch = cursor.fetchmany(min(1000, remaining))
+                        if not batch:
+                            break
+                        rows.extend(batch)
+                        remaining -= len(batch)
+                    return field_names, rows
                 if fetch == "all":
                     result = cursor.fetchall()
                 elif fetch == "one":
                     result = cursor.fetchone()
                 else:
                     raise ValueError("Fetch parameter must be either 'one' or 'all'")
-                field_names = list(cursor.keys())
                 return field_names, list(result)
             return [], None
 

@@ -574,7 +574,11 @@ async def _materialize_sandbox_file_refs(
     支持 gyra-fs:// 协议（通过 FileStorageClient 直接读取）以及 http(s) URL。
     文件提示同时注入 provider 可消费的公共 URL，供主 agent 转发给多媒体子 agent。
     """
-    work_dir = sandbox_client.work_dir
+    # 与 file_dispatch / sandbox_file_ref 保持一致:落进会话目录的 uploads/,
+    # 这样不同会话上传的同名附件不会互相覆盖。
+    from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
+    work_dir = resolve_session_work_dir(sandbox_client)
     uploads_dir = f"{work_dir}/uploads"
     os.makedirs(uploads_dir, exist_ok=True)
     updated_refs: List[str] = []
@@ -873,6 +877,7 @@ class AgentChat(BaseComponent, ABC):
             # 与数据集目录同源),大厅/任务共享且跨会话持久;非场景对话保持原行为
             work_dir = sandbox_config.work_dir
             host_work_dir = None
+            session_work_dir = None
             workspace_id = (context.extra or {}).get("workspace_id")
 
             # 工程目录生态(Claude Code / Cursor 兼容):agent 编辑里配置了
@@ -898,14 +903,33 @@ class AgentChat(BaseComponent, ABC):
             elif workspace_id:
                 try:
                     from gyra_serve.workspace.dataset_service import (
+                        session_sandbox_root,
                         workspace_sandbox_root,
                     )
 
                     host_work_dir = workspace_sandbox_root(int(workspace_id))
                     work_dir = host_work_dir
+                    # 会话级 cwd:同一空间的不同会话各自读写
+                    # sessions/<conv_session_id>/,同名文件不再互相覆盖。
+                    # 沙箱实例仍按 workspace 复用(_sandbox_key 在 workspace 场景
+                    # 不含 conv),实例数、资源占用、cleanup 规则都不受影响;
+                    # 会话目录位于 host_work_dir 之下,allowed_roots 覆盖公共层,
+                    # 因此公共资产与主子 agent 之间物理上仍互相可达。
+                    #
+                    # 会话维度**必须**取 conv_session_id:conv_id 是
+                    # {conv_session_id}_{round},每提一次问就变(带 _1/_2 后缀),
+                    # 用它建目录会让同一会话的每一轮各占一个目录,上一轮写的
+                    # 文件下一轮就读不到。
+                    conv_session = getattr(context, "conv_session_id", None) or getattr(
+                        context, "conv_id", None
+                    )
+                    if conv_session:
+                        session_work_dir = session_sandbox_root(
+                            int(workspace_id), conv_session
+                        )
                     logger.info(
                         f"[Sandbox] scene workspace {workspace_id} sandbox dir: "
-                        f"{host_work_dir}"
+                        f"{host_work_dir}, session cwd: {session_work_dir}"
                     )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
@@ -931,6 +955,7 @@ class AgentChat(BaseComponent, ABC):
                 template=sandbox_config.template_id,
                 work_dir=work_dir,
                 host_work_dir=host_work_dir,
+                session_work_dir=session_work_dir,
                 skill_dir=sandbox_config.skill_dir,
                 file_storage_client=file_storage_client,
                 oss_ak=sandbox_config.oss_ak,
@@ -1594,6 +1619,24 @@ class AgentChat(BaseComponent, ABC):
                     logger.debug(f"[AgentChat] loaded_skills event push failed: {e}")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[AgentChat] preload skills injection failed: {e}")
+
+        # AGENTS.md 注入（对话开始默认进上下文）：显式配置路径 > 记忆空间
+        # vault > project_dir 自动探测，三路合并共享预算。实现见同目录
+        # agents_md_injection.py，规则与 V2（read_pipeline.load_static_block /
+        # react_master_agent）对齐。失败仅降级，不阻断对话。
+        try:
+            from gyra_serve.agent.agents.chat.agents_md_injection import (
+                build_agents_md_block,
+            )
+
+            _agents_md_block = await build_agents_md_block(
+                self.system_app, gpt_app, ext_info
+            )
+            if _agents_md_block:
+                system_prompt_parts.append(_agents_md_block)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AgentChat] agents_md injection failed: {e}")
+
         if system_prompt_parts:
             ext_info["system_prompt"] = "\n\n".join(system_prompt_parts).strip()
 

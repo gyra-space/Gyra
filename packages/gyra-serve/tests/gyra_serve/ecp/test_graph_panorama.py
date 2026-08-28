@@ -408,6 +408,123 @@ class TestGraphView:
             ("kn:ecp-default:entity:风控模型A", "ent.risk", "confirmed"),
         ]
 
+    def test_entity_graph_context_collects_neighbors_and_snippets(self):
+        """图上下文收集:一跳邻居 + source_verbat_id 反查原文片段。"""
+        import asyncio
+
+        from gyra_serve.ecp.service.service import Service as S
+
+        svc = S.__new__(S)
+        edge = SimpleNamespace(
+            subject="销售单据", predicate="mentions", object="doc:wiki_1",
+            source_verbat_id="verbat:v1",
+        )
+        vault = MagicMock()
+        vault.graph_query = MagicMock(
+            return_value=_async_ret(
+                SimpleNamespace(
+                    nodes=["销售单据", "doc:wiki_1"], edges=[edge], root="销售单据"
+                )
+            )
+        )
+        vault.verbat_get = MagicMock(
+            return_value=_async_ret(
+                SimpleNamespace(content="销售单据指客户下单后生成的结算凭证。")
+            )
+        )
+
+        async def get_vault(slug):
+            if slug == "docs-ws1":
+                return vault
+            raise KeyError(slug)
+
+        ks = MagicMock()
+        ks.get_vault = get_vault
+        svc._system_app = MagicMock()
+        svc._system_app.get_component.return_value = ks
+
+        ctx = asyncio.run(svc._entity_graph_context({"docs-ws1": ["销售单据"]}))
+        vault.graph_query.assert_called_once_with("销售单据", hop=1)
+        assert ctx == {
+            "docs-ws1": {
+                "销售单据": "关联文档片段:销售单据指客户下单后生成的结算凭证。"
+            }
+        }
+
+    def test_entity_graph_context_degrades_silently(self):
+        """空间不可达 → 空上下文,不阻塞对齐/检索主流程。"""
+        import asyncio
+
+        from gyra_serve.ecp.service.service import Service as S
+
+        svc = S.__new__(S)
+
+        async def get_vault(slug):
+            raise KeyError(slug)
+
+        ks = MagicMock()
+        ks.get_vault = get_vault
+        svc._system_app = MagicMock()
+        svc._system_app.get_component.return_value = ks
+        assert asyncio.run(svc._entity_graph_context({"nope": ["x"]})) == {}
+
+    def test_graph_entity_search_attaches_context(self):
+        """entity 检索命中 kn 实体 → vo.entity_context 附图上下文证据。"""
+        import asyncio
+
+        from gyra_serve.ecp.service.service import Service as S
+
+        svc = _svc(assets=[], objects=[])
+        svc._alignment_dao = MagicMock()
+        svc._alignment_dao.decisions.return_value = []
+
+        full_sub = SimpleNamespace(
+            nodes=["doc:wiki_1", "风控模型A"],
+            edges=[
+                SimpleNamespace(
+                    subject="doc:wiki_1", predicate="about", object="风控模型A",
+                    source_verbat_id=None,
+                )
+            ],
+            root=None,
+        )
+        one_hop = SimpleNamespace(
+            nodes=["doc:wiki_1", "风控模型A"],
+            edges=[
+                SimpleNamespace(
+                    subject="doc:wiki_1", predicate="about", object="风控模型A",
+                    source_verbat_id="verbat:v9",
+                )
+            ],
+            root="风控模型A",
+        )
+
+        def gq(entity=None, predicate=None, hop=1, include_invalid=False):
+            # _knowledge_subgraph 全图无参调用;上下文收集按实体一跳
+            return _async_ret(one_hop if entity == "风控模型A" else full_sub)
+
+        vault = MagicMock()
+        vault.graph_query = MagicMock(side_effect=gq)
+        vault.verbat_get = MagicMock(
+            return_value=_async_ret(
+                SimpleNamespace(content="风控模型A 用于信贷审批额度测算。")
+            )
+        )
+
+        async def get_vault(slug):
+            if slug == "ecp-default":
+                return vault
+            raise KeyError(slug)
+
+        ks = MagicMock()
+        ks.get_vault = get_vault
+        svc._system_app = MagicMock()
+        svc._system_app.get_component.return_value = ks
+
+        vo = asyncio.run(svc.graph("default", entity="风控模型A"))
+        assert vo.entity_context and "风控模型A" in vo.entity_context
+        assert "风控模型A 用于信贷审批额度测算。" in vo.entity_context["风控模型A"]
+
     def test_isolated_nodes_included_in_panorama(self):
         """孤立节点(不在任何边上的 doc/实体)也成为 kn 节点。"""
         import asyncio
@@ -531,3 +648,76 @@ class TestEntityAlignerValidate:
         al.last_error = "LLM 调用失败: timeout"
         assert al._validate(None, self.ENTITIES, self.OBJECT_IDS) == []
         assert al.last_error == "LLM 调用失败: timeout"
+
+# ------------------------------------------------- 图上下文证据(prompt 输入增强)
+class TestFoldContext:
+    def test_folds_snippets_and_neighbors(self):
+        """证据主体是文档片段,邻居实体名辅助消歧。"""
+        from gyra_serve.ecp.service.alignment import fold_context
+
+        ctx = fold_context(
+            ["订单", "客户"], ["销售单据指客户下单后生成的结算凭证。"]
+        )
+        assert ctx.startswith("关联文档片段:销售单据指客户下单后生成的结算凭证。")
+        assert ctx.endswith("关联实体:订单、客户")
+
+    def test_truncates_snippets_and_limits_neighbors(self):
+        """片段截 400 字,邻居最多 5 个——单批 20 实体的 prompt 体量可控。"""
+        from gyra_serve.ecp.service.alignment import fold_context
+
+        ctx = fold_context(
+            list("abcdef"), ["x" * 500, "y" * 500]
+        )
+        assert "x" * 400 in ctx and "y" * 400 in ctx
+        neighbor_part = ctx.split("关联实体:")[1]
+        assert neighbor_part == "a、b、c、d、e"
+
+    def test_empty_inputs(self):
+        from gyra_serve.ecp.service.alignment import fold_context
+
+        assert fold_context([], []) == ""
+
+
+class TestAlignBatchContext:
+    def test_prompt_includes_entity_context(self):
+        """带图上下文时 prompt 逐实体附带证据;无上下文实体保持裸名。"""
+        import asyncio
+
+        al = EntityAligner()
+        captured = {}
+
+        async def fake_call(prompt, max_tokens=4000):
+            captured["prompt"] = prompt
+            return "[]"
+
+        al._call_llm = fake_call
+        obj = SimpleNamespace(
+            id="ent.order", obj_type="entity", name="订单",
+            payload={"aliases": ["销售单据"], "description": "客户订单"},
+        )
+        asyncio.run(
+            al.align_batch(
+                ["销售单据", "风控模型A"],
+                [obj],
+                context={"销售单据": "关联文档片段:销售单据指订单凭证。"},
+            )
+        )
+        prompt = captured["prompt"]
+        assert "- 销售单据(上下文:关联文档片段:销售单据指订单凭证。)" in prompt
+        assert "- 风控模型A\n" in prompt
+
+    def test_context_optional(self):
+        """不传 context 时 prompt 与旧版一致(裸实体名列表)。"""
+        import asyncio
+
+        al = EntityAligner()
+        captured = {}
+
+        async def fake_call(prompt, max_tokens=4000):
+            captured["prompt"] = prompt
+            return "[]"
+
+        al._call_llm = fake_call
+        obj = SimpleNamespace(id="ent.a", obj_type="entity", name="A", payload={})
+        asyncio.run(al.align_batch(["实体甲"], [obj]))
+        assert "## 知识实体\n- 实体甲\n\n## 语义层对象" in captured["prompt"]

@@ -1,6 +1,9 @@
 SANDBOX_ENV_PROMPT = """<execution_environment>
 - 系统环境：{{sandbox.system_info}}
-- 工作目录：{{sandbox.work_dir}}（用于所有临时工作）
+- 工作目录：{{sandbox.work_dir}}（用于所有临时工作；相对路径默认写入这里，与其他会话互不干扰）
+{% if sandbox.shared_dir and sandbox.shared_dir != sandbox.work_dir %}
+- 空间公共目录：{{sandbox.shared_dir}}（上传的数据集等公共资产在此，用绝对路径访问；需要跨会话共享时写入其下的 shared/）
+{% endif %}
 - 技能目录：{{sandbox.skill_dir}}（用于存储和读取 Skill 知识包）
 - Python 环境：版本：3.12.0，命令：python3, pip3（不支持 python, pip）
 - Node.js 环境：版本：18.19.1，命令：node, pnpm（预装 pnpm, yarn）

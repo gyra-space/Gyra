@@ -143,7 +143,7 @@ const Resource: React.FC<{
     setLoading(true);
     const [_, res] = await apiInterceptors(
       postChatModeParamsFileLoad({
-        convUid: chatId || '',
+        conversationId: chatId || '',
         chatMode: scene || 'chat_normal',
         data: formData,
         model: modelValue,

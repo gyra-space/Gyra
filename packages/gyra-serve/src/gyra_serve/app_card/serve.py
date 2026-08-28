@@ -40,6 +40,9 @@ class Serve(BaseServe):
         self._config = self._config or ServeConfig.from_app_config(
             system_app.config, SERVE_CONFIG_KEY_PREFIX
         )
+        from .sql_runtime import configure as configure_sql_runtime
+
+        configure_sql_runtime(self._config)
         init_endpoints(self._system_app, self._config)
         self._app_has_initiated = True
 

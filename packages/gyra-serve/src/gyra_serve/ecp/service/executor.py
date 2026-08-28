@@ -89,6 +89,8 @@ class BindingExecutor:
         group_by: Optional[List[str]] = None,
         filters: Optional[List[Dict[str, Any]]] = None,
         time_range: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        max_rows: Optional[int] = None,
     ) -> Dict[str, Any]:
         raise NotImplementedError
 
@@ -137,6 +139,8 @@ class DbBindingExecutor(BindingExecutor):
         group_by: Optional[List[str]] = None,
         filters: Optional[List[Dict[str, Any]]] = None,
         time_range: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        max_rows: Optional[int] = None,
     ) -> Dict[str, Any]:
         group_by = group_by or []
         filters = filters or []
@@ -197,10 +201,74 @@ class DbBindingExecutor(BindingExecutor):
                     f"SQL 组装缺少冻结过滤条件: {frag}", code="ASSEMBLY_INVALID"
                 )
 
-        # ⑦ read-only execution
+        # ⑦ read-only execution (DB 语句级超时 + 行数熔断 + TTL 结果缓存)
+        from gyra_serve.app_card.sql_runtime import (
+            get_query_settings,
+            get_result_cache,
+            is_timeout_error,
+        )
+
+        settings = get_query_settings()
+        exec_timeout = (
+            float(timeout)
+            if timeout is not None
+            else (
+                float(settings.query_timeout_seconds)
+                if settings.query_timeout_seconds > 0
+                else None
+            )
+        )
+        cap = max_rows if max_rows is not None else settings.max_result_rows
         datasource_id = binding.get("datasource_id")
+        lineage = {
+            "metric_id": metric_id,
+            "metric_version": metric.version,
+            "entity_id": entity_id,
+            "entity_version": entity.version,
+            "table": binding.get("table"),
+            "datasource_id": datasource_id,
+            "executed_at": datetime.now().isoformat(),
+        }
+        cache = get_result_cache()
+        cache_key = ("ecp_metric", datasource_id, sql, cap)
+        cached = cache.get(cache_key) if cache is not None else None
+        if cached is not None:
+            columns, rows, truncated = cached
+            result = {
+                "rows": rows,
+                "columns": columns,
+                "row_count": len(rows),
+                "trust": "verified",
+                "sql": sql,
+                "cached": True,
+                "lineage": lineage,
+            }
+            if truncated:
+                result["truncated"] = True
+            return result
         connector = self._connector_factory(datasource_id)
-        raw = connector.run(sql)
+        truncated = False
+        try:
+            try:
+                fields, data_rows = connector.query_ex(
+                    sql,
+                    fetch="all",
+                    timeout=exec_timeout,
+                    max_rows=cap + 1,
+                )
+                raw = [list(fields), *(data_rows or [])]
+            except TypeError:
+                # 旧连接器 query_ex 签名不含 fetch/max_rows, 回退原执行路径
+                raw = connector.run(sql)
+        except Exception as e:  # noqa: BLE001
+            if is_timeout_error(e):
+                shown = f"{exec_timeout:g}" if exec_timeout is not None else "默认"
+                raise GateError(
+                    f"指标查询超时(超过 {shown} 秒), 已被数据库中止, "
+                    "请缩小时间范围或先做聚合再试",
+                    code="QUERY_TIMEOUT",
+                )
+            raise
         columns, rows = [], []
         if raw:
             columns = list(raw[0])
@@ -211,23 +279,23 @@ class DbBindingExecutor(BindingExecutor):
                     datasource_id, columns, rows,
                     table_name=binding.get("table"),
                 )
+        if len(rows) > cap:
+            rows = rows[:cap]
+            truncated = True
 
-        return {
+        result = {
             "rows": rows,
             "columns": columns,
             "row_count": len(rows),
             "trust": "verified",
             "sql": sql,
-            "lineage": {
-                "metric_id": metric_id,
-                "metric_version": metric.version,
-                "entity_id": entity_id,
-                "entity_version": entity.version,
-                "table": binding.get("table"),
-                "datasource_id": datasource_id,
-                "executed_at": datetime.now().isoformat(),
-            },
+            "lineage": lineage,
         }
+        if truncated:
+            result["truncated"] = True
+        if cache is not None:
+            cache.put(cache_key, (columns, rows, truncated))
+        return result
 
     # ------------------------------------------------------------------ steps
     @staticmethod
@@ -591,9 +659,18 @@ def execute_metric_query(
     executor = get_executor(kind, connector_factory=connector_factory)
     if not executor:
         raise GateError(f"不支持的绑定类型 {kind}", code="BINDING_INVALID")
+    from gyra_serve.app_card.sql_runtime import get_query_settings
+
+    settings = get_query_settings()
+    exec_timeout = (
+        float(settings.query_timeout_seconds)
+        if settings.query_timeout_seconds > 0
+        else None
+    )
     return executor.execute_metric_query(
         daos, metric_id, workspace_id,
         group_by=group_by, filters=filters, time_range=time_range,
+        timeout=exec_timeout, max_rows=settings.max_result_rows,
     )
 
 
@@ -657,9 +734,35 @@ def _preview_run(sql: str, datasource_id: int, obj: Any,
         except Exception as e:  # noqa: BLE001
             result.update(trust="none", ok=False, error=f"LIMIT 生成失败: {e}")
             return result
+    from gyra_serve.app_card.sql_runtime import (
+        get_query_settings,
+        is_timeout_error,
+    )
+
+    settings = get_query_settings()
+    exec_timeout = (
+        float(settings.query_timeout_seconds)
+        if settings.query_timeout_seconds > 0
+        else None
+    )
     try:
-        raw = connector.run(sql)
+        try:
+            fields, data_rows = connector.query_ex(
+                sql, fetch="all", timeout=exec_timeout,
+            )
+            raw = [list(fields), *(data_rows or [])]
+        except TypeError:
+            # 旧连接器 query_ex 签名不含 fetch 参数, 回退原执行路径
+            raw = connector.run(sql)
     except Exception as e:  # noqa: BLE001
+        if is_timeout_error(e):
+            shown = f"{exec_timeout:g}" if exec_timeout is not None else "默认"
+            result.update(
+                trust="none", ok=False,
+                error=f"查询超时(超过 {shown} 秒), 已被数据库中止, "
+                      "请缩小时间范围或先做聚合再试",
+            )
+            return result
         result.update(trust="none", ok=False, error=f"执行失败: {e}")
         return result
     columns, rows = [], []

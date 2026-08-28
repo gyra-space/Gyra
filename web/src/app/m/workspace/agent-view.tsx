@@ -36,7 +36,7 @@ function StepMarkdown({ text }: { text: string }) {
 }
 
 export interface MobileAgentViewProps {
-  convUid?: string;
+  conversationId?: string;
   workspaceId?: number | string;
   appCode?: string;
   taskId?: number | string;
@@ -49,16 +49,16 @@ export interface MobileAgentViewProps {
  * 复用桌面场景空间的 SSE 执行流(useSceneAgentChat)与渲染器(AgentWorkspaceRenderer),
  * 输入条使用移动端专属轻量输入条(避免桌面 AgentWorkspaceInput 的固定宽度布局破坏窄屏)。
  */
-export function MobileAgentView({ convUid, workspaceId, appCode, taskId, onNewSession }: MobileAgentViewProps) {
-  const { submitUserInput } = useUserInput(convUid);
+export function MobileAgentView({ conversationId, workspaceId, appCode, taskId, onNewSession }: MobileAgentViewProps) {
+  const { submitUserInput } = useUserInput(conversationId);
   const [text, setText] = useState('');
   const [selectedStep, setSelectedStep] = useState<WorkspaceExecutionStep | null>(null);
 
   const { workspaceView, loading, error, lastInput, modelName, convState, usageMetrics, send, abort, appendOptimisticUser } =
-    useSceneAgentChat({ convUid, appCode, workspaceId, taskId });
+    useSceneAgentChat({ conversationId, appCode, workspaceId, taskId });
 
   const running = loading || convState === 'RUNNING';
-  const canSend = !!convUid && text.trim().length > 0;
+  const canSend = !!conversationId && text.trim().length > 0;
 
   const handleOpenFile = useMemo(
     () => (file: WorkspaceDeliverableFile) => {
@@ -112,7 +112,7 @@ export function MobileAgentView({ convUid, workspaceId, appCode, taskId, onNewSe
         </div>
       )}
       <div className="ms-agent__feed">
-        {!convUid ? (
+        {!conversationId ? (
           <div className="ms-empty">
             <div className="ms-empty__title">会话加载中…</div>
           </div>
@@ -140,7 +140,7 @@ export function MobileAgentView({ convUid, workspaceId, appCode, taskId, onNewSe
                 <button
                   type="button"
                   className="ms-agent-composer__retry"
-                  disabled={!convUid}
+                  disabled={!conversationId}
                   onClick={() => send(lastInput)}
                 >
                   <ReloadOutlined /> 重试
@@ -156,7 +156,7 @@ export function MobileAgentView({ convUid, workspaceId, appCode, taskId, onNewSe
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={onKeyDown}
-              disabled={!convUid}
+              disabled={!conversationId}
             />
             {running ? (
               <button

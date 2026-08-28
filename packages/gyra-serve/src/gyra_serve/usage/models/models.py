@@ -313,18 +313,18 @@ class UsageDao(BaseDao[LLMUsageEntity, Any, Any]):
 
         # conv_id 的定义是「会话uuid_段号」(如 xxx_1),任务列表等按稳定会话 uuid(conv_session_id)传参。
         # 因此在 Python 侧去掉段号得到基础 uuid 再过滤/聚合,跨 MySQL/Postgres 都安全,不依赖方言函数。
+        from gyra_serve.conversation.ids import to_conversation_id
+
         requested = set()
         for cid in conv_ids or []:
             cid = (cid or "").strip()
             if not cid:
                 continue
-            requested.add(cid.rsplit("_", 1)[0] if cid.split("_")[-1].isdigit() else cid)
+            requested.add(to_conversation_id(cid))
 
         grouped = {}
         for r in rows:
-            key = r.conv_id
-            if key and key.split("_")[-1].isdigit():
-                key = key.rsplit("_", 1)[0]
+            key = to_conversation_id(r.conv_id)
             if conv_ids and key not in requested:
                 continue
             item = grouped.get(key)

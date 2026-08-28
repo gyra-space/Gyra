@@ -28,6 +28,16 @@ class GptsConversationsEntity(Model):
     conv_session_id = Column(
         String(255), nullable=False, comment="The unique id of the conversation record"
     )
+
+    @property
+    def conv_turn_id(self) -> str:
+        """轮次 id（统一术语）。DB 列名 ``conv_id`` 不变，只加读别名。
+
+        会话维度用 ``conv_session_id``（列名即标准名）。
+        查询构造（``GptsConversationsEntity.conv_id == x``）仍需用列对象。
+        """
+        return self.conv_id
+
     user_goal = Column(Text, nullable=False, comment="User's goals content")
 
     gpts_name = Column(String(255), nullable=False, comment="The gpts name")

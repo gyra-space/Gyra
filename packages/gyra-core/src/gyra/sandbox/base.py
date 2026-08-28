@@ -69,6 +69,7 @@ class SandboxBase:
         enable_skill: Optional[bool] = True,
         skill_dir: Optional[str] = DEFAULT_SKILL_DIR,
         connection_config: Optional[ConnectionConfig] = None,
+        session_work_dir: Optional[str] = None,
         **kwargs,
     ):
         self.__connection_config = connection_config
@@ -80,6 +81,9 @@ class SandboxBase:
             connection_config.domain if connection_config else None
         )
         self.__work_dir = work_dir or DEFAULT_WORK_DIR
+        # 会话级当前工作目录(cwd):场景空间下为 <work_dir>/sessions/<conv_uid>/。
+        # 沙箱实例与访问边界仍由 work_dir 决定,这里只记录 cwd。
+        self.__session_work_dir = session_work_dir
         self.__enable_skill = enable_skill
 
         if skill_dir is None:
@@ -118,6 +122,18 @@ class SandboxBase:
     @property
     def work_dir(self) -> str:
         return self.__work_dir
+
+    @property
+    def session_work_dir(self) -> str:
+        """当前会话工作目录(cwd)。
+
+        场景空间下为公共层之下的 ``sessions/<conv_uid>/``;未配置时回退到
+        :attr:`work_dir`,因此对非场景空间链路与 E2B 等行为完全不变。
+
+        注意:这只是 cwd,**不是访问边界**。沙箱实例、allowed_roots、
+        缓存 key、cleanup 规则仍全部由 workspace 层的 work_dir 决定。
+        """
+        return self.__session_work_dir or self.__work_dir
 
     @property
     def skill_dir(self) -> str:

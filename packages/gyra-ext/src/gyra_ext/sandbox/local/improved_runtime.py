@@ -83,8 +83,12 @@ class ImprovedLocalSandboxSession(SandboxSession):
         """Resolve the working directory to a physical path."""
         # 宿主机工作目录模式(场景空间独立沙箱):直接使用真实路径,
         # 不嵌套 session 目录;sandbox-exec 的读写放行即对该路径生效。
-        if getattr(self.config, "host_working_dir", None):
-            target = os.path.abspath(self.config.host_working_dir)
+        host_dir = getattr(self.config, "host_working_dir", None)
+        if host_dir:
+            # 会话级 cwd 优先:只改变常驻进程的 cwd;sandbox-exec 的读写放行
+            # 边界仍是 host_working_dir,而会话目录位于其下,因此自然被放行。
+            session_dir = getattr(self.config, "host_session_working_dir", None)
+            target = os.path.abspath(session_dir or host_dir)
             os.makedirs(target, exist_ok=True)
             return target
         base = self.session_dir

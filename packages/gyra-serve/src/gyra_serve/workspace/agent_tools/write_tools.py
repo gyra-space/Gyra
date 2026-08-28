@@ -356,6 +356,63 @@ def build_scene_write_tools(
             })
         return result
 
+    def promote_to_shared(**kwargs):
+        """把当前会话目录中的文件提升为空间级共享资产(放进公共目录 shared/)。
+
+        会话目录是私有的,其他会话看不到;需要跨会话共享的文件必须先提升到这里。
+        默认复制,``move=true`` 时移动(移出会话私有区)。
+        """
+        import os
+        import shutil
+
+        from gyra_serve.workspace.dataset_service import (
+            SESSION_DIR_NAME,
+            session_sandbox_root,
+            workspace_sandbox_root,
+            workspace_shared_dir,
+        )
+
+        src = (kwargs.get("path") or "").strip()
+        if not src:
+            return {"error": "path 不能为空"}
+
+        session_dir = session_sandbox_root(int(workspace_id), conv_uid)
+        src_abs = os.path.normpath(
+            src if os.path.isabs(src) else os.path.join(session_dir, src)
+        )
+        # 允许提升本空间任意会话目录(<公共层>/sessions/<xxx>/)下的文件。
+        # 刻意不绑定具体的 conv 语义:conv_uid 在不同链路里可能是会话级
+        # (conv_session_id)也可能是轮次级(conv_id={session}_{round}),
+        # 但只要落在 sessions/ 之下就是会话私有文件,可以安全提升。
+        # 会话目录之外一律拒绝,避免把公共层/系统文件搬来搬去。
+        sessions_root = os.path.join(
+            workspace_sandbox_root(int(workspace_id)), SESSION_DIR_NAME
+        )
+        if not src_abs.startswith(sessions_root + os.sep):
+            return {"error": f"只能提升会话目录({sessions_root}/...)内的文件"}
+        if not os.path.isfile(src_abs):
+            return {"error": f"文件不存在: {src_abs}"}
+
+        shared_dir = workspace_shared_dir(int(workspace_id))
+        # 只取文件名部分,防止路径穿越
+        target_name = os.path.basename(
+            (kwargs.get("target_name") or os.path.basename(src_abs)).strip()
+        )
+        if not target_name:
+            return {"error": "target_name 无效"}
+
+        dst_abs = os.path.join(shared_dir, target_name)
+        if kwargs.get("move"):
+            shutil.move(src_abs, dst_abs)
+        else:
+            shutil.copy2(src_abs, dst_abs)
+        return {
+            "promoted": True,
+            "from": src_abs,
+            "to": dst_abs,
+            "shared_dir": shared_dir,
+        }
+
     extra_specs = [
         ("create_playbook", "在当前空间下创建一个剧本", create_playbook, {
             "name": _p("name", "string", "剧本名称", required=True),
@@ -393,6 +450,13 @@ def build_scene_write_tools(
             "trigger_id": _p("trigger_id", "integer", "触发规则 ID", required=True),
             "payload": _p("payload", "string", "JSON 字符串,作为任务输入负载"),
         }),
+        ("promote_to_shared",
+         "把当前会话目录中的文件提升为空间级共享资产(复制进公共目录 shared/,其他会话可见)",
+         promote_to_shared, {
+             "path": _p("path", "string", "会话目录内的文件路径(相对路径或绝对路径)", required=True),
+             "target_name": _p("target_name", "string", "提升到公共目录后的文件名,默认沿用原名"),
+             "move": _p("move", "boolean", "true=移动(移出会话私有区),默认 false=复制"),
+         }),
     ]
     for name, desc, fn, tool_args in extra_specs:
         base.append(FunctionTool(name=name, description=desc, func=fn, args=tool_args))

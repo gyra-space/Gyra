@@ -58,21 +58,79 @@ def _is_readonly_sql(sql: str) -> bool:
     return _first_keyword(sql) in _READONLY_KEYWORDS
 
 
+def _sql_success(
+    columns: List[str],
+    rows: List[Dict[str, Any]],
+    sql: str,
+    truncated: bool = False,
+    cached: bool = False,
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "trust": "inferred",
+        "warnings": ["未验证口径: 此结果未经语义层确认"],
+        "columns": columns,
+        "rows": rows,
+        "row_count": len(rows),
+        "sql": sql,
+    }
+    if truncated:
+        result["warnings"].append("结果已截断: 超过最大返回行数上限, 仅返回部分数据")
+        result["truncated"] = True
+    if cached:
+        result["cached"] = True
+    return result
+
+
 def run_readonly_sql(
     datasource_id: int,
     sql: str,
     bind_params: Optional[Dict[str, Any]] = None,
     limit: Optional[int] = None,
+    timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """执行一条只读 SQL, 参数走绑定(防注入), 返回 {trust:inferred, columns, rows, ...}."""
+    """执行一条只读 SQL, 参数走绑定(防注入), 返回 {trust:inferred, columns, rows, ...}.
+
+    执行链路: 数据库侧语句级超时(query_ex timeout) + 流式行数熔断(max_rows) +
+    TTL 结果缓存; 旧连接器不支持 query_ex 新参数时(TypeError)自动回退原
+    session_scope 路径, 保证各数据源类型行为不回归.
+    """
     from sqlalchemy import text
 
     from gyra._private.config import Config
     from gyra_serve.datasource.manages.connect_config_db import ConnectConfigDao
 
+    from ..sql_runtime import get_query_settings, get_result_cache, is_timeout_error
+
     if not _is_readonly_sql(sql):
         return {"trust": "none", "error": "仅允许只读查询(SELECT/WITH/SHOW/DESC/EXPLAIN)",
                 "columns": [], "rows": [], "row_count": 0, "sql": sql}
+
+    settings = get_query_settings()
+    if timeout is None:
+        timeout = (
+            float(settings.query_timeout_seconds)
+            if settings.query_timeout_seconds > 0
+            else None
+        )
+    cap = settings.max_result_rows
+    if limit is not None:
+        cap = min(limit, cap)
+    bind_params = bind_params or {}
+
+    cache = get_result_cache()
+    cache_key = None
+    if cache is not None:
+        cache_key = (
+            "app_card_sql",
+            datasource_id,
+            " ".join(sql.split()),
+            json.dumps(bind_params, sort_keys=True, default=str),
+            cap,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            columns, rows, truncated = cached
+            return _sql_success(columns, rows, sql, truncated=truncated, cached=True)
 
     config = ConnectConfigDao().get_one({"id": datasource_id})
     db_name = None
@@ -86,20 +144,43 @@ def run_readonly_sql(
                 "columns": [], "rows": [], "row_count": 0, "sql": sql}
 
     connector = Config().local_db_manager.get_connector(db_name)
-    bind_params = bind_params or {}
+    truncated = False
     try:
-        with connector.session_scope(commit=False) as session:
-            result = session.execute(text(sql), bind_params)
-            columns = list(result.keys())
-            rows = [dict(zip(columns, r)) for r in result.fetchall()]
+        try:
+            fields, raw_rows = connector.query_ex(
+                sql,
+                fetch="all",
+                timeout=timeout,
+                params=bind_params,
+                max_rows=cap + 1,
+            )
+            columns = list(fields)
+            rows = [dict(zip(columns, r)) for r in (raw_rows or [])]
+        except TypeError:
+            # 旧连接器 query_ex 签名不含 fetch/params/max_rows, 回退原执行路径
+            with connector.session_scope(commit=False) as session:
+                result = session.execute(text(sql), bind_params)
+                columns = list(result.keys())
+                rows = [dict(zip(columns, r)) for r in result.fetchall()]
     except Exception as e:  # noqa: BLE001
         logger.exception("app_card sql execute failed")
+        if timeout is not None and is_timeout_error(e):
+            return {
+                "trust": "none",
+                "error": f"查询超时(超过 {timeout:g} 秒), 已被数据库中止, "
+                         "请缩小时间范围或先做聚合再试",
+                "columns": [], "rows": [], "row_count": 0, "sql": sql,
+            }
         return {"trust": "none", "error": str(e), "columns": [], "rows": [], "row_count": 0, "sql": sql}
 
-    if limit is not None:
-        rows = rows[:limit]
-    return {"trust": "inferred", "warnings": ["未验证口径: 此结果未经语义层确认"],
-            "columns": columns, "rows": rows, "row_count": len(rows), "sql": sql}
+    if len(rows) > cap:
+        rows = rows[:cap]
+        truncated = True
+
+    result = _sql_success(columns, rows, sql, truncated=truncated)
+    if cache is not None and cache_key is not None:
+        cache.put(cache_key, (columns, rows, truncated))
+    return result
 
 
 # --------------------------------------------------------------------------- #

@@ -2580,10 +2580,15 @@ class ConversableAgent(Role, Agent):
                 for k, v in sandbox_tool_dict.items():
                     prompt, _ = await v.get_prompt(lang=instance.agent_context.language)
                     sandbox_tool_prompts.append(prompt)
+                from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
                 param = {
                     "sandbox": {
                         "tools": "\n- ".join([item for item in sandbox_tool_prompts]),
-                        "work_dir": sandbox_client.work_dir,
+                        # 会话工作目录:场景空间下为 <公共层>/sessions/<conv_uid>/
+                        "work_dir": resolve_session_work_dir(sandbox_client),
+                        # 空间公共层(数据集等公共资产,以及 shared/ 共享目录)
+                        "shared_dir": sandbox_client.work_dir,
                         "use_agent_skill": sandbox_client.enable_skill,
                         "agent_skill_dir": sandbox_client.skill_dir,
                     }

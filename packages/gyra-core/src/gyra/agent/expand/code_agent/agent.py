@@ -179,7 +179,9 @@ class CodeAssistantAgent(ConversableAgent):
                 )
 
             sandbox = self.sandbox_manager.client
-            work_dir = sandbox.work_dir or "/workspace"
+            from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
+            work_dir = resolve_session_work_dir(sandbox)
 
             if language.lower() in ["python", "python3"]:
                 result = await sandbox.shell.exec_command(
