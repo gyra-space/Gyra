@@ -94,7 +94,9 @@ async def _caption_embedded_image(
         with tempfile.TemporaryDirectory(prefix="ks_embed_img_") as tmp:
             tmp_path = Path(tmp) / f"img{_safe_image_suffix(filename)}"
             tmp_path.write_bytes(data)
-            caption = await model_caller(model, _EMBEDDED_IMAGE_PROMPT, images=[tmp_path])
+            caption = await model_caller(
+                model, _EMBEDDED_IMAGE_PROMPT, images=[tmp_path]
+            )
             return (caption or "").strip()
     except Exception as e:  # noqa: BLE001
         logger.warning("Embedded image caption failed for %s: %s", filename, e)
@@ -146,6 +148,7 @@ class TextExtractor(Extractor):
         mime: str,
         model: Optional[str],
         model_caller: Optional[ModelCaller],
+        asset_store: Optional[AssetStore] = None,
     ) -> List[VerbatimSpec]:
         raw = path.read_bytes()
         try:
@@ -312,7 +315,9 @@ class DocxExtractor(Extractor):
                 img_idx += 1
                 if rid in caption_cache:
                     ref = await _store_embedded_image(asset_store, filename, data)
-                    block = _image_placeholder(img_idx, filename, ref, caption_cache[rid])
+                    block = _image_placeholder(
+                        img_idx, filename, ref, caption_cache[rid]
+                    )
                 else:
                     block, caption_cache[rid] = await _process_embedded_image(
                         img_idx, filename, data, model, model_caller, asset_store
@@ -440,6 +445,7 @@ class ImageExtractor(Extractor):
         mime: str,
         model: Optional[str],
         model_caller: Optional[ModelCaller],
+        asset_store: Optional[AssetStore] = None,
     ) -> List[VerbatimSpec]:
         date_iso, mtime = _file_mtime_iso(path)
         if not model or not model_caller:
@@ -490,6 +496,7 @@ class AudioExtractor(Extractor):
         mime: str,
         model: Optional[str],
         model_caller: Optional[ModelCaller],
+        asset_store: Optional[AssetStore] = None,
     ) -> List[VerbatimSpec]:
         date_iso, mtime = _file_mtime_iso(path)
         if not model or not model_caller:
@@ -569,6 +576,7 @@ class VideoExtractor(Extractor):
         mime: str,
         model: Optional[str],
         model_caller: Optional[ModelCaller],
+        asset_store: Optional[AssetStore] = None,
     ) -> List[VerbatimSpec]:
         if not model or not model_caller:
             raise RuntimeError(

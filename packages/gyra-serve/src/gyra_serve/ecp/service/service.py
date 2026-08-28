@@ -53,6 +53,7 @@ from ..models.models import (
     MissLearnDao,
     OpLogDao,
     ResolutionCacheDao,
+    SemanticAlignmentDao,
     SemanticEdgeDao,
     SemanticObjectDao,
     WorkspaceConfigDao,

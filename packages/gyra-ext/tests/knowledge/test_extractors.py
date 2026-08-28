@@ -285,7 +285,10 @@ def _noise_png(width: int = 96, height: int = 96) -> bytes:
     img = Image.new("RGB", (width, height))
     rng = random.Random(42)
     img.putdata(
-        [(rng.randrange(256), rng.randrange(256), rng.randrange(256)) for _ in range(width * height)]
+        [
+            (rng.randrange(256), rng.randrange(256), rng.randrange(256))
+            for _ in range(width * height)
+        ]
     )
     buf = io.BytesIO()
     img.save(buf, format="PNG")

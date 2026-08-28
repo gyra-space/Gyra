@@ -19,7 +19,9 @@ DOMAIN = "https://feishu.test"
 TokenRoute = "/open-apis/auth/v3/tenant_access_token/internal"
 
 
-def _install_mock_transport(monkeypatch, handler: Callable[[httpx.Request], httpx.Response]):
+def _install_mock_transport(
+    monkeypatch, handler: Callable[[httpx.Request], httpx.Response]
+):
     """Inject a MockTransport into every AsyncClient the connector creates."""
     real_client = httpx.AsyncClient
 
@@ -37,7 +39,9 @@ def _token_ok(_request: httpx.Request) -> httpx.Response:
     )
 
 
-def _items(items: list, has_more: bool = False, page_token: str | None = None) -> httpx.Response:
+def _items(
+    items: list, has_more: bool = False, page_token: str | None = None
+) -> httpx.Response:
     body: dict = {"code": 0, "items": items, "has_more": has_more}
     if page_token:
         body["page_token"] = page_token
