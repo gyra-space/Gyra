@@ -7,7 +7,9 @@ third-party) must also pass.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
 import pytest
 import pytest_asyncio
 
@@ -71,3 +73,48 @@ async def test_local_vaultfs_agents_md_is_protected(vault):
     await vault.write_agents_md("# My Agent\n\n## Identity\n测试\n")
     with pytest.raises(PermissionError):
         await vault.doc_delete("AGENTS.md")
+
+
+# ---------------------------------------------------------------------------
+# Asset storage (embedded images from extractors)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_local_vaultfs_asset_roundtrip(vault):
+    """asset_write returns a vault-relative ref; asset_read restores the bytes."""
+    data = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8
+    ref = await vault.asset_write("team offsite.png", data)
+
+    match = re.fullmatch(r"assets/([0-9a-f]{16})-(\S+)", ref)
+    assert match is not None
+    assert match.group(2) == "team_offsite.png"
+
+    got = await vault.asset_read(ref)
+    assert got == data
+
+
+@pytest.mark.asyncio
+async def test_local_vaultfs_asset_write_is_deduped(vault):
+    """Same bytes twice → same content-addressed ref, file written once."""
+    data = b"same-bytes" * 128
+    ref1 = await vault.asset_write("a.png", data)
+    ref2 = await vault.asset_write("a.png", data)
+    assert ref1 == ref2
+    files = list((vault.root / "assets").iterdir())
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_local_vaultfs_asset_read_missing_returns_empty(vault):
+    assert await vault.asset_read("assets/deadbeef00112233-nope.png") == b""
+    assert await vault.asset_read("") == b""
+
+
+@pytest.mark.asyncio
+async def test_local_vaultfs_asset_read_blocks_traversal(vault, tmp_path: Path):
+    """Refs escaping the vault root must never resolve outside it."""
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"top secret")
+    for evil in ("../secret.txt", "../../secret.txt", "assets/../../secret.txt"):
+        assert await vault.asset_read(evil) == b""

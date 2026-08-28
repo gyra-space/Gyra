@@ -175,6 +175,45 @@ class IngestJobListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# External wiki sync (Feishu)
+# ---------------------------------------------------------------------------
+
+
+class FeishuWikiSpace(BaseModel):
+    space_id: str
+    name: str
+    description: str = ""
+
+
+class FeishuWikiTestRequest(BaseModel):
+    """Credentials probe — nothing is persisted server-side."""
+
+    app_id: str = Field(..., description="Feishu app id")
+    app_secret: str = Field(..., description="Feishu app secret")
+    domain: str = Field("https://open.feishu.cn", description="Feishu OpenAPI domain")
+
+
+class FeishuWikiTestResponse(BaseModel):
+    ok: bool
+    spaces: List[FeishuWikiSpace] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+class FeishuWikiSyncRequest(BaseModel):
+    app_id: str = Field(..., description="Feishu app id")
+    app_secret: str = Field(..., description="Feishu app secret")
+    domain: str = Field("https://open.feishu.cn", description="Feishu OpenAPI domain")
+    wiki_space_id: str = Field(..., description="Feishu wiki space to pull")
+    llm_model: Optional[str] = Field(
+        None, description="Override the space llm_model for wiki generation"
+    )
+
+
+class FeishuWikiSyncResponse(BaseModel):
+    job_id: str
+
+
+# ---------------------------------------------------------------------------
 # LLM usage ledger (RFC-005)
 # ---------------------------------------------------------------------------
 
@@ -312,6 +351,11 @@ __all__ = [
     "UploadResponse",
     "IngestJobResponse",
     "IngestJobListResponse",
+    "FeishuWikiSpace",
+    "FeishuWikiTestRequest",
+    "FeishuWikiTestResponse",
+    "FeishuWikiSyncRequest",
+    "FeishuWikiSyncResponse",
     "LlmUsageBucket",
     "LlmUsageSummaryResponse",
     "LlmCallLogItem",

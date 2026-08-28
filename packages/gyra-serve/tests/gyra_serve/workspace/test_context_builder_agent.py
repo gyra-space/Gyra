@@ -158,6 +158,41 @@ def test_build_workspace_context_lobby_loads_active_tasks():
     assert ctx.active_tasks[0].id == 4
 
 
+def test_build_workspace_context_lobby_active_tasks_capped_to_recent():
+    from gyra_serve.workspace.agent_tools.context_builder import build_workspace_context
+
+    fake_system_app = MagicMock()
+    fake_workspace = MagicMock(name="ws", id=1)
+    fake_materialized = MagicMock(dynamic_resources=[], extra_agents=[])
+    fake_running_tasks = [
+        MagicMock(id=i, status="running") for i in range(1, 9)
+    ]
+
+    with patch(
+        "gyra_serve.workspace.agent_tools.context_builder.get_workspace_service"
+    ) as gs, patch(
+        "gyra_serve.workspace.agent_tools.context_builder.materialize_resources"
+    ) as mr, patch(
+        "gyra_serve.workspace.agent_tools.context_builder.get_task_service"
+    ) as gts:
+        gs.return_value.get_by_id.return_value = fake_workspace
+        mr.return_value = fake_materialized
+        gts.return_value.list_tasks.return_value = list(fake_running_tasks)
+        ctx = build_workspace_context(
+            system_app=fake_system_app,
+            workspace_id=1,
+            user_id="u1",
+            task_id=None,
+            mode="lobby",
+        )
+    assert len(ctx.active_tasks) == 5
+    assert [t.id for t in ctx.active_tasks] == [1, 2, 3, 4, 5]
+    gts.return_value.list_tasks.assert_called_once()
+    filter_arg = gts.return_value.list_tasks.call_args[0][0]
+    assert filter_arg.workspace_id == 1
+    assert filter_arg.limit == 50
+
+
 def test_render_summary_workbench_with_task_and_skills():
     from gyra_serve.workspace.agent_tools.context_builder import (
         WorkspaceContextSnapshot,

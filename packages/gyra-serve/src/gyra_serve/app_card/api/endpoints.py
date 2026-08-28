@@ -1,4 +1,5 @@
 """AppCard API endpoints — unified invoke protocol."""
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -129,7 +130,11 @@ async def validate_app_card(
     request: AppCardCreateRequest, service: AppCardService = Depends(get_service),
 ) -> Result[AppCardValidateResponse]:
     try:
-        return Result.succ(service.validate_queries(request.workspace_id, request.queries or []))
+        # 同步取数放线程池, 与运行期 invoke 一致不阻塞事件循环
+        result = await asyncio.to_thread(
+            service.validate_queries, request.workspace_id, request.queries or []
+        )
+        return Result.succ(result)
     except Exception as e:
         logger.exception("app_card validate exception!")
         return Result.failed(str(e))
@@ -179,7 +184,8 @@ async def invoke_app_card_share(
 ) -> Result:
     """匿名分享: 凭分享令牌走统一 invoke 协议取数(无需登录)。"""
     try:
-        return Result.succ(service.invoke_anonymous(card_id, token, request))
+        result = await asyncio.to_thread(service.invoke_anonymous, card_id, token, request)
+        return Result.succ(result)
     except Exception as e:
         logger.exception("app_card share invoke exception!")
         return Result.failed(str(e))
@@ -232,7 +238,12 @@ async def invoke_app_card(
     user: UserRequest = Depends(get_user_from_headers),
 ) -> Result:
     try:
-        return Result.succ(service.invoke(card_id, workspace_id, request, user))
+        # 取数是同步阻塞代码(SQLAlchemy), 放线程池执行避免阻塞事件循环,
+        # 使卡片内并发的多个查询请求真正并行处理
+        result = await asyncio.to_thread(
+            service.invoke, card_id, workspace_id, request, user
+        )
+        return Result.succ(result)
     except Exception as e:
         logger.exception("app_card invoke exception!")
         return Result.failed(str(e))

@@ -172,6 +172,23 @@ class ECPCapability(Capability):
                 )
             )
 
+        # TOOLS: app_card_preview -- AppCard 开发期取数预览。场景空间对话只绑
+        # workspace_scene+ecp、不绑定 datasource/DBResource,base_agent 的
+        # _inject_database_tools 不会经 DBResource 注入它,导致 app-card-generator
+        # skill 要求的「用 hook 工具逐条验证取数」在开发对话里找不到工具。此处
+        # 显式注入:闭包绑定本 ECP 的 workspace_id(与上面 6 个 ECP 工具同构,agent
+        # 无需传 workspace_id),仅暴露 op/params/query_key/queries 四个入参。
+        contribs.append(
+            Contribution(
+                capability_id=f"{self.capability_id}:tool:app_card_preview",
+                slot=Slot.TOOLS,
+                content=_build_app_card_preview_tool(self._workspace_id),
+                lifetime=Lifetime.CONFIG_STATIC,
+                cache_scope=CacheScope.NONE,
+                order=30,
+            )
+        )
+
         # TOOLS: 托管 db 资产的降级连带注入——只读 schema 工具(get_table_spec/
         # list_tables)。ECP 托管的资源以降级形态出现:结构可查(供 execute_raw_sql
         # 兜底与提案理解物理表),数据查询只走 ECP 工具;execute_sql 不连带,
@@ -198,6 +215,112 @@ class ECPCapability(Capability):
 
     async def release(self, reason: ReleaseReason) -> None:
         self._status = ExecutorStatus.RELEASED
+
+
+def _build_app_card_preview_tool(workspace_id: str) -> "FunctionTool":
+    """把全局注册的 ``app_card_preview``(ToolBase)包装成闭包绑 ``workspace_id`` 的
+    FunctionTool,供 ECP 场景 TOOLS 槽注入。
+
+    背景:app 卡片开发对话(场景空间 lobby)只绑 ``workspace_scene``+``ecp``、不绑
+    ``datasource``/``DBResource``,故 base_agent 的 ``_inject_database_tools`` 不会经
+    DBResource 注入它。此处显式包装后注入,使 app-card-generator skill 要求的
+    「用 hook 工具逐条验证取数」在开发对话真正可用。
+
+    与 ECP 工具群一致:``workspace_id`` 闭包绑定,agent 只传 ``op``/``params``/
+    ``query_key``/``queries`` 四个入参,不必知道 workspace_id。
+    """
+    import json as _json
+    from typing import Dict, List, Optional
+
+    from gyra.agent.resource.tool.base import FunctionTool
+    from gyra.agent.tools.context import ToolContext
+    from gyra.agent.tools.registry import tool_registry
+
+    try:
+        import gyra_serve.app_card.agent_tools  # noqa: F401  触发 @tool 注册
+    except ImportError:
+        pass
+    preview = tool_registry.get("app_card_preview")
+
+    if preview is None:
+        # 注册缺失时优雅降级:返回一个明确报错工具,避免 declare 抛异常阻塞场景装配。
+        async def _missing(*_args: Any, **_kwargs: Any) -> str:
+            return _json.dumps(
+                {
+                    "trust": "none",
+                    "error": "app_card_preview 工具不可用(未注册)",
+                    "columns": [],
+                    "rows": [],
+                    "row_count": 0,
+                },
+                ensure_ascii=False,
+            )
+
+        return FunctionTool(
+            "app_card_preview",
+            _missing,
+            description="AppCard 应用卡片开发期取数预览(暂不可用:工具未注册)",
+            args={},
+        )
+
+    async def _invoke(
+        op: str,
+        params: Optional[Dict[str, Any]] = None,
+        query_key: Optional[str] = None,
+        queries: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        args = {
+            "op": op,
+            "params": params or {},
+            "query_key": query_key,
+            "queries": queries or [],
+            "workspace_id": (
+                int(workspace_id) if str(workspace_id).lstrip("-").isdigit() else workspace_id
+            ),
+        }
+        result = await preview.execute(args, ToolContext())
+        if result is None:
+            return _json.dumps(
+                {"trust": "none", "error": "空结果", "columns": [], "rows": [], "row_count": 0},
+                ensure_ascii=False,
+            )
+        return result.output if result.output is not None else ""
+
+    return FunctionTool(
+        "app_card_preview",
+        _invoke,
+        description=(
+            "AppCard 应用卡片开发期取数预览：按运行期同一派发路径执行 query.sql / "
+            "query.metric，返回对象数组 rows + trust + row_count + elapsed_ms(性能基线)。"
+            "开发应用卡片时用它验证 SQL/指标列名与取数、并评估/调优查询性能，"
+            "避免用 execute_sql(二维数组 rows)写代码导致运行期渲染错乱。"
+            "datasource_id 通过 params 传入(如 params={'sql': '...', 'datasource_id': 1})。"
+        ),
+        args={
+            "op": {
+                "type": "string",
+                "description": "取值：query.sql / sql.preview / query.metric / metric.preview / sql.explain",
+            },
+            "params": {
+                "type": "object",
+                "description": (
+                    "query.sql 传 {sql, datasource_id, bind_params?, limit?}；"
+                    "query.metric 传 {metric_id, group_by?, filters?, time_range?}。"
+                ),
+                "required": False,
+            },
+            "query_key": {
+                "type": "string",
+                "description": "引用 queries 里已声明的命名查询(可选，与 params 二选一)",
+                "required": False,
+            },
+            "queries": {
+                "type": "array",
+                "description": "命名查询契约(未落库也可)，配合 query_key 引用",
+                "required": False,
+            },
+        },
+    )
 
 
 def _load_db_schema_tools() -> List[Any]:

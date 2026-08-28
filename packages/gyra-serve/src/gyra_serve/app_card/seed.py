@@ -59,9 +59,9 @@ var root = document.getElementById('root');
 root.innerHTML =
  '<div class="ac">'+
   '<div class="bar"><div><div class="title">运行指标概览</div><div class="sub">Agent 生成的常驻子应用 · Demo</div></div><div class="pills" id="pills"></div></div>'+
-  '<div class="grid" id="cards"></div>'+
-  '<div class="chart"><div class="h">指标趋势</div><svg class="svg" id="svg" preserveAspectRatio="none"></svg><div class="st" id="note"></div></div>'+
-  '<div class="tbl" id="tbl" style="margin-top:12px"></div>'+
+  '<div class="grid" id="cards"><div class="st">\\u52a0\\u8f7d\\u4e2d\\u2026</div></div>'+
+  '<div class="chart"><div class="h">指标趋势</div><svg class="svg" id="svg" preserveAspectRatio="none"></svg><div class="st" id="note">\\u52a0\\u8f7d\\u4e2d\\u2026</div></div>'+
+  '<div class="tbl" id="tbl" style="margin-top:12px"><div class="st">\\u52a0\\u8f7d\\u4e2d\\u2026</div></div>'+
  '</div>';
 
 var state = { start: '2020-01-01' };
@@ -91,27 +91,40 @@ function draw(rows){
     pts.map(function(p){return '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="3" fill="#3b82f6"/>';}).join('');
   document.getElementById('note').innerHTML = '峰值: <b>'+fmt(max)+'</b> \\u00b7 '+(rows||[]).length+' \\u4e2a\\u70b9';
 }
-function load(){
-  var p = { bind_params: { start: state.start } };
-  Promise.all([
-    GyraAppCard.op('query.sql', p, 'q_totals'),
-    GyraAppCard.op('query.sql', p, 'q_trend'),
-    GyraAppCard.op('query.sql', p, 'q_metrics')
-  ]).then(function(res){
-    var total=(res[0]&&res[0].rows&&res[0].rows[0])||{};
+function loadCards(p){
+  GyraAppCard.op('query.sql', p, 'q_totals').then(function(res){
+    var total=(res&&res.rows&&res.rows[0])||{};
     document.getElementById('cards').innerHTML =
       '<div class="k"><div class="t">\\u8bb0\\u5f55\\u6570</div><div class="v">'+fmt(total.n)+'</div></div>'+
       '<div class="k"><div class="t">\\u5e73\\u5747\\u503c</div><div class="v">'+fmt(total.avg)+'</div></div>'+
       '<div class="k"><div class="t">\\u6700\\u5927\\u503c</div><div class="v">'+fmt(total.max)+'</div></div>';
-    draw(res[1]&&res[1].rows);
-    var rows=(res[2]&&res[2].rows)||[];
+  }).catch(function(e){
+    document.getElementById('cards').innerHTML='<div class="st">\\u6307\\u6807\\u5361\\u53d6\\u6570\\u5931\\u8d25: '+esc(e.message)+'</div>';
+  });
+}
+function loadTrend(p){
+  GyraAppCard.op('query.sql', p, 'q_trend').then(function(res){
+    draw(res&&res.rows);
+  }).catch(function(e){
+    document.getElementById('note').innerHTML='\\u8d8b\\u52bf\\u53d6\\u6570\\u5931\\u8d25: '+esc(e.message);
+  });
+}
+function loadTable(p){
+  GyraAppCard.op('query.sql', p, 'q_metrics').then(function(res){
+    var rows=(res&&res.rows)||[];
     document.getElementById('tbl').innerHTML =
       '<table style="width:100%"><thead><tr><th>\\u670d\\u52a1</th><th>\\u6307\\u6807\\u503c</th><th>\\u65e5\\u671f</th></tr></thead><tbody>'+
-      rows.map(function(r){return '<tr><td>'+esc(r.service)+'</td><td>'+fmt(r.cpu)+'</td><td>'+esc(r.day)+'</td></tr>';}).join('')+
+      (rows.length? rows.map(function(r){return '<tr><td>'+esc(r.service)+'</td><td>'+fmt(r.cpu)+'</td><td>'+esc(r.day)+'</td></tr>';}).join('')
+                  : '<tr><td colspan="3" class="st">\\u6682\\u65e0\\u6570\\u636e</td></tr>')+
       '</tbody></table>';
   }).catch(function(e){
-    var c=document.getElementById('cards'); c.innerHTML='<div class="st">\\u53d6\\u6570\\u5931\\u8d25: '+esc(e.message)+'</div>';
+    document.getElementById('tbl').innerHTML='<div class="st">\\u660e\\u7ec6\\u53d6\\u6570\\u5931\\u8d25: '+esc(e.message)+'</div>';
   });
+}
+function load(){
+  var p = { bind_params: { start: state.start } };
+  // 并行发出、先到先渲染: 各区块独立请求/独立渲染, 互不阻塞
+  loadCards(p); loadTrend(p); loadTable(p);
 }
 document.getElementById('pills').addEventListener('click', function(e){
   var b=e.target.closest('button'); if(!b) return;

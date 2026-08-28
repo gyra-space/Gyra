@@ -13,13 +13,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import shutil
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.security.http import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -49,6 +59,11 @@ from .schemas import (
     DocHitOut,
     DocReadResponse,
     EdgeOut,
+    FeishuWikiSpace,
+    FeishuWikiSyncRequest,
+    FeishuWikiSyncResponse,
+    FeishuWikiTestRequest,
+    FeishuWikiTestResponse,
     IngestJobListResponse,
     IngestJobResponse,
     LintResponse,
@@ -372,6 +387,29 @@ async def delete_verbat(
 
 
 # ---------------------------------------------------------------------------
+# Asset serving (images embedded in office documents, stored by the ingest
+# pipeline and referenced from markdown as `assets/...`).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/spaces/{slug}/assets/{asset_path:path}")
+async def asset_read(
+    slug: str, asset_path: str, service: Service = Depends(get_service)
+):
+    """Serve a binary asset (e.g. an image extracted from docx/pdf/pptx)."""
+    if not asset_path or asset_path.startswith("/") or ".." in asset_path:
+        raise HTTPException(status_code=400, detail="invalid asset path")
+    if not asset_path.startswith("assets/"):
+        asset_path = f"assets/{asset_path}"
+    vault = await service.get_vault(slug)
+    data = await vault.asset_read(asset_path)
+    if not data:
+        raise HTTPException(status_code=404, detail="asset not found")
+    media_type = mimetypes.guess_type(asset_path)[0] or "application/octet-stream"
+    return Response(content=data, media_type=media_type)
+
+
+# ---------------------------------------------------------------------------
 # Raw file CRUD (manual L0 editing)
 # ---------------------------------------------------------------------------
 
@@ -634,6 +672,69 @@ async def rebuild_all_wiki(
             for j in jobs
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# External wiki sync (Feishu)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/spaces/{slug}/wiki-sync/feishu/test",
+    response_model=Result[FeishuWikiTestResponse],
+)
+async def feishu_wiki_test(
+    slug: str, req: FeishuWikiTestRequest, service: Service = Depends(get_service)
+):
+    """Probe Feishu credentials and return the selectable wiki spaces.
+
+    Credentials are used for this call only — never persisted server-side.
+    """
+    await service.get_vault(slug)  # ensure the space exists
+    from gyra_ext.knowledge.connectors import FeishuWikiClient
+
+    client = FeishuWikiClient(
+        app_id=req.app_id,
+        app_secret=req.app_secret,
+        domain=req.domain,
+    )
+    try:
+        spaces = await client.list_spaces()
+    except Exception as e:
+        logger.warning("feishu wiki test failed for %s: %s", slug, e)
+        return Result.succ(FeishuWikiTestResponse(ok=False, error=str(e)))
+    finally:
+        await client.aclose()
+    return Result.succ(
+        FeishuWikiTestResponse(ok=True, spaces=[FeishuWikiSpace(**s) for s in spaces])
+    )
+
+
+@router.post(
+    "/spaces/{slug}/wiki-sync/feishu/run",
+    response_model=Result[FeishuWikiSyncResponse],
+)
+async def feishu_wiki_run(
+    slug: str, req: FeishuWikiSyncRequest, service: Service = Depends(get_service)
+):
+    """Start pulling Feishu wiki pages into the space (async job).
+
+    Pages land as CLIP verbats (dedup by content hash) and each gets an L1
+    wiki doc via the standard pipeline. Poll /spaces/{slug}/ingest-jobs for
+    progress — the job appears with source_file ``feishu-wiki:<space_id>``.
+    """
+    vault = await service.get_vault(slug)
+    space = await service.get_space_config(slug)
+    job = await service.orchestrator.sync_feishu_wiki(
+        space=space,
+        vault=vault,
+        app_id=req.app_id,
+        app_secret=req.app_secret,
+        domain=req.domain,
+        wiki_space_id=req.wiki_space_id,
+        llm_model_override=req.llm_model,
+    )
+    return Result.succ(FeishuWikiSyncResponse(job_id=job.id))
 
 
 @router.get(

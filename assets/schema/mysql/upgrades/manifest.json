@@ -14,7 +14,7 @@
     {
       "name": "upgrade_0.6.0_20260826_to_0.6.0_20260826.sql",
       "from_version": "0.6.0",
-      "from_timestamp": "20260827",
+      "from_timestamp": "20260828",
       "to_version": "0.6.0",
       "to_timestamp": "20260828",
       "seq": 0,

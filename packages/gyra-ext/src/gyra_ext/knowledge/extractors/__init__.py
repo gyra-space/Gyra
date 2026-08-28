@@ -42,6 +42,17 @@ ModelCaller = Callable[
     Coroutine[Any, Any, str],
 ]
 
+# Async callable the orchestrator passes to extractors for persisting binary
+# assets (e.g. images embedded in docx/pdf/pptx). Signature:
+#   async def asset_store(filename: str, data: bytes) -> str
+# Returns the vault-relative reference (e.g. "assets/ab12-photo.png") that
+# extractors embed into markdown placeholders, or "" when the asset could
+# not be persisted (extractors then keep a bare placeholder).
+AssetStore = Callable[
+    ...,
+    Coroutine[Any, Any, str],
+]
+
 
 @dataclass
 class VerbatimSpec:
@@ -61,7 +72,10 @@ class Extractor(Protocol):
 
     `model` is the resolved model name (or None for plain-text extractors).
     `model_caller` is provided by the orchestrator; extractors that do not
-    need an LLM may ignore it. Extractors MUST NOT call `verbat_add`:
+    need an LLM may ignore it. `asset_store` (optional) persists binary
+    assets embedded in the document (docx/pdf/pptx images) into the vault
+    and returns their vault-relative reference; None means the backend
+    cannot store assets. Extractors MUST NOT call `verbat_add`:
     the orchestrator owns verbat creation.
     """
 
@@ -74,6 +88,7 @@ class Extractor(Protocol):
         mime: str,
         model: Optional[str],
         model_caller: Optional[ModelCaller],
+        asset_store: Optional[AssetStore] = None,
     ) -> List[VerbatimSpec]: ...
 
 

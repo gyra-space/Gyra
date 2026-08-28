@@ -11,6 +11,10 @@ import type {
   DocMeta,
   DocRead,
   EdgeOut,
+  FeishuWikiSyncRequest,
+  FeishuWikiSyncResponse,
+  FeishuWikiTestRequest,
+  FeishuWikiTestResponse,
   IngestJobListResponse,
   LintResponse,
   LlmUsageSummary,
@@ -157,6 +161,27 @@ export const listIngestJobs = (slug: string, limit = 50) =>
     `${BASE}/spaces/${slug}/ingest-jobs`,
     { limit },
   );
+
+// ----- external wiki sync (Feishu) -----
+
+export const testFeishuWiki = (slug: string, req: FeishuWikiTestRequest) =>
+  POST<FeishuWikiTestRequest, FeishuWikiTestResponse>(
+    `${BASE}/spaces/${slug}/wiki-sync/feishu/test`,
+    req,
+  );
+
+export const startFeishuWikiSync = (slug: string, req: FeishuWikiSyncRequest) =>
+  POST<FeishuWikiSyncRequest, FeishuWikiSyncResponse>(
+    `${BASE}/spaces/${slug}/wiki-sync/feishu/run`,
+    req,
+  );
+
+/**
+ * Resolve a vault-relative asset ref (e.g. `assets/ab12-photo.png`) that
+ * appears in markdown to a servable URL.
+ */
+export const knowledgeAssetUrl = (slug: string, ref: string) =>
+  `${BASE}/spaces/${slug}/assets/${ref.replace(/^\/+/, '')}`;
 
 // ----- LLM usage ledger -----
 

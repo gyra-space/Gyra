@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 # Task and playbook services are imported lazily below to avoid pulling in
 # heavy endpoint/runtime dependencies (e.g. gyra_app) at module load time.
 
+# 注入 system prompt 的进行中任务条数上限(只取最近,不全量注入)
+ACTIVE_TASKS_INJECT_LIMIT = 5
+
 
 @dataclass
 class WorkspaceContextSnapshot:
@@ -163,7 +166,7 @@ def build_workspace_context(
             from gyra_serve.task.api.schemas import TaskListFilter
 
             active_tasks = task_service.list_tasks(
-                TaskListFilter(workspace_id=workspace_id)
+                TaskListFilter(workspace_id=workspace_id, limit=50)
             ) or []
             # Keep only genuinely active tasks (状态枚举见 task/api/schemas.py:
             # draft/pending_trigger/running/awaiting_human/blocked/delivered/
@@ -173,7 +176,7 @@ def build_workspace_context(
                 for t in active_tasks
                 if getattr(t, "status", None)
                 in {"running", "awaiting_human", "blocked"}
-            ]
+            ][:ACTIVE_TASKS_INJECT_LIMIT]
         except Exception:
             pass
 

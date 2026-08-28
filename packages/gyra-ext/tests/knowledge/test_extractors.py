@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
@@ -265,3 +266,180 @@ async def test_video_extractor_requires_model(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="multimodal model"):
         await ext.extract(f, "video/mp4", model=None, model_caller=None)
+
+
+# ---------------------------------------------------------------------------
+# Embedded images in docx/pptx (asset_store persistence + vision caption)
+# ---------------------------------------------------------------------------
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _noise_png(width: int = 96, height: int = 96) -> bytes:
+    """A real PNG (python-docx/pptx must parse it) large enough for the extractor."""
+    import io
+    import random
+
+    from PIL import Image
+
+    img = Image.new("RGB", (width, height))
+    rng = random.Random(42)
+    img.putdata(
+        [(rng.randrange(256), rng.randrange(256), rng.randrange(256)) for _ in range(width * height)]
+    )
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    data = buf.getvalue()
+    assert len(data) >= builtin_mod.MIN_EMBEDDED_IMAGE_BYTES
+    return data
+
+
+def _tiny_png() -> bytes:
+    """A real but tiny PNG that must be skipped by MIN_EMBEDDED_IMAGE_BYTES."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1, 1)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_docx_extractor_persists_and_captions_images(tmp_path: Path):
+    pytest.importorskip("docx")
+    pytest.importorskip("PIL")
+    import docx as docx_mod
+
+    png = _noise_png()
+    doc = docx_mod.Document()
+    doc.add_paragraph("第一段正文")
+    doc.add_picture(io.BytesIO(png))
+    doc.add_paragraph("第二段正文")
+    f = tmp_path / "with_img.docx"
+    doc.save(str(f))
+
+    stored: dict = {}
+
+    async def fake_asset_store(filename: str, data: bytes) -> str:
+        stored[filename] = data
+        return f"assets/fake-{filename}"
+
+    captured: dict = {}
+
+    async def fake_caller(model, prompt, images=None):
+        captured["model"] = model
+        captured["images"] = images or []
+        # tmp file only exists during the call — read it now
+        captured["captioned_bytes"] = images[0].read_bytes() if images else None
+        return "一张测试图"
+
+    ext = get_extractor_registry().get(DOCX_MIME)
+    specs = await ext.extract(
+        f,
+        DOCX_MIME,
+        model="vl-model",
+        model_caller=fake_caller,
+        asset_store=fake_asset_store,
+    )
+
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec.meta["images"] == 1
+    assert "第一段正文" in spec.content
+    assert "第二段正文" in spec.content
+    assert "![图片1: image1.png](assets/fake-image1.png)" in spec.content
+    assert "图片说明：一张测试图" in spec.content
+    assert stored == {"image1.png": png}
+    assert captured["model"] == "vl-model"
+    assert captured["captioned_bytes"] == png
+
+
+@pytest.mark.asyncio
+async def test_docx_extractor_without_model_and_store_keeps_placeholder(tmp_path: Path):
+    """No asset_store + no model → bare placeholder, document still ingests."""
+    pytest.importorskip("docx")
+    pytest.importorskip("PIL")
+    import docx as docx_mod
+
+    doc = docx_mod.Document()
+    doc.add_picture(__import__("io").BytesIO(_noise_png()))
+    f = tmp_path / "bare.docx"
+    doc.save(str(f))
+
+    ext = get_extractor_registry().get(DOCX_MIME)
+    specs = await ext.extract(f, DOCX_MIME, model=None, model_caller=None)
+
+    assert len(specs) == 1
+    content = specs[0].content
+    assert "（内嵌图片: image1.png，未保存）" in content
+    assert "![图片1" not in content
+    assert "图片说明：" not in content
+    assert specs[0].meta["images"] == 1
+
+
+@pytest.mark.asyncio
+async def test_docx_extractor_skips_tiny_images(tmp_path: Path):
+    """Images below MIN_EMBEDDED_IMAGE_BYTES are decoration → skipped entirely."""
+    pytest.importorskip("docx")
+    pytest.importorskip("PIL")
+    import docx as docx_mod
+
+    doc = docx_mod.Document()
+    doc.add_paragraph("只有文字和一个小图标")
+    doc.add_picture(__import__("io").BytesIO(_tiny_png()))
+    f = tmp_path / "tiny.docx"
+    doc.save(str(f))
+
+    ext = get_extractor_registry().get(DOCX_MIME)
+    specs = await ext.extract(f, DOCX_MIME, model=None, model_caller=None)
+
+    assert specs[0].meta["images"] == 0
+    assert "内嵌图片" not in specs[0].content
+
+
+@pytest.mark.asyncio
+async def test_pptx_extractor_persists_and_captions_images(tmp_path: Path):
+    pytest.importorskip("pptx")
+    pytest.importorskip("PIL")
+    import pptx as pptx_mod
+
+    png = _noise_png()
+    prs = pptx_mod.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    tb = slide.shapes.add_textbox(0, 0, 914400, 914400)
+    tb.text_frame.text = "封面标题"
+    slide.shapes.add_picture(io.BytesIO(png), 0, 0)
+    f = tmp_path / "deck.pptx"
+    prs.save(str(f))
+
+    stored: dict = {}
+
+    async def fake_asset_store(filename: str, data: bytes) -> str:
+        stored[filename] = data
+        return f"assets/fake-{filename}"
+
+    async def fake_caller(model, prompt, images=None):
+        return "产品架构图"
+
+    ext = get_extractor_registry().get(
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
+    specs = await ext.extract(
+        f,
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        model="vl-model",
+        model_caller=fake_caller,
+        asset_store=fake_asset_store,
+    )
+
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec.meta["images"] == 1
+    assert spec.meta["slides"] == 1
+    assert "封面标题" in spec.content
+    assert "![图片1: slide1_" in spec.content
+    assert "](assets/fake-slide1_" in spec.content
+    assert "图片说明：产品架构图" in spec.content
+    assert len(stored) == 1
+    assert next(iter(stored.values())) == png

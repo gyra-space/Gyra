@@ -1489,6 +1489,24 @@ class BaseVaultFS(ABC):
     @abstractmethod
     async def _wiki_delete(self, norm_path: str) -> None: ...
 
+    # ----- Binary assets (default: unsupported) -----
+    async def asset_write(self, filename: str, data: bytes) -> str:
+        """Persist a binary asset (e.g. an image embedded in docx/pdf/pptx).
+
+        Returns the vault-relative reference to embed in markdown
+        (e.g. "assets/ab12-photo.png"), or "" when the backend cannot
+        store assets — extractors then keep a bare placeholder.
+        """
+        return ""
+
+    async def asset_read(self, ref: str) -> bytes:
+        """Read a previously stored asset by vault-relative ref.
+
+        Returns b"" when the ref is unknown or the backend does not
+        support assets.
+        """
+        return b""
+
     # ===================================================================
     # L2 Graph — high-level orchestration
     # ===================================================================

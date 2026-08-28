@@ -48,6 +48,7 @@ from gyra.knowledge.types import (
 )
 
 from gyra_ext.knowledge.extractors import (
+    AssetStore,
     Extractor,
     ModelCaller,
     VerbatimSpec,
@@ -343,6 +344,135 @@ class IngestOrchestrator:
             jobs.append(job)
         return jobs
 
+    async def sync_feishu_wiki(
+        self,
+        space: Space,
+        vault: Any,
+        *,
+        app_id: str,
+        app_secret: str,
+        domain: Optional[str] = None,
+        wiki_space_id: str,
+        llm_model_override: Optional[str] = None,
+    ) -> IngestJob:
+        """Pull Feishu wiki pages into the space as a background job.
+
+        Each readable page becomes one CLIP verbatim (dedup by content_hash,
+        so re-syncs are cheap), then the standard L1 wiki generation +
+        entity curation pipeline runs over the new verbats. Job source_file
+        is ``feishu-wiki:<wiki_space_id>`` so the UI can label it.
+        """
+        job = IngestJob(
+            id=f"ij_{uuid.uuid4().hex[:12]}",
+            space_slug=space.slug,
+            source_file=f"feishu-wiki:{wiki_space_id}",
+        )
+        self.jobs.add(job)
+        await self._persist_job(vault, job.id)
+        asyncio.create_task(
+            self._run_feishu_sync(
+                job=job,
+                space=space,
+                vault=vault,
+                app_id=app_id,
+                app_secret=app_secret,
+                domain=domain,
+                wiki_space_id=wiki_space_id,
+                llm_model_override=llm_model_override,
+            )
+        )
+        return job
+
+    async def _run_feishu_sync(
+        self,
+        job: IngestJob,
+        space: Space,
+        vault: Any,
+        *,
+        app_id: str,
+        app_secret: str,
+        domain: Optional[str],
+        wiki_space_id: str,
+        llm_model_override: Optional[str],
+    ) -> None:
+        try:
+            from gyra_ext.knowledge.connectors import FeishuWikiClient
+
+            await self._job_update(vault, job.id, status="extracting")
+            client = FeishuWikiClient(
+                app_id=app_id, app_secret=app_secret, domain=domain or "https://open.feishu.cn",
+            )
+            try:
+                pages = await client.list_pages(wiki_space_id)
+            finally:
+                await client.aclose()
+            if not pages:
+                raise RuntimeError(
+                    f"No readable docx pages found in Feishu wiki space "
+                    f"'{wiki_space_id}' (check app permissions / node types)"
+                )
+
+            # 1. Persist pages as CLIP verbats (dedup by content_hash)
+            verbat_ids: List[VerbatId] = []
+            for page in pages:
+                v = Verbat.create(
+                    space_id=vault.space_id,
+                    content=page.content,
+                    source_file=f"feishu-wiki/{wiki_space_id}/{page.title}",
+                    extract_mode=ExtractMode.CLIP,
+                    source_path=page.url or None,
+                    content_date=(
+                        datetime.fromisoformat(page.updated_at)
+                        if page.updated_at
+                        else None
+                    ),
+                )
+                vid = await vault.verbat_add(v)
+                verbat_ids.append(vid)
+            job.verbat_ids = verbat_ids
+            await self._job_update(
+                vault, job.id, status="generating_wiki", verbat_ids=verbat_ids
+            )
+
+            # 2. Generate L1 wiki per verbat (skips ones that already have one)
+            wiki_doc_ids: List[DocId] = []
+            llm_model = llm_model_override or space.llm_model
+            for vid in verbat_ids:
+                try:
+                    doc_id = await self._generate_wiki(
+                        space=space, vault=vault, verbat_id=vid,
+                        llm_model=llm_model, job_id=job.id,
+                    )
+                    if doc_id:
+                        wiki_doc_ids.append(doc_id)
+                        job.wiki_doc_ids = wiki_doc_ids
+                        await self._job_update(
+                            vault, job.id, wiki_doc_ids=list(wiki_doc_ids)
+                        )
+                except Exception:
+                    logger.exception(
+                        "Wiki generation failed for verbat %s (feishu sync %s)",
+                        vid, wiki_space_id,
+                    )
+
+            # 3. Entity curation over the fresh wiki docs
+            await self._curate_entities_for_docs(
+                space, vault, wiki_doc_ids, llm_model, job_id=job.id
+            )
+
+            await self._job_update(
+                vault, job.id, status="done", finished_at=datetime.utcnow().isoformat()
+            )
+        except Exception as e:
+            logger.exception("Feishu wiki sync failed for job %s", job.id)
+            await self._job_update(
+                vault,
+                job.id,
+                status="failed",
+                error=str(e),
+                finished_at=datetime.utcnow().isoformat(),
+            )
+
     # ------------------------------------------------------------------
     # Pipeline implementation
     # ------------------------------------------------------------------
@@ -382,6 +512,9 @@ class IngestOrchestrator:
             # 4. Build model_caller closure
             model_caller = self._make_model_caller(space, vault=vault, job_id=job.id)
 
+            # 4b. Asset store for embedded images (None → bare placeholders)
+            asset_store = self._make_asset_store(vault)
+
             # 5. Extract
             await self._job_update(vault, job.id, status="extracting")
             specs: List[VerbatimSpec] = await extractor.extract(
@@ -389,6 +522,7 @@ class IngestOrchestrator:
                 mime=mime,
                 model=model,
                 model_caller=model_caller,
+                asset_store=asset_store,
             )
             if not specs:
                 raise RuntimeError(
@@ -522,11 +656,16 @@ class IngestOrchestrator:
         # 3. Resolve model + 4. model caller
         model = self._resolve_extract_model(space, mime, model_override)
         model_caller = self._make_model_caller(space, vault=vault, job_id=job_id)
+        asset_store = self._make_asset_store(vault)
 
         # 5. Extract
         on_status("extracting")
         specs: List[VerbatimSpec] = await extractor.extract(
-            path=file_path, mime=mime, model=model, model_caller=model_caller,
+            path=file_path,
+            mime=mime,
+            model=model,
+            model_caller=model_caller,
+            asset_store=asset_store,
         )
         if not specs:
             raise RuntimeError(
@@ -534,7 +673,7 @@ class IngestOrchestrator:
             )
 
         # 6. Persist verbats
-        verbat_ids: List[VerbatimId] = []
+        verbat_ids: List[VerbatId] = []
         for spec in specs:
             spec_source = spec.source_file
             if not spec_source or spec_source == file_path.name:
@@ -1469,6 +1608,16 @@ class IngestOrchestrator:
     # Helpers
     # ------------------------------------------------------------------
 
+    # Mimes of documents that may embed images worth captioning by the
+    # multimodal model (pdf / docx / pptx families).
+    _OFFICE_MIMES_WITH_IMAGES = (
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-powerpoint",
+    )
+
     def _resolve_extract_model(
         self,
         space: Space,
@@ -1481,8 +1630,33 @@ class IngestOrchestrator:
         # Image/audio → space.multimodal_model
         if mime.startswith(("image/", "audio/", "video/")):
             return space.multimodal_model
+        # Office docs can embed images — the multimodal model captions them
+        if mime in self._OFFICE_MIMES_WITH_IMAGES:
+            return space.multimodal_model
         # Plain text → no model needed
         return None
+
+    def _make_asset_store(self, vault: Any) -> Optional[AssetStore]:
+        """Build an ``AssetStore`` closure over the vault's asset storage.
+
+        Extractors call it to persist images embedded in office documents and
+        get back a vault-relative markdown reference. Returns ``None`` when
+        the vault backend cannot store assets — extractors then keep bare
+        placeholders and the ingest still succeeds (product decision: never
+        fail the document over an image).
+        """
+        asset_write = getattr(vault, "asset_write", None)
+        if asset_write is None:
+            return None
+
+        async def _store(filename: str, data: bytes) -> str:
+            try:
+                return await asset_write(filename, data)
+            except Exception as e:
+                logger.warning("asset_store failed for %s: %s", filename, e)
+                return ""
+
+        return _store
 
     def _guess_mime_from_ext(self, filename: str) -> Optional[str]:
         """Fallback mime detection when mimetypes.guess_type returns None."""

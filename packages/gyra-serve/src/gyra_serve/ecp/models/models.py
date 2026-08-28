@@ -38,6 +38,7 @@ from ..api.schemas import (
     ConfirmerVO,
     MissLearnVO,
     OpLogVO,
+    SemanticAlignmentVO,
     SemanticObjectListVO,
     SemanticObjectVO,
     WorkspaceConfigVO,
@@ -46,12 +47,14 @@ from ..config import (
     DEFAULT_WORKSPACE_ID,
     STATUS_CONFIRMED,
     STATUS_PROPOSED,
+    STATUS_REJECTED,
     STATUS_SUPERSEDED,
     TABLE_ASSET_REF,
     TABLE_CONFIRMER,
     TABLE_MISS_LEARN,
     TABLE_OP_LOG,
     TABLE_RESOLUTION_CACHE,
+    TABLE_SEMANTIC_ALIGNMENT,
     TABLE_SEMANTIC_EDGE,
     TABLE_SEMANTIC_OBJECT,
     TABLE_WORKSPACE_CONFIG,
@@ -210,6 +213,46 @@ class EcpMissLearnEntity(Model):
     )
 
     __table_args__ = (Index("idx_ecp_miss_learn_ws", "workspace_id"),)
+
+
+class EcpSemanticAlignmentEntity(Model):
+    """知识层实体 ↔ 硬层语义对象的语义对齐记录(LLM 推理固化)。
+
+    对齐关系由 LLM 推理产出(EntityAligner):给定知识实体名与语义对象
+    清单(name/description/aliases),LLM 判断语义等价/强关联并以
+    rationale 说明推理依据——覆盖名字硬匹配够不着的情况(如 wiki 里的
+    "销售单据" ↔ ent.order)。全景图的 aligns_to 边从本表投影,查询时
+    零 LLM 依赖。
+
+    状态机: proposed --confirm--> confirmed / --reject--> rejected。
+    唯一键 (workspace_id, slug, entity_name, object_id);LLM 复跑只刷新
+    proposed 行的 confidence/rationale,人工决定不会被覆盖或降级。
+    """
+
+    __tablename__ = TABLE_SEMANTIC_ALIGNMENT
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(String(128), nullable=False, default=DEFAULT_WORKSPACE_ID)
+    slug = Column(String(128), nullable=False)
+    entity_name = Column(String(256), nullable=False)
+    object_id = Column(String(128), nullable=False)
+    status = Column(String(32), nullable=False, default=STATUS_PROPOSED)
+    confidence = Column(Float, nullable=True)
+    rationale = Column(String(1024), nullable=True)
+    source = Column(String(16), nullable=False, default="llm")
+    decided_by = Column(String(64), nullable=True)
+    gmt_create = Column(DateTime, default=datetime.now, nullable=False)
+    gmt_modify = Column(
+        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "slug", "entity_name", "object_id",
+            name="uk_ecp_alignment_key",
+        ),
+        Index("idx_ecp_alignment_ws_status", "workspace_id", "status"),
+    )
 
 
 class EcpWorkspaceConfigEntity(Model):
@@ -1060,6 +1103,176 @@ class MissLearnDao(BaseDao[EcpMissLearnEntity, Any, Any]):
         return _to_miss_learn_vo(entity) if entity else None
 
 
+class SemanticAlignmentDao(BaseDao[EcpSemanticAlignmentEntity, Any, Any]):
+    """DAO for LLM-proposed entity↔object semantic alignments.
+
+    对齐候选是数据:LLM 推理产出 → 本表固化(proposed) → 人工确认
+    (confirmed)→ 全景图投影 aligns_to 边。LLM 不可用时走 add_manual
+    兜底(直通 confirmed,与对象层"SQL 直添加即确认"同哲学)。
+    """
+
+    _ALLOWED_STATUS = (STATUS_PROPOSED, STATUS_CONFIRMED, STATUS_REJECTED)
+
+    def upsert_candidates(
+        self,
+        workspace_id: str,
+        slug: str,
+        candidates: List[Dict[str, Any]],
+        source: str = "llm",
+    ) -> List[SemanticAlignmentVO]:
+        """Idempotently persist alignment candidates.
+
+        唯一键 ``(workspace_id, slug, entity_name, object_id)``;碰撞时
+        只刷新 proposed 行的 confidence/rationale——confirmed/rejected
+        是人工决定,LLM 复跑既不覆盖也不降级。
+        """
+        out: List[SemanticAlignmentVO] = []
+        with self.session() as session:
+            for cand in candidates:
+                entity_name = str(cand.get("entity_name") or "").strip()[:256]
+                object_id = str(cand.get("object_id") or "").strip()[:128]
+                if not entity_name or not object_id:
+                    continue
+                try:
+                    confidence = (
+                        max(0.0, min(1.0, float(cand.get("confidence"))))
+                        if cand.get("confidence") is not None
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    confidence = None
+                rationale = (str(cand.get("rationale")) or "")[:1024] or None
+                entity = (
+                    session.query(EcpSemanticAlignmentEntity)
+                    .filter(
+                        EcpSemanticAlignmentEntity.workspace_id == workspace_id,
+                        EcpSemanticAlignmentEntity.slug == slug,
+                        EcpSemanticAlignmentEntity.entity_name == entity_name,
+                        EcpSemanticAlignmentEntity.object_id == object_id,
+                    )
+                    .first()
+                )
+                if entity:
+                    if entity.status == STATUS_PROPOSED:
+                        entity.confidence = (
+                            confidence if confidence is not None else entity.confidence
+                        )
+                        entity.rationale = rationale or entity.rationale
+                        session.flush()
+                        session.refresh(entity)
+                else:
+                    entity = EcpSemanticAlignmentEntity(
+                        workspace_id=workspace_id,
+                        slug=slug,
+                        entity_name=entity_name,
+                        object_id=object_id,
+                        status=STATUS_PROPOSED,
+                        confidence=confidence,
+                        rationale=rationale,
+                        source=source,
+                    )
+                    session.add(entity)
+                    session.flush()
+                    session.refresh(entity)
+                out.append(_to_alignment_vo(entity))
+        return out
+
+    def list(
+        self, workspace_id: str, status: Optional[str] = None
+    ) -> List[SemanticAlignmentVO]:
+        with self.session(commit=False) as session:
+            query = session.query(EcpSemanticAlignmentEntity).filter(
+                EcpSemanticAlignmentEntity.workspace_id == workspace_id
+            )
+            if status:
+                query = query.filter(EcpSemanticAlignmentEntity.status == status)
+            rows = query.order_by(desc(EcpSemanticAlignmentEntity.gmt_modify)).all()
+        return [_to_alignment_vo(r) for r in rows]
+
+    def decisions(self, workspace_id: str) -> List[SemanticAlignmentVO]:
+        """proposed + confirmed 行——图投影的对齐输入(rejected 不上 图)。"""
+        with self.session(commit=False) as session:
+            rows = (
+                session.query(EcpSemanticAlignmentEntity)
+                .filter(
+                    EcpSemanticAlignmentEntity.workspace_id == workspace_id,
+                    EcpSemanticAlignmentEntity.status != STATUS_REJECTED,
+                )
+                .all()
+            )
+        return [_to_alignment_vo(r) for r in rows]
+
+    def set_status(
+        self, alignment_id: int, status: str, decided_by: Optional[str] = None
+    ) -> Optional[SemanticAlignmentVO]:
+        """Confirm/reject a candidate (write rule 2 同源:LLM 不自确认)。"""
+        if status not in self._ALLOWED_STATUS:
+            raise ValueError(f"invalid alignment status: {status}")
+        with self.session() as session:
+            entity = session.get(EcpSemanticAlignmentEntity, alignment_id)
+            if not entity:
+                return None
+            entity.status = status
+            entity.decided_by = decided_by
+            session.flush()
+            session.refresh(entity)
+            return _to_alignment_vo(entity)
+
+    def add_manual(
+        self,
+        workspace_id: str,
+        slug: str,
+        entity_name: str,
+        object_id: str,
+        decided_by: Optional[str] = None,
+    ) -> SemanticAlignmentVO:
+        """手工添加对齐,直通 confirmed(LLM 不可用时的确定性兜底)。"""
+        entity_name = (entity_name or "").strip()[:256]
+        object_id = (object_id or "").strip()[:128]
+        if not entity_name or not object_id:
+            raise ValueError("entity_name 和 object_id 不能为空")
+        with self.session() as session:
+            entity = (
+                session.query(EcpSemanticAlignmentEntity)
+                .filter(
+                    EcpSemanticAlignmentEntity.workspace_id == workspace_id,
+                    EcpSemanticAlignmentEntity.slug == slug,
+                    EcpSemanticAlignmentEntity.entity_name == entity_name,
+                    EcpSemanticAlignmentEntity.object_id == object_id,
+                )
+                .first()
+            )
+            if entity:
+                entity.status = STATUS_CONFIRMED
+                entity.source = "manual"
+                entity.decided_by = decided_by
+                session.flush()
+                session.refresh(entity)
+            else:
+                entity = EcpSemanticAlignmentEntity(
+                    workspace_id=workspace_id,
+                    slug=slug,
+                    entity_name=entity_name,
+                    object_id=object_id,
+                    status=STATUS_CONFIRMED,
+                    source="manual",
+                    decided_by=decided_by,
+                )
+                session.add(entity)
+                session.flush()
+                session.refresh(entity)
+            return _to_alignment_vo(entity)
+
+    def remove(self, alignment_id: int) -> bool:
+        """删除一条对齐记录(手工纠错入口)。"""
+        with self.session() as session:
+            entity = session.get(EcpSemanticAlignmentEntity, alignment_id)
+            if not entity:
+                return False
+            session.delete(entity)
+            return True
+
+
 class AssetRefDao(BaseDao[EcpAssetRefEntity, Any, Any]):
     """DAO for the original-asset reference registry."""
 
@@ -1243,6 +1456,22 @@ def _to_miss_learn_vo(e: EcpMissLearnEntity) -> MissLearnVO:
         proposal_ids=e.proposal_ids or [],
         trigger=e.trigger,
         learned_at=_iso(e.learned_at),
+    )
+
+
+def _to_alignment_vo(e: EcpSemanticAlignmentEntity) -> SemanticAlignmentVO:
+    return SemanticAlignmentVO(
+        id=e.id,
+        workspace_id=e.workspace_id,
+        slug=e.slug,
+        entity_name=e.entity_name,
+        object_id=e.object_id,
+        status=e.status,
+        confidence=e.confidence,
+        rationale=e.rationale,
+        source=e.source,
+        decided_by=e.decided_by,
+        gmt_modify=_iso(e.gmt_modify),
     )
 
 

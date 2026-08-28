@@ -26,6 +26,7 @@ TABLE_OP_LOG = "gyra_serve_ecp_op_log"
 TABLE_ASSET_REF = "gyra_serve_ecp_asset_ref"
 TABLE_WORKSPACE_CONFIG = "gyra_serve_ecp_workspace_config"
 TABLE_MISS_LEARN = "gyra_serve_ecp_miss_learn"
+TABLE_SEMANTIC_ALIGNMENT = "gyra_serve_ecp_semantic_alignment"
 
 # Semantic object types
 # 结构化(DB): entity/metric/relation/dimension

@@ -42,7 +42,9 @@ app_card_<card_slug>_v<meta.version>_<YYYYMMDDTHHMMSSZ>.json
 - 返回的列名（`columns` / `rows[0]` 的键）与 `code` 里访问的 `r.代数名` 完全一致；
 - SQL 只读、前缀合法、`bind_params` 占位齐全；metric 已 `confirmed`。
 
-**只要有一条查询取不到数据、报错或字段对不上，就修到通过再交付**。验证通过后再进入 `validate.py`。
+**只要有一条查询取不到数据、报错或字段对不上，就修到通过再交付**。
+
+> **交付门禁**：未逐条跑过 hook 工具验证的 payload，**禁止**进入 `validate.py`、**禁止**交付。只用 `execute_sql` 探数而未走 hook 工具逐条验证的，视为未验证。
 
 ## 4. 必做：最后一步运行校验脚本 `validate.py`
 

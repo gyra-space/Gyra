@@ -663,6 +663,40 @@ class LocalVaultFS(BaseVaultFS):
             path.unlink()
 
     # ===================================================================
+    # Binary assets (embedded document images etc.)
+    # ===================================================================
+    async def asset_write(self, filename: str, data: bytes) -> str:
+        """Store bytes under assets/<sha1[:16]>-<safe_name>; content-addressed
+        so repeated extraction of the same image dedupes on disk."""
+        import hashlib
+        import re as _re
+
+        safe = _re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(filename or ""))
+        if not safe or safe in (".", ".."):
+            safe = "asset.bin"
+        digest = hashlib.sha1(data).hexdigest()[:16]
+        rel = f"assets/{digest}-{safe}"
+        path = self._root / rel
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        return rel
+
+    async def asset_read(self, ref: str) -> bytes:
+        """Read asset bytes by vault-relative ref (path-traversal safe)."""
+        clean = os.path.normpath(ref or "").lstrip("./")
+        if not clean or clean.startswith(".."):
+            return b""
+        path = (self._root / clean).resolve()
+        try:
+            path.relative_to(self._root.resolve())
+        except ValueError:
+            return b""
+        if not path.is_file():
+            return b""
+        return path.read_bytes()
+
+    # ===================================================================
     # L2 Graph — SQLite storage
     # ===================================================================
     async def _edge_insert(self, e: Edge) -> None:

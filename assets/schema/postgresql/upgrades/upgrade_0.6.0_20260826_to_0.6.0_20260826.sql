@@ -17,3 +17,4 @@ CREATE INDEX "ix_app_card_record_app_card_id" ON "app_card_record" ("app_card_id
 CREATE UNIQUE INDEX "uk_app_card_record_rid" ON "app_card_record" ("workspace_id", "app_card_id", "collection", "record_id");
 CREATE INDEX "idx_ecp_miss_learn_ws" ON "gyra_serve_ecp_miss_learn" ("workspace_id");
 ALTER TABLE "app_card_kv" ALTER COLUMN "value_json" TEXT NOT NULL DEFAULT NULL;
+CREATE INDEX "idx_ecp_alignment_ws_status" ON "gyra_serve_ecp_semantic_alignment" ("workspace_id", "status");

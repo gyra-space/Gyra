@@ -348,8 +348,11 @@ export const getEcpReadiness = (datasource_id: number, workspace_id?: string) =>
     { datasource_id, workspace_id },
   );
 
-export const getEcpGraph = (workspace_id?: string) =>
-  GET<{ workspace_id?: string }, EcpGraph>(`${API_PREFIX}/graph`, { workspace_id });
+export const getEcpGraph = (workspace_id?: string, entity?: string) =>
+  GET<{ workspace_id?: string; entity?: string }, EcpGraph>(
+    `${API_PREFIX}/graph`,
+    { workspace_id, entity },
+  );
 
 export const rebuildEcpGraph = (workspace_id?: string) =>
   POST<Record<string, never>, EcpGraphRebuildResult>(
@@ -362,6 +365,73 @@ export const getOrCreateEcpSpace = (workspace_id?: string) =>
     `${API_PREFIX}/space${workspace_id ? `?workspace_id=${encodeURIComponent(workspace_id)}` : ''}`,
     {},
   );
+
+// =============================================================================
+// Semantic alignment (知识实体 × 语义对象的 LLM 语义对齐)
+// =============================================================================
+
+export interface EcpSemanticAlignment {
+  id: number;
+  workspace_id: string;
+  slug: string;
+  entity_name: string;
+  object_id: string;
+  status: 'proposed' | 'confirmed' | 'rejected';
+  confidence?: number | null;
+  rationale?: string | null;
+  /** llm = 推理产出;manual = 人工兜底(直通 confirmed) */
+  source: 'llm' | 'manual';
+  decided_by?: string | null;
+  gmt_modify?: string | null;
+}
+
+export interface EcpAlignmentRunResult {
+  workspace_id: string;
+  entities: number;
+  candidates: number;
+  errors: string[];
+}
+
+export const runEcpAlignment = (workspace_id?: string, user_id?: string) => {
+  const qs = [
+    workspace_id ? `workspace_id=${encodeURIComponent(workspace_id)}` : '',
+    user_id ? `user_id=${encodeURIComponent(user_id)}` : '',
+  ]
+    .filter(Boolean)
+    .join('&');
+  return POST<Record<string, never>, EcpAlignmentRunResult>(
+    `${API_PREFIX}/graph/alignments/run${qs ? `?${qs}` : ''}`,
+    {},
+  );
+};
+
+export const listEcpAlignments = (params?: { workspace_id?: string; status?: string }) =>
+  GET<typeof params, EcpSemanticAlignment[]>(
+    `${API_PREFIX}/graph/alignments`,
+    params,
+  );
+
+export const addEcpAlignment = (data: {
+  entity_name: string;
+  object_id: string;
+  user_id?: string;
+  workspace_id?: string;
+}) => POST<typeof data, EcpSemanticAlignment>(`${API_PREFIX}/graph/alignments`, data);
+
+export const confirmEcpAlignment = (id: number, data?: { user_id?: string }) =>
+  POST<typeof data, EcpSemanticAlignment>(
+    `${API_PREFIX}/graph/alignments/${id}/confirm`,
+    data ?? {},
+  );
+
+export const rejectEcpAlignment = (id: number, data?: { user_id?: string }) =>
+  POST<typeof data, EcpSemanticAlignment>(
+    `${API_PREFIX}/graph/alignments/${id}/reject`,
+    data ?? {},
+  );
+
+export const removeEcpAlignment = (id: number) =>
+  DELETE<Record<string, never>, boolean>(`${API_PREFIX}/graph/alignments/${id}`);
 
 // =============================================================================
 // Workspace config (proposal agent settings)

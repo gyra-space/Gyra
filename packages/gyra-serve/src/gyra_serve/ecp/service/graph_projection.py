@@ -25,6 +25,8 @@ projection, never hand-edited"——本模块是投影的单一计算点。两�
 - entity    ─binding─▶ asset:db:<datasource_id>                (对象→资产)
 - claim/terminology/policy ─ref─▶ asset:document:<space>:<doc_id>
                                                                 (对象→资产)
+- kn 实体  ─aligns_to─▶ 硬层对象(查询时,``align_key`` 归一后 name/aliases
+  完全相等才连)                                            (知识→对象)
 
 设计决策:资产边**不进物化边表**——资产 ref_id(``{space}:{doc_id}``)可达
 256 字符,超出边表 src/dst 的 String(128);且资产边只服务可视化(实时投影
@@ -34,6 +36,21 @@ projection, never hand-edited"——本模块是投影的单一计算点。两�
 from typing import Any, Dict, List, Tuple
 
 DOC_TYPES = ("claim", "terminology", "policy")
+
+# 知识层实体 → 硬层语义对象的对齐边:LLM 推理产出固化在对齐表,
+# 查询时读表投影(见 alignment.py 与 service._knowledge_subgraph)
+ALIGNMENT_EDGE = "aligns_to"
+
+
+def align_key(name: Any) -> str:
+    """对齐表索引键/检索归一助手:小写 + 仅保留字母数字。
+
+    纯语法归一(中文字符按字母数字处理,中英文标点/空白一律去除)。
+    对齐**决策本身由 LLM 推理产出**(alignment.EntityAligner 喂实体名
+    与对象清单做语义判断)并固化在 semantic_alignment 表——本函数不做
+    任何语义判断,只供对齐索引建键与 entity 检索命中时归一名字。
+    """
+    return "".join(ch for ch in str(name or "").strip().lower() if ch.isalnum())
 
 
 def _doc_ref_id(binding: Dict[str, Any]) -> str:

@@ -240,3 +240,35 @@ export interface CurateReport {
   path?: string | null;
   timestamp?: string | null;
 }
+
+// ----- external wiki sync (Feishu) -----
+
+export interface FeishuWikiSpace {
+  space_id: string;
+  name: string;
+  description: string;
+}
+
+export interface FeishuWikiTestRequest {
+  app_id: string;
+  app_secret: string;
+  domain?: string;
+}
+
+export interface FeishuWikiTestResponse {
+  ok: boolean;
+  spaces: FeishuWikiSpace[];
+  error?: string | null;
+}
+
+export interface FeishuWikiSyncRequest {
+  app_id: string;
+  app_secret: string;
+  domain?: string;
+  wiki_space_id: string;
+  llm_model?: string | null;
+}
+
+export interface FeishuWikiSyncResponse {
+  job_id: string;
+}

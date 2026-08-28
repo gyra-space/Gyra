@@ -1,9 +1,12 @@
 """Connection manager."""
 
+import hashlib
 import json
 import logging
 import os
-from typing import TYPE_CHECKING, Dict, List, Optional, Type
+import threading
+from collections import OrderedDict
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type
 
 from gyra.component import BaseComponent, ComponentType, SystemApp
 from gyra.core.awel.flow import ResourceMetadata
@@ -22,6 +25,9 @@ from .db_conn_info import DBConfig
 
 logger = logging.getLogger(__name__)
 
+# 连接器缓存上限(LRU): 复用 Engine, 避免每次取数都新建连接 + 全库 schema 反射
+_MAX_CONNECTOR_CACHE = 32
+
 
 class ConnectorManager(BaseComponent):
     """Connector manager."""
@@ -32,6 +38,10 @@ class ConnectorManager(BaseComponent):
         """Create a new ConnectorManager."""
         self.storage = ConnectConfigDao()
         self.system_app = system_app
+        # fingerprint -> connector; 配置指纹变化(改密/改 host/换文件)自动失效
+        self._connector_cache: "OrderedDict[str, BaseConnector]" = OrderedDict()
+        self._connector_fp_by_db_name: Dict[str, str] = {}
+        self._cache_lock = threading.Lock()
         super().__init__(system_app)
 
     def init_app(self, system_app: SystemApp):
@@ -198,14 +208,84 @@ class ConnectorManager(BaseComponent):
             raise ValueError("Unsupported Db Type！" + db_type)
         return result
 
+    @staticmethod
+    def _connector_fingerprint(db_name: str, db_config: Dict[str, Any]) -> str:
+        """Compute a stable fingerprint from the connection-relevant config.
+
+        配置任一连接要素变化(换库/改密/改 host/换文件路径) → 新指纹 → 旧缓存
+        自然失效; 每次都从元库现读配置, 无需在编辑/删除路径上挂失效钩子。
+        """
+        raw = json.dumps(
+            {
+                "db_name": db_name,
+                "db_type": db_config.get("db_type"),
+                "db_path": db_config.get("db_path"),
+                "db_host": db_config.get("db_host"),
+                "db_port": str(db_config.get("db_port")),
+                "db_user": db_config.get("db_user"),
+                "db_pwd": db_config.get("db_pwd"),
+                "ext_config": db_config.get("ext_config"),
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        )
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()  # noqa: S324
+
+    def _cache_put(
+        self, fingerprint: str, db_name: str, connector: BaseConnector
+    ) -> BaseConnector:
+        """Insert into the LRU cache; close stale entries for the same db."""
+        with self._cache_lock:
+            old_fp = self._connector_fp_by_db_name.get(db_name)
+            if old_fp and old_fp != fingerprint:
+                old = self._connector_cache.pop(old_fp, None)
+                if old is not None:
+                    logger.info(f"[ConnectorManager] config changed for '{db_name}', closing stale connector")
+                    try:
+                        old.close()
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"[ConnectorManager] close stale connector failed: {e}")
+            self._connector_fp_by_db_name[db_name] = fingerprint
+            self._connector_cache[fingerprint] = connector
+            self._connector_cache.move_to_end(fingerprint)
+            while len(self._connector_cache) > _MAX_CONNECTOR_CACHE:
+                _, evicted = self._connector_cache.popitem(last=False)
+                self._connector_fp_by_db_name = {
+                    k: v for k, v in self._connector_fp_by_db_name.items()
+                    if v in self._connector_cache
+                }
+                try:
+                    evicted.close()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[ConnectorManager] close evicted connector failed: {e}")
+        return connector
+
     def get_connector(self, db_name: str, db_id=None):
-        """Create a new connection instance.
+        """Get a cached connection instance (create on first use).
+
+        连接器按配置指纹缓存复用: 同一数据源的多次取数共享同一个
+        Engine/连接池, 省去每次请求的建连与全库 schema 反射开销;
+        配置变化时指纹失效, 自动重建。
 
         Args:
             db_name (str): database name
             db_id (int, optional): database config id, used as fallback
         """
         db_config = self.storage.get_db_config(db_name, db_id=db_id)
+        fingerprint = self._connector_fingerprint(db_name, db_config)
+        with self._cache_lock:
+            cached = self._connector_cache.get(fingerprint)
+            if cached is not None and not getattr(cached, "_is_closed", False):
+                self._connector_cache.move_to_end(fingerprint)
+                return cached
+            if cached is not None:
+                self._connector_cache.pop(fingerprint, None)
+        connector = self._build_connector(db_name, db_config)
+        return self._cache_put(fingerprint, db_name, connector)
+
+    def _build_connector(self, db_name: str, db_config: Dict[str, Any]):
+        """Build a new connector instance from the given db config."""
         db_type = DBType.of_db_type(db_config.get("db_type"))
         if not db_type:
             raise ValueError("Unsupported Db Type！" + db_config.get("db_type"))

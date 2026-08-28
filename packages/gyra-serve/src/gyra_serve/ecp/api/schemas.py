@@ -191,6 +191,48 @@ class MissLearnVO(BaseModel):
     learned_at: Optional[str] = None
 
 
+class SemanticAlignmentVO(BaseModel):
+    """知识层实体 ↔ 硬层语义对象的语义对齐记录(LLM 推理产出 + 人工决定)。
+
+    对齐关系不是名字硬匹配:EntityAligner 让 LLM 在知识实体名与语义对象
+    (name/description/aliases)之间做语义推理,候选以数据形式固化在本表;
+    全景图的 aligns_to 边从本表投影——图渲染零 LLM 依赖。
+    """
+
+    model_config = ConfigDict(title="EcpSemanticAlignment")
+
+    id: int
+    workspace_id: str
+    slug: str
+    entity_name: str
+    object_id: str
+    status: str = "proposed"
+    confidence: Optional[float] = None
+    rationale: Optional[str] = None
+    source: str = "llm"
+    decided_by: Optional[str] = None
+    gmt_modify: Optional[str] = None
+
+
+class AlignmentManualRequest(BaseModel):
+    """手工添加一条实体↔对象语义对齐(LLM 不可用时的兜底,直通 confirmed)。"""
+
+    model_config = ConfigDict(title="EcpAlignmentManualRequest")
+
+    entity_name: str
+    object_id: str
+    user_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+
+
+class AlignmentDecideRequest(BaseModel):
+    """Confirm/reject an alignment candidate."""
+
+    model_config = ConfigDict(title="EcpAlignmentDecideRequest")
+
+    user_id: Optional[str] = None
+
+
 class MissRecordVO(BaseModel):
     """一条原始兜底(fallback)记录——聚类详情里的明细行。"""
 

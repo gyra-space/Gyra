@@ -9,12 +9,19 @@
   被引用资产生成虚拟节点(status=unregistered)
 - _knowledge_subgraph:verbat 端点映射到稳定资产节点 id(与 claim 的
   ref 边同节点,三层连通);空间来源不依赖登记(派生 docs-<code>)
+- 语义对齐:aligns_to 边从 semantic_alignment 表(LLM 推理产出 +
+  人工确认)投影;EntityAligner._validate 是 LLM 幻觉防护闸门
 """
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from gyra_serve.ecp.service.graph_projection import project_edges
+from gyra_serve.ecp.service.alignment import EntityAligner
+from gyra_serve.ecp.service.graph_projection import (
+    ALIGNMENT_EDGE,
+    align_key,
+    project_edges,
+)
 from gyra_serve.ecp.service.service import Service
 
 
@@ -68,6 +75,14 @@ class TestProjectEdges:
             [{"edge_type": "belongs_to", "dst": "ent.a"}],
             [],
         )
+
+
+class TestAlignKey:
+    def test_normalizes_case_punct_keeps_cjk(self):
+        """归一键:小写、去标点空白,中文保留——仅作索引键,非对齐决策。"""
+        assert align_key("风控模型A") == "风控模型a"
+        assert align_key("  Sales-Order! ") == "salesorder"
+        assert align_key(None) == ""
 
 
 # --------------------------------------------------------------- 写时物化
@@ -319,6 +334,80 @@ class TestGraphView:
             ("kn:docs-ws1:doc:wiki_1", "kn:docs-ws1:entity:风控模型A", "about")
         ]
 
+    def test_alignment_edges_projected_from_index(self):
+        """裸实体端点按 (slug, align_key) 查对齐索引 → aligns_to 边携带状态。"""
+        import asyncio
+
+        from gyra_serve.ecp.service.service import Service as S
+
+        svc = S.__new__(S)
+        edge = SimpleNamespace(subject="doc:wiki_1", predicate="about",
+                               object="风控模型A")
+        sub = SimpleNamespace(nodes=[], edges=[edge], root=None)
+        vault = MagicMock()
+        vault.graph_query = MagicMock(return_value=_async_ret(sub))
+
+        async def get_vault(slug):
+            if slug == "docs-ws1":
+                return vault
+            raise KeyError(slug)
+
+        ks = MagicMock()
+        ks.get_vault = get_vault
+        svc._system_app = MagicMock()
+        svc._system_app.get_component.return_value = ks
+
+        # LLM 推理 + 人工确认后固化在对齐表的数据(此处模拟投影输入)
+        index = {
+            ("docs-ws1", align_key("风控模型A")): [
+                ("ent.risk", "confirmed"),
+                ("ent.deal", "proposed"),
+            ]
+        }
+        kn_nodes, links = asyncio.run(
+            svc._knowledge_subgraph("ecp_ws1", {}, {}, index)
+        )
+        align = [l for l in links if l.edge_type == ALIGNMENT_EDGE]
+        assert sorted((l.source, l.target, l.status) for l in align) == [
+            ("kn:docs-ws1:entity:风控模型A", "ent.deal", "proposed"),
+            ("kn:docs-ws1:entity:风控模型A", "ent.risk", "confirmed"),
+        ]
+
+    def test_graph_projects_alignment_from_dao(self):
+        """graph() 端到端:从对齐 DAO 构建索引,kn 实体连出 aligns_to 边。"""
+        import asyncio
+
+        from gyra_serve.ecp.service.service import Service as S
+
+        svc = _svc(assets=[], objects=[])
+        svc._alignment_dao = MagicMock()
+        svc._alignment_dao.decisions.return_value = [
+            SimpleNamespace(slug="ecp-default", entity_name="风控模型A",
+                            object_id="ent.risk", status="confirmed"),
+        ]
+        edge = SimpleNamespace(subject="doc:wiki_1", predicate="about",
+                               object="风控模型A")
+        sub = SimpleNamespace(nodes=[], edges=[edge], root=None)
+        vault = MagicMock()
+        vault.graph_query = MagicMock(return_value=_async_ret(sub))
+
+        async def get_vault(slug):
+            if slug == "ecp-default":
+                return vault
+            raise KeyError(slug)
+
+        ks = MagicMock()
+        ks.get_vault = get_vault
+        svc._system_app = MagicMock()
+        svc._system_app.get_component.return_value = ks
+
+        vo = asyncio.run(svc.graph("default"))
+        svc._alignment_dao.decisions.assert_called_once_with("default")
+        align = [l for l in vo.links if l.edge_type == ALIGNMENT_EDGE]
+        assert [(l.source, l.target, l.status) for l in align] == [
+            ("kn:ecp-default:entity:风控模型A", "ent.risk", "confirmed"),
+        ]
+
     def test_isolated_nodes_included_in_panorama(self):
         """孤立节点(不在任何边上的 doc/实体)也成为 kn 节点。"""
         import asyncio
@@ -367,3 +456,78 @@ class _async_ret:
             return self._value
 
         return _coro().__await__()
+
+# ------------------------------------------------------- LLM 幻觉防护闸门
+class TestEntityAlignerValidate:
+    """EntityAligner._validate:LLM 输出的确定性校验闸门。
+
+    与提案侧 quote 子串校验同哲学——LLM 可能幻觉,固化前必须过代码
+    校验:object_id 白名单、entity 归属、confidence 截断。
+    """
+
+    ENTITIES = ["风控模型A", "销售单据"]
+    OBJECT_IDS = {"ent.risk", "ent.order"}
+
+    def test_valid_candidates_pass(self):
+        raw = (
+            '[{"entity_name": "风控模型A", "object_id": "ent.risk",'
+            ' "confidence": 0.9, "rationale": "同指风控业务对象"}]'
+        )
+        out = EntityAligner()._validate(raw, self.ENTITIES, self.OBJECT_IDS)
+        assert out == [
+            {
+                "entity_name": "风控模型A",
+                "object_id": "ent.risk",
+                "confidence": 0.9,
+                "rationale": "同指风控业务对象",
+            }
+        ]
+
+    def test_markdown_fenced_output_parsed(self):
+        raw = (
+            "```json\n"
+            '[{"entity_name": "销售单据", "object_id": "ent.order",'
+            ' "confidence": 1, "rationale": "业务俗称"}]\n'
+            "```"
+        )
+        out = EntityAligner()._validate(raw, self.ENTITIES, self.OBJECT_IDS)
+        assert len(out) == 1
+        assert out[0]["confidence"] == 1.0
+
+    def test_hallucinated_object_id_filtered(self):
+        raw = (
+            '[{"entity_name": "风控模型A", "object_id": "ent.nope",'
+            ' "confidence": 0.9, "rationale": "幻觉 id"}]'
+        )
+        assert EntityAligner()._validate(raw, self.ENTITIES, self.OBJECT_IDS) == []
+
+    def test_unknown_entity_filtered(self):
+        raw = (
+            '[{"entity_name": "不在批次的实体", "object_id": "ent.risk",'
+            ' "confidence": 0.9, "rationale": ""}]'
+        )
+        assert EntityAligner()._validate(raw, self.ENTITIES, self.OBJECT_IDS) == []
+
+    def test_confidence_clamped(self):
+        raw = (
+            '[{"entity_name": "风控模型A", "object_id": "ent.risk",'
+            ' "confidence": 7, "rationale": ""},'
+            '{"entity_name": "风控模型A", "object_id": "ent.risk",'
+            ' "confidence": 0, "rationale": ""},'
+            '{"entity_name": "风控模型A", "object_id": "ent.risk",'
+            ' "confidence": "bad", "rationale": ""}]'
+        )
+        out = EntityAligner()._validate(raw, self.ENTITIES, self.OBJECT_IDS)
+        assert [c["confidence"] for c in out] == [1.0, 0.01, 0.5]
+
+    def test_non_array_output_rejected_with_error(self):
+        al = EntityAligner()
+        assert al._validate('{"oops": 1}', self.ENTITIES, self.OBJECT_IDS) == []
+        assert al.last_error == "LLM 输出不是 JSON 数组"
+
+    def test_none_raw_keeps_existing_error(self):
+        """raw=None 是 LLM 调用失败场景:保留调用期 last_error 不覆盖。"""
+        al = EntityAligner()
+        al.last_error = "LLM 调用失败: timeout"
+        assert al._validate(None, self.ENTITIES, self.OBJECT_IDS) == []
+        assert al.last_error == "LLM 调用失败: timeout"

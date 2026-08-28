@@ -30,6 +30,7 @@ from ..api.schemas import (
     OpLogVO,
     ReadinessCheckVO,
     ReadinessVO,
+    SemanticAlignmentVO,
     SemanticObjectListVO,
     SemanticObjectVO,
     SpaceInfoVO,
@@ -39,6 +40,7 @@ from ..config import (
     DEFAULT_WORKSPACE_ID,
     OBJECT_TYPES,
     SERVE_SERVICE_COMPONENT_NAME,
+    STATUS_CONFIRMED,
     STATUS_DEPRECATED,
     STATUS_PROPOSED,
     STATUS_REJECTED,
@@ -132,6 +134,7 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         self._asset_dao = AssetRefDao()
         self._ws_config_dao = WorkspaceConfigDao()
         self._miss_learn_dao = MissLearnDao()
+        self._alignment_dao = SemanticAlignmentDao()
 
     @property
     def config(self) -> ServeConfig:
@@ -1098,6 +1101,7 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         ws: str,
         registered: Dict[tuple, AssetRefVO],
         referenced: Dict[tuple, None],
+        alignment_index: Optional[Dict[tuple, List[tuple]]] = None,
     ) -> tuple[List[GraphNodeVO], List[GraphLinkVO]]:
         """聚合知识空间 L2 图(wiki/doc/跨文档实体)为 kn 节点与边。
 
@@ -1112,6 +1116,12 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         - ``doc:<id>`` → kn 节点(wiki 页)。
         - 其他端点(实体名等裸标识) → kn 实体节点(``kn:<slug>:entity:<name>``)。
 
+        知识实体 → 硬层对象的对齐:从 ``alignment_index``(语义对齐表
+        投影,键 ``(slug, align_key(entity_name))``,由 graph() 从
+        semantic_alignment 表构建)读 ``aligns_to`` 边——对齐关系是
+        LLM 推理产出后固化入库的数据,查询时零 LLM 依赖;
+        GraphLinkVO.status 携带 proposed/confirmed 供前端区分展示。
+
         节点来自 ``graph_query().nodes ∪ edges 端点``:孤立文档/实体
         (没有任何 L2 边)也会成为 kn 节点——刚 ingest 完还没建边的
         空间在全景图里立即可见。
@@ -1121,8 +1131,9 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         派生的文档空间(workspace_id 形如 ecp_<code> → docs-<code>)。
         """
         from ..api.schemas import GraphLinkVO
-        from .graph_projection import asset_node_id
+        from .graph_projection import ALIGNMENT_EDGE, align_key, asset_node_id
 
+        alignment_index = alignment_index or {}
         slugs = {f"ecp-{ws}"}
         for kind, ref_id in list(registered) + list(referenced):
             if kind == "space":
@@ -1187,6 +1198,19 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                         status="confirmed",
                         node_kind="kn",
                     )
+                    # 语义对齐边:LLM 推理产出并固化在 semantic_alignment
+                    # 表的数据,此处按 (slug, 归一实体名) 查表投影
+                    for obj_id, a_status in alignment_index.get(
+                        (slug, align_key(endpoint)), ()
+                    ):
+                        links.append(
+                            GraphLinkVO(
+                                source=kn_id,
+                                target=obj_id,
+                                edge_type=ALIGNMENT_EDGE,
+                                status=a_status,
+                            )
+                        )
                 return kn_id
 
             # 孤立节点(不在任何边上的 doc/verbat/实体)也纳入全景图
@@ -1207,7 +1231,9 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                 )
         return list(nodes.values()), links
 
-    async def graph(self, workspace_id: Optional[str] = None) -> GraphVO:
+    async def graph(
+        self, workspace_id: Optional[str] = None, entity: Optional[str] = None
+    ) -> GraphVO:
         """Asset-panorama graph view for one workspace.
 
         边**查询时实时投影**(纯函数,单空间 ≤ 千对象成本可忽略)——图
@@ -1216,14 +1242,46 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
 
         节点三类(实时查询,零同步):硬层对象 + 资产节点(已登记 enrich
         名称/状态,被引用未登记 → 虚拟节点 status=unregistered) +
-        知识层 kn 节点(L2 图聚合涌现)。
+        知识层 kn 节点(L2 图聚合涌现)。kn 实体节点与硬层对象之间按
+        semantic_alignment 表(LLM 推理固化 + 人工确认)投影
+        ``aligns_to`` 对齐边,status 区分 proposed/confirmed。
+
+        ``entity`` 给定时返回检索视图:命中节点(id/name/别名归一匹配)
+        及其一跳邻域——一次调用同时取回「硬层对象 ↔ 对齐的 kn 实体 ↔
+        提及它的 wiki 文档」。
         """
-        from .graph_projection import asset_node_id, project_edges
+        from .graph_projection import align_key, asset_node_id, project_edges
 
         ws = self._ws(workspace_id)
         objects = self._object_dao.list_latest(
             workspace_id=ws, page=1, page_size=1000
         ).items
+
+        # ---- 语义对齐索引:LLM 推理产出 + 人工确认后固化的对齐数据,
+        #      键 (slug, align_key(entity_name)) → [(对象 id, 状态)]。
+        #      rejected 不投影;这里只读表,不做任何语义判断。
+        alignment_index: Dict[tuple, List[tuple]] = {}
+        try:
+            for d in self._alignment_dao.decisions(ws):
+                key = align_key(d.entity_name)
+                if key:
+                    alignment_index.setdefault((d.slug, key), []).append(
+                        (d.object_id, d.status)
+                    )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[ecp] build alignment index failed: {e}")
+
+        # ---- 检索索引:归一(name/aliases)→ 对象 id 列表,仅供
+        #      entity 检索视图命中,不参与连边。
+        semantic_index: Dict[str, List[str]] = {}
+        for o in objects:
+            payload = o.payload or {}
+            for nm in [o.name, *(payload.get("aliases") or [])]:
+                key = align_key(nm)
+                if key:
+                    bucket = semantic_index.setdefault(key, [])
+                    if o.id not in bucket:
+                        bucket.append(o.id)
 
         # ---- 实时投影:对象→对象边 + 对象→资产边(稳定资产节点 id)
         links: List[GraphLinkVO] = []
@@ -1271,10 +1329,11 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                 )
             )
 
-        # ---- knowledge 层聚合(kn 节点 + L2 边),best-effort 不阻塞
+        # ---- knowledge 层聚合(kn 节点 + L2 边 + aligns_to 对齐边),
+        #      best-effort 不阻塞
         try:
             kn_nodes, kn_links = await self._knowledge_subgraph(
-                ws, registered, referenced
+                ws, registered, referenced, alignment_index
             )
             nodes.extend(kn_nodes)
             for lk in kn_links:
@@ -1284,7 +1343,255 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                     links.append(lk)
         except Exception:  # noqa: BLE001
             pass
-        return GraphVO(nodes=nodes, links=links)
+
+        vo = GraphVO(nodes=nodes, links=links)
+        if entity:
+            return self._graph_focus(vo, entity, semantic_index)
+        return vo
+
+    @staticmethod
+    def _graph_focus(
+        vo: GraphVO, entity: str, semantic_index: Dict[str, List[str]]
+    ) -> GraphVO:
+        """按实体检索:命中节点(id/name/别名归一匹配) + 一跳邻域。
+
+        命中来源三路:语义索引(对象 name/aliases)、节点 id 精确匹配、
+        节点 name 归一匹配(覆盖 kn/asset 节点)。邻域经 aligns_to 边
+        可同时拉进对齐的另一侧(如 kn 实体 → ent.order),实现一次
+        检索取回「对象 ↔ 知识实体 ↔ wiki 文档」完整关系链。
+        """
+        key = align_key(entity)
+        matched = set(semantic_index.get(key, ()))
+        for n in vo.nodes:
+            if n.id == entity or (n.name and align_key(n.name) == key):
+                matched.add(n.id)
+        keep = set(matched)
+        for lk in vo.links:
+            if lk.source in matched or lk.target in matched:
+                keep.add(lk.source)
+                keep.add(lk.target)
+        return GraphVO(
+            nodes=[n for n in vo.nodes if n.id in keep],
+            links=[
+                lk
+                for lk in vo.links
+                if lk.source in keep and lk.target in keep
+            ],
+        )
+
+    # ------------------------------------------------- semantic alignment
+    async def _kn_entity_names(self, ws: str) -> Dict[str, List[str]]:
+        """收集各知识空间的实体名(裸标识端点)——LLM 对齐的输入。
+
+        与 _knowledge_subgraph 同一套 slug 聚合与端点规则:非
+        ``doc:``/``verbat:`` 前缀的端点即实体名。
+        """
+        from .graph_projection import project_edges
+
+        objects = self._object_dao.list_latest(
+            workspace_id=ws, page=1, page_size=1000
+        ).items
+        registered = {(a.kind, a.ref_id): a for a in self._asset_dao.list(ws)}
+        referenced: Dict[tuple, None] = {}
+        for o in objects:
+            _, refs = project_edges(o.obj_type, o.payload or {})
+            for key in refs:
+                referenced[key] = None
+
+        slugs = {f"ecp-{ws}"}
+        for kind, ref_id in list(registered) + list(referenced):
+            if kind == "space":
+                slugs.add(ref_id)
+            elif kind == "document" and ":" in ref_id:
+                slugs.add(ref_id.split(":", 1)[0])
+        if ws.startswith("ecp_"):
+            slugs.add(f"docs-{ws[len('ecp_') :]}")
+
+        try:
+            from gyra_serve.knowledge.config import (
+                SERVE_SERVICE_COMPONENT_NAME as KNOWLEDGE_SERVICE,
+            )
+            from gyra_serve.knowledge.service.service import (
+                Service as KnowledgeService,
+            )
+
+            ks = self._system_app.get_component(KNOWLEDGE_SERVICE, KnowledgeService)
+        except Exception:  # noqa: BLE001
+            return {}
+
+        result: Dict[str, List[str]] = {}
+        for slug in sorted(slugs):
+            try:
+                vault = await ks.get_vault(slug)
+                sub = await vault.graph_query()
+            except Exception:  # noqa: BLE001
+                continue
+            names = set()
+            for ep in list(sub.nodes or []):
+                if ep and not ep.startswith(("doc:", "verbat:")):
+                    names.add(ep)
+            for e in sub.edges:
+                for ep in (e.subject, e.object):
+                    if ep and not ep.startswith(("doc:", "verbat:")):
+                        names.add(ep)
+            if names:
+                result[slug] = sorted(names)
+        return result
+
+    async def align_entities(
+        self, workspace_id: Optional[str] = None, user_id: Optional[str] = None
+    ) -> dict:
+        """LLM 语义对齐 runner:知识实体 × 硬层对象 → 推理候选固化(写路径)。
+
+        对齐关系是推理产物:LLM 基于对象 name/description/aliases 与实体
+        名做语义判断(覆盖字面匹配够不着的映射),候选过确定性校验闸门
+        (object_id 白名单 + 实体归属)后入库为 proposed,等人工确认——
+        与对象提案同一状态机哲学。人工已决定的(confirmed/rejected)实体
+        不再推理;proposed 复跑只刷新置信度与理由(幂等)。
+        """
+        from .alignment import EntityAligner
+
+        ws = self._ws(workspace_id)
+        objects = self._object_dao.list_latest(
+            workspace_id=ws, page=1, page_size=1000
+        ).items
+        if not objects:
+            return {
+                "workspace_id": ws,
+                "entities": 0,
+                "candidates": 0,
+                "errors": ["工作空间暂无硬层语义对象"],
+            }
+
+        try:
+            rows = self._alignment_dao.list(ws)
+        except Exception:  # noqa: BLE001
+            rows = []
+        decided = {
+            (r.slug, r.entity_name)
+            for r in rows
+            if r.status in (STATUS_CONFIRMED, STATUS_REJECTED)
+        }
+
+        slug_entities = await self._kn_entity_names(ws)
+        todo = {
+            slug: [n for n in names if (slug, n) not in decided]
+            for slug, names in slug_entities.items()
+        }
+        todo = {slug: names for slug, names in todo.items() if names}
+        total = sum(len(v) for v in todo.values())
+        if not total:
+            return {
+                "workspace_id": ws,
+                "entities": 0,
+                "candidates": 0,
+                "errors": [],
+            }
+
+        aligner = EntityAligner()
+        candidates: List[SemanticAlignmentVO] = []
+        errors: List[str] = []
+        for slug, names in sorted(todo.items()):
+            try:
+                cands = await aligner.align(names, objects)
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{slug}: {e}")
+                continue
+            if cands:
+                candidates.extend(
+                    self._alignment_dao.upsert_candidates(ws, slug, cands)
+                )
+            if aligner.last_error:
+                errors.append(f"{slug}: {aligner.last_error}")
+        self._oplog_dao.append(
+            "alignment_run",
+            ws,
+            {"entities": total, "candidates": len(candidates), "errors": errors[:5]},
+        )
+        return {
+            "workspace_id": ws,
+            "entities": total,
+            "candidates": len(candidates),
+            "errors": errors,
+        }
+
+    def list_alignments(
+        self, workspace_id: Optional[str] = None, status: Optional[str] = None
+    ) -> List[SemanticAlignmentVO]:
+        """对齐候选/决定列表(待确认抽屉的数据源)。"""
+        return self._alignment_dao.list(self._ws(workspace_id), status=status)
+
+    def confirm_alignment(
+        self, alignment_id: int, user_id: Optional[str] = None
+    ) -> SemanticAlignmentVO:
+        vo = self._alignment_dao.set_status(
+            alignment_id, STATUS_CONFIRMED, decided_by=user_id
+        )
+        if not vo:
+            raise ValueError(f"对齐记录 {alignment_id} 不存在")
+        self._oplog_dao.append(
+            "alignment_confirm",
+            vo.workspace_id,
+            {"id": alignment_id, "entity": vo.entity_name, "object_id": vo.object_id},
+        )
+        return vo
+
+    def reject_alignment(
+        self, alignment_id: int, user_id: Optional[str] = None
+    ) -> SemanticAlignmentVO:
+        vo = self._alignment_dao.set_status(
+            alignment_id, STATUS_REJECTED, decided_by=user_id
+        )
+        if not vo:
+            raise ValueError(f"对齐记录 {alignment_id} 不存在")
+        self._oplog_dao.append(
+            "alignment_reject",
+            vo.workspace_id,
+            {"id": alignment_id, "entity": vo.entity_name, "object_id": vo.object_id},
+        )
+        return vo
+
+    async def add_alignment(
+        self,
+        workspace_id: Optional[str] = None,
+        entity_name: str = "",
+        object_id: str = "",
+        user_id: Optional[str] = None,
+    ) -> SemanticAlignmentVO:
+        """手工添加对齐(直通 confirmed):LLM 不可用时的确定性兜底。
+
+        object_id 必须是本工作空间真实存在的语义对象(校验防手误);
+        slug 自动定位到实体名实际出现的知识空间(找不到则挂 ECP 软层)。
+        """
+        ws = self._ws(workspace_id)
+        entity_name = (entity_name or "").strip()
+        object_id = (object_id or "").strip()
+        if not entity_name or not object_id:
+            raise ValueError("entity_name 和 object_id 不能为空")
+        obj = self.get_object(object_id, workspace_id=ws)
+        if not obj:
+            raise ValueError(f"语义对象 {object_id} 不存在")
+        slug_entities = await self._kn_entity_names(ws)
+        slug = next(
+            (
+                s
+                for s, names in sorted(slug_entities.items())
+                if entity_name in names
+            ),
+            f"ecp-{ws}",
+        )
+        vo = self._alignment_dao.add_manual(
+            ws, slug, entity_name, object_id, decided_by=user_id
+        )
+        self._oplog_dao.append(
+            "alignment_manual",
+            ws,
+            {"id": vo.id, "entity": entity_name, "object_id": object_id, "slug": slug},
+        )
+        return vo
+
+    def remove_alignment(self, alignment_id: int) -> bool:
+        return self._alignment_dao.remove(alignment_id)
 
     # ------------------------------------------------------------- ECP space
     async def get_or_create_space(

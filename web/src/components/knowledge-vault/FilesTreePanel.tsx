@@ -10,6 +10,7 @@ import {
 } from '@/client/api/knowledge-vault';
 import type { IngestJob, TreeNode, VerbatOut } from '@/types/knowledge-vault';
 import {
+  CloudDownloadOutlined,
   FileAddOutlined,
   InboxOutlined,
   ReloadOutlined,
@@ -17,6 +18,7 @@ import {
 } from '@ant-design/icons';
 import { Button, Empty, List, Spin, Tag, Tooltip, Upload, App } from 'antd';
 import TreeView from './TreeView';
+import WikiSyncModal from './WikiSyncModal';
 import { useSpace } from './SpaceContext';
 
 const { Dragger } = Upload;
@@ -52,6 +54,7 @@ export default function FilesTreePanel({
   const [verbats, setVerbats] = useState<VerbatOut[]>([]);
   const [loading, setLoading] = useState(false);
   const [jobs, setJobs] = useState<IngestJob[]>([]);
+  const [wikiSyncOpen, setWikiSyncOpen] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -112,6 +115,14 @@ export default function FilesTreePanel({
                 className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400"
               >
                 <ReloadOutlined className={`text-xs ${loading ? 'animate-spin' : ''}`} />
+              </button>
+            </Tooltip>
+            <Tooltip title="飞书知识库同步">
+              <button
+                onClick={() => setWikiSyncOpen(true)}
+                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400"
+              >
+                <CloudDownloadOutlined className="text-xs" />
               </button>
             </Tooltip>
             <Tooltip title="新建 md 原文件">
@@ -189,6 +200,15 @@ export default function FilesTreePanel({
           </div>
         </div>
       </div>
+      <WikiSyncModal
+        slug={slug}
+        open={wikiSyncOpen}
+        onClose={() => setWikiSyncOpen(false)}
+        onStarted={() => {
+          pollJobs();
+          refresh();
+        }}
+      />
     </Spin>
   );
 }

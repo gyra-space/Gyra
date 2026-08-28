@@ -14,6 +14,8 @@ from gyra.component import SystemApp
 from gyra_serve.core import Result
 
 from ..api.schemas import (
+    AlignmentDecideRequest,
+    AlignmentManualRequest,
     AssetRefRegisterRequest,
     AssetRefVO,
     CatalogEntryVO,
@@ -34,6 +36,7 @@ from ..api.schemas import (
     ProposeRequest,
     ReadinessVO,
     RejectRequest,
+    SemanticAlignmentVO,
     SemanticObjectListVO,
     SemanticObjectVO,
     SpaceInfoVO,
@@ -599,11 +602,24 @@ async def readiness(
 @router.get("/graph", response_model=Result[GraphVO])
 async def graph(
     workspace_id: Optional[str] = Query(default=None),
+    entity: Optional[str] = Query(
+        default=None,
+        description=(
+            "按实体检索:命中节点(id/name/别名归一匹配)及其一跳邻域,"
+            "含 kn 实体→语义对象的 aligns_to 对齐边"
+        ),
+    ),
     service: Service = Depends(get_service),
 ) -> Result[GraphVO]:
     """Asset-panorama graph: objects + registered assets + knowledge-layer
-    nodes, with materialized semantic edges and aggregated knowledge edges."""
-    return Result.succ(await service.graph(workspace_id=workspace_id))
+    nodes, with materialized semantic edges and aggregated knowledge edges.
+
+    ``entity`` given → focus view: matched node(s) + 1-hop neighborhood
+    (e.g. object ↔ aligned kn entity ↔ wiki docs) in a single call.
+    """
+    return Result.succ(
+        await service.graph(workspace_id=workspace_id, entity=entity)
+    )
 
 
 @router.post("/graph/rebuild", response_model=Result[dict])
@@ -621,6 +637,108 @@ async def rebuild_graph(
         return Result.succ(service.rebuild_edges(workspace_id=workspace_id))
     except Exception as e:  # noqa: BLE001
         return Result.failed(msg=str(e))
+
+
+# ------------------------------------------------- semantic alignment
+@router.post("/graph/alignments/run", response_model=Result[dict])
+async def run_alignment(
+    workspace_id: Optional[str] = Query(default=None),
+    user_id: Optional[str] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[dict]:
+    """触发 LLM 语义对齐:知识实体 × 硬层对象 → 推理候选入库(待确认)。
+
+    同步执行(LLM 批量推理,实体多时耗时数十秒到分钟级);候选一律
+    proposed,不自动上图生效——confirm 后才生效。人工已决定
+    (confirmed/rejected)的实体不重复推理。LLM 未配置时返回错误信息,
+    可走手工添加兜底(POST /graph/alignments)。
+    """
+    try:
+        return Result.succ(
+            await service.align_entities(workspace_id=workspace_id, user_id=user_id)
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[ecp] alignment run failed")
+        return Result.failed(msg=f"语义对齐执行失败: {e}")
+
+
+@router.get("/graph/alignments", response_model=Result[List[SemanticAlignmentVO]])
+async def list_alignments(
+    workspace_id: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(
+        default=None,
+        description="按状态筛选:proposed(待确认)/confirmed/rejected",
+    ),
+    service: Service = Depends(get_service),
+) -> Result[List[SemanticAlignmentVO]]:
+    """语义对齐候选/决定列表(LLM 推理产出 + 人工决定)。"""
+    return Result.succ(
+        service.list_alignments(workspace_id=workspace_id, status=status)
+    )
+
+
+@router.post("/graph/alignments", response_model=Result[SemanticAlignmentVO])
+async def add_alignment(
+    request: AlignmentManualRequest,
+    service: Service = Depends(get_service),
+) -> Result[SemanticAlignmentVO]:
+    """手工添加对齐(直通 confirmed):LLM 不可用时的确定性兜底。"""
+    try:
+        return Result.succ(
+            await service.add_alignment(
+                workspace_id=request.workspace_id,
+                entity_name=request.entity_name,
+                object_id=request.object_id,
+                user_id=request.user_id,
+            )
+        )
+    except ValueError as e:
+        return Result.failed(msg=str(e))
+
+
+@router.post(
+    "/graph/alignments/{alignment_id}/confirm",
+    response_model=Result[SemanticAlignmentVO],
+)
+async def confirm_alignment(
+    alignment_id: int,
+    request: AlignmentDecideRequest,
+    service: Service = Depends(get_service),
+) -> Result[SemanticAlignmentVO]:
+    """确认一条对齐候选:生效并在全景图上以 confirmed 样式展示。"""
+    try:
+        return Result.succ(
+            service.confirm_alignment(alignment_id, user_id=request.user_id)
+        )
+    except ValueError as e:
+        return Result.failed(msg=str(e))
+
+
+@router.post(
+    "/graph/alignments/{alignment_id}/reject",
+    response_model=Result[SemanticAlignmentVO],
+)
+async def reject_alignment(
+    alignment_id: int,
+    request: AlignmentDecideRequest,
+    service: Service = Depends(get_service),
+) -> Result[SemanticAlignmentVO]:
+    """拒绝一条对齐候选:不上图,且该实体不再被 LLM 复跑重复提案。"""
+    try:
+        return Result.succ(
+            service.reject_alignment(alignment_id, user_id=request.user_id)
+        )
+    except ValueError as e:
+        return Result.failed(msg=str(e))
+
+
+@router.delete("/graph/alignments/{alignment_id}", response_model=Result[bool])
+async def remove_alignment(
+    alignment_id: int,
+    service: Service = Depends(get_service),
+) -> Result[bool]:
+    """删除一条对齐记录(手工纠错)。"""
+    return Result.succ(service.remove_alignment(alignment_id))
 
 
 # --------------------------------------------------------------------- space

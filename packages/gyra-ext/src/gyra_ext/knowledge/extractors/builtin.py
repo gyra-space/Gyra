@@ -14,18 +14,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import logging
 import mimetypes
 import os
 import re
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from gyra.knowledge.types import ExtractMode
 
-from . import Extractor, ModelCaller, VerbatimSpec, extractor
+from . import AssetStore, Extractor, ModelCaller, VerbatimSpec, extractor
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,94 @@ def _file_mtime_iso(path: Path) -> tuple[Optional[str], Optional[int]]:
         )
     except OSError:
         return None, None
+
+
+# ---------------------------------------------------------------------------
+# Embedded-image helpers (docx/pdf/pptx)
+# ---------------------------------------------------------------------------
+
+# Skip obvious decorations (tiny icons, spacers) — not worth an LLM call.
+MIN_EMBEDDED_IMAGE_BYTES = 1024
+
+_EMBEDDED_IMAGE_PROMPT = (
+    "请用一段简明中文描述这张图片的内容：可见的文字（OCR）、图表数据、"
+    "主体对象与场景。输出纯文本，不要 markdown 标题，不要解释性文字。"
+)
+
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
+
+
+def _safe_image_suffix(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    return suffix if suffix in _IMAGE_SUFFIXES else ".png"
+
+
+async def _store_embedded_image(
+    asset_store: Optional[AssetStore], filename: str, data: bytes
+) -> str:
+    """Persist image bytes via the vault asset store; "" on any failure."""
+    if asset_store is None or not data:
+        return ""
+    try:
+        return await asset_store(filename, data)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("asset_store failed for %s: %s", filename, e)
+        return ""
+
+
+async def _caption_embedded_image(
+    filename: str,
+    data: bytes,
+    model: Optional[str],
+    model_caller: Optional[ModelCaller],
+) -> str:
+    """Best-effort caption for an embedded image.
+
+    Returns "" when no multimodal model is configured or the call fails —
+    the caller keeps the image placeholder either way (never fails the
+    document, per space-config decision).
+    """
+    if not model or not model_caller or not data:
+        return ""
+    try:
+        with tempfile.TemporaryDirectory(prefix="ks_embed_img_") as tmp:
+            tmp_path = Path(tmp) / f"img{_safe_image_suffix(filename)}"
+            tmp_path.write_bytes(data)
+            caption = await model_caller(model, _EMBEDDED_IMAGE_PROMPT, images=[tmp_path])
+            return (caption or "").strip()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Embedded image caption failed for %s: %s", filename, e)
+        return ""
+
+
+def _image_placeholder(index: int, filename: str, ref: str, caption: str) -> str:
+    """Markdown block for one embedded image."""
+    label = f"图片{index}: {filename}"
+    if ref:
+        lines = [f"![{label}]({ref})"]
+    else:
+        lines = [f"（内嵌图片: {filename}，未保存）"]
+    if caption:
+        lines.append(f"图片说明：{caption}")
+    return "\n".join(lines)
+
+
+async def _process_embedded_image(
+    index: int,
+    filename: str,
+    data: bytes,
+    model: Optional[str],
+    model_caller: Optional[ModelCaller],
+    asset_store: Optional[AssetStore],
+) -> Tuple[str, str]:
+    """Store + caption + render one embedded image.
+
+    Returns (markdown_block, caption) so callers can cache the caption for
+    repeated occurrences of the same image.
+    """
+    ref = await _store_embedded_image(asset_store, filename, data)
+    caption = await _caption_embedded_image(filename, data, model, model_caller)
+    return _image_placeholder(index, filename, ref, caption), caption
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +167,12 @@ class TextExtractor(Extractor):
 
 @extractor("pdf", ["application/pdf"])
 class PDFExtractor(Extractor):
-    """PDF → text via pdfplumber (page-separated)."""
+    """PDF → text via pdfplumber (page-separated) + embedded-image placeholders.
+
+    Images are extracted with pypdf (PIL-backed), persisted via `asset_store`
+    and captioned via `model_caller`, appended at the end of each page block.
+    If pypdf/Pillow is unavailable the extractor degrades to text-only.
+    """
 
     async def extract(
         self,
@@ -85,6 +180,7 @@ class PDFExtractor(Extractor):
         mime: str,
         model: Optional[str],
         model_caller: Optional[ModelCaller],
+        asset_store: Optional[AssetStore] = None,
     ) -> List[VerbatimSpec]:
         try:
             import pdfplumber  # type: ignore
@@ -93,11 +189,21 @@ class PDFExtractor(Extractor):
                 "PDF extraction requires pdfplumber. Install with: pip install pdfplumber"
             ) from e
 
+        page_images = self._extract_page_images(path)
+
         pages_text: List[str] = []
+        img_idx = 0
         with pdfplumber.open(str(path)) as pdf:
             for i, page in enumerate(pdf.pages, start=1):
                 txt = page.extract_text() or ""
-                pages_text.append(f"## Page {i}\n{txt}".strip())
+                block = f"## Page {i}\n{txt}".strip()
+                for filename, data in page_images.get(i, []):
+                    img_idx += 1
+                    image_block, _ = await _process_embedded_image(
+                        img_idx, filename, data, model, model_caller, asset_store
+                    )
+                    block = f"{block}\n\n{image_block}"
+                pages_text.append(block)
 
         content = "\n\n".join(pages_text)
         date_iso, mtime = _file_mtime_iso(path)
@@ -108,9 +214,47 @@ class PDFExtractor(Extractor):
                 extract_mode=ExtractMode.UPLOAD,
                 content_date=date_iso,
                 source_mtime=mtime,
-                meta={"mime": mime, "pages": len(pages_text)},
+                meta={"mime": mime, "pages": len(pages_text), "images": img_idx},
             )
         ]
+
+    def _extract_page_images(self, path: Path) -> Dict[int, List[Tuple[str, bytes]]]:
+        """pypdf → {page_number: [(filename, png_bytes), ...]}; best-effort."""
+        try:
+            from pypdf import PdfReader  # type: ignore
+        except ImportError:
+            logger.warning(
+                "PDFExtractor: pypdf not installed, skipping embedded images in %s",
+                path.name,
+            )
+            return {}
+
+        out: Dict[int, List[Tuple[str, bytes]]] = {}
+        try:
+            reader = PdfReader(str(path))
+            for pageno, page in enumerate(reader.pages, start=1):
+                try:
+                    for img in page.images:
+                        pil = getattr(img, "image", None)
+                        if pil is None:
+                            continue
+                        buf = io.BytesIO()
+                        pil.save(buf, format="PNG")
+                        data = buf.getvalue()
+                        if len(data) < MIN_EMBEDDED_IMAGE_BYTES:
+                            continue
+                        name = getattr(img, "name", None) or f"page{pageno}_img.png"
+                        out.setdefault(pageno, []).append((str(name), data))
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "PDFExtractor: image extraction failed on page %d of %s",
+                        pageno,
+                        path.name,
+                        exc_info=True,
+                    )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PDFExtractor: pypdf failed for %s: %s", path.name, e)
+        return out
 
 
 @extractor("docx", [
@@ -118,7 +262,14 @@ class PDFExtractor(Extractor):
     "application/msword",
 ])
 class DocxExtractor(Extractor):
-    """DOCX/DOC → text via python-docx."""
+    """DOCX/DOC → text via python-docx, plus embedded-image placeholders.
+
+    Walks every w:p element in body order (paragraphs AND table cells). For
+    each paragraph, inline images are discovered via a:blip r:embed →
+    image part blob, persisted through `asset_store` and captioned via
+    `model_caller`; the markdown placeholder is inserted right after the
+    paragraph text.
+    """
 
     async def extract(
         self,
@@ -126,6 +277,7 @@ class DocxExtractor(Extractor):
         mime: str,
         model: Optional[str],
         model_caller: Optional[ModelCaller],
+        asset_store: Optional[AssetStore] = None,
     ) -> List[VerbatimSpec]:
         try:
             import docx  # type: ignore
@@ -133,10 +285,41 @@ class DocxExtractor(Extractor):
             raise RuntimeError(
                 "DOCX extraction requires python-docx. Install with: pip install python-docx"
             ) from e
+        from docx.oxml.ns import qn  # type: ignore
 
         doc = docx.Document(str(path))
-        paragraphs = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
-        content = "\n\n".join(paragraphs)
+        related_parts = doc.part.related_parts
+        caption_cache: Dict[str, str] = {}
+        lines: List[str] = []
+        img_idx = 0
+
+        for p_el in doc.element.body.iter(qn("w:p")):
+            text = "".join(t.text or "" for t in p_el.iter(qn("w:t"))).strip()
+            if text:
+                lines.append(text)
+            for blip in p_el.iter(qn("a:blip")):
+                rid = blip.get(qn("r:embed"))
+                if not rid or rid not in related_parts:
+                    continue
+                try:
+                    part = related_parts[rid]
+                    data = part.blob
+                    filename = str(part.partname).rsplit("/", 1)[-1]
+                except Exception:  # noqa: BLE001
+                    continue
+                if not data or len(data) < MIN_EMBEDDED_IMAGE_BYTES:
+                    continue
+                img_idx += 1
+                if rid in caption_cache:
+                    ref = await _store_embedded_image(asset_store, filename, data)
+                    block = _image_placeholder(img_idx, filename, ref, caption_cache[rid])
+                else:
+                    block, caption_cache[rid] = await _process_embedded_image(
+                        img_idx, filename, data, model, model_caller, asset_store
+                    )
+                lines.append(block)
+
+        content = "\n\n".join(lines)
         date_iso, mtime = _file_mtime_iso(path)
         return [
             VerbatimSpec(
@@ -145,7 +328,7 @@ class DocxExtractor(Extractor):
                 extract_mode=ExtractMode.UPLOAD,
                 content_date=date_iso,
                 source_mtime=mtime,
-                meta={"mime": mime, "paragraphs": len(paragraphs)},
+                meta={"mime": mime, "paragraphs": len(lines), "images": img_idx},
             )
         ]
 
@@ -155,7 +338,12 @@ class DocxExtractor(Extractor):
     "application/vnd.ms-powerpoint",
 ])
 class PptxExtractor(Extractor):
-    """PPTX/PPT → text via python-pptx (slide-separated)."""
+    """PPTX/PPT → text via python-pptx (slide-separated) + image placeholders.
+
+    Pictures are discovered recursively (including inside group shapes),
+    persisted via `asset_store` and captioned via `model_caller`, appended
+    after each slide's text.
+    """
 
     async def extract(
         self,
@@ -163,6 +351,7 @@ class PptxExtractor(Extractor):
         mime: str,
         model: Optional[str],
         model_caller: Optional[ModelCaller],
+        asset_store: Optional[AssetStore] = None,
     ) -> List[VerbatimSpec]:
         try:
             import pptx  # type: ignore
@@ -170,9 +359,21 @@ class PptxExtractor(Extractor):
             raise RuntimeError(
                 "PPTX extraction requires python-pptx. Install with: pip install python-pptx"
             ) from e
+        from pptx.enum.shapes import MSO_SHAPE_TYPE  # type: ignore
+
+        def iter_pictures(shapes):
+            for shape in shapes:
+                try:
+                    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                        yield from iter_pictures(shape.shapes)
+                    elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                        yield shape
+                except Exception:  # noqa: BLE001
+                    continue
 
         prs = pptx.Presentation(str(path))
         slides_text: List[str] = []
+        img_idx = 0
         for i, slide in enumerate(prs.slides, start=1):
             texts: List[str] = []
             for shape in slide.shapes:
@@ -181,8 +382,25 @@ class PptxExtractor(Extractor):
                         t = "".join(run.text for run in para.runs).strip()
                         if t:
                             texts.append(t)
-            if texts:
-                slides_text.append(f"## Slide {i}\n" + "\n".join(texts))
+            block = f"## Slide {i}\n" + "\n".join(texts) if texts else f"## Slide {i}"
+            for pic in iter_pictures(slide.shapes):
+                try:
+                    image = pic.image
+                    data = image.blob
+                    ext = (image.ext or "png").lower()
+                    if ext not in _IMAGE_SUFFIXES:
+                        ext = "png"
+                    filename = f"slide{i}_{pic.shape_id}.{ext}"
+                except Exception:  # noqa: BLE001
+                    continue
+                if not data or len(data) < MIN_EMBEDDED_IMAGE_BYTES:
+                    continue
+                img_idx += 1
+                image_block, _ = await _process_embedded_image(
+                    img_idx, filename, data, model, model_caller, asset_store
+                )
+                block = f"{block}\n\n{image_block}"
+            slides_text.append(block)
 
         content = "\n\n".join(slides_text)
         date_iso, mtime = _file_mtime_iso(path)
@@ -193,7 +411,7 @@ class PptxExtractor(Extractor):
                 extract_mode=ExtractMode.UPLOAD,
                 content_date=date_iso,
                 source_mtime=mtime,
-                meta={"mime": mime, "slides": len(slides_text)},
+                meta={"mime": mime, "slides": len(slides_text), "images": img_idx},
             )
         ]
 
