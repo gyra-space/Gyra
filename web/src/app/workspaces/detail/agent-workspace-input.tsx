@@ -27,7 +27,7 @@ import {
   type UsageMetrics,
 } from '@/types/context-metrics';
 import type { AgentWorkspaceInputHandle, PlaybookCommand, SkillRef } from './agent-workspace-types';
-import { getPendingResources, setPendingResources } from './scene-agent-send-data';
+import { getPendingResources, setPendingResources, getPendingResourceRefs, setPendingResourceRefs } from './scene-agent-send-data';
 import {
   PlusMenu,
   SelectionChip,
@@ -35,7 +35,7 @@ import {
   type PlusMenuPermission,
 } from '@/components/chat/input/plus-menu';
 import { SceneTriggerMenu, type SceneTriggerMenuHandle, type SceneTriggerSelection } from '@/components/chat/input/scene-trigger-menu';
-import type { SessionCommandItem, SessionCommandAction, SubAgentRef, ArtifactRef, AssetRef } from '@/components/chat/input/trigger-types';
+import type { SessionCommandItem, SessionCommandAction, SubAgentRef, ArtifactRef, AssetRef, ResourceRef } from '@/components/chat/input/trigger-types';
 import { detectTrigger, stripTrigger, type TriggerState } from '@/components/chat/input/trigger-detect';
 import { VoiceInputButton } from '@/components/chat/input/voice-input-button';
 import {
@@ -426,7 +426,15 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     // @ 接管态:会话级 sticky,选中后持续生效直到显式退出或改选他人
     const [activeSubAgent, setActiveSubAgent] = useState<SubAgentRef | null>(null);
     // # 引用的资源(交付产物/空间资产)。start/end 为 P1 内联化预留,P0 恒在文本末尾
-    const [resourceRefs, setResourceRefs] = useState<ResourceRef[]>([]);
+    // 挂载时从暂存域恢复(跨重挂载存活),变更统一走 applyResourceRefs 双写
+    const [resourceRefs, setResourceRefs] = useState<ResourceRef[]>(() =>
+      attachmentScopeKey ? getPendingResourceRefs(attachmentScopeKey) : [],
+    );
+    /** `#` 引用变更统一入口:实例 state 与跨重挂载暂存同写 */
+    const applyResourceRefs = (next: ResourceRef[]) => {
+      setResourceRefs(next);
+      if (attachmentScopeKey) setPendingResourceRefs(attachmentScopeKey, next);
+    };
     const [selectedSkills, setSelectedSkills] = useState<SkillRef[]>([]);
     // + 菜单选中的 MCP 连接器
     const [selectedMcps, setSelectedMcps] = useState<PlusMenuMcpRef[]>([]);
@@ -678,6 +686,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       });
       setText('');
       applyResources([]);
+      applyResourceRefs([]);
       setPlaybookCommand(null);
       setSelectedSkills([]);
       setSelectedMcps([]);
@@ -806,19 +815,20 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
               label: (ref as AssetRef).name,
               ref_id: (ref as AssetRef).asset_id,
             };
-      setResourceRefs((prev) =>
-        prev.some((r) => r.id === meta.id)
-          ? prev
-          : [
-              ...prev,
-              { ...meta, kind, content_ref: ref.content_ref, start: text.length, end: text.length },
-            ],
-      );
+      setResourceRefs((prev) => {
+        if (prev.some((r) => r.id === meta.id)) return prev;
+        const next = [
+          ...prev,
+          { ...meta, kind, content_ref: ref.content_ref, start: text.length, end: text.length },
+        ];
+        if (attachmentScopeKey) setPendingResourceRefs(attachmentScopeKey, next);
+        return next;
+      });
       consumeTriggerToken();
     };
 
     const removeResourceRef = (id: string) =>
-      setResourceRefs((prev) => prev.filter((r) => r.id !== id));
+      applyResourceRefs(resourceRefs.filter((r) => r.id !== id));
 
     /** 会话命令:即时执行型(clear)与模式开关型(plan / compact) */
     const applySessionCommand = (cmd: SessionCommandItem) => {

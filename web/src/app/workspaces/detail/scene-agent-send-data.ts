@@ -29,6 +29,22 @@ export function setPendingResources(scopeKey: string, resources: SceneAgentResou
   else pendingResourcesByScope.delete(scopeKey);
 }
 
+/** 未随消息发出的 `#` 资源引用暂存(按空间维度,跨输入框重挂载存活):
+ *  与上传附件同理,实例 state 在输入框重建时归零会导致已选中的引用从
+ *  发送 payload 中静默丢失,这里复用同一套暂存域机制兜底。 */
+const pendingResourceRefsByScope = new Map<string, ResourceRef[]>();
+
+/** 读取某空间的未发送 `#` 引用(无则返回空数组) */
+export function getPendingResourceRefs(scopeKey: string): ResourceRef[] {
+  return pendingResourceRefsByScope.get(scopeKey) ?? [];
+}
+
+/** 覆写某空间的未发送 `#` 引用;空数组时清除条目 */
+export function setPendingResourceRefs(scopeKey: string, refs: ResourceRef[]): void {
+  if (refs.length > 0) pendingResourceRefsByScope.set(scopeKey, refs);
+  else pendingResourceRefsByScope.delete(scopeKey);
+}
+
 export interface SceneAgentSendPayload {
   text: string;
   resources?: SceneAgentResource[];

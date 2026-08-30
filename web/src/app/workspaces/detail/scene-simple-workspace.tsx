@@ -565,16 +565,9 @@ export function SceneSimpleWorkspace({
     setRightOpen(true);
   }, [deliverables]);
 
-  // 自动跟随:流式期间右侧「执行过程」实时展示最新步骤的工具输出;
-  // 用户点击某步骤后转为手动浏览,新步骤开跑时自动恢复跟随。
-  const latestStep = useMemo(
-    () => [...view.execution].reverse().find((s) => s.type === 'tool_call' || s.type === 'thinking' || s.type === 'skill_loaded') ?? null,
-    [view.execution],
-  );
-  useEffect(() => {
-    if (latestStep?.status === 'running') setSelectedStep(null);
-  }, [latestStep?.id, latestStep?.status]);
-  const displayStep = selectedStep ?? latestStep;
+  // 打开才展示:右侧「执行过程」只渲染用户手动点开的步骤快照,
+  // 不跟随最新步骤、不随流式 chunk 更新,避免执行期右侧持续重渲染。
+  const displayStep = selectedStep;
 
   // 步骤 prev/next 导航:按执行序列浏览历史步骤(问题溯源)
   const navSteps = useMemo(
@@ -627,8 +620,8 @@ export function SceneSimpleWorkspace({
     if (selectedStep) return selectedStep.title || '步骤详情';
     if (rightTab === 'task_files') return '任务文件';
     if (rightTab === 'summary') return '总结';
-    return displayStep?.title || '任务详情';
-  }, [activeFile, selectedStep, rightTab, displayStep]);
+    return '任务详情';
+  }, [activeFile, selectedStep, rightTab]);
 
   const handleOpenDeliverable = (file: WorkspaceDeliverableFile) => {
     const exhibit = deliverableToExhibit(file);
@@ -664,7 +657,7 @@ export function SceneSimpleWorkspace({
     setRightOpen(true);
   };
 
-  // 收起右侧:清空手动选择,回到全宽对话流(展开时自动跟随最新步骤)
+  // 收起右侧:清空手动选择,回到全宽对话流
   const collapseRight = () => {
     setRightOpen(false);
     setSelectedStep(null);
@@ -773,7 +766,7 @@ export function SceneSimpleWorkspace({
         <section className="ws-simple-right">
           <div className="ws-simple-right__hd">
             {/* 步骤 prev/next 导航(执行过程 tab 且存在步骤序列时) */}
-            {rightTab === 'execution' && navSteps.length > 1 && (
+            {rightTab === 'execution' && selectedStep && navSteps.length > 1 && (
               <div className="ws-simple-right__nav">
                 <Button
                   type="text"
@@ -882,12 +875,12 @@ export function SceneSimpleWorkspace({
               <>
             {!activeFile && rightTab === 'execution' && (
               <>
-                {selectedStep || displayStep ? (
-                  <StepDetail step={(selectedStep ?? displayStep)!} />
+                {selectedStep ? (
+                  <StepDetail step={selectedStep} />
                 ) : (
                   <div className="ws-simple-right__empty">
                     <InboxOutlined />
-                    <div>{running ? 'Agent 正在执行…' : '点击左侧步骤查看详情'}</div>
+                    <div>点击左侧步骤查看详情</div>
                   </div>
                 )}
               </>

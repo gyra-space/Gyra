@@ -410,6 +410,15 @@ class OracleConnector(RDBMSConnector):
         # Build connection URL
         dsn = f"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={host})(PORT={port}))(CONNECT_DATA=(SERVICE_NAME={svc})))" if service_name else f"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={host})(PORT={port}))(CONNECT_DATA=(SID={sid})))"
         url = f"{cls.driver}://{quote(user)}:{quote_plus(pwd)}@{dsn}"
+        
+        # Oracle 11g (Client 11.2) does not support arraysize > 1 for array DML row counts
+        # Set arraysize=1 to disable array fetching and avoid DPI-1050
+        if engine_args is None:
+            engine_args = {}
+        if cls._using_thick_mode and cls._oracle_version and cls._oracle_version < (12, 1):
+            engine_args['arraysize'] = 1
+            logger.info(f"Oracle 11g detected, setting arraysize=1 to avoid DPI-1050")
+        
         return cls.from_uri(url, engine_args=engine_args, **kwargs)
 
     @classmethod

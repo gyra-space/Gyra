@@ -477,8 +477,9 @@ async def get_table_spec(
             "type": "string",
             "description": (
                 "数据库名称，使用可用数据库列表中的 db_name 字段值。"
+                "如果不指定，系统会尝试从当前绑定的数据库资源自动解析。"
             ),
-            "required": True,
+            "required": False,
         },
         "sql": {
             "type": "string",
@@ -1683,8 +1684,9 @@ async def list_tables(
             "type": "string",
             "description": (
                 "数据库名称，使用可用数据库列表中的 db_name 字段值。"
+                "如果不指定，系统会尝试从当前绑定的数据库资源自动解析。"
             ),
-            "required": True,
+            "required": False,
         },
         "question": {
             "type": "string",
@@ -1723,7 +1725,7 @@ async def list_tables(
     category=ToolCategory.UTILITY,
 )
 async def search_tables(
-    db_name: str,
+    db_name: Optional[str] = None,
     question: Optional[str] = None,
     intents: Optional[str] = None,
     use_llm: bool = False,
@@ -1748,6 +1750,17 @@ async def search_tables(
     Returns:
         A list of recommended tables with match scores and reasons
     """
+    # Auto-resolve from agent's bound DB resource when db_name not provided
+    # (动态选择的 DB 资源可能未把 db_name 注入 prompt,这里兜底)
+    if not db_name:
+        _ds_id, _db_name = _auto_resolve_datasource(
+            kwargs.get("agent"), context
+        )
+        if _db_name:
+            db_name = _db_name
+    if not db_name:
+        return "错误: 必须提供 db_name 参数"
+
     try:
         from gyra._private.config import Config
 

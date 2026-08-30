@@ -626,9 +626,21 @@ class RDBMSConnector(BaseConnector):
                     rows: List[Any] = []
                     remaining = max_rows
                     while remaining > 0:
-                        batch = cursor.fetchmany(min(1000, remaining))
-                        if not batch:
-                            break
+                        # Oracle 11g (Client 11.2) 不支持 fetchmany 的数组行数获取
+                        # 使用 fetchone 逐行读取替代
+                        if self.dialect == "oracle":
+                            batch = []
+                            for _ in range(min(1000, remaining)):
+                                row = cursor.fetchone()
+                                if row is None:
+                                    break
+                                batch.append(row)
+                            if not batch:
+                                break
+                        else:
+                            batch = cursor.fetchmany(min(1000, remaining))
+                            if not batch:
+                                break
                         rows.extend(batch)
                         remaining -= len(batch)
                     return field_names, rows
