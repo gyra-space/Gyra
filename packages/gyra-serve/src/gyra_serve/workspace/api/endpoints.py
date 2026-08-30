@@ -11,6 +11,7 @@ from gyra_serve.core import Result
 from ..dataset_service import WorkspaceDatasetService
 
 from .schemas import (
+    FavoriteConversationRequest,
     HomeWorkspaceRequest,
     RenameConversationRequest,
     SceneModeSetRequest,
@@ -737,6 +738,26 @@ async def delete_conversation(
         ))
     except Exception as e:
         logger.exception("conversation delete exception!")
+        return Result.failed(str(e))
+
+
+@router.post("/conversations/{conv_uid}/favorite", response_model=Result,
+             dependencies=[Depends(check_api_key),
+                           Depends(require_space("space.chat.use"))])
+async def favorite_conversation(
+    conv_uid: str,
+    request: FavoriteConversationRequest,
+    user_id: Optional[int] = Header(None, alias="X-User-ID"),
+    service: Service = Depends(get_service),
+) -> Result:
+    """收藏/取消收藏会话。仅限归属用户或具备空间对话权限的用户。"""
+    try:
+        return Result.succ(service.set_conversation_favorite(
+            workspace_id=request.workspace_id, conv_uid=conv_uid,
+            favorited=request.favorited, user_id=user_id,
+        ))
+    except Exception as e:
+        logger.exception("conversation favorite exception!")
         return Result.failed(str(e))
 
 

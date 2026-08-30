@@ -268,6 +268,10 @@ const getActionOptions = (resourceType: string, t: any) => {
       { value: 'manage', label: t('permissions_action_manage') },
       { value: 'admin', label: t('permissions_action_admin') },
     ],
+    database: [
+      { value: 'read', label: t('permissions_action_read') },
+      { value: 'manage', label: t('permissions_action_manage') },
+    ],
   };
   return actionMap[resourceType] || actionMap.agent;
 };
@@ -711,6 +715,20 @@ function PermissionPanel({
     setPermissions(role.permissions ?? []);
   }, [role.permissions]);
 
+  // 重新拉取本角色权限——onPermissionsChange 只刷新父级 roles 列表,
+  // 不会更新 selectedRole 快照;不本地刷新的话 Transfer 右侧会因
+  // useEffect 用陈旧 permissions 重算而显示为空(“添加成功但已分配没数据”)
+  const refreshPermissions = useCallback(async () => {
+    try {
+      const perms = await permissionsService.listRolePermissions(role.id);
+      setPermissions(perms);
+      const scopedPerms = await permissionsService.listScopedPermissions({ role_id: role.id });
+      setScopedPermissions(scopedPerms);
+    } catch (error) {
+      console.error('Failed to refresh role permissions:', error);
+    }
+  }, [role.id]);
+
   // Load scoped permissions for this role
   useEffect(() => {
     const loadScopedPermissions = async () => {
@@ -837,6 +855,7 @@ function PermissionPanel({
       }
 
       message.success(t('permissions_role_updated'));
+      await refreshPermissions();
       await onPermissionsChange();
     } catch (e: unknown) {
       message.error(t('permissions_update_error') + ': ' + (e as Error).message);
@@ -866,6 +885,8 @@ function PermissionPanel({
     setLoading(true);
     try {
       const addedPermissions: Permission[] = [];
+      const skippedDuplicates: string[] = [];
+      const failedResources: string[] = [];
 
       for (const resourceId of scopedForm.resource_id) {
         try {
@@ -878,15 +899,30 @@ function PermissionPanel({
           });
           addedPermissions.push(perm);
         } catch (error) {
-          // Skip if already exists
-          console.warn(`Failed to add scoped permission for ${resourceId}:`, error);
+          // 409=重复授权(静默跳过),其他错误要让用户知道
+          const status = (error as { response?: { status?: number } })?.response?.status;
+          if (status === 409) {
+            skippedDuplicates.push(resourceId);
+          } else {
+            failedResources.push(resourceId);
+            console.warn(`Failed to add scoped permission for ${resourceId}:`, error);
+          }
         }
+      }
+
+      if (failedResources.length > 0) {
+        message.error(
+          (t('permissions_update_error') || '操作失败') + `: ${failedResources.join(', ')}`,
+        );
+      } else if (addedPermissions.length === 0 && skippedDuplicates.length > 0) {
+        message.info(t('permissions_already_exists') || '权限已存在,未重复添加');
       }
 
       if (addedPermissions.length > 0) {
         setScopedPermissions((prev) => [...prev, ...addedPermissions]);
         message.success(t('permissions_permission_added'));
-        await onPermissionsChange();
+        await refreshPermissions();
+      await onPermissionsChange();
 
         // Reset form
         setScopedForm({
@@ -915,6 +951,7 @@ function PermissionPanel({
       await permissionsService.removeRolePermission(role.id, permissionId);
       setScopedPermissions((prev) => prev.filter((p) => p.id !== permissionId));
       message.success(t('permissions_permission_removed'));
+      await refreshPermissions();
       await onPermissionsChange();
     } catch (e: unknown) {
       message.error(t('permissions_remove_permission_error') + ': ' + (e as Error).message);
@@ -978,7 +1015,7 @@ function PermissionPanel({
             description={
               <div className="mt-2">
                 <Text type="secondary">
-                  {t('permissions_assign_roles_hint') || '使用穿梭框分配权限策略：'}
+                  {t('permissions_assign_policies_hint') || '使用下方穿梭框为角色分配权限策略：'}
                 </Text>
               </div>
             }
@@ -1027,6 +1064,7 @@ function PermissionPanel({
                       { value: 'tool', label: t('permissions_resource_tool') },
                       { value: 'knowledge', label: t('permissions_resource_knowledge') },
                       { value: 'model', label: t('permissions_resource_model') },
+                      { value: 'database', label: t('permissions_resource_database') },
                     ]}
                     className="w-full"
                   />
@@ -1192,7 +1230,8 @@ function PermissionPanel({
                   }
 
                   message.success(t('permissions_definition_assigned'));
-                  await onPermissionsChange();
+                  await refreshPermissions();
+      await onPermissionsChange();
 
                   // Reload role permission definitions
                   const roleDefs = await permissionsService.getRolePermissionDefs(role.id);

@@ -38,6 +38,13 @@ def _make_connector(rows_count: int, db_type: str = "sqlite") -> MagicMock:
     columns = ["id", "name"]
     rows = [[i, f"name_{i}"] for i in range(1, rows_count + 1)]
     mock_connector.run.return_value = [columns] + rows
+
+    # 安全层执行路径走 query_ex(超时 + max_rows 截断),忠实模拟其截断语义
+    def _query_ex(sql, fetch="all", timeout=None, params=None, max_rows=None):
+        capped = rows[:max_rows] if max_rows is not None else rows
+        return (columns, capped)
+
+    mock_connector.query_ex.side_effect = _query_ex
     return mock_connector
 
 

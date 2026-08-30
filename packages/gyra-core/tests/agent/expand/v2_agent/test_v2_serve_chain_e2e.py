@@ -134,8 +134,6 @@ def test_agent_manager_registers_v2_agent():
     assert resolved is V2Agent
     resolved_alias2 = manager.get_by_name("V2Agent")
     assert resolved_alias2 is V2Agent
-    resolved_bixiu = manager.get_by_name("BIXIU")
-    assert resolved_bixiu is V2Agent
 
 
 # =============================================================================

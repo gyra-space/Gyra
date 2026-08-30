@@ -33,7 +33,8 @@ class SubagentCoordinator:
 
     def __init__(self, agent_chat: Any):
         """Args:
-            agent_chat: AgentChat 实例，提供 gpts_conversations / aggregation_chat 等依赖。
+            agent_chat: AgentChat 实例，提供 gpts_conversations /
+            aggregation_chat 等依赖。
         """
         self._agent_chat = agent_chat
 
@@ -41,70 +42,78 @@ class SubagentCoordinator:
 
     async def _read_pending(self, main_conv_id: str) -> List[SubAgentHandle]:
         """从 gpts_conversations.extra 读取 pending_subagents 列表。"""
-        conv = self._agent_chat.gpts_conversations.get_by_conv_id(main_conv_id)
+        conv = await self._agent_chat.gpts_conversations.a_get_by_conv_id(main_conv_id)
         if not conv or not getattr(conv, "extra", None):
             return []
         try:
-            extra = json.loads(conv.extra) if isinstance(conv.extra, str) else conv.extra
+            extra = (
+                json.loads(conv.extra)
+                if isinstance(conv.extra, str)
+                else conv.extra
+            )
         except (json.JSONDecodeError, TypeError):
             return []
-        pending_list = extra.get("pending_subagents", []) if isinstance(extra, dict) else []
+        pending_list = (
+            extra.get("pending_subagents", []) if isinstance(extra, dict) else []
+        )
         return [SubAgentHandle.from_dict(item) for item in pending_list]
 
     async def _write_pending(
         self, main_conv_id: str, handles: List[SubAgentHandle]
     ) -> None:
         """写入 pending_subagents 列表到 gpts_conversations.extra。"""
-        conv = self._agent_chat.gpts_conversations.get_by_conv_id(main_conv_id)
+        conv = await self._agent_chat.gpts_conversations.a_get_by_conv_id(main_conv_id)
         if not conv:
             logger.warning(f"[subagent-coordinator] conv {main_conv_id} not found")
             return
         try:
-            extra = json.loads(conv.extra) if isinstance(conv.extra, str) else (conv.extra or {})
+            extra = (
+                json.loads(conv.extra)
+                if isinstance(conv.extra, str)
+                else (conv.extra or {})
+            )
         except (json.JSONDecodeError, TypeError):
             extra = {}
         if not isinstance(extra, dict):
             extra = {}
         extra["pending_subagents"] = [h.to_dict() for h in handles]
-        # 直接 update extra 字段
-        session = self._agent_chat.gpts_conversations.get_raw_session()
-        from gyra_serve.agent.db.gpts_conversations_db import GptsConversationsEntity
-        session.query(GptsConversationsEntity).filter(
-            GptsConversationsEntity.conv_id == main_conv_id
-        ).update(
-            {GptsConversationsEntity.extra: json.dumps(extra, ensure_ascii=False)},
-            synchronize_session="fetch",
+        # 直接 update extra 字段（异步写，避免阻塞事件循环）
+        await self._agent_chat.gpts_conversations.a_update_extra(
+            main_conv_id, extra
         )
-        session.commit()
-        session.close()
+        # 看板台账变更，立即失效主会话 dock 帧缓存（getattr 防御旧实例无此方法）
+        invalidate = getattr(self._agent_chat, "invalidate_dock_frame_cache", None)
+        if invalidate:
+            invalidate(main_conv_id)
 
     async def _read_extra(self, main_conv_id: str) -> Dict[str, Any]:
         """读取 gpts_conversations.extra 字典（不存在/损坏时返回空 dict）。"""
-        conv = self._agent_chat.gpts_conversations.get_by_conv_id(main_conv_id)
+        conv = await self._agent_chat.gpts_conversations.a_get_by_conv_id(main_conv_id)
         if not conv or not getattr(conv, "extra", None):
             return {}
         try:
-            extra = json.loads(conv.extra) if isinstance(conv.extra, str) else conv.extra
+            extra = (
+                json.loads(conv.extra)
+                if isinstance(conv.extra, str)
+                else conv.extra
+            )
         except (json.JSONDecodeError, TypeError):
             return {}
         return extra if isinstance(extra, dict) else {}
 
     async def _write_extra(self, main_conv_id: str, extra: Dict[str, Any]) -> None:
         """写回 gpts_conversations.extra。"""
-        conv = self._agent_chat.gpts_conversations.get_by_conv_id(main_conv_id)
+        conv = await self._agent_chat.gpts_conversations.a_get_by_conv_id(main_conv_id)
         if not conv:
             logger.warning(f"[subagent-coordinator] conv {main_conv_id} not found")
             return
-        session = self._agent_chat.gpts_conversations.get_raw_session()
-        from gyra_serve.agent.db.gpts_conversations_db import GptsConversationsEntity
-        session.query(GptsConversationsEntity).filter(
-            GptsConversationsEntity.conv_id == main_conv_id
-        ).update(
-            {GptsConversationsEntity.extra: json.dumps(extra, ensure_ascii=False)},
-            synchronize_session="fetch",
+        await self._agent_chat.gpts_conversations.a_update_extra(
+            main_conv_id, extra
         )
-        session.commit()
-        session.close()
+        # 看板台账变更，立即失效主会话 dock 帧缓存（getattr 防御旧实例无此方法）
+        invalidate = getattr(self._agent_chat, "invalidate_dock_frame_cache", None)
+        if invalidate:
+            invalidate(main_conv_id)
 
     # ---- 公开接口 ----
 
@@ -143,7 +152,11 @@ class SubagentCoordinator:
                     )
                     return h, False
 
-        display_name = agent_display_name or await self._resolve_app_display_name(agent_name) or agent_name
+        display_name = (
+            agent_display_name
+            or await self._resolve_app_display_name(agent_name)
+            or agent_name
+        )
         handle = SubAgentHandle(
             sub_conv_id=sub_conv_id,
             main_conv_id=main_conv_id,
@@ -195,7 +208,10 @@ class SubagentCoordinator:
             )
 
     def _mirror_complete(
-        self, sub_conv_id: str, result: Optional[str] = None, error: Optional[str] = None
+        self,
+        sub_conv_id: str,
+        result: Optional[str] = None,
+        error: Optional[str] = None,
     ) -> None:
         """把子 agent 终态同步到 AsyncTaskManager 镜像任务。"""
         try:
@@ -339,7 +355,8 @@ class SubagentCoordinator:
             return name or None
         except Exception as e:  # noqa: BLE001
             logger.debug(
-                f"[subagent-coordinator] resolve display name for {app_code} failed: {e}"
+                f"[subagent-coordinator] resolve display name "
+                f"for {app_code} failed: {e}"
             )
             return None
 
@@ -387,7 +404,8 @@ class SubagentCoordinator:
         else:
             self._mirror_complete(sub_conv_id, result=result)
             logger.info(
-                f"[subagent-coordinator] subagent {sub_conv_id} done for main {main_conv_id}"
+                f"[subagent-coordinator] subagent {sub_conv_id} "
+                f"done for main {main_conv_id}"
             )
         if all(h.is_terminal() for h in handles):
             await self._trigger_main_resume(main_conv_id, handles)
@@ -408,7 +426,8 @@ class SubagentCoordinator:
         await self._emit_board_event(main_conv_id, handles)
         self._mirror_complete(sub_conv_id, error=error)
         logger.warning(
-            f"[subagent-coordinator] subagent {sub_conv_id} failed for main {main_conv_id}: {error}"
+            f"[subagent-coordinator] subagent {sub_conv_id} failed "
+            f"for main {main_conv_id}: {error}"
         )
         if all(h.is_terminal() for h in handles):
             await self._trigger_main_resume(main_conv_id, handles)
@@ -422,7 +441,9 @@ class SubagentCoordinator:
         handles = await self._read_pending(main_conv_id)
         items = []
         for h in handles:
-            board_status = "awaiting_authorization" if h.authorization else h.status.value
+            board_status = (
+                "awaiting_authorization" if h.authorization else h.status.value
+            )
             items.append(
                 {
                     "sub_conv_id": h.sub_conv_id,
@@ -456,7 +477,8 @@ class SubagentCoordinator:
             await self._write_extra(main_conv_id, extra)
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                f"[subagent-coordinator] persist board failed for main={main_conv_id}: {e}"
+                f"[subagent-coordinator] persist board failed "
+                f"for main={main_conv_id}: {e}"
             )
 
     async def list_persistent_board(
@@ -514,7 +536,8 @@ class SubagentCoordinator:
             )
         except Exception as e:
             logger.warning(
-                f"[subagent-coordinator] emit board event failed for main={main_conv_id}: {e}"
+                f"[subagent-coordinator] emit board event failed "
+                f"for main={main_conv_id}: {e}"
             )
 
     async def emit_authorization_needed(
@@ -559,7 +582,8 @@ class SubagentCoordinator:
             messages = await dao.get_by_conv_id(sub_conv_id)
         except Exception as e:
             logger.warning(
-                f"[subagent-coordinator] failed to load transcript for sub={sub_conv_id}: {e}"
+                f"[subagent-coordinator] failed to load transcript "
+                f"for sub={sub_conv_id}: {e}"
             )
             return ""
 
@@ -595,7 +619,8 @@ class SubagentCoordinator:
                             content_short = (r.get("content") or "")[:150]
                             mark = "✓" if success else "✗"
                             lines.append(
-                                f"    [{sender} tool {mark} {tool_name}] {content_short}"
+                                f"    [{sender} tool {mark} "
+                                f"{tool_name}] {content_short}"
                             )
                 except (json.JSONDecodeError, TypeError, AttributeError):
                     pass
@@ -622,7 +647,10 @@ class SubagentCoordinator:
         results_lines = []
         for h in handles:
             if h.status == SubAgentStatus.DONE:
-                results_lines.append(f"  - 子对话 {h.sub_conv_id} 完成：\n{h.result or '(空结果)'}")
+                results_lines.append(
+                    f"  - 子对话 {h.sub_conv_id} 完成：\n"
+                    f"{h.result or '(空结果)'}"
+                )
             elif h.status == SubAgentStatus.FAILED:
                 # Tier 3.3: 尝试重建崩溃前的 transcript
                 transcript = await self._rebuild_subagent_transcript(h.sub_conv_id)
@@ -632,7 +660,10 @@ class SubagentCoordinator:
                         f"    失败原因：{h.error or '(未知错误)'}"
                     )
                 else:
-                    results_lines.append(f"  - 子对话 {h.sub_conv_id} 失败：{h.error or '(未知错误)'}")
+                    results_lines.append(
+                        f"  - 子对话 {h.sub_conv_id} "
+                        f"失败：{h.error or '(未知错误)'}"
+                    )
         synthesized = "子 agent 全部完成：\n" + "\n".join(results_lines)
 
         logger.info(
@@ -671,21 +702,26 @@ class SubagentCoordinator:
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                f"[subagent-coordinator] emit terminal board failed for main={main_conv_id}: {e}"
+                f"[subagent-coordinator] emit terminal board failed "
+                f"for main={main_conv_id}: {e}"
             )
 
         # 读 main conv entity，拿 gpts_name(app_code) 与 state
         try:
-            conv = self._agent_chat.gpts_conversations.get_by_conv_id(main_conv_id)
+            conv = await self._agent_chat.gpts_conversations.a_get_by_conv_id(
+                main_conv_id
+            )
             if not conv:
                 logger.warning(
-                    f"[subagent-coordinator] main conv {main_conv_id} not found; cannot resume"
+                    f"[subagent-coordinator] main conv {main_conv_id} "
+                    f"not found; cannot resume"
                 )
                 return
             await self._safe_set_waiting(main_conv_id)
             # 同步内存对象 state 为 WAITING：_safe_set_waiting 只改数据库，不更新
-            # 传入的 conv 实体。aggregation_chat 依赖传入实体的 state 判断 is_retry_chat，
-            # 若不更新会误判为新会话而重复 INSERT，触发 UNIQUE constraint failed。
+            # 传入的 conv 实体。aggregation_chat 依赖传入实体的 state 判断
+            # is_retry_chat，若不更新会误判为新会话而重复 INSERT，
+            # 触发 UNIQUE constraint failed。
             from gyra.agent.core.schema import Status as _Status
 
             conv.state = _Status.WAITING.value
@@ -722,7 +758,8 @@ class SubagentCoordinator:
                         pass
                 except Exception as e:  # noqa: BLE001
                     logger.exception(
-                        f"[subagent-coordinator] resume run failed for {main_conv_id}: {e}"
+                        f"[subagent-coordinator] resume run failed "
+                        f"for {main_conv_id}: {e}"
                     )
 
             try:
@@ -734,7 +771,8 @@ class SubagentCoordinator:
                 )
         except Exception as e:
             logger.exception(
-                f"[subagent-coordinator] failed to trigger main resume for {main_conv_id}: {e}"
+                f"[subagent-coordinator] failed to trigger main resume "
+                f"for {main_conv_id}: {e}"
             )
 
     async def _safe_set_waiting(self, conv_id: str) -> None:
@@ -744,7 +782,9 @@ class SubagentCoordinator:
         """
         try:
             from gyra.agent.core.schema import Status
-            self._agent_chat.gpts_conversations.update(conv_id, Status.WAITING.value)
+            await self._agent_chat.gpts_conversations.a_update_state(
+                conv_id, Status.WAITING.value
+            )
             # 子 agent 等待：resume 由 SubagentCoordinator 注入子任务结果驱动，
             # 明确记为 await_subagents，供 base_agent._update_recovering 决策
             # （非工具授权 → 不重放，走 LLM 处理子任务完成通知）。
@@ -760,7 +800,8 @@ class SubagentCoordinator:
         用于 PR 4 的 RecoveryDaemon 启动时恢复。
 
         Tier 3.2/3.3: 对 RUNNING 状态的子 agent，按 lease 状态判断：
-        - lease 已过期 → 子 agent 真死 → 标记 FAILED + 重建 transcript → 触发 main resume
+        - lease 已过期 → 子 agent 真死 → 标记 FAILED + 重建 transcript
+        → 触发 main resume
         - lease 未过期 → 子 agent 在另一进程跑 → 注册监听等子完成
         """
         handles = await self._read_pending(main_conv_id)
@@ -768,15 +809,17 @@ class SubagentCoordinator:
             return
 
         # Tier 3.2: 对 RUNNING 子 agent 检查 lease 是否过期
-        from gyra_serve.agent.heartbeat import is_lease_expired
         from gyra_serve.agent.db.gpts_conversations_db import GptsConversationsDao
+        from gyra_serve.agent.heartbeat import is_lease_expired
         dao = GptsConversationsDao()
         modified = False
         for h in handles:
             if h.status != SubAgentStatus.RUNNING:
                 continue
             try:
-                wid, expires_at = await asyncio.to_thread(dao.get_lease_holder, h.sub_conv_id)
+                wid, expires_at = await asyncio.to_thread(
+                    dao.get_lease_holder, h.sub_conv_id
+                )
                 if is_lease_expired(expires_at):
                     # 子 agent 真死（lease 过期）→ 标记 FAILED
                     logger.warning(

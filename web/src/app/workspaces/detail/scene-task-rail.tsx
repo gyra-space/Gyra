@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Dropdown, Form, Input, Modal } from 'antd';
-import { CheckOutlined, CommentOutlined, DeleteOutlined, DownOutlined, EditOutlined, LinkOutlined, MoreOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
+import { CheckOutlined, CommentOutlined, DeleteOutlined, DownOutlined, EditOutlined, LinkOutlined, MoreOutlined, RightOutlined, SearchOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { apiInterceptors, createAsset, resolveAndExecuteIntervention, abortIntervention, terminateTask, deleteTask, reassignTask, deleteConversation, renameConversation } from '@/client/api';
+import { apiInterceptors, createAsset, resolveAndExecuteIntervention, abortIntervention, terminateTask, deleteTask, reassignTask, deleteConversation, favoriteConversation, renameConversation } from '@/client/api';
 import { listInbox, updateInboxStatus, listMembers, type InboxItem } from '@/client/api/workspace';
 import { confirmEcpObject } from '@/client/api/ecp';
 import { getUserId } from '@/utils';
@@ -23,6 +23,13 @@ function segLabel(iso: string): string {
   if (d.isSame(now.subtract(1, 'day'), 'day')) return '昨天';
   if (d.isAfter(now.startOf('week'))) return '本周';
   return '更早';
+}
+
+/** 判断列表项是否已收藏(lobby 会话看 is_favorited;任务按其会话 conv_session_id 回查) */
+function isFavEntry(it: any, favSet: Set<string>): boolean {
+  if (it.kind === 'lobby-conversation') return !!it.raw.is_favorited;
+  if (it.kind === 'task') return it.raw.conv_session_id ? favSet.has(String(it.raw.conv_session_id)) : false;
+  return false;
 }
 
 const TRIGGER_LABEL: Record<string, string> = {
@@ -454,6 +461,17 @@ export function SceneTaskRail({
     });
   }, [merged, tab, filter]);
 
+  // 已收藏会话集合:以 lobby 会话的 is_favorited 为准;任务项按其 conv_session_id 回查同一集合
+  const favSet = useMemo(
+    () =>
+      new Set(
+        merged
+          .filter((it: any) => it.kind === 'lobby-conversation' && it.raw?.is_favorited)
+          .map((it: any) => String(it.raw.conv_uid)),
+      ),
+    [merged],
+  );
+
   // 滚动分页:任务多时,底部哨兵进入视口即自动追加一页(替代手动“加载更多”)
   const hasMore = filtered.length > visibleCount;
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
@@ -485,8 +503,12 @@ export function SceneTaskRail({
   const groups = useMemo(() => {
     const shown = filtered.slice(0, visibleCount);
     const out: Array<{ label: string; items: (typeof shown)[number][] }> = [];
+    // 收藏分组置顶:已收藏项从时间段分组剔除,只出现在「收藏」组,不重复展示
+    const favs = shown.filter((it) => isFavEntry(it, favSet));
+    if (favs.length > 0) out.push({ label: '收藏', items: favs });
     let last = '';
     shown.forEach((item) => {
+      if (isFavEntry(item, favSet)) return;
       const seg = segLabel(item.updatedAt);
       if (seg !== last) {
         out.push({ label: seg, items: [] });
@@ -495,7 +517,7 @@ export function SceneTaskRail({
       out[out.length - 1].items.push(item);
     });
     return out;
-  }, [filtered, visibleCount]);
+  }, [filtered, visibleCount, favSet]);
 
   const handleTerminate = (id: number) => {
     modal.confirm({
@@ -541,6 +563,18 @@ export function SceneTaskRail({
         onRefreshLists?.();
       },
     });
+  };
+
+  // 收藏/取消收藏会话(lobby 会话与任务会话通用)。与删除/重命名一致:直接调 API 后刷新列表。
+  const handleToggleConversationFavorite = async (convUid: string, currentFav: boolean) => {
+    if (!workspaceId) return;
+    const nextFav = !currentFav;
+    const [err] = await apiInterceptors(
+      favoriteConversation({ workspace_id: workspaceId, conv_uid: convUid, favorited: nextFav }),
+    );
+    if (err) { message.error(err.message); return; }
+    message.success(nextFav ? '已收藏' : '已取消收藏');
+    onRefreshLists?.();
   };
 
   // ---------------- 会话重命名 ----------------
@@ -639,7 +673,7 @@ export function SceneTaskRail({
       const iv = it.raw;
       return (
         <div key={`orphan-${iv.id}`} className="ws-rail-card ws-rail-card--int ws-rail-card--orphan">
-          <div className="ws-rail-ttl">{questionToText(iv.question) || `intervention_${iv.id}`}</div>
+          <div className="ws-rail-ttl" title={questionToText(iv.question) || `intervention_${iv.id}`}>{questionToText(iv.question) || `intervention_${iv.id}`}</div>
           <div className="ws-rail-meta">
             <span className="ws-rail-status ws-rail-status--requested"><span className="ws-rail-dot" />待响应</span>
             <span className="ws-rail-meta-sep">·</span>
@@ -669,7 +703,7 @@ export function SceneTaskRail({
           onClick={() => !disabled && onOpenConversation?.(c.conv_uid, null)}
           onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenConversation?.(c.conv_uid, null); } }}
         >
-          <div className="ws-rail-ttl">{title}</div>
+          <div className="ws-rail-ttl" title={title}>{title}</div>
           <div className="ws-rail-meta">
             <span className="ws-rail-conv-kind ws-rail-conv-kind--lobby">大厅</span>
             {initiator && (
@@ -686,6 +720,16 @@ export function SceneTaskRail({
             <span className="ws-rail-src">大厅会话</span>
             {canDeleteConversation && !disabled && (
               <div className="ws-rail-card-actions">
+                <span
+                  className={`ws-rail-card-act${c.is_favorited ? ' ws-rail-card-act--fav' : ''}`}
+                  title={c.is_favorited ? '取消收藏' : '收藏'}
+                  role="button"
+                  tabIndex={-1}
+                  onClick={(e) => { e.stopPropagation(); handleToggleConversationFavorite(c.conv_uid, !!c.is_favorited); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); handleToggleConversationFavorite(c.conv_uid, !!c.is_favorited); } }}
+                >
+                  {c.is_favorited ? <StarFilled /> : <StarOutlined />}
+                </span>
                 <span
                   className="ws-rail-card-act"
                   title="重命名会话"
@@ -716,6 +760,7 @@ export function SceneTaskRail({
     const pbName = t.playbook_id ? pbNameById.get(t.playbook_id) : null;
     const isActive = activeTaskId === t.id;
     const canTerminate = t.status === 'running' || t.status === 'awaiting_human';
+    const isFav = t.conv_session_id ? favSet.has(String(t.conv_session_id)) : false;
     const moreItems = [
       { key: 'reassign', label: '转交任务' },
       ...(canTerminate
@@ -733,7 +778,7 @@ export function SceneTaskRail({
         onClick={() => !disabled && onPreview(t, 'task')}
         onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPreview(t, 'task'); } }}
       >
-        <div className="ws-rail-ttl">{t.title || `task_${t.id}`}</div>
+        <div className="ws-rail-ttl" title={t.title || `task_${t.id}`}>{t.title || `task_${t.id}`}</div>
         <div className="ws-rail-meta">
           <span className={`ws-rail-status ws-rail-status--${t.status || 'draft'}`}>
             <span className="ws-rail-dot" />
@@ -758,6 +803,18 @@ export function SceneTaskRail({
           <span className="ws-rail-src">{triggerLabel(t)}</span>
           <ElapsedTimer task={t} />
           <div className="ws-rail-card-actions">
+            {canDeleteConversation && !disabled && t.conv_session_id && (
+              <span
+                className={`ws-rail-card-act${isFav ? ' ws-rail-card-act--fav' : ''}`}
+                title={isFav ? '取消收藏' : '收藏'}
+                role="button"
+                tabIndex={-1}
+                onClick={(e) => { e.stopPropagation(); handleToggleConversationFavorite(t.conv_session_id, isFav); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); handleToggleConversationFavorite(t.conv_session_id, isFav); } }}
+              >
+                {isFav ? <StarFilled /> : <StarOutlined />}
+              </span>
+            )}
             <span
               className="ws-rail-card-act"
               title="引用到输入框"

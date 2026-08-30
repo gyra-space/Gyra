@@ -15,7 +15,8 @@ class UserPermissions:
 
     user_id: int
     role_names: List[str]
-    permissions_map: Dict[str, List[str]]  # resource_type -> [action, ...]
+    permissions_map: Dict[str, List[str]]  # resource_type 或 resource_type:resource_id -> [action, ...]
+    deny_map: Dict[str, List[str]] = field(default_factory=dict)  # 同上分桶的 deny
     grants: List[Dict] = field(default_factory=list)  # 实例级授权（未过期）
     loaded_at: float = field(default_factory=time.time)
 
@@ -46,22 +47,27 @@ class PermissionService:
         role_ids = list(all_roles.keys())
         role_names = list(all_roles.values())
 
-        # 3. 聚合所有角色的权限
+        # 3. 聚合所有角色的权限（按 effect 分桶;resource_id != "*" 的行
+        # 用 scoped key(resource_type:resource_id),不再压扁成通配——
+        # 否则"仅给某个 agent 的权限"会泄漏成全量 agent 权限）
         permissions_map: Dict[str, List[str]] = {}
+        deny_map: Dict[str, List[str]] = {}
         if role_ids:
             perms = self._dao.get_permissions_for_roles(role_ids)
             for p in perms:
-                if p["effect"] == "allow":
-                    rt = p["resource_type"]
-                    act = p["action"]
-                    permissions_map.setdefault(rt, [])
-                    if act not in permissions_map[rt]:
-                        permissions_map[rt].append(act)
+                rt = p["resource_type"]
+                rid = p.get("resource_id") or "*"
+                key = rt if rid == "*" else f"{rt}:{rid}"
+                target = permissions_map if p["effect"] == "allow" else deny_map
+                target.setdefault(key, [])
+                if p["action"] not in target[key]:
+                    target[key].append(p["action"])
 
         result = UserPermissions(
             user_id=user_id_int,
             role_names=role_names,
             permissions_map=permissions_map,
+            deny_map=deny_map,
             grants=self._dao.get_user_grants(user_id_int),
         )
         self._cache[user_id_int] = result
@@ -97,6 +103,15 @@ class PermissionService:
         # superadmin 绕过所有检查
         if "superadmin" in perms.role_names:
             return True
+
+        # 0. deny 优先于 allow（scoped 与通配都查）
+        if resource_id and resource_id != "*":
+            scoped_deny = perms.deny_map.get(f"{resource_type}:{resource_id}", [])
+            if action in scoped_deny or "admin" in scoped_deny:
+                return False
+        denied = perms.deny_map.get(resource_type, []) + perms.deny_map.get("*", [])
+        if action in denied or "admin" in denied:
+            return False
 
         # 1. 检查精确匹配（resource_id 指定的资源）
         if resource_id and resource_id != "*":

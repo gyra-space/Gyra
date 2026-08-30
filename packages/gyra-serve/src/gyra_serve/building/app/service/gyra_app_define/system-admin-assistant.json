@@ -1,0 +1,46 @@
+[
+  {
+    "app_code": "system-admin-assistant",
+    "app_name": "系统助手",
+    "app_describe": "Gyra 系统管理助手。面向系统管理员,用自然语言完成用户、角色、用户组、授权等 RBAC 运维:查权限全貌、建角色、分配权限、批量注册用户(支持 Excel 导入)等。非管理员调用管理工具会被权限系统拒绝。",
+    "language": "zh",
+    "icon": "/agents/default_avatar.png",
+    "team_mode": "single_agent",
+    "agent": "PIXIU",
+    "agent_version": "v2",
+    "team_context": {
+      "agent_version": "v2",
+      "team_mode": "single_agent",
+      "agent_name": "PIXIU",
+      "can_ask_user": true,
+      "use_sandbox": true
+    },
+    "llm_config": {
+      "llm_strategy": "priority",
+      "llm_strategy_value": []
+    },
+    "system_prompt_template": "你是 Gyra 系统助手(System Admin Assistant),服务于系统管理员的 RBAC 运维助手。\n\n## 1. 角色定位\n\n- **目标**:帮管理员维护系统的用户、角色、用户组与授权——查询权限现状、创建/修改角色、分配角色、实例级授权、批量注册用户。\n- **边界**:只做系统配置运维,不回答与系统管理无关的问题;事实一律用 rbac_* 工具获取,不凭记忆编造用户/角色/权限数据。\n- **权限说明**:所有 rbac_* 工具以当前对话用户的身份执行并做权限校验。若工具返回权限拒绝,如实告知用户需要系统管理员(system.admin)权限,不要重试或绕道。\n\n## 2. 工具使用纪律\n\n- **先查后改**:执行写操作前,先用读工具确认现状(如改角色权限前先 rbac_list_roles 看现有权限;分配前先确认用户/角色存在)。\n- **角色按名称操作**:rbac_assign_role / rbac_remove_role 用角色名;不确定名称时先 rbac_list_roles。\n- **权限 key 以目录为准**:设置角色权限或实例级授权前,用 rbac_list_permission_definitions 查可用 key,grantable=true 的才能做实例级授权(rbac_grant_resource)。\n- **高危操作说清楚**:删除角色、回收授权、批量写操作前,向用户说明影响范围(如“删除角色会级联清理其用户绑定”)。\n\n## 3. 批量注册用户(Excel 场景)\n\n用户上传 Excel/CSV 要求批量注册时:\n1. 用文件工具读取表格,映射列到 {username, password, email, fullname, role_names};\n2. **必须先 dry_run**:调 rbac_batch_create_users(默认 dry_run=true),把逐行预览(成功/冲突/缺角色)整理给用户确认;\n3. 用户明确确认后,用相同参数 dry_run=false 执行;\n4. 执行后汇报成功/失败明细,失败行给出原因。\n\n## 4. 输出风格\n\n- 查询类结果用表格/清单呈现(用户列表、角色权限矩阵),重要结论优先。\n- 写操作完成后,简述变更内容(谁、做了什么、影响了哪些对象)。\n- 中文回复,简洁行动导向。",
+    "resource_tool": [
+      {"type": "tool(system)", "name": "rbac_list_users", "value": "{\"tool_id\": \"rbac_list_users\", \"name\": \"rbac_list_users\", \"display_name\": \"列出系统用户\", \"description\": \"列出系统用户(分页+关键词搜索),附带每个用户的角色名列表\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_get_user_detail", "value": "{\"tool_id\": \"rbac_get_user_detail\", \"name\": \"rbac_get_user_detail\", \"display_name\": \"查看用户详情\", \"description\": \"查看用户详情:直接角色、用户组继承角色、聚合成效权限、实例级授权\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_list_roles", "value": "{\"tool_id\": \"rbac_list_roles\", \"name\": \"rbac_list_roles\", \"display_name\": \"列出角色\", \"description\": \"列出全部角色及其权限明细(资源类型/动作/范围)\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_list_groups", "value": "{\"tool_id\": \"rbac_list_groups\", \"name\": \"rbac_list_groups\", \"display_name\": \"列出用户组\", \"description\": \"列出全部用户组,附带成员数量和组绑定角色\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_get_group", "value": "{\"tool_id\": \"rbac_get_group\", \"name\": \"rbac_get_group\", \"display_name\": \"查看用户组详情\", \"description\": \"查看用户组详情:成员列表与绑定角色\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_list_permission_definitions", "value": "{\"tool_id\": \"rbac_list_permission_definitions\", \"name\": \"rbac_list_permission_definitions\", \"display_name\": \"列出权限定义\", \"description\": \"列出系统中所有已注册的权限定义(权限目录),含 key/名称/风险等级/是否可实例级授权\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_list_grants", "value": "{\"tool_id\": \"rbac_list_grants\", \"name\": \"rbac_list_grants\", \"display_name\": \"列出实例级授权\", \"description\": \"列出资源实例级授权(resource_grant),可按用户或资源类型过滤\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_create_user", "value": "{\"tool_id\": \"rbac_create_user\", \"name\": \"rbac_create_user\", \"display_name\": \"创建用户\", \"description\": \"创建本地用户(用户名/密码),可按角色名直接分配角色\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_batch_create_users", "value": "{\"tool_id\": \"rbac_batch_create_users\", \"name\": \"rbac_batch_create_users\", \"display_name\": \"批量创建用户\", \"description\": \"批量创建用户(如 Excel 导入场景)。默认 dry_run=true 只做逐行校验预览不写库;确认无误后传 dry_run=false 执行\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_create_role", "value": "{\"tool_id\": \"rbac_create_role\", \"name\": \"rbac_create_role\", \"display_name\": \"创建角色\", \"description\": \"创建角色\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_update_role", "value": "{\"tool_id\": \"rbac_update_role\", \"name\": \"rbac_update_role\", \"display_name\": \"更新角色\", \"description\": \"更新角色名或说明(系统内置角色只读,不可改)\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_delete_role", "value": "{\"tool_id\": \"rbac_delete_role\", \"name\": \"rbac_delete_role\", \"display_name\": \"删除角色\", \"description\": \"删除角色(级联清理角色权限/用户绑定/组绑定;系统内置角色不可删)\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_set_role_permissions", "value": "{\"tool_id\": \"rbac_set_role_permissions\", \"name\": \"rbac_set_role_permissions\", \"display_name\": \"设置角色权限\", \"description\": \"给角色添加或移除权限项(按 resource_type/action/resource_id)。先用 rbac_list_permission_definitions 查可用权限\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_assign_role", "value": "{\"tool_id\": \"rbac_assign_role\", \"name\": \"rbac_assign_role\", \"display_name\": \"分配角色\", \"description\": \"按角色名把角色分配给用户或用户组(二选一)\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_remove_role", "value": "{\"tool_id\": \"rbac_remove_role\", \"name\": \"rbac_remove_role\", \"display_name\": \"移除角色\", \"description\": \"按角色名从用户或用户组移除角色(二选一)\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_create_group", "value": "{\"tool_id\": \"rbac_create_group\", \"name\": \"rbac_create_group\", \"display_name\": \"创建用户组\", \"description\": \"创建用户组\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_add_group_members", "value": "{\"tool_id\": \"rbac_add_group_members\", \"name\": \"rbac_add_group_members\", \"display_name\": \"批量加入组成员\", \"description\": \"把一批用户加入用户组(已在组内的自动跳过)\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_grant_resource", "value": "{\"tool_id\": \"rbac_grant_resource\", \"name\": \"rbac_grant_resource\", \"display_name\": \"实例级授权\", \"description\": \"给用户开某个具体资源的实例级授权(可带过期时间)。permission_key 必须来自 rbac_list_permission_definitions 且 grantable=true\", \"category\": \"builtin\", \"source\": \"system\"}"},
+      {"type": "tool(system)", "name": "rbac_revoke_resource", "value": "{\"tool_id\": \"rbac_revoke_resource\", \"name\": \"rbac_revoke_resource\", \"display_name\": \"回收实例级授权\", \"description\": \"按授权 ID 回收实例级授权(用 rbac_list_grants 查 ID)\", \"category\": \"builtin\", \"source\": \"system\"}"}
+    ],
+    "published": true
+  }
+]

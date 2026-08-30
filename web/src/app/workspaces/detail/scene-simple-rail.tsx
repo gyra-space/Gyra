@@ -15,6 +15,8 @@ import {
   PlusOutlined,
   RightOutlined,
   SearchOutlined,
+  StarFilled,
+  StarOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { ConversationUsageChip } from '@/components/chat/ConversationUsageChip';
@@ -31,6 +33,8 @@ export interface SimpleHistoryItem {
   updatedAt: string;
   conversationId?: string;
   taskId?: number | null;
+  /** 收藏状态(挂在对应会话 conv 上) */
+  isFavorited?: boolean;
   /** 是否当前已选中的会话/任务(由外层按 conversationId/taskId 判定) */
   active?: boolean;
 }
@@ -53,12 +57,16 @@ interface SceneSimpleRailProps {
   onDeleteItem?: (item: SimpleHistoryItem) => void;
   /** 重命名会话项(lobby)。由外层弹窗收集新名称并调用重命名接口。 */
   onRenameItem?: (item: SimpleHistoryItem) => void;
+  /** 收藏/取消收藏历史项。由外层调用收藏接口。 */
+  onToggleFavorite?: (item: SimpleHistoryItem) => void;
   /** 是否允许删除任务项(space.task.manage) */
   canDeleteTask?: boolean;
   /** 是否允许删除会话项(space.chat.use) */
   canDeleteConversation?: boolean;
   /** 是否允许重命名会话项(space.chat.use) */
   canRenameConversation?: boolean;
+  /** 是否允许收藏会话(space.chat.use) */
+  canFavoriteConversation?: boolean;
 }
 
 function StatusDot({ status }: { status: SimpleHistoryItem['status'] }) {
@@ -98,9 +106,11 @@ export function SceneSimpleRail({
   usageMap = {},
   onDeleteItem,
   onRenameItem,
+  onToggleFavorite,
   canDeleteTask,
   canDeleteConversation,
   canRenameConversation,
+  canFavoriteConversation,
 }: SceneSimpleRailProps) {
   const [filter, setFilter] = useState('');
   const [collapsedSegs, setCollapsedSegs] = useState<Set<string>>(() => new Set());
@@ -118,8 +128,14 @@ export function SceneSimpleRail({
 
   const groups = useMemo(() => {
     const out: Array<{ label: string; items: SimpleHistoryItem[] }> = [];
+    // 收藏分组置顶:已收藏项只出现在收藏分组,不再重复进入时间段
+    const favs = filtered.filter((it) => it.isFavorited);
+    if (favs.length > 0) {
+      out.push({ label: '收藏', items: favs });
+    }
     let last = '';
     filtered.forEach((item) => {
+      if (item.isFavorited) return;
       const seg = segLabel(item.updatedAt);
       if (seg !== last) {
         out.push({ label: seg, items: [] });
@@ -199,6 +215,13 @@ export function SceneSimpleRail({
                     it.active ||
                     (it.kind === 'task' && it.taskId != null && it.taskId === currentTaskId) ||
                     (it.conversationId != null && it.conversationId === currentConvUid);
+                  // 悬浮操作胶囊:收藏/重命名/删除,按权限与回调逐项启用。
+                  const canFavorite = !disabled && !!onToggleFavorite && !!it.conversationId && !!canFavoriteConversation;
+                  const canRename = !disabled && !!onRenameItem && it.kind === 'lobby' && !!canRenameConversation;
+                  const canDelete = !disabled && !!onDeleteItem && (
+                    (it.kind === 'task' && !!canDeleteTask) ||
+                    (it.kind === 'lobby' && !!canDeleteConversation)
+                  );
                   return (
                     <div
                       key={it.key}
@@ -226,34 +249,57 @@ export function SceneSimpleRail({
                           </div>
                         )}
                       </div>
-                      {!disabled && onRenameItem && it.kind === 'lobby' && canRenameConversation && (
-                        <span
-                          className="ws-simple-item__act"
-                          role="button"
-                          tabIndex={-1}
-                          title="重命名"
-                          aria-label="重命名"
-                          onClick={(e) => { e.stopPropagation(); onRenameItem?.(it); }}
-                          onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onRenameItem?.(it); } }}
-                        >
-                          <EditOutlined />
+                      {it.isFavorited && (
+                        <span className="ws-simple-item__favflag" aria-label="已收藏">
+                          <StarFilled />
                         </span>
                       )}
-                      {!disabled && onDeleteItem && (
-                        (it.kind === 'task' && canDeleteTask) ||
-                        (it.kind === 'lobby' && canDeleteConversation)
-                      ) && (
-                        <span
-                          className="ws-simple-item__del"
-                          role="button"
-                          tabIndex={-1}
-                          title="删除"
-                          aria-label="删除"
-                          onClick={(e) => { e.stopPropagation(); onDeleteItem?.(it); }}
-                          onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onDeleteItem?.(it); } }}
+                      {(canFavorite || canRename || canDelete) && (
+                        <div
+                          className="ws-simple-item__ops"
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => e.stopPropagation()}
                         >
-                          <DeleteOutlined />
-                        </span>
+                          {canFavorite && (
+                            <span
+                              className={`ws-simple-item__op ws-simple-item__op--fav${it.isFavorited ? ' ws-simple-item__op--on' : ''}`}
+                              role="button"
+                              tabIndex={-1}
+                              title={it.isFavorited ? '取消收藏' : '收藏'}
+                              aria-label={it.isFavorited ? '取消收藏' : '收藏'}
+                              onClick={(e) => { e.stopPropagation(); onToggleFavorite?.(it); }}
+                              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onToggleFavorite?.(it); } }}
+                            >
+                              {it.isFavorited ? <StarFilled /> : <StarOutlined />}
+                            </span>
+                          )}
+                          {canRename && (
+                            <span
+                              className="ws-simple-item__op ws-simple-item__op--rename"
+                              role="button"
+                              tabIndex={-1}
+                              title="重命名"
+                              aria-label="重命名"
+                              onClick={(e) => { e.stopPropagation(); onRenameItem?.(it); }}
+                              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onRenameItem?.(it); } }}
+                            >
+                              <EditOutlined />
+                            </span>
+                          )}
+                          {canDelete && (
+                            <span
+                              className="ws-simple-item__op ws-simple-item__op--delete"
+                              role="button"
+                              tabIndex={-1}
+                              title="删除"
+                              aria-label="删除"
+                              onClick={(e) => { e.stopPropagation(); onDeleteItem?.(it); }}
+                              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onDeleteItem?.(it); } }}
+                            >
+                              <DeleteOutlined />
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                   );

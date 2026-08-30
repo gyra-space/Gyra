@@ -17,7 +17,9 @@ from gyra.sandbox.sandbox_utils import (
     validate_shell_command,
     collect_shell_output,
     is_high_risk_command,
+    is_skill_script_command,
     get_sandbox_whitelist,
+    get_skill_command_extra_roots,
 )
 
 logger = logging.getLogger(__name__)
@@ -214,22 +216,33 @@ class ShellExecTool(SandboxToolBase):
             )
 
         sandbox_type = _resolve_sandbox_type()
+        # 命令默认在会话目录(session_work_dir)执行,同名文件不再跨会话覆盖;
+        # 空间公共层(work_dir)同样放行进 allowed_roots,这样用绝对路径读
+        # files/ 下的公共数据集不会被路径栅栏拦下。
+        # 注意:命令参数中的 ".." 本来就一律禁止(见 _validate_tokens),
+        # 因此访问公共层只能走绝对路径,promote 共享文件同理。
+        from gyra.sandbox.sandbox_utils import resolve_session_work_dir
+
+        work_dir = resolve_session_work_dir(client)
+        # skill 目录内的脚本默认受信:入口为 skill 脚本时,路径栅栏额外放行
+        # /tmp(脚本中间产物常见落点),高危授权门也不再触发(正则命中的通常
+        # 只是脚本参数字符串)。
+        skill_dirs = [
+            d for d in (getattr(client, "skill_dir", None),) if isinstance(d, str) and d
+        ]
+        trusted_skill_command = bool(skill_dirs) and is_skill_script_command(
+            command, skill_dirs, work_dir
+        )
         try:
             # 与 LocalShellClient 保持一致:路径栅栏额外放行 skill_dir 与 /mnt,
             # 避免把 skill 目录内的正常命令误判为越界。
             allowed_roots = list(
                 get_sandbox_whitelist(getattr(client, "skill_dir", None))
             )
-            # 命令默认在会话目录(session_work_dir)执行,同名文件不再跨会话覆盖;
-            # 空间公共层(work_dir)同样放行进 allowed_roots,这样用绝对路径读
-            # files/ 下的公共数据集不会被路径栅栏拦下。
-            # 注意:命令参数中的 ".." 本来就一律禁止(见 _validate_tokens),
-            # 因此访问公共层只能走绝对路径,promote 共享文件同理。
-            from gyra.sandbox.sandbox_utils import resolve_session_work_dir
-
-            work_dir = resolve_session_work_dir(client)
             if work_dir != client.work_dir:
                 allowed_roots.append(client.work_dir)
+            if trusted_skill_command:
+                allowed_roots.extend(get_skill_command_extra_roots())
             validate_shell_command(
                 command,
                 work_dir,
@@ -240,7 +253,11 @@ class ShellExecTool(SandboxToolBase):
             return ToolResult.fail(error=str(e), tool_name=self.name)
 
         # local 沙箱下高危命令需用户交互授权；远程沙箱无限制
-        if sandbox_type == "local" and is_high_risk_command(command):
+        if (
+            sandbox_type == "local"
+            and is_high_risk_command(command)
+            and not trusted_skill_command
+        ):
             approved = await self._request_high_risk_approval(command)
             if not approved:
                 return ToolResult.fail(

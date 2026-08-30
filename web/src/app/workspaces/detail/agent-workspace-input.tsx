@@ -1,7 +1,7 @@
 'use client';
 
 import { forwardRef, useImperativeHandle, useEffect, useMemo, useRef, useState } from 'react';
-import { Input, Popover, Drawer, Progress, Statistic, Row, Col } from 'antd';
+import { Input, Popover, Drawer, Progress, Statistic, Row, Col, message } from 'antd';
 import {
   ArrowUpOutlined,
   CheckOutlined,
@@ -11,11 +11,12 @@ import {
   FileOutlined,
   LoadingOutlined,
   ReloadOutlined,
+  RobotOutlined,
   SafetyOutlined,
 } from '@ant-design/icons';
 import classNames from 'classnames';
 import { useRequest } from 'ahooks';
-import { apiInterceptors, getModelList, getSkillList, getMCPList, postChatModeParamsFileLoad } from '@/client/api';
+import { apiInterceptors, getModelList, getSkillList, getMCPList, postChatModeParamsFileLoad, listResources, listArtifacts, listAssets } from '@/client/api';
 import ModelIcon from '@/components/icons/model-icon';
 import { transformFileUrl } from '@/utils';
 import type { IModelData } from '@/types/model';
@@ -26,13 +27,16 @@ import {
   type UsageMetrics,
 } from '@/types/context-metrics';
 import type { AgentWorkspaceInputHandle, PlaybookCommand, SkillRef } from './agent-workspace-types';
+import { getPendingResources, setPendingResources } from './scene-agent-send-data';
 import {
   PlusMenu,
   SelectionChip,
   type PlusMenuMcpRef,
   type PlusMenuPermission,
 } from '@/components/chat/input/plus-menu';
-import { SlashMenu, type SlashMenuHandle, type SessionCommandItem, type SessionCommandAction } from '@/components/chat/input/slash-menu';
+import { SceneTriggerMenu, type SceneTriggerMenuHandle, type SceneTriggerSelection } from '@/components/chat/input/scene-trigger-menu';
+import type { SessionCommandItem, SessionCommandAction, SubAgentRef, ArtifactRef, AssetRef } from '@/components/chat/input/trigger-types';
+import { detectTrigger, stripTrigger, type TriggerState } from '@/components/chat/input/trigger-detect';
 import { VoiceInputButton } from '@/components/chat/input/voice-input-button';
 import {
   MediaParamsButton,
@@ -377,12 +381,27 @@ interface AgentWorkspaceInputProps {
   onModelChange?: (name: string) => void;
   /** 默认模型(可选):优先于全局模型列表首个;用于场景空间默认取「空间设置模型列表」首个配置模型 */
   defaultModel?: string;
+  /** 场景空间 id:`@` 子 Agent 与 `#` 交付资源两个菜单的数据源都按空间维度拉取 */
+  workspaceId?: number;
+  /** 附件暂存域(可选):传入后已上传未发送的附件跨重挂载存活
+   *  (欢迎态↔运行态分支切换/会话切换会重建输入框,实例 state 会归零) */
+  attachmentScopeKey?: string;
+  /** 会话缺失时的懒创建回调(可选):上传需要会话上下文,空间连当前会话都没有时由外部创建 */
+  onEnsureConversation?: () => Promise<string | null>;
 }
 
 export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWorkspaceInputProps>(
-  function AgentWorkspaceInput({ conversationId, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, model, onModelChange, defaultModel }, ref) {
+  function AgentWorkspaceInput({ conversationId, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, model, onModelChange, defaultModel, workspaceId, attachmentScopeKey, onEnsureConversation }, ref) {
     const [text, setText] = useState('');
-    const [resources, setResources] = useState<ResourceItem[]>([]);
+    // 已上传未发送附件:挂载时从暂存域恢复(跨重挂载存活),变更统一走 applyResources 双写
+    const [resources, setResources] = useState<ResourceItem[]>(() =>
+      attachmentScopeKey ? getPendingResources(attachmentScopeKey) : [],
+    );
+    /** 附件变更统一入口:实例 state 与跨重挂载暂存同写 */
+    const applyResources = (next: ResourceItem[]) => {
+      setResources(next);
+      if (attachmentScopeKey) setPendingResources(attachmentScopeKey, next);
+    };
     const [uploading, setUploading] = useState<UploadingFile[]>([]);
     const [modelList, setModelList] = useState<IModelData[]>([]);
     const [internalSelectedModel, setInternalSelectedModel] = useState<string>('');
@@ -401,8 +420,13 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       else setInternalSelectedModel(name);
     };
     const [mediaParams, setMediaParams] = useState<MediaParams>({});
-    const [showPlaybook, setShowPlaybook] = useState(false);
+    // 统一 trigger 状态:null = 未激活;char 决定当前唤起的是 `/` `@` `#` 中的哪一个
+    const [activeTrigger, setActiveTrigger] = useState<TriggerState | null>(null);
     const [playbookCommand, setPlaybookCommand] = useState<PlaybookCommand | null>(null);
+    // @ 接管态:会话级 sticky,选中后持续生效直到显式退出或改选他人
+    const [activeSubAgent, setActiveSubAgent] = useState<SubAgentRef | null>(null);
+    // # 引用的资源(交付产物/空间资产)。start/end 为 P1 内联化预留,P0 恒在文本末尾
+    const [resourceRefs, setResourceRefs] = useState<ResourceRef[]>([]);
     const [selectedSkills, setSelectedSkills] = useState<SkillRef[]>([]);
     // + 菜单选中的 MCP 连接器
     const [selectedMcps, setSelectedMcps] = useState<PlusMenuMcpRef[]>([]);
@@ -417,7 +441,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const [usageDrawerOpen, setUsageDrawerOpen] = useState(false);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const slashMenuRef = useRef<SlashMenuHandle>(null);
+    const triggerMenuRef = useRef<SceneTriggerMenuHandle>(null);
 
     useImperativeHandle(ref, () => ({
       focus: () => textareaRef.current?.focus(),
@@ -470,6 +494,44 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       return err ? [] : (((res as any)?.items || []) as PlusMenuMcpRef[]);
     });
     const allMcps: PlusMenuMcpRef[] = mcpList ?? [];
+
+    // ---- `@` / `#` 数据源 ----
+    // 首次唤起这两个菜单时才拉取:进场景空间不一定会用到,避免每次都多打三个接口。
+    /** 是否已请求过 `@`/`#` 菜单数据(首次唤起时置 true,之后常驻不重复拉) */
+    const [menuDataRequested, setMenuDataRequested] = useState(false);
+
+    // `@` 子 Agent:空间绑定的 app 型资源(physical_ref = app_code)
+    const { data: subAgentList, loading: subAgentsLoading } = useRequest(async () => {
+      if (!workspaceId || !menuDataRequested) return [];
+      const [err, res] = await apiInterceptors(listResources({ workspace_id: workspaceId, type: 'app' }));
+      return err ? [] : (((res as any)?.items ?? res ?? []) as SubAgentRef[]);
+    }, { refreshDeps: [workspaceId, menuDataRequested] });
+    const allSubAgents: SubAgentRef[] = subAgentList ?? [];
+
+    // `#` 交付产物(Artifact,会话/任务产出、已落盘)
+    const { data: artifactList, loading: artifactsLoading } = useRequest(async () => {
+      if (!workspaceId || !menuDataRequested) return [];
+      const [err, res] = await apiInterceptors(listArtifacts({ workspace_id: workspaceId }));
+      return err ? [] : (((res as any)?.items ?? res ?? []) as ArtifactRef[]);
+    }, { refreshDeps: [workspaceId, menuDataRequested] });
+    const allArtifacts: ArtifactRef[] = artifactList ?? [];
+
+    // `#` 空间资产(Asset,带 maturity 沉淀)
+    const { data: assetList, loading: assetsLoading } = useRequest(async () => {
+      if (!workspaceId || !menuDataRequested) return [];
+      const [err, res] = await apiInterceptors(listAssets({ workspace_id: workspaceId }));
+      return err ? [] : (((res as any)?.items ?? res ?? []) as AssetRef[]);
+    }, { refreshDeps: [workspaceId, menuDataRequested] });
+    const allAssets: AssetRef[] = assetList ?? [];
+
+    // 空间自定义命令:workspace_resource(type='command')。
+    // physical_ref=命令标识,config_json={kind,description,payload}。
+    // 与内置 3 条种子合并进 `/` 菜单「命令」组,新增命令无需发版。
+    const { data: customCommandList } = useRequest(async () => {
+      if (!workspaceId || !menuDataRequested) return [];
+      const [err, res] = await apiInterceptors(listResources({ workspace_id: workspaceId, type: 'command' }));
+      return err ? [] : ((res as any)?.items ?? res ?? []);
+    }, { refreshDeps: [workspaceId, menuDataRequested] });
 
     // 权限等级选项:key 与后端 PermissionMode 对齐(plan/auto/manual),
     // 发送时写入 ext_info.permission_mode,接入 Agent 5 级工具权限链
@@ -544,13 +606,25 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     }, [modelList]);
 
     const handleFileUpload = async (file: File) => {
-      if (!conversationId) return;
+      // 会话源:优先当前会话;缺失时经外部回调懒创建(不再静默跳过上传)
+      let cid: string | undefined = conversationId;
+      if (!cid && onEnsureConversation) {
+        try {
+          cid = (await onEnsureConversation()) ?? undefined;
+        } catch {
+          cid = undefined;
+        }
+      }
+      if (!cid) {
+        message.warning('当前没有可用的对话,无法上传文件,请先发起对话');
+        return;
+      }
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       setUploading(prev => [...prev, { id, file, status: 'uploading' }]);
       const formData = new FormData();
       formData.append('doc_files', file);
       const [err, res] = await apiInterceptors(
-        postChatModeParamsFileLoad({ conversationId, chatMode: 'chat_normal', data: formData, model: selectedModel, config: { timeout: 1000 * 60 * 60 } }),
+        postChatModeParamsFileLoad({ conversationId: cid, chatMode: 'chat_normal', data: formData, model: selectedModel, config: { timeout: 1000 * 60 * 60 } }),
       );
       setUploading(prev => prev.filter(u => u.id !== id));
       if (err) {
@@ -558,7 +632,11 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
         return;
       }
       const { fileUrl, previewUrl } = normalizeUploadRes(res);
-      setResources(prev => [...prev, buildResourceItem(file, fileUrl, previewUrl)]);
+      // 先写暂存域再写实例 state:若上传期间输入框因会话创建/分支切换被重挂载,
+      // 旧实例的 setState 已失效,附件仍可由新实例从暂存域恢复
+      const uploaded = buildResourceItem(file, fileUrl, previewUrl);
+      const base = attachmentScopeKey ? getPendingResources(attachmentScopeKey) : resources;
+      applyResources([...base, uploaded]);
     };
 
     const handleDrop = async (e: React.DragEvent) => {
@@ -584,25 +662,34 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
         playbookCommand: playbookCommand ?? undefined,
         skills: selectedSkills.length ? selectedSkills : undefined,
         mcps: selectedMcps.length ? selectedMcps : undefined,
+        // @ 接管:会话级生效,每轮都带上,后端据此覆写主 Agent
+        subAgent: activeSubAgent ?? undefined,
+        // # 引用的交付资源(artifact/asset),已落盘不重复上传
+        resourceRefs: resourceRefs.length ? resourceRefs : undefined,
         // 规划模式开启时强制 plan 档(消费侧写 ext_info.permission_mode)
         permission: planMode ? 'plan' : permission,
         media: Object.keys(mediaParams).length ? mediaParams : undefined,
         // 压缩模式开启时携带 forceCompress,本轮推理前强制压缩
         forceCompress: compactMode || undefined,
+        // 已开启的自定义 toggle 命令:payload 合并后随 ext_info 下发
+        commandPayload: activeCustomCommands.length
+          ? activeCustomCommands.reduce((acc, c) => ({ ...acc, ...(c.payload || {}) }), {})
+          : undefined,
       });
       setText('');
-      setResources([]);
+      applyResources([]);
       setPlaybookCommand(null);
       setSelectedSkills([]);
       setSelectedMcps([]);
-      setShowPlaybook(false);
+      setActiveTrigger(null);
       setPlanMode(false);
       setCompactMode(false);
+      setActiveCustomCommands([]);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      // / 命令菜单打开时,方向键/回车/Esc 优先交给菜单消费
-      if (showPlaybook && slashMenuRef.current?.handleKey(e)) return;
+      // 菜单打开时,方向键/回车/Esc 优先交给菜单消费(三个 trigger 共用同一套导航)
+      if (activeTrigger && triggerMenuRef.current?.handleKey(e)) return;
       if (e.key === 'Enter' && !e.shiftKey) {
         // 输入法组词阶段的回车(选词/上屏)只作用于输入法,不触发提交,
         // 也不做 preventDefault,避免干扰候选词选择
@@ -615,18 +702,30 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const v = e.target.value;
       setText(v);
-      // 只有输入框"最开始"的 / 才唤起统一命令菜单:文本中间的 / 不触发。
-      // 已选了剧本 chip 后不再触发(单选,要换剧本先移除 chip)。
-      // 简洁/运维模式行为一致,/ 都是命令菜单入口。
-      setShowPlaybook(v.startsWith('/') && !playbookCommand);
+      // 统一 trigger 检测:`/` `@` `#` 在任意位置都能唤起(前置需为行首或空白),
+      // 规则见 trigger-detect.ts。已选了剧本 chip 后 `/` 不再重复触发
+      // (剧本单选,要换剧本先移除 chip)。
+      const caret = (e.target as HTMLTextAreaElement).selectionStart ?? v.length;
+      const next = detectTrigger(v, caret);
+      // 首次唤起任一 trigger 时拉取 `@`/`#`/自定义命令数据源(进空间不一定用得到)
+      if (next) setMenuDataRequested(true);
+      setActiveTrigger(next && next.char === '/' && playbookCommand ? null : next);
+    };
+
+    /**
+     * 清理输入里的 trigger token(`/xxx` `@xxx` `#xxx`)并关闭菜单、保留焦点。
+     * 取代原先散落各处的行首锚定正则 —— 那些正则在句中触发时会误删前文。
+     */
+    const consumeTriggerToken = () => {
+      if (activeTrigger) setText((prev) => stripTrigger(prev, activeTrigger));
+      setActiveTrigger(null);
+      textareaRef.current?.focus();
     };
 
     const pickPlaybook = (pb: { playbook_id: number; playbook_name: string }) => {
       setPlaybookCommand({ playbook_id: pb.playbook_id, playbook_name: pb.playbook_name });
-      // 清掉触发用的 "/" 及过滤词(用户在开头打的),话题由用户随后输入。
-      setText(text.replace(/^\/\S*\s*/, ''));
-      setShowPlaybook(false);
-      textareaRef.current?.focus();
+      // 清掉触发用的 token,话题由用户随后输入
+      consumeTriggerToken();
     };
 
     const toggleSkill = (skill: SkillRef) => {
@@ -646,53 +745,145 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       );
     };
 
-    // 会话命令数据源:/ 菜单「命令」组。与剧本/技能/MCP 的"资源引用"不同,命令选中即执行或切换模式
-    const sessionCommands: SessionCommandItem[] = [
-      { command: '压缩上下文', name: '压缩上下文', description: '压缩当前会话上下文,释放上下文空间', action: 'compact' },
-      { command: '清理会话', name: '清理会话', description: '开启新会话,清空当前上下文', action: 'clear' },
-      { command: '规划模式', name: '规划模式', description: '本回合使用规划能力(plan 权限档)', action: 'plan' },
+    // 会话命令数据源:`/` 菜单「命令」组 = 内置种子 + 空间自定义。
+    // 与剧本/技能/MCP 的"资源引用"不同,命令选中即执行或切换模式。
+    const builtinCommands: SessionCommandItem[] = [
+      { command: '压缩上下文', name: '压缩上下文', description: '压缩当前会话上下文,释放上下文空间', action: 'compact', source: 'builtin' },
+      { command: '清理会话', name: '清理会话', description: '开启新会话,清空当前上下文', action: 'clear', source: 'builtin' },
+      { command: '规划模式', name: '规划模式', description: '本回合使用规划能力(plan 权限档)', action: 'plan', source: 'builtin' },
     ];
 
-    // 统一 / 菜单选中:剧本 → 剧本 chip;技能/MCP → 对应 chip;命令 → 会话行为
-    const handleSlashSelect = (sel: import('@/components/chat/input/slash-menu').SlashMenuSelection) => {
-      if (sel.type === 'playbook' && sel.playbook) {
-        pickPlaybook(sel.playbook);
-        return;
-      }
-      if (sel.type === 'command' && sel.command) {
-        const action: SessionCommandAction = sel.command.action;
-        // 清掉触发用的 / 及过滤词
-        setText(text.replace(/^\/\S*\s*/, ''));
-        if (action === 'clear') {
-          // 即时执行:清理会话(复用新建干净会话逻辑)
-          onClearContext?.();
-        } else if (action === 'plan') {
-          // 模式 chip:规划模式开启,本回合按 plan 档发送
-          setPlanMode(true);
-          textareaRef.current?.focus();
-        } else if (action === 'compact') {
-          // 压缩模式:开启 chip,下一条发送携带 forceCompress,本轮推理前强制压缩
-          setCompactMode(true);
-          textareaRef.current?.focus();
-        }
-        return;
-      }
-      if (sel.type === 'skill' && sel.skill) {
-        toggleSkill(sel.skill);
-      } else if (sel.type === 'mcp' && sel.mcp) {
-        toggleMcp(sel.mcp);
-      }
-      // 技能/MCP 选中后清掉触发用的 / 及过滤词,保留焦点
-      setText(text.replace(/^\/\S*\s*/, ''));
-      textareaRef.current?.focus();
+    const allCommands = useMemo<SessionCommandItem[]>(() => {
+      const custom = (customCommandList ?? [])
+        .filter((r: any) => r.is_active !== false)
+        .map((r: any): SessionCommandItem => {
+          let cfg: any = {};
+          try {
+            cfg = typeof r.config === 'string' ? JSON.parse(r.config || '{}') : r.config || {};
+          } catch {
+            cfg = {};
+          }
+          return {
+            command: r.physical_ref || r.name,
+            name: r.name,
+            description: cfg.description,
+            // 自定义命令统一按 toggle 处理:发送时 payload 合并进 ext_info
+            action: 'custom',
+            payload: cfg.payload,
+            source: 'workspace',
+          };
+        });
+      return [...builtinCommands, ...custom];
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [customCommandList]);
+
+    // 已开启的自定义 toggle 命令(会话级 chip,发送时 payload 合并进 ext_info)
+    const [activeCustomCommands, setActiveCustomCommands] = useState<SessionCommandItem[]>([]);
+
+    /** `@` 选中:会话级接管,持续生效直到显式退出或改选他人 */
+    const takeOverSubAgent = (agent: SubAgentRef) => {
+      setActiveSubAgent(agent);
+      consumeTriggerToken();
     };
 
-    // `/` at the very start of text opens the unified slash menu; the text the user
-    // types after picking a chip is the task topic (sent as `text`).
-    const visiblePlaybooks = (playbooks ?? []);
+    const removeSubAgent = () => setActiveSubAgent(null);
 
-    // / 触发词:开头 / 后的文本作为菜单搜索词
-    const slashQuery = showPlaybook && text.startsWith('/') ? text.slice(1) : '';
+    /**
+     * `#` 选中:加入引用列表。
+     * P0 阶段引用进附件区展示,start/end 恒为当前文本末尾;
+     * P1 输入框内联化后,同一份数据即可驱动真内联 chip。
+     */
+    const addResourceRef = (kind: 'artifact' | 'asset', ref: ArtifactRef | AssetRef) => {
+      const meta =
+        kind === 'artifact'
+          ? {
+              id: `artifact:${(ref as ArtifactRef).artifact_id}`,
+              label: (ref as ArtifactRef).title,
+              ref_id: (ref as ArtifactRef).artifact_id,
+            }
+          : {
+              id: `asset:${(ref as AssetRef).asset_id}`,
+              label: (ref as AssetRef).name,
+              ref_id: (ref as AssetRef).asset_id,
+            };
+      setResourceRefs((prev) =>
+        prev.some((r) => r.id === meta.id)
+          ? prev
+          : [
+              ...prev,
+              { ...meta, kind, content_ref: ref.content_ref, start: text.length, end: text.length },
+            ],
+      );
+      consumeTriggerToken();
+    };
+
+    const removeResourceRef = (id: string) =>
+      setResourceRefs((prev) => prev.filter((r) => r.id !== id));
+
+    /** 会话命令:即时执行型(clear)与模式开关型(plan / compact) */
+    const applySessionCommand = (cmd: SessionCommandItem) => {
+      const action: SessionCommandAction = cmd.action;
+      consumeTriggerToken();
+      if (action === 'clear') {
+        // 即时执行:清理会话(复用新建干净会话逻辑)
+        onClearContext?.();
+      } else if (action === 'plan') {
+        // 模式 chip:规划模式开启,本回合按 plan 档发送
+        setPlanMode(true);
+      } else if (action === 'compact') {
+        // 压缩模式:开启 chip,下一条发送携带 forceCompress,本轮推理前强制压缩
+        setCompactMode(true);
+      } else if (action === 'custom') {
+        // 空间自定义 toggle 命令:chip 开关,发送时 payload 合并进 ext_info
+        setActiveCustomCommands((prev) =>
+          prev.some((c) => c.command === cmd.command)
+            ? prev.filter((c) => c.command !== cmd.command)
+            : [...prev, cmd],
+        );
+      }
+    };
+
+    /**
+     * 三个 trigger 的统一选中入口。
+     * `/` → 能力挂载(chip);`@` → 身份接管(banner,会话级);`#` → 对象引用(列表)。
+     */
+    const handleTriggerSelect = (sel: SceneTriggerSelection) => {
+      switch (sel.type) {
+        case 'addFile':
+          fileInputRef.current?.click();
+          consumeTriggerToken();
+          break;
+        case 'playbook':
+          if (sel.playbook) pickPlaybook(sel.playbook);
+          break;
+        case 'skill':
+          if (sel.skill) {
+            toggleSkill(sel.skill);
+            consumeTriggerToken();
+          }
+          break;
+        case 'mcp':
+          if (sel.mcp) {
+            toggleMcp(sel.mcp);
+            consumeTriggerToken();
+          }
+          break;
+        case 'command':
+          if (sel.command) applySessionCommand(sel.command);
+          break;
+        case 'subAgent':
+          if (sel.subAgent) takeOverSubAgent(sel.subAgent);
+          break;
+        case 'artifact':
+          if (sel.artifact) addResourceRef('artifact', sel.artifact);
+          break;
+        case 'asset':
+          if (sel.asset) addResourceRef('asset', sel.asset);
+          break;
+      }
+    };
+
+    const visiblePlaybooks = playbooks ?? [];
 
     return (
       <div className="w-full relative">
@@ -712,6 +903,25 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
               只读：查看角色不能发起对话
             </div>
           )}
+          {/* SECTION 0 — `@` 接管态 banner(会话级 sticky,常驻直到显式退出或改选他人) */}
+          {activeSubAgent && (
+            <div className="mx-4 mt-3 flex items-center gap-2 rounded-lg border border-purple-200 dark:border-purple-800/60 bg-purple-50 dark:bg-purple-900/20 px-3 py-2">
+              <RobotOutlined className="text-purple-500 text-sm flex-shrink-0" />
+              <span className="min-w-0 flex-1 truncate text-xs text-purple-700 dark:text-purple-300">
+                当前由 <span className="font-medium">{activeSubAgent.name}</span> 接管
+                <span className="ml-1 text-purple-400 dark:text-purple-500">· 后续对话直接由它回复</span>
+              </span>
+              <button
+                type="button"
+                className="flex-shrink-0 text-xs text-purple-500 hover:text-purple-700 dark:hover:text-purple-300 px-1.5 py-0.5 rounded transition-colors"
+                onClick={removeSubAgent}
+                title="退出接管,恢复空间默认 Agent"
+              >
+                退出
+              </button>
+            </div>
+          )}
+
           {/* SECTION 1 — attached file chips (only when files present) */}
           {(uploading.length > 0 || resources.length > 0) && (
             <div className="px-4 pt-3 pb-2">
@@ -722,7 +932,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   </span>
                   <button
                     className="text-xs text-gray-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 px-2 py-0.5 rounded transition-colors"
-                    onClick={() => { setResources([]); setUploading([]); }}
+                    onClick={() => { applyResources([]); setUploading([]); }}
                   >
                     全部清除
                   </button>
@@ -779,7 +989,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                       </div>
                       <button
                         className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
-                        onClick={() => setResources(prev => prev.filter((_, j) => j !== i))}
+                        onClick={() => applyResources(resources.filter((_, j) => j !== i))}
                       >
                         <CloseOutlined className="text-[10px]" />
                       </button>
@@ -787,6 +997,22 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   );
                 })}
               </div>
+            </div>
+          )}
+
+          {/* SECTION 1.3 — `#` 引用的资源(交付产物/空间资产,可多选可移除) */}
+          {resourceRefs.length > 0 && (
+            <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
+              {resourceRefs.map((ref) => (
+                <SelectionChip
+                  key={ref.id}
+                  theme={ref.kind === 'artifact' ? 'amber' : 'indigo'}
+                  prefix={ref.kind === 'artifact' ? '交付' : '资产'}
+                  label={ref.label}
+                  onRemove={() => removeResourceRef(ref.id)}
+                  removeTitle="移除引用"
+                />
+              ))}
             </div>
           )}
 
@@ -885,21 +1111,43 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
               />
             </div>
           )}
+          {/* SECTION 1.10 — 空间自定义 toggle 命令 chip(可多个,发送时 payload 合并进 ext_info) */}
+          {activeCustomCommands.length > 0 && (
+            <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
+              {activeCustomCommands.map((cmd) => (
+                <SelectionChip
+                  key={cmd.command}
+                  theme="cyan"
+                  prefix="命令"
+                  label={cmd.name}
+                  onRemove={() =>
+                    setActiveCustomCommands((prev) => prev.filter((c) => c.command !== cmd.command))
+                  }
+                  removeTitle="关闭该命令"
+                />
+              ))}
+            </div>
+          )}
 
           {/* SECTION 2 — textarea (borderless, card is the only border) */}
           <div className="relative">
-            <SlashMenu
-              ref={slashMenuRef}
-              open={showPlaybook}
-              query={slashQuery}
+            <SceneTriggerMenu
+              ref={triggerMenuRef}
+              trigger={activeTrigger}
               playbooks={visiblePlaybooks}
               skills={allSkills}
               mcps={allMcps}
               mcpsLoading={mcpLoading}
-              commands={sessionCommands}
-              onSelect={handleSlashSelect}
+              commands={allCommands}
+              subAgents={allSubAgents}
+              subAgentsLoading={subAgentsLoading}
+              artifacts={allArtifacts}
+              artifactsLoading={artifactsLoading}
+              assets={allAssets}
+              assetsLoading={assetsLoading}
+              onSelect={handleTriggerSelect}
               onAddFile={() => fileInputRef.current?.click()}
-              onClose={() => setShowPlaybook(false)}
+              onClose={() => setActiveTrigger(null)}
             >
               <div className={classNames('p-4', onClearContext && 'pr-12')}>
                 <Input.TextArea
@@ -925,7 +1173,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   disabled={inputDisabled}
                 />
               </div>
-            </SlashMenu>
+            </SceneTriggerMenu>
 
             {/* 清理上下文:浮动在输入区右上角,半透明毛玻璃圆形按钮,hover 点亮 */}
             {onClearContext && (

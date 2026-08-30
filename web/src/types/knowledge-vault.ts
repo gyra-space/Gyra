@@ -54,7 +54,14 @@ export interface IngestJob {
   source_file: string;
   verbat_ids: string[];
   wiki_doc_ids: string[];
-  status: 'pending' | 'extracting' | 'embedding' | 'generating_wiki' | 'done' | 'failed';
+  status:
+    | 'pending'
+    | 'extracting'
+    | 'embedding'
+    | 'generating_wiki'
+    | 'generating_graph'
+    | 'done'
+    | 'failed';
   error?: string | null;
   started_at: string;
   finished_at?: string | null;
@@ -67,6 +74,24 @@ export interface IngestJob {
 export interface IngestJobListResponse {
   items: IngestJob[];
 }
+
+/** Coarse wiki-learning status of one raw file (derived server-side). */
+export type FileLearningState = 'pending' | 'running' | 'done' | 'failed';
+
+export interface FileLearningStatus {
+  /** Raw tree path, e.g. `raw/sources/foo.md`. */
+  path: string;
+  status: FileLearningState;
+  job_id?: string | null;
+  /** Fine-grained IngestJob status (only when a job is associated). */
+  job_status?: IngestJob['status'] | null;
+  error?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  verbat_count: number;
+}
+
+export type FileLearningStatusMap = Record<string, FileLearningStatus>;
 
 export type LlmUsageBucket = {
   tokens: number;

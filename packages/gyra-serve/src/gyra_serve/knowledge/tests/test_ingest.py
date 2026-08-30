@@ -163,8 +163,8 @@ async def test_ingest_txt_creates_verbat_and_wiki_doc(vault, space, stub_llm, tm
 
 
 @pytest.mark.asyncio
-async def test_ingest_registers_ecp_asset_for_ecp_space(space, tmp_path: Path, monkeypatch):
-    """ecp-<ws> / docs-<code> 空间 ingest 后自动登记 ECP document 资产。"""
+async def test_ingest_does_not_register_document_asset(space, tmp_path: Path, monkeypatch):
+    """ingest 不按文档登记 ECP 资产——知识库级资产在空间创建时登记一次。"""
     from gyra_serve.knowledge.ingest import IngestOrchestrator
 
     vault = LocalVaultFS(space_id=new_space_id(), root=tmp_path / "ks_ecp")
@@ -187,30 +187,22 @@ async def test_ingest_registers_ecp_asset_for_ecp_space(space, tmp_path: Path, m
 
         orch = IngestOrchestrator(system_app=None)
 
-        f = tmp_path / "ecp_input.txt"
-        f.write_text("content for ecp asset registration", encoding="utf-8")
-
-        # docs-<code> 空间 → ECP workspace ecp_<code>
+        # docs-<code> 空间 ingest 也不登记 document 资产
         docs_space = Space(
             id=vault.space_id, slug="docs-demo", name="docs",
             default_agent_id=None, llm_model=None, multimodal_model=None,
         )
+        f = tmp_path / "ecp_input.txt"
+        f.write_text("content for ecp asset registration", encoding="utf-8")
         job = await orch.ingest_file(
             space=docs_space, vault=vault, file_path=f,
             original_filename="ecp_input.txt",
         )
         finished = await _wait_for_job(orch, job.id)
         assert finished.status == "done", f"job failed: {finished.error}"
+        assert registered == []
 
-        assert len(registered) == 1
-        kind, ref_id, ws, meta = registered[0]
-        assert kind == "document"
-        assert ref_id.startswith("docs-demo:")
-        assert ws == "ecp_demo"
-        assert meta["name"] == "ECP Doc"
-
-        # 普通知识空间不登记(没有对应 ECP workspace)
-        registered.clear()
+        # 普通知识空间同样不登记(没有对应 ECP workspace)
         f2 = tmp_path / "plain_input.txt"
         f2.write_text("content for plain space", encoding="utf-8")
         plain_space = Space(

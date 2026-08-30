@@ -2,9 +2,8 @@ import asyncio
 import json
 import logging
 import os
-import traceback
+import time
 import uuid
-import warnings
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Type, Union
@@ -16,79 +15,75 @@ from fastapi import BackgroundTasks
 from gyra import BaseComponent
 from gyra._private.config import Config
 from gyra.agent import (
+    AgentContext,
     AgentMemory,
     ConversableAgent,
-    get_agent_manager,
-    AgentContext,
-    UserProxyAgent,
-    LLMStrategyType,
     GptsMemory,
     LLMConfig,
-    ActionOutput,
-    Agent,
-    AgentMessage,
-    ProfileConfig,
+    LLMStrategyType,
     ShortTermMemory,
+    UserProxyAgent,
+    get_agent_manager,
 )
-from gyra.agent.core.agent_alias import AgentAliasManager, resolve_agent_name
+from gyra.agent.core.agent_alias import resolve_agent_name
 from gyra.agent.core.memory.gpts import GptsMessage
-from gyra_serve.agent.preload_skills import (
-    build_preloaded_skills_reminder,
-    collect_preloaded_skill_xmls,
-)
 from gyra.agent.core.plan.react.team_react_plan import AutoTeamContext
 from gyra.agent.core.sandbox_manager import SandboxManager
-from gyra.agent.core.step_state_guard import validate_session_transition
 from gyra.agent.core.schema import Status
-from gyra.agent.resource import get_resource_manager, ResourceManager
+from gyra.agent.core.step_state_guard import validate_session_transition
+from gyra.agent.resource import ResourceManager, get_resource_manager
 from gyra.agent.resource.agent_skills import AgentSkillResource
 from gyra.agent.resource.base import FILE_RESOURCES, AgentResource
 from gyra.agent.util.ext_config import ExtConfigHolder
-from gyra_serve.agent.resource.tool.memory_tool import MemoryToolPack
 from gyra.component import ComponentType, SystemApp
-from gyra.sandbox import AutoSandbox
-from gyra_app.config import SandboxConfigParameters
-from gyra_serve.agent.resource import GyraSkillResource
-from gyra_serve.schedule.local_scheduler import LocalScheduler
-from gyra.core.interface.scheduler import Scheduler
 from gyra.core import HumanMessage, StorageConversation
 from gyra.core.interface.file import FileStorageClient
+from gyra.core.interface.scheduler import Scheduler
+from gyra.sandbox import AutoSandbox
 from gyra.util.data_util import first
 from gyra.util.date_utils import current_ms
-from gyra.util.executor_utils import ExecutorFactory, execute_no_wait
+from gyra.util.executor_utils import execute_no_wait
 from gyra.util.json_utils import serialize
 from gyra.util.log_util import CHAT_LOGGER
 from gyra.util.logger import digest
 from gyra.util.tracer.tracer_impl import root_tracer, trace
 from gyra.vis import VisProtocolConverter
 from gyra.vis.vis_manage import get_vis_manager
-from gyra_serve.core import blocking_func_to_async
+from gyra_app.config import SandboxConfigParameters
 from gyra_serve.agent.agents.gyras_memory import (
-    MetaGyrasPlansMemory,
-    MetaGyrasMessageMemory,
     MetaAgentSystemMessageMemory,
-    MetaGyrasWorkLogStorage,
-    MetaGyrasKanbanStorage,
-    MetaGyrasTodoStorage,
     MetaGyrasFileMetadataStorage,
+    MetaGyrasKanbanStorage,
+    MetaGyrasMessageMemory,
+    MetaGyrasPlansMemory,
+    MetaGyrasTodoStorage,
+    MetaGyrasWorkLogStorage,
 )
 from gyra_serve.agent.db import (
-    GptsConversationsEntity,
     GptsConversationsDao,
+    GptsConversationsEntity,
     GptsMessagesDao,
 )
 from gyra_serve.agent.db.gpts_tool import GptsToolDao
+from gyra_serve.agent.preload_skills import (
+    build_preloaded_skills_reminder,
+    collect_preloaded_skill_xmls,
+)
+from gyra_serve.agent.resource import GyraSkillResource
+from gyra_serve.agent.resource.tool.memory_tool import MemoryToolPack
 from gyra_serve.agent.team.base import TeamMode
 from gyra_serve.building.app.api.schema_app import GptsApp
 from gyra_serve.building.app.api.schemas import ServerResponse
 from gyra_serve.building.app.service.service import Service as AppService
-from gyra_serve.building.config.api.schemas import ChatInParamValue, AppParamType
+from gyra_serve.building.config.api.schemas import AppParamType, ChatInParamValue
 from gyra_serve.conversation.serve import Serve as ConversationServe
+from gyra_serve.core import blocking_func_to_async
+from gyra_serve.schedule.local_scheduler import LocalScheduler
+from gyra_serve.workspace.agent_prompts import render_scene_dynamic_context
 from gyra_serve.workspace.agent_tools.context_builder import (
     build_workspace_context,
     render_workspace_context_summary,
 )
-from gyra_serve.workspace.agent_prompts import render_scene_dynamic_context
 from gyra_serve.workspace.context_builder import (
     build_workspace_context as _legacy_build_workspace_context,
 )
@@ -373,8 +368,6 @@ async def _register_memory_curator_cron(system_app: Any, space_slug: str) -> Non
     任务永不注册、且无任何日志（既不成功也不报错）。
     """
     try:
-        from gyra_serve.cron.config import SERVE_SERVICE_COMPONENT_NAME
-        from gyra_serve.cron.service.service import Service as CronService
         from gyra.cron.types import (
             CronJobCreate,
             CronPayload,
@@ -383,6 +376,8 @@ async def _register_memory_curator_cron(system_app: Any, space_slug: str) -> Non
             ScheduleKind,
             SessionMode,
         )
+        from gyra_serve.cron.config import SERVE_SERVICE_COMPONENT_NAME
+        from gyra_serve.cron.service.service import Service as CronService
     except Exception as e:  # noqa: BLE001
         logger.warning(
             f"[AgentChat] cron modules unavailable, skip curator cron: {e}"
@@ -707,6 +702,18 @@ class AgentChat(BaseComponent, ABC):
         self.agent_memory_map = {}
         self._running_tasks: Dict[str, asyncio.Task] = {}
 
+        # ---- 轮询链路缓存（单事件循环内读写，无锁；多 worker 进程各缓存各的） ----
+        # Dock 帧缓存：{conv_id: (expires_at_monotonic, frame)}。
+        # coordinator 写路径（子任务/异步任务看板变更）会主动失效；
+        # TTL 兜底 todo 等无失效钩子的数据源，最迟 TTL 秒可见。
+        self._dock_frame_cache: Dict[str, Tuple[float, dict]] = {}
+        self._dock_frame_cache_ttl = 1.5
+        # 轮询视图缓存：{conv_id: (expires_at, version_key, final_view, user_answer)}。
+        # version_key=(MAX(msg.id), MAX(msg.updated_at), conv_state)，任一变化即重建；
+        # 兜底 TTL 覆盖版本信号之外的极端变更源（如文件元数据晚到）。
+        self._query_view_cache: Dict[str, Tuple[float, tuple, Any, Any]] = {}
+        self._query_view_cache_ttl = 15.0
+
         # 设置 system_app 属性
         super().__init__(system_app)
         self.system_app = system_app
@@ -798,7 +805,11 @@ class AgentChat(BaseComponent, ABC):
                 logger.info(f"Registered {len(model_configs)} models to global cache")
 
     async def _get_or_create_sandbox_manager(
-        self, context: AgentContext, app: GptsApp, need_sandbox: bool
+        self,
+        context: AgentContext,
+        app: GptsApp,
+        need_sandbox: bool,
+        force: bool = False,
     ) -> Optional[SandboxManager]:
         """获取或创建沙箱管理器，同一会话内共享
 
@@ -806,6 +817,9 @@ class AgentChat(BaseComponent, ABC):
             context: Agent 上下文
             app: 应用配置
             need_sandbox: 是否需要沙箱
+            force: 强制创建（跳过应用级/系统级开关检查）。用于用户上传文件
+                必须落沙箱的场景：即使应用未显式开启沙箱，文件分发也需要
+                一个可用的沙箱实例。
 
         Returns:
             SandboxManager 实例或 None
@@ -832,7 +846,7 @@ class AgentChat(BaseComponent, ABC):
         extra_dict = context.extra or {}
         dynamic_resources = extra_dict.get("dynamic_resources", [])
 
-        if not (
+        if not force and not (
             (need_sandbox and (use_sandbox_flag or system_sandbox_enabled))
             or await self._have_agent_skill(app, dynamic_resources)
         ):
@@ -1077,7 +1091,9 @@ class AgentChat(BaseComponent, ABC):
         try:
             # 检查对话状态，如果是 RUNNING 则根据 err_msg 更新
             try:
-                conv_entity = self.gpts_conversations.get_by_conv_id(agent_conv_id)
+                conv_entity = await self.gpts_conversations.a_get_by_conv_id(
+                    agent_conv_id
+                )
                 if conv_entity and conv_entity.state == Status.RUNNING.value:
                     if err_msg:
                         if "中断" in err_msg or "interrupt" in err_msg.lower():
@@ -1086,7 +1102,9 @@ class AgentChat(BaseComponent, ABC):
                         else:
                             new_state = Status.FAILED.value
                             validate_session_transition(Status.RUNNING, Status.FAILED)
-                        self.gpts_conversations.update(agent_conv_id, new_state)
+                        await self.gpts_conversations.a_update_state(
+                            agent_conv_id, new_state
+                        )
                         logger.info(
                             f"Updated conversation {agent_conv_id} state to {new_state}"
                         )
@@ -1398,6 +1416,26 @@ class AgentChat(BaseComponent, ABC):
         return None
 
     @staticmethod
+    def _extract_subagent(chat_in_params):
+        """从 chat_in_params 抽取 `@` 接管指定的子 Agent,返回 {app_code, app_name} 或 None。
+
+        与「子 Agent 委托」(SubAgent AgentAction,模型自主调用、独立 conv)不同,
+        这条路径是**用户显式 @ 选择**的会话级接管:共享当前 conv,主 Agent 让位。
+        """
+        if not chat_in_params:
+            return None
+        for p in chat_in_params:
+            if getattr(p, "param_type", None) == "subagent":
+                try:
+                    data = json.loads(p.param_value)
+                except (TypeError, ValueError, AttributeError):
+                    return None
+                if isinstance(data, dict) and data.get("app_code"):
+                    return data
+                return None
+        return None
+
+    @staticmethod
     def _resolve_app_model_name(gpt_app: Any) -> Optional[str]:
         """安全地从 app 解析当前模型名（用于文件分流的能力判断）。
 
@@ -1525,6 +1563,30 @@ class AgentChat(BaseComponent, ABC):
         web_config = _get_web_config(app_config)
 
         app_service = get_app_service()
+
+        # `@` 接管:用户显式选中子 Agent 时,本轮(及其后续轮)由该 Agent 充当主 Agent。
+        # 主 Agent 由 app_detail(gpts_name) 单点决定,下游 _inner_chat / _build_agent_by_gpts
+        # 全部读 gpt_app,因此只需在此覆写 gpts_name 即可让整条链路跟随(含 V2/PIXIU)。
+        #
+        # 取舍:上方 root_tracer / CHAT_ENTRY 摘要仍记原始主 Agent —— 会话归属主 Agent,
+        # 接管是轮次级行为,二者的对应关系记在 ext_info.active_agent(main_app_code) 里。
+        # 而下方 gpts_conversations 落表用的是覆写后的 gpts_name(即实际执行者)。
+        _subagent = self._extract_subagent(chat_in_params)
+        if _subagent and _subagent.get("app_code"):
+            _origin_gpts_name = gpts_name
+            gpts_name = _subagent["app_code"]
+            ext_info["active_agent"] = {
+                "app_code": _subagent["app_code"],
+                "app_name": _subagent.get("app_name", ""),
+                # 保留原始主 Agent:用量/回放归属与 UI「退出接管」都要用
+                "main_app_code": _origin_gpts_name,
+            }
+            # 深度守卫:接管后仍可继续派发别的子 Agent,但自身不可再被递归拉起
+            ext_info["subagent_depth"] = 1
+            logger.info(
+                f"[SubAgentTakeover] main={_origin_gpts_name} -> active={gpts_name} conv={conv_id}"
+            )
+
         gpt_app: GptsApp = await app_service.app_detail(
             gpts_name, specify_config_code, building_mode=False
         )
@@ -1839,11 +1901,16 @@ class AgentChat(BaseComponent, ABC):
             )
             # 注册任务以便可以通过 stop_chat 取消
             self.register_running_task(conv_id, task)
-            ## TEST FILE WRITE
-            WRITE_TO_FILE = True
+            ## TEST FILE WRITE（纯调试 dump,chunk_file_cleaner 定期清理。
+            # 默认关闭:每个 chunk 同步 open+write 会阻塞事件循环,拖慢所有并发
+            # SSE 流与轮询;需要调试 dump 时设 GYRA_CHAT_CHUNK_DEBUG=1）
+            WRITE_TO_FILE = os.environ.get("GYRA_CHAT_CHUNK_DEBUG", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
             if WRITE_TO_FILE:
                 from gyra.configs.model_config import DATA_DIR
-                import os
 
                 chat_chunk_file_path = os.path.join(DATA_DIR, "chat_chunk_file")
                 os.makedirs(chat_chunk_file_path, exist_ok=True)
@@ -2099,7 +2166,8 @@ class AgentChat(BaseComponent, ABC):
                 _in_session_task_id = ext_info.get("task_id")
                 if _ws_id_for_bus and _in_session_task_id:
                     from gyra_serve.task.service.service import (
-                        TASK_SERVICE_COMPONENT_NAME, TaskService,
+                        TASK_SERVICE_COMPONENT_NAME,
+                        TaskService,
                     )
                     _task_service = self.system_app.get_component(
                         TASK_SERVICE_COMPONENT_NAME, TaskService,
@@ -2393,6 +2461,33 @@ class AgentChat(BaseComponent, ABC):
                     try:
                         if hasattr(recipient, "set_v2_engine_ready_hook"):
 
+                            def _bind_v2_ops_delegate(agent: Any) -> None:
+                                # V2→V1 运维桥：异步子任务上板/台账镜像/终态回写
+                                # （CoordinatorOpsDelegate 懒取模块级单例，
+                                # 注入一次后幂等跳过）
+                                try:
+                                    _rt = getattr(
+                                        agent, "v2_subagent_runtime", None
+                                    )
+                                    if (
+                                        _rt is not None
+                                        and getattr(
+                                            _rt, "ops_delegate", None
+                                        )
+                                        is None
+                                    ):
+                                        from gyra_serve.agent.v2_ops_delegate import (
+                                            CoordinatorOpsDelegate,
+                                        )
+
+                                        _rt.ops_delegate = (
+                                            CoordinatorOpsDelegate()
+                                        )
+                                except Exception as _e:  # noqa: BLE001
+                                    logger.debug(
+                                        f"[AgentChat] v2 ops_delegate bind failed: {_e}"
+                                    )
+
                             async def _bind_v2_job_registry(agent: Any) -> None:
                                 try:
                                     _reg = agent.v2_job_registry
@@ -2401,6 +2496,7 @@ class AgentChat(BaseComponent, ABC):
                                         and self.async_task_coord is not None
                                     ):
                                         self.async_task_coord.set_job_registry(_reg)
+                                    _bind_v2_ops_delegate(agent)
                                 except Exception as _e:  # noqa: BLE001
                                     logger.debug(
                                         f"[AgentChat] v2 job_registry bind failed: {_e}"
@@ -2414,6 +2510,7 @@ class AgentChat(BaseComponent, ABC):
                                 and self.async_task_coord is not None
                             ):
                                 self.async_task_coord.set_job_registry(_v2_reg)
+                            _bind_v2_ops_delegate(recipient)
                     except Exception as _e:  # noqa: BLE001
                         logger.debug(f"[AgentChat] v2 job_registry wiring failed: {_e}")
 
@@ -2509,14 +2606,14 @@ class AgentChat(BaseComponent, ABC):
                             # (migration period / missing knowledge service).
                             memory_bundle = None
                             try:
-                                from gyra_ext.storage.memory.knowledge_vault_store import (
-                                    KnowledgeVaultMemoryConfig,
-                                    KnowledgeVaultMemoryStore,
-                                )
                                 from gyra.agent.core.memory.longterm_manager import (
                                     LongTermMemoryManager,
                                     MemoryIntegrationBundle,
                                     MemorySpaceStrategy,
+                                )
+                                from gyra_ext.storage.memory.knowledge_vault_store import (
+                                    KnowledgeVaultMemoryConfig,
+                                    KnowledgeVaultMemoryStore,
                                 )
                                 from gyra_serve.knowledge.service.service import (
                                     Service as KnowledgeService,
@@ -2609,11 +2706,21 @@ class AgentChat(BaseComponent, ABC):
                                     )
 
                                 if memory_stores:
-                                    from gyra.storage.memory.recall_tracker import RecallTracker
-                                    from gyra.storage.memory.promotion import MemoryPromotionEngine
-                                    from gyra.storage.memory.hybrid_search import HybridSearchEngine
-                                    from gyra.storage.memory.lifecycle import DefaultLifecycleHooks
-                                    from gyra.storage.memory.snapshot import FrozenSnapshotManager
+                                    from gyra.storage.memory.hybrid_search import (
+                                        HybridSearchEngine,
+                                    )
+                                    from gyra.storage.memory.lifecycle import (
+                                        DefaultLifecycleHooks,
+                                    )
+                                    from gyra.storage.memory.promotion import (
+                                        MemoryPromotionEngine,
+                                    )
+                                    from gyra.storage.memory.recall_tracker import (
+                                        RecallTracker,
+                                    )
+                                    from gyra.storage.memory.snapshot import (
+                                        FrozenSnapshotManager,
+                                    )
 
                                     # 为每个 space 建 LLMMemoryProcessor。
                                     # 优先用 self.llm_provider（chat 自己的 working LLM
@@ -2629,14 +2736,14 @@ class AgentChat(BaseComponent, ABC):
                                     llm_client = self.llm_provider
                                     if llm_client is None:
                                         try:
+                                            from gyra.agent.core.llm_config import (
+                                                AgentLLMConfig,
+                                            )
                                             from gyra.agent.util.llm.llm_client import (
                                                 AIWrapper,
                                             )
                                             from gyra.agent.util.llm.model_config_cache import (
                                                 ModelConfigCache,
-                                            )
-                                            from gyra.agent.core.llm_config import (
-                                                AgentLLMConfig,
                                             )
 
                                             all_models = (
@@ -2769,6 +2876,8 @@ class AgentChat(BaseComponent, ABC):
                                 try:
                                     from gyra.agent.core.memory.hook_dispatcher import (
                                         get_memory_pipeline as _get_session_pipeline,
+                                    )
+                                    from gyra.agent.core.memory.hook_dispatcher import (
                                         register_memory_pipeline as _register_session_pipeline,
                                     )
                                     from gyra.agent.core.memory.read_pipeline import (
@@ -3065,6 +3174,35 @@ class AgentChat(BaseComponent, ABC):
                                     )
                         except Exception as e:
                             logger.warning(f"Failed to process MCP resource: {e}")
+                    elif sub_type in ("artifact", "asset"):
+                        # `#` 引用的交付资源(交付产物 / 空间资产):文件已落盘,
+                        # 这里只作为上下文资源注入。两者都不在 FILE_RESOURCES 内,
+                        # 因此不会被 _dispatch_uploaded_files 重复落沙箱。
+                        try:
+                            value_data = (
+                                json.loads(param_value)
+                                if isinstance(param_value, str)
+                                else param_value
+                            )
+                        except (TypeError, ValueError):
+                            value_data = {}
+                        if not isinstance(value_data, dict):
+                            value_data = {}
+                        ref_title = (
+                            value_data.get("title")
+                            or value_data.get("name")
+                            or f"{sub_type}#{value_data.get('artifact_id') or value_data.get('asset_id')}"
+                        )
+                        dynamic_resources.append(
+                            AgentResource.from_dict(
+                                {
+                                    "type": sub_type,
+                                    "name": f"用户引用了[{ref_title}]",
+                                    "value": param_value,
+                                }
+                            )
+                        )
+                        logger.info(f"Added {sub_type} ref from chat_in_params: {ref_title}")
                     else:
                         # Skip FILE_RESOURCES (common_file, text_file, excel_file, image_file)
                         # These are handled separately in _dispatch_uploaded_files
@@ -3318,6 +3456,13 @@ class AgentChat(BaseComponent, ABC):
                             logger.warning(f"选择资源无法转换！{chat_in_params}", e)
                     else:
                         llm_context[param.sub_type] = param.param_value
+                elif param.param_type == "subagent":
+                    # `@` 接管标记:已在 aggregation_chat 里覆写 gpts_name 消费掉,
+                    # 这里显式跳过,避免落进 llm_context 污染上下文(未知 param_type
+                    # 会静默进 llm_context,后续又被按白名单丢弃,排查时极易误判)。
+                    logger.info(
+                        f"[SubAgentTakeover] skip subagent param in context building: {param.param_value}"
+                    )
                 else:
                     llm_context[param.param_type] = param.param_value
                     if param.param_type == AppParamType.Model.value:
@@ -3335,7 +3480,9 @@ class AgentChat(BaseComponent, ABC):
                         try:
                             parsed = json.loads(media_value) if isinstance(media_value, str) else media_value
                             if isinstance(parsed, dict):
-                                from gyra.agent.multimedia.config import resolve_image_size
+                                from gyra.agent.multimedia.config import (
+                                    resolve_image_size,
+                                )
                                 if parsed.get("size"):
                                     parsed["size"] = resolve_image_size(str(parsed["size"]))
                                 llm_context["media"] = parsed
@@ -3367,6 +3514,7 @@ class AgentChat(BaseComponent, ABC):
         staff_no: Optional[str] = None,
         model_name: Optional[str] = None,
         prefer_direct_media: bool = False,
+        workspace_id: Optional[str] = None,
     ) -> Optional[HumanMessage]:
         """处理上传的文件，根据类型分流.
 
@@ -3380,6 +3528,7 @@ class AgentChat(BaseComponent, ABC):
             staff_no: 用户工号 (用于获取 sandbox)
             model_name: 当前 agent 所用模型名（按模型能力决定是否直接消费）
             prefer_direct_media: 是否为多媒体 agent（媒体文件直接消费）
+            workspace_id: 场景空间 ID（沙箱缓存 key 与创建侧保持一致）
 
         Returns:
             更新后的用户消息（如果需要），如果无需更新则返回None
@@ -3429,18 +3578,19 @@ class AgentChat(BaseComponent, ABC):
             return None
 
         sandbox_client = None
-        # 使用与 _get_or_create_sandbox_manager 相同的 key 格式（此函数无 workspace_id，回退 conv 维度）
-        sandbox_key = _sandbox_key(None, conv_id, staff_no)
+        # 使用与 _get_or_create_sandbox_manager 相同的 key 格式（含 workspace 维度，
+        # 场景空间下才能命中 force 创建的沙箱管理器）
+        sandbox_key = _sandbox_key(workspace_id, conv_id, staff_no)
         sandbox_manager = GlobalSandboxManagerCache.get(sandbox_key)
         if sandbox_manager and sandbox_manager.client:
             sandbox_client = sandbox_manager.client
 
-        from gyra_serve.agent.utils.file_dispatch import (
-            process_uploaded_files,
-            FileDispatchType,
-        )
-        from gyra.core.interface.media import MediaContent
         from gyra.core.interface.file import FileStorageClient
+        from gyra.core.interface.media import MediaContent
+        from gyra_serve.agent.utils.file_dispatch import (
+            FileDispatchType,
+            process_uploaded_files,
+        )
 
         # 获取 FileStorageClient 实例
         file_storage_client = None
@@ -3488,7 +3638,9 @@ class AgentChat(BaseComponent, ABC):
 
         return HumanMessage(content=new_content)
 
-    def _set_waiting_reason(self, conv_uid: str, waiting_reason: Optional[str]) -> None:
+    async def _set_waiting_reason(
+        self, conv_uid: str, waiting_reason: Optional[str]
+    ) -> None:
         """在 gpts_conversations.extra 持久化等待原因。
 
         WAITING 时写入具体原因（await_user_question / await_tool_authorization /
@@ -3497,7 +3649,7 @@ class AgentChat(BaseComponent, ABC):
         置 None 时清空该字段，避免终态会话残留旧等待原因。
         """
         try:
-            conv = self.gpts_conversations.get_by_conv_id(conv_uid)
+            conv = await self.gpts_conversations.a_get_by_conv_id(conv_uid)
             if not conv:
                 return
             try:
@@ -3510,15 +3662,9 @@ class AgentChat(BaseComponent, ABC):
                 extra.pop("waiting_reason", None)
             else:
                 extra["waiting_reason"] = waiting_reason
-            session = self.gpts_conversations.get_raw_session()
-            session.query(GptsConversationsEntity).filter(
-                GptsConversationsEntity.conv_id == conv_uid
-            ).update(
-                {GptsConversationsEntity.extra: json.dumps(extra, ensure_ascii=False)},
-                synchronize_session="fetch",
+            await self.gpts_conversations.a_update_extra(
+                conv_uid, extra
             )
-            session.commit()
-            session.close()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[AgentChat] set_waiting_reason failed for {conv_uid}: {e}")
 
@@ -3576,8 +3722,8 @@ class AgentChat(BaseComponent, ABC):
 
         try:
             if isinstance(user_query.content, List):
+                from gyra.core.interface.media import MediaContent
                 from gyra_serve.multimodal.service.service import MultimodalService
-                from gyra.core.interface.media import MediaContent, MediaContentType
 
                 multimodal_service = MultimodalService.get_instance(self.system_app)
 
@@ -3606,7 +3752,6 @@ class AgentChat(BaseComponent, ABC):
                 self.agent_manage = get_agent_manager()
 
             from gyra.agent.core.types import ENV_CONTEXT_KEY
-            from gyra.agent.core.types import LLM_CONTEXT_KEY
 
             ## 处理对话输入参数
             ### 环境参数穿透当前会话不落表，llm参数作为消息的扩展参数随消息落表，agent控制是否向下传递
@@ -3814,9 +3959,28 @@ class AgentChat(BaseComponent, ABC):
                 # 处理 sandbox_file_refs（从 api_v1.py 传递过来）
                 sandbox_key = _sandbox_key(ext_info.get("workspace_id"), conv_uid, staff_no)
                 sandbox_manager = GlobalSandboxManagerCache.get(sandbox_key)
+                if not (sandbox_manager and sandbox_manager.client):
+                    # 治本：缓存 miss 不再静默跳过。用户上传的文件必须落沙箱，
+                    # 即使应用未开启沙箱开关，文件分发也强制创建沙箱实例。
+                    logger.info(
+                        f"[AgentChat] sandbox_manager cache miss for key {sandbox_key}, "
+                        f"force creating for file dispatch"
+                    )
+                    try:
+                        sandbox_manager = await self._get_or_create_sandbox_manager(
+                            context, gpts_app, need_sandbox=True, force=True
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"[AgentChat] force create sandbox_manager failed for key "
+                            f"{sandbox_key}: {e}"
+                        )
+                        sandbox_manager = None
                 logger.info(
                     f"[AgentChat] sandbox_manager for key {sandbox_key}: {sandbox_manager is not None}"
                 )
+
+                updated_refs: List[str] = []
                 if sandbox_manager and sandbox_manager.client:
                     sandbox_client = sandbox_manager.client
                     updated_refs = await _materialize_sandbox_file_refs(
@@ -3826,44 +3990,60 @@ class AgentChat(BaseComponent, ABC):
                     )
 
                     ext_info["sandbox_file_refs"] = sandbox_file_refs
-
-                    # 获取用户消息的文本内容
-                    user_text = ""
-                    if isinstance(user_query.content, str):
-                        user_text = user_query.content
-                    elif isinstance(user_query.content, list):
-                        # 多模态消息，提取文本部分
-                        for item in user_query.content:
-                            if isinstance(item, dict) and item.get("type") == "text":
-                                # 字典格式
-                                user_text = item.get("object", {}).get("data", "")
-                                break
-                            elif hasattr(item, "type") and item.type == "text":
-                                # MediaContent 对象格式
-                                try:
-                                    user_text = item.get_text()
-                                except Exception:
-                                    user_text = (
-                                        str(item.object.data)
-                                        if hasattr(item, "object")
-                                        else ""
-                                    )
-                                break
-
-                    # 如果用户消息中没有文件提示，添加正确的文件提示
-                    if updated_refs and user_text:
-                        if "User uploaded files" not in user_text:
-                            new_file_info = (
-                                f"\n\n---\n\n📎 **User uploaded files**:\n"
-                                + "\n".join(updated_refs)
-                            )
-                            user_query = HumanMessage(content=user_text + new_file_info)
-                            logger.info(
-                                f"[AgentChat] Added file info to user message with correct paths"
-                            )
                 else:
-                    logger.warning(
-                        f"[AgentChat] sandbox_manager not available for key: {sandbox_key}"
+                    # 沙箱彻底不可用（创建失败/未配置 type）：降级为把原始文件
+                    # 引用注入用户消息，保证附件信息不丢失，由模型按 URL 自行取用。
+                    logger.error(
+                        f"[AgentChat] sandbox unavailable for key {sandbox_key}, "
+                        f"fallback to injecting original file refs into user message"
+                    )
+                    for idx, ref in enumerate(sandbox_file_refs, 1):
+                        if not isinstance(ref, dict):
+                            continue
+                        _name = ref.get("file_name", "")
+                        _url = ref.get("url", "") or ""
+                        if not _name:
+                            continue
+                        _ref_info = f"{idx}. `{_name}`"
+                        if _url:
+                            _ref_info += f" (URL: {_url})"
+                        updated_refs.append(_ref_info)
+
+                # 获取用户消息的文本内容
+                user_text = ""
+                if isinstance(user_query.content, str):
+                    user_text = user_query.content
+                elif isinstance(user_query.content, list):
+                    # 多模态消息，提取文本部分
+                    for item in user_query.content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            # 字典格式
+                            user_text = item.get("object", {}).get("data", "")
+                            break
+                        elif hasattr(item, "type") and item.type == "text":
+                            # MediaContent 对象格式
+                            try:
+                                user_text = item.get_text()
+                            except Exception:
+                                user_text = (
+                                    str(item.object.data)
+                                    if hasattr(item, "object")
+                                    else ""
+                                )
+                            break
+
+                # 如果用户消息中没有文件提示，添加正确的文件提示
+                # 纯文件无文本时也注入（此时消息体即文件提示），避免附件信息丢失
+                if updated_refs and "User uploaded files" not in user_text:
+                    new_file_info = (
+                        f"\n\n---\n\n📎 **User uploaded files**:\n"
+                        + "\n".join(updated_refs)
+                    )
+                    user_query = HumanMessage(
+                        content=(user_text + new_file_info).strip()
+                    )
+                    logger.info(
+                        f"[AgentChat] Added file info to user message with correct paths"
                     )
             elif chat_in_params:
                 # 如果没有 sandbox_file_refs，才处理 chat_in_params
@@ -3877,6 +4057,31 @@ class AgentChat(BaseComponent, ABC):
                     _prefer_direct = is_multimedia_agent(gpt_app=gpts_app)
                 except Exception:
                     _prefer_direct = False
+                # 路径 B 同样保证沙箱可用：chat_in_params 携带文件时，
+                # 缓存 miss 会直接导致文件不落沙箱，这里先 force 创建。
+                _dispatch_ws_id = ext_info.get("workspace_id")
+                _dispatch_sb_key = _sandbox_key(_dispatch_ws_id, conv_uid, staff_no)
+                _cached_mgr = GlobalSandboxManagerCache.get(_dispatch_sb_key)
+                if not (_cached_mgr and _cached_mgr.client):
+                    try:
+                        _cached_mgr = await self._get_or_create_sandbox_manager(
+                            context, gpts_app, need_sandbox=True, force=True
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"[AgentChat] force create sandbox_manager failed for key "
+                            f"{_dispatch_sb_key}: {e}"
+                        )
+                # 沙箱初始化是异步的(asyncio.create_task(acquire))，
+                # force create 后必须等待完成，否则 sandbox_client.file 尚未就绪，
+                # dispatch_file_to_sandbox 会跳过写入返回 None。
+                if _cached_mgr and _cached_mgr.init_task and not _cached_mgr.initialized:
+                    try:
+                        await _cached_mgr.init_task
+                    except Exception as e:
+                        logger.warning(
+                            f"[AgentChat] wait sandbox init failed for key {_dispatch_sb_key}: {e}"
+                        )
                 file_dispatch_result = await self._dispatch_uploaded_files(
                     chat_in_params=chat_in_params,
                     conv_id=conv_uid,
@@ -3885,6 +4090,7 @@ class AgentChat(BaseComponent, ABC):
                     model_name=ext_info.get("model_name")
                     or self._resolve_app_model_name(gpts_app),
                     prefer_direct_media=_prefer_direct,
+                    workspace_id=_dispatch_ws_id,
                 )
                 if file_dispatch_result:
                     user_query = file_dispatch_result
@@ -3931,7 +4137,9 @@ class AgentChat(BaseComponent, ABC):
             if is_retry_chat:
                 # retry chat
                 validate_session_transition(Status.WAITING, Status.RUNNING)
-                self.gpts_conversations.update(conv_uid, Status.RUNNING.value)
+                await self.gpts_conversations.a_update_state(
+                    conv_uid, Status.RUNNING.value
+                )
 
             user_proxy: UserProxyAgent = (
                 await UserProxyAgent().bind(context).bind(agent_memory).build()
@@ -4021,15 +4229,18 @@ class AgentChat(BaseComponent, ABC):
                     )
 
             validate_session_transition(Status.RUNNING, Status(gpts_status))
-            self.gpts_conversations.update(conv_uid, gpts_status)
+            await self.gpts_conversations.a_update_state(conv_uid, gpts_status)
             # 持久化等待原因：WAITING 时写入具体原因供 resume 决策；非 WAITING（COMPLETE
             # 等终态）时清空，避免残留旧等待原因误导后续恢复。
-            self._set_waiting_reason(conv_uid, waiting_reason if gpts_status == Status.WAITING.value else None)
+            _waiting = (
+                waiting_reason if gpts_status == Status.WAITING.value else None
+            )
+            await self._set_waiting_reason(conv_uid, _waiting)
         except asyncio.CancelledError:
             logger.info(f"Chat cancelled by user for conv_uid: {conv_uid}")
             gpts_status = Status.INTERRUPTED.value
             validate_session_transition(Status.RUNNING, Status.INTERRUPTED)
-            self.gpts_conversations.update(conv_uid, gpts_status)
+            await self.gpts_conversations.a_update_state(conv_uid, gpts_status)
 
             # 推送中断消息到消息队列
             try:
@@ -4065,7 +4276,7 @@ class AgentChat(BaseComponent, ABC):
             )
             gpts_status = Status.FAILED.value
             validate_session_transition(Status.RUNNING, Status.FAILED)
-            self.gpts_conversations.update(conv_uid, gpts_status)
+            await self.gpts_conversations.a_update_state(conv_uid, gpts_status)
 
             error_pushed = False
             try:
@@ -4122,8 +4333,8 @@ class AgentChat(BaseComponent, ABC):
             # Tier 3.2: 释放 lease（会话正常结束），让其他 worker 可立即接管
             # WAITING 状态不释放（等子 agent / 用户输入期间仍由本 worker 持有）
             try:
-                from gyra_serve.agent.heartbeat import release_lease
                 from gyra.agent.core.schema import Status as _Status
+                from gyra_serve.agent.heartbeat import release_lease
                 if gpts_status not in (
                     _Status.WAITING.value, _Status.RETRYING.value
                 ):
@@ -4406,7 +4617,7 @@ class AgentChat(BaseComponent, ABC):
         )
         try:
             gpts_conversation: GptsConversationsEntity = (
-                self.gpts_conversations.get_by_conv_id(conv_id)
+                await self.gpts_conversations.a_get_by_conv_id(conv_id)
             )
             session_convs = None
             if not gpts_conversation:
@@ -4441,6 +4652,32 @@ class AgentChat(BaseComponent, ABC):
                 current_vis_render
             )(gyra_url=web_config.web_url)
 
+            # ---- 轮询视图缓存：轻量版本探测，数据无变化直接复用渲染产物 ----
+            # 版本信号：(MAX(msg.id), MAX(msg.updated_at), conv_state)。
+            # 消息 insert 改 MAX(id)，流式 chunk update 改 MAX(updated_at)，
+            # 状态流转改 state；任一变化才触发全量加载 + vis 全量重渲染。
+            now = time.monotonic()
+            session_version = await self.gpts_messages_dao.a_get_session_version(
+                gpts_conversation.conv_session_id
+            )
+            version_key = (
+                session_version[0],
+                session_version[1],
+                gpts_conversation.state,
+            )
+            cached_view = self._query_view_cache.get(conv_id)
+            if cached_view and cached_view[0] > now and cached_view[1] == version_key:
+                # dock 走独立的短 TTL 缓存（看板写路径主动失效），保持实时性
+                dock = await self._build_dock_frame(gpts_memory, conv_id)
+                return (
+                    cached_view[2],
+                    cached_view[3],
+                    current_vis_render,
+                    is_final,
+                    gpts_conversation.state,
+                    dock,
+                )
+
             ## 重新初始化对话memory数据
             await gpts_memory.init(conv_id=conv_id, vis_converter=vis_convert)
             await gpts_memory.load_persistent_memory(conv_id)
@@ -4457,11 +4694,6 @@ class AgentChat(BaseComponent, ABC):
             # except Exception as e:
             #     logger.warning(f"查询会话时，恢复agent对象异常！{str(e)}")
 
-            # 返回对应协议的最终消息内容
-            # 6th 返回值：dock 帧（Composer Dock 协议），从专用表回放 todo 等
-            # 输入区 widget，重开会话时可恢复 todo 面板。
-            dock = await self._build_dock_frame(gpts_memory, conv_id)
-
             # 多轮会话聚合终态视图;聚合失败(非 scene_agent_workspace 协议等)回退单轮。
             if multi_round_session:
                 aggregated = await self._aggregate_session_final_view(
@@ -4473,10 +4705,26 @@ class AgentChat(BaseComponent, ABC):
                 )
             else:
                 final_view = await gpts_memory.vis_final(conv_id)
+            user_answer = await gpts_memory.user_answer(conv_id)
+
+            self._query_view_cache[conv_id] = (
+                now + self._query_view_cache_ttl,
+                version_key,
+                final_view,
+                user_answer,
+            )
+            if len(self._query_view_cache) > 512:
+                self._query_view_cache = {
+                    k: v for k, v in self._query_view_cache.items() if v[0] > now
+                }
+
+            # dock 帧（Composer Dock 协议），从专用表回放 todo 等输入区
+            # widget，重开会话时可恢复 todo 面板。
+            dock = await self._build_dock_frame(gpts_memory, conv_id)
 
             return (
                 final_view,
-                await gpts_memory.user_answer(conv_id),
+                user_answer,
                 current_vis_render,
                 is_final,
                 gpts_conversation.state,
@@ -4486,6 +4734,31 @@ class AgentChat(BaseComponent, ABC):
             await gpts_memory.clear(conv_id)
 
     async def _build_dock_frame(self, gpts_memory: GptsMemory, conv_id: str) -> dict:
+        """Dock 帧缓存外壳：TTL 内多客户端轮询同一会话合并为一次构建。
+
+        看板写路径（SubagentCoordinator/AsyncTaskCoordinator 的台账写入）
+        调用 invalidate_dock_frame_cache 主动失效；todo 等无失效钩子的
+        数据源由 TTL 兜底，最迟 _dock_frame_cache_ttl 秒可见。
+        """
+        now = time.monotonic()
+        cached = self._dock_frame_cache.get(conv_id)
+        if cached and cached[0] > now:
+            return cached[1]
+        frame = await self._build_dock_frame_impl(gpts_memory, conv_id)
+        self._dock_frame_cache[conv_id] = (now + self._dock_frame_cache_ttl, frame)
+        if len(self._dock_frame_cache) > 256:
+            self._dock_frame_cache = {
+                k: v for k, v in self._dock_frame_cache.items() if v[0] > now
+            }
+        return frame
+
+    def invalidate_dock_frame_cache(self, conv_id: str) -> None:
+        """看板台账写路径调用：使该会话的 dock 帧缓存立即失效。"""
+        self._dock_frame_cache.pop(conv_id, None)
+
+    async def _build_dock_frame_impl(
+        self, gpts_memory: GptsMemory, conv_id: str
+    ) -> dict:
         """从领域存储回放输入区 Dock widget，组装成统一 dock 帧。
 
         目前回放 todo_list 与 subagent_board；后续新增 widget 在此追加即可。
@@ -4574,7 +4847,9 @@ class AgentChat(BaseComponent, ABC):
             # 正确处理并行多工具调用(render_step_detail 只取消息内最后一个 action)。
             # 全量加载该会话所有轮次消息(按 conv_session_id)。
             if hasattr(vis_convert, "get_step_detail"):
-                all_messages = self.gpts_messages_dao.get_by_conv_session_id(conv_id)
+                all_messages = (
+                    await self.gpts_messages_dao.get_by_conv_session_id_async(conv_id)
+                )
                 if all_messages:
                     detail = vis_convert.get_step_detail(messages=all_messages, step_id=step_uid)
                     if detail:

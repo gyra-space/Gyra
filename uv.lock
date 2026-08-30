@@ -3281,12 +3281,14 @@ proxy-tongyi = [
 rag = [
     { name = "bs4" },
     { name = "markdown" },
+    { name = "openpyxl" },
     { name = "pdfplumber" },
     { name = "pypdf" },
     { name = "python-docx" },
     { name = "python-pptx" },
     { name = "sentence-transformers" },
     { name = "spacy" },
+    { name = "xlrd" },
 ]
 sandbox-e2b = [
     { name = "e2b" },
@@ -3347,6 +3349,7 @@ requires-dist = [
     { name = "neo4j", marker = "extra == 'graph-rag'" },
     { name = "networkx", marker = "extra == 'graph-rag'" },
     { name = "onnxruntime", marker = "extra == 'storage-chromadb'", specifier = ">=1.14.1,<=1.18.1" },
+    { name = "openpyxl", marker = "extra == 'rag'" },
     { name = "oracledb", specifier = ">=1.4.0,<4" },
     { name = "oss2", marker = "extra == 'storage-oss2'", specifier = "==2.18.4" },
     { name = "pdfplumber", marker = "extra == 'rag'" },
@@ -3374,6 +3377,7 @@ requires-dist = [
     { name = "weaviate-client", marker = "extra == 'storage-weaviate'" },
     { name = "websockets", marker = "extra == 'mcp-gateway'", specifier = ">=15.0.1" },
     { name = "werkzeug", marker = "extra == 'mcp-gateway'", specifier = ">=3.1.3" },
+    { name = "xlrd", marker = "extra == 'rag'", specifier = ">=2.0.1" },
 ]
 provides-extras = ["sandbox-e2b", "rag", "graph-rag", "datasource-mysql", "datasource-postgres", "datasource-oracle", "datasource-duckdb", "storage-milvus", "storage-weaviate", "storage-chromadb", "storage-elasticsearch", "storage-obvector", "storage-oss2", "storage-mempalace", "knowledge-local", "proxy-tongyi", "ext-base", "prometheus", "mcp-gateway", "channel-feishu", "channel-dingtalk", "channel-all"]
 

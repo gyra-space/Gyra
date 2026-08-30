@@ -73,6 +73,36 @@ class Serve(BaseServe):
             EcpWorkspaceConfigEntity,
         )
 
+    @staticmethod
+    def _migrate_schema(init_db) -> None:
+        """存量表补列(幂等,失败只告警;照 usage serve 先例)。
+
+        - semantic_object.provenance JSON:提案结构化溯源(config.make_provenance)
+        """
+        from sqlalchemy import inspect as sa_inspect
+        from sqlalchemy import text
+
+        from .config import TABLE_SEMANTIC_OBJECT
+
+        try:
+            engine = init_db.engine
+            existing = {
+                c["name"]
+                for c in sa_inspect(engine).get_columns(TABLE_SEMANTIC_OBJECT)
+            }
+            if "provenance" in existing:
+                return
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {TABLE_SEMANTIC_OBJECT} "
+                        "ADD COLUMN provenance JSON"
+                    )
+                )
+            logger.info("ecp semantic_object: added column provenance")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"ensure provenance column failed: {e}")
+
     def before_start(self):
         """Create tables and register ECP agent tools."""
         if not (self._config and self._config.enabled):
@@ -80,6 +110,7 @@ class Serve(BaseServe):
         try:
             init_db = self.create_or_get_db_manager()
             init_db.create_all()
+            self._migrate_schema(init_db)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to create ECP tables: {e}")
 

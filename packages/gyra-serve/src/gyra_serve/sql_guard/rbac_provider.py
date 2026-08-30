@@ -73,6 +73,16 @@ class RbacPermissionProvider(PermissionProvider):
 
         action = _OP_TO_ACTION.get(operation, "read")
 
+        # deny 优先于逐级 allow:先查表级/数据源级的显式 deny——
+        # 否则"通配 allow + 单表 deny"会在回退到上级 allow 时放行
+        ds = str(datasource_id)
+        for deny_key in (f"database:{ds}.{table_name}", f"database:{ds}"):
+            if self._is_denied(deny_key, action):
+                logger.info(
+                    f"[RbacPermissionProvider] denied by {deny_key}: user={user_id}"
+                )
+                return False
+
         # 逐级回退: ds_id.table → ds_id → *
         for rid in self._candidate_resource_ids(datasource_id, table_name):
             if self._has(f"database.{action}", resource_id=rid):
@@ -95,14 +105,32 @@ class RbacPermissionProvider(PermissionProvider):
         table_name: str,
         column_names: List[str],
     ) -> List[str]:
-        """列级权限检查(预留)。
+        """列级权限检查:返回被 deny 的列名列表。
 
-        当前 RBAC 协议未定义列级资源,返回空列表(不拦截)。
-        待 protocol 注册 database.column.read 后启用。
+        列维度只做"否决"(敏感列场景):角色权限 effect=deny 且
+        resource_id = "{ds_id}.{table}.{column}" 时该列被拦截;
+        无任何 deny 记录则全部放行(表级放行由 check_table_access 保证)。
+
+        判定直接读 deny_map——不能用 has():列级没有 allow 语义,
+        has() 对无显式授权的列一律 False,会把所有列都误判为拒绝。
         """
         if not self._enabled:
             return []
-        return []
+
+        deny_map = getattr(self._user, "deny_permissions", None) or {}
+        denied: List[str] = []
+        for col in column_names:
+            rid = f"database:{datasource_id}.{table_name}.{col}"
+            actions = deny_map.get(rid, [])
+            if "read" in actions or "manage" in actions or "admin" in actions:
+                denied.append(col)
+
+        if denied:
+            logger.info(
+                f"[RbacPermissionProvider] denied columns {denied}: user={user_id} "
+                f"ds={datasource_id} table={table_name}"
+            )
+        return denied
 
     def get_allowed_tables(
         self,
@@ -144,6 +172,12 @@ class RbacPermissionProvider(PermissionProvider):
             # (与 _db_tools_impl.py 中 ECP gate 的 fail-open 策略一致)
             logger.warning(f"[RbacPermissionProvider] has() failed, allow: {e}")
             return True
+
+    def _is_denied(self, scoped_key: str, action: str) -> bool:
+        """查 deny_map 中指定 scoped key 是否 deny 该动作(含 admin 覆盖)。"""
+        deny_map = getattr(self._user, "deny_permissions", None) or {}
+        actions = deny_map.get(scoped_key, [])
+        return action in actions or "admin" in actions
 
     @staticmethod
     def _candidate_resource_ids(datasource_id: int, table_name: str) -> List[str]:

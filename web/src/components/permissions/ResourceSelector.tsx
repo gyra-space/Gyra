@@ -1,10 +1,9 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { Select, Space, Tag, Typography, Spin } from 'antd';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Cascader, Select, Space, Tag, Typography, Spin } from 'antd';
 import { useTranslation } from 'react-i18next';
-import { apiInterceptors, ins as axios } from '@/client/api';
-import { listSpaces } from '@/client/api/knowledge-vault';
+import { ins as axios } from '@/client/api';
 
 const { Text } = Typography;
 
@@ -22,13 +21,38 @@ export interface ResourceSelectorProps {
   allowWildcard?: boolean;
 }
 
+interface CatalogItem {
+  id: string | number;
+  name?: string;
+  parent_id?: string | null;
+  description?: string | null;
+}
+
+interface CascadeOption {
+  value: string;
+  label: string;
+  isLeaf?: boolean;
+  loading?: boolean;
+  children?: CascadeOption[];
+}
+
+async function fetchCatalog(resourceType: string, parentId?: string): Promise<{ items: CatalogItem[]; supportsHierarchy: boolean }> {
+  const res = await axios.get('/api/v1/permissions/resources/catalog', {
+    params: { resource_type: resourceType, parent_id: parentId, limit: 200 },
+  });
+  return {
+    items: res.data?.data?.items || [],
+    supportsHierarchy: !!res.data?.data?.supports_hierarchy,
+  };
+}
+
 /**
  * Resource Selector Component (T2.1)
  *
- * Displays a list of resources for the given resource type with:
- * - Search functionality
- * - Multi-select support
- * - "All resources" wildcard option
+ * 取数走统一资源目录 /permissions/resources/catalog(后端 catalog_registry
+ * 的 7 个 provider:agent/tool/knowledge/model/database/channel/cron)。
+ * 支持级联的资源类型(如 database:数据源→表→列)用 Cascader 逐级懒加载,
+ * 其余类型用多选 Select。
  */
 export default function ResourceSelector({
   resourceType,
@@ -39,78 +63,71 @@ export default function ResourceSelector({
   const { t } = useTranslation();
   const [options, setOptions] = useState<ResourceOption[]>([]);
   const [loading, setLoading] = useState(false);
+  const [hierarchical, setHierarchical] = useState(false);
+  const [cascadeOptions, setCascadeOptions] = useState<CascadeOption[]>([]);
 
   useEffect(() => {
     setLoading(true);
-    const newOptions: ResourceOption[] = [];
-
-    // Add wildcard option
-    if (allowWildcard) {
-      newOptions.push({
-        value: '*',
-        label: t('permissions_all_resources'),
-        type: 'wildcard',
-      });
-    }
-
-    // Load resources based on type
-    const loadResources = async () => {
-      try {
-        let resources: Array<{ name?: string; displayName?: string; id?: string | number }> = [];
-
-        switch (resourceType) {
-          case 'agent':
-            {
-              const res = await axios.get('/api/v1/config/agents');
-              resources = res.data?.data?.list || res.data?.data || [];
-            }
-            break;
-          case 'tool':
-            {
-              const res = await axios.get('/api/v1/tools/list');
-              resources = res.data?.data?.list || res.data?.data || [];
-            }
-            break;
-          case 'knowledge':
-            {
-              const [, spaces] = await apiInterceptors(listSpaces());
-              resources = (spaces || []).map((s) => ({ name: s.slug }));
-            }
-            break;
-          case 'model':
-            {
-              const res = await axios.get('/api/v1/serve/model/models');
-              resources = res.data?.data?.list || res.data?.data || [];
-            }
-            break;
-          default:
-            break;
-        }
-
-        resources.forEach((item) => {
-          const label =
-            'displayName' in item
-              ? item.displayName
-              : 'name' in item
-                ? item.name
-                : String(item.id || '');
-          const value = 'name' in item ? item.name : String(item.id || '');
-
-          newOptions.push({
-            value: value || '',
-            label: label || value || '',
-            type: resourceType,
+    fetchCatalog(resourceType)
+      .then(({ items, supportsHierarchy }) => {
+        setHierarchical(supportsHierarchy);
+        if (supportsHierarchy) {
+          setCascadeOptions(
+            items.map((it) => ({
+              value: String(it.id),
+              label: it.name || String(it.id),
+              isLeaf: false,
+            })),
+          );
+        } else {
+          const newOptions: ResourceOption[] = [];
+          if (allowWildcard) {
+            newOptions.push({ value: '*', label: t('permissions_all_resources'), type: 'wildcard' });
+          }
+          items.forEach((it) => {
+            const value = String(it.id);
+            newOptions.push({ value, label: it.name || value, type: resourceType });
           });
-        });
-      } catch (error) {
+          setOptions(newOptions);
+        }
+      })
+      .catch((error) => {
         console.error(`Failed to load ${resourceType} resources:`, error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadResources();
+      })
+      .finally(() => setLoading(false));
   }, [resourceType, t, allowWildcard]);
+
+  // Cascader 懒加载子级:选中节点的 value 即 parent_id
+  // (数据源 "3" → 表;表 "3.orders" → 列,isLeaf)
+  const loadCascadeChildren = useCallback(
+    (selectedOptions: CascadeOption[]) => {
+      const target = selectedOptions[selectedOptions.length - 1];
+      if (!target || target.children) return;
+      target.loading = true;
+      setCascadeOptions((prev) => [...prev]);
+      const isTableLevel = target.value.includes('.');
+      fetchCatalog(resourceType, target.value)
+        .then(({ items }) => {
+          target.loading = false;
+          target.children = items.map((it) => ({
+            value: String(it.id),
+            label: it.name || String(it.id),
+            isLeaf: isTableLevel ? true : items.length === 0,
+          }));
+          if (items.length === 0) {
+            target.isLeaf = true;
+            target.children = undefined;
+          }
+          setCascadeOptions((prev) => [...prev]);
+        })
+        .catch(() => {
+          target.loading = false;
+          target.isLeaf = true;
+          setCascadeOptions((prev) => [...prev]);
+        });
+    },
+    [resourceType],
+  );
 
   const handleChange = (values: string[]) => {
     // If wildcard is selected, clear other selections
@@ -136,6 +153,7 @@ export default function ResourceSelector({
       tool: 'green',
       knowledge: 'orange',
       model: 'purple',
+      database: 'cyan',
       wildcard: 'red',
     };
 
@@ -145,6 +163,48 @@ export default function ResourceSelector({
       </Tag>
     );
   };
+
+  if (loading && options.length === 0 && cascadeOptions.length === 0) {
+    return <Spin size="small" />;
+  }
+
+  // 级联模式(database 等):Cascader 多选,option value 为全路径 id,
+  // 选中路径的最后一段即 resource_id
+  if (hierarchical) {
+    const idToPath = (id: string): string[] => {
+      const segs = id.split('.');
+      return segs.map((_, i) => segs.slice(0, i + 1).join('.'));
+    };
+    return (
+      <div className="resource-selector">
+        <Space direction="vertical" className="w-full">
+          <Text type="secondary" className="text-xs">
+            {t('permissions_cascade_hint') || '逐级展开选择(数据源 → 表 → 列),可选中任意层级'}
+          </Text>
+          <Cascader
+            multiple
+            changeOnSelect
+            expandTrigger="click"
+            options={cascadeOptions}
+            loadData={loadCascadeChildren as any}
+            value={selectedResourceIds.filter((id) => id !== '*').map(idToPath)}
+            onChange={(paths) => {
+              const ids = (paths as string[][]).map((p) => p[p.length - 1]);
+              onChange(ids);
+            }}
+            displayRender={(labels: string[]) => labels[labels.length - 1]}
+            placeholder={t('permissions_select_resource')}
+            className="w-full"
+            showSearch={{
+              filter: (inputValue: string, path: any[]) =>
+                path.some((o) => (o.label as string).toLowerCase().includes(inputValue.toLowerCase())),
+            }}
+            maxTagCount="responsive"
+          />
+        </Space>
+      </div>
+    );
+  }
 
   return (
     <div className="resource-selector">
@@ -172,6 +232,10 @@ export default function ResourceSelector({
           }))}
           placeholder={t('permissions_select_resource')}
           loading={loading}
+          showSearch
+          filterOption={(input, option) =>
+            (option?.label as string)?.toLowerCase().includes(input.toLowerCase())
+          }
           tagRender={({ value }) => renderTag(String(value))}
           className="w-full"
           maxTagCount="responsive"

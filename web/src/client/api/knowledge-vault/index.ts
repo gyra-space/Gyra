@@ -15,6 +15,7 @@ import type {
   FeishuWikiSyncResponse,
   FeishuWikiTestRequest,
   FeishuWikiTestResponse,
+  FileLearningStatusMap,
   IngestJobListResponse,
   LintResponse,
   LlmUsageSummary,
@@ -54,31 +55,58 @@ export const deleteSpace = (slug: string) =>
 
 // ----- raw (L0) -----
 
+/** Normalize a tree key (`raw/a.md`, `wiki/b.md`, `/raw/a.md`) or an already
+ *  bare path to the vault-relative form expected by raw-file APIs. Shared by
+ *  every caller so the knowledge-vault module and ECP behave identically. */
+const stripVaultPrefix = (path: string) =>
+  path.replace(/^\/+/, '').replace(/^(raw|wiki)\//, '');
+
 export const getRawTree = (slug: string) =>
   GET<null, TreeNode[]>(`${BASE}/spaces/${slug}/raw/tree`);
 
 export const readRawFile = (slug: string, path: string) =>
   GET<{ path: string }, { content: string }>(
     `${BASE}/spaces/${slug}/raw/files/read`,
-    { path },
+    { path: stripVaultPrefix(path) },
   );
 
 export const createRawFile = (slug: string, req: RawFileCreateRequest) =>
   POST<RawFileCreateRequest, UploadResponse>(
     `${BASE}/spaces/${slug}/raw/files`,
-    req,
+    { ...req, path: stripVaultPrefix(req.path) },
   );
 
 export const editRawFile = (slug: string, path: string, req: RawFileEditRequest) =>
   PUT<RawFileEditRequest, UploadResponse>(
-    `${BASE}/spaces/${slug}/raw/files?path=${encodeURIComponent(path)}`,
+    `${BASE}/spaces/${slug}/raw/files?path=${encodeURIComponent(stripVaultPrefix(path))}`,
     req,
   );
 
 export const deleteRawFile = (slug: string, path: string) =>
   DELETE<null, { ok: boolean }>(
-    `${BASE}/spaces/${slug}/raw/files?path=${encodeURIComponent(path)}`,
+    `${BASE}/spaces/${slug}/raw/files?path=${encodeURIComponent(stripVaultPrefix(path))}`,
   );
+
+/** Per-raw-file wiki learning status (keyed by raw tree path). */
+export const getLearningStatus = (slug: string) =>
+  GET<null, FileLearningStatusMap>(
+    `${BASE}/spaces/${slug}/raw/learning-status`,
+  );
+
+/** Re-trigger wiki generation + graph extraction for one raw file. */
+export const rebuildRawFileLearning = (
+  slug: string,
+  path: string,
+  llmModel?: string,
+) => {
+  const search = new URLSearchParams({
+    path: stripVaultPrefix(path),
+  });
+  if (llmModel) search.set('llm_model', llmModel);
+  return POST<undefined, UploadResponse>(
+    `${BASE}/spaces/${slug}/raw/files/rebuild?${search.toString()}`,
+  );
+};
 
 export const listVerbats = (slug: string, limit = 100, offset = 0) =>
   GET<{ limit: number; offset: number }, VerbatListResponse>(

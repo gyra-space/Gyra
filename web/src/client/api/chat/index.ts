@@ -61,8 +61,8 @@ export type ChatQueryResponse = {
   dock?: DockFrame;
 };
 
-export const queryChatStatus = (convId: string, visRender?: string) => {
+export const queryChatStatus = (conversationId: string, visRender?: string) => {
   const qs = visRender ? `&vis_render=${encodeURIComponent(visRender)}` : '';
-  return GET<null, ChatQueryResponse>(`/api/v1/chat/query?conv_id=${convId}${qs}`);
+  return GET<null, ChatQueryResponse>(`/api/v1/chat/query?conv_id=${conversationId}${qs}`);
 };
 

@@ -22,7 +22,7 @@ const isInProgress = (s: string | undefined) => {
 };
 
 interface UseChatPollingOptions {
-  convId: string | null;
+  conversationId: string | null;
   enabled?: boolean;
   interval?: number;
   /** 强制历史/轮询用指定 converter 组装 vis_final(如通用页传 vis_manus) */
@@ -45,7 +45,7 @@ interface UseChatPollingReturn {
 }
 
 export function useChatPolling({
-  convId,
+  conversationId,
   enabled = true,
   interval = 2000,
   visRender,
@@ -65,7 +65,7 @@ export function useChatPolling({
   const visibleRef = useRef(true);
   // 回调用 ref 承载,避免进入 checkStatus/startPolling 依赖导致频繁重建/重复请求。
   // 调用方(如 chat-session)传内联函数,每次渲染新身份 -> startPolling 重建 ->
-  // convId effect 重跑 -> 每帧发起一次 /chat/query,页面疯狂刷新无法渲染。
+  // conversationId effect 重跑 -> 每帧发起一次 /chat/query,页面疯狂刷新无法渲染。
   const onPollRef = useRef(onPoll);
   onPollRef.current = onPoll;
   const onCompleteRef = useRef(onComplete);
@@ -74,10 +74,10 @@ export function useChatPolling({
   onErrorRef.current = onError;
 
   const checkStatus = useCallback(async (): Promise<ChatQueryResponse | null> => {
-    if (!convId) return null;
+    if (!conversationId) return null;
     
     try {
-      const response = await queryChatStatus(convId, visRender);
+      const response = await queryChatStatus(conversationId, visRender);
       const result = response.data?.data;
       if (!result) {
         // 后端返回 success:false / 无 data(如会话尚未生成),不更新状态,避免读 undefined 崩溃
@@ -106,10 +106,10 @@ export function useChatPolling({
       onErrorRef.current?.(error as Error);
       return null;
     }
-  }, [convId, visRender]);
+  }, [conversationId, visRender]);
 
   const startPolling = useCallback(() => {
-    if (!convId || !enabled) return;
+    if (!conversationId || !enabled) return;
 
     // 防御:已有轮询在跑则先清掉,避免 interval 引用被覆盖导致旧轮询泄露
     if (intervalRef.current) {
@@ -118,7 +118,7 @@ export function useChatPolling({
 
     setIsPolling(true);
 
-    // convId effect 已确认会话处于 inProgress(RUNNING/WAITING)才调本方法,这里
+    // conversationId effect 已确认会话处于 inProgress(RUNNING/WAITING)才调本方法,这里
     // 不再重复 checkStatus:第二次查询会与后端 save_conversation(可能瞬时把状态
     // 置 COMPLETE)/resume 竞争,误读终态而放弃轮询,导致异步任务 resume 后的输出
     // 页面收不到(用户只看到"已提交后台执行"就结束,看不到子 Agent 回复/后续)。
@@ -137,7 +137,7 @@ export function useChatPolling({
         onCompleteRef.current?.(status);
       }
     }, interval);
-  }, [convId, enabled, checkStatus, interval]);
+  }, [conversationId, enabled, checkStatus, interval]);
 
   const stopPolling = useCallback(() => {
     if (intervalRef.current) {
@@ -156,7 +156,7 @@ export function useChatPolling({
 
   const resumePolling = useCallback(() => {
     visibleRef.current = true;
-    if (!convId || !enabled) return;
+    if (!conversationId || !enabled) return;
     checkStatus().then((result) => {
       // 竞态防御:checkStatus 异步期间页面又隐藏/失焦,则放弃恢复
       if (!visibleRef.current) return;
@@ -164,7 +164,7 @@ export function useChatPolling({
         startPolling();
       }
     });
-  }, [convId, enabled, checkStatus, startPolling]);
+  }, [conversationId, enabled, checkStatus, startPolling]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -199,35 +199,35 @@ export function useChatPolling({
   }, [stopPolling]);
 
   // enabled 变为 false 时主动停止轮询(如 SSE 接管)。
-  // 恢复由下方 convId effect 负责:其依赖含 enabled,false→true 时会自动 checkStatus + 按需 startPolling。
+  // 恢复由下方 conversationId effect 负责:其依赖含 enabled,false→true 时会自动 checkStatus + 按需 startPolling。
   useEffect(() => {
     if (!enabled && isPolling) {
       stopPolling();
     }
   }, [enabled, isPolling, stopPolling]);
 
-  // 记录上次轮询的 convId:会话切换时据此复位残留状态,避免沿用上一会话的
-  // RUNNING/WAITING 造成 running 误判(见 convId effect 内注释)。
+  // 记录上次轮询的 conversationId:会话切换时据此复位残留状态,避免沿用上一会话的
+  // RUNNING/WAITING 造成 running 误判(见 conversationId effect 内注释)。
   const prevConvIdRef = useRef<string | null>(null);
 
-  // convId 变化时，检查状态
+  // conversationId 变化时，检查状态
   useEffect(() => {
-    if (convId && enabled) {
+    if (conversationId && enabled) {
       // 切换会话(打开历史任务/另开任务)时,上一会话可能残留 RUNNING/WAITING。
       // 若沿用,外层 running = loading || convState === 'RUNNING' 会被误判为 true,
       // 使"继续追问"被当作补充输入投递到无活跃执行会话的队列而静默吞掉(无报错、
       // 无 AI 回复)。此处先复位为 UNKNOWN,待下面 checkStatus 拉回新会话真实状态。
-      if (prevConvIdRef.current !== convId) {
-        prevConvIdRef.current = convId;
+      if (prevConvIdRef.current !== conversationId) {
+        prevConvIdRef.current = conversationId;
         setState('UNKNOWN');
         setIsPolling(false);
         // 仅在会话真正切换时置位:effect 会因 checkStatus/startPolling 依赖变化重跑,
         // 若无条件置位,重跑会闪一下"加载中"
         setInitialLoading(true);
       }
-      const effectConvId = convId;
+      const effectConvId = conversationId;
       checkStatus().then(result => {
-        // 竞态防御:异步期间 convId 又变了,则由新一轮 effect 负责清除
+        // 竞态防御:异步期间 conversationId 又变了,则由新一轮 effect 负责清除
         if (prevConvIdRef.current === effectConvId) {
           // result 为 null(新空会话后端暂无数据/请求失败)也要清除,否则永久 loading
           setInitialLoading(false);
@@ -241,8 +241,8 @@ export function useChatPolling({
       // 若不复位,外层 running = loading || convState === 'RUNNING' 仍为 true,
       // 导致新任务的首次发送被当作上一会话的"补充输入"投递到旧会话队列,
       // 追问承接在最后一个对话里,而不是真正新开对话。
-      if (prevConvIdRef.current !== convId) {
-        prevConvIdRef.current = convId;
+      if (prevConvIdRef.current !== conversationId) {
+        prevConvIdRef.current = conversationId;
         setState('UNKNOWN');
         setIsPolling(false);
       }
@@ -253,7 +253,7 @@ export function useChatPolling({
     return () => {
       stopPolling();
     };
-  }, [convId, enabled, checkStatus, startPolling, stopPolling]);
+  }, [conversationId, enabled, checkStatus, startPolling, stopPolling]);
 
   return {
     state,

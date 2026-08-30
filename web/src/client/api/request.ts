@@ -307,14 +307,14 @@ export const postChatModeParamsList = (chatMode: string) => {
 export const postChatModeParamsInfoList = (chatMode: string) => {
   return POST<null, Record<string, string>>(`/api/v1/chat/mode/params/info?chat_mode=${chatMode}`);
 };
-export const getChatHistory = (convId: string) => {
-  return GET<null, ChatHistoryResponse>(`/api/v1/chat/dialogue/messages/history?con_uid=${convId}`);
+export const getChatHistory = (conversationId: string) => {
+  return GET<null, ChatHistoryResponse>(`/api/v1/chat/dialogue/messages/history?con_uid=${conversationId}`);
 };
-export const getChatCallDetails = (convId: string) => {
-  return GET<null, IChatDialogueCallDetail[]>(`/api/v1/chat/dialogue/call-details?con_uid=${convId}`);
+export const getChatCallDetails = (conversationId: string) => {
+  return GET<null, IChatDialogueCallDetail[]>(`/api/v1/chat/dialogue/call-details?con_uid=${conversationId}`);
 };
-export const getCompressionSegments = (convId: string) => {
-  return GET<null, CompressionSegmentVo[]>(`/api/v1/chat/dialogue/compression/segments?con_uid=${convId}`);
+export const getCompressionSegments = (conversationId: string) => {
+  return GET<null, CompressionSegmentVo[]>(`/api/v1/chat/dialogue/compression/segments?con_uid=${conversationId}`);
 };
 export const postChatModeParamsFileLoad = ({
   conversationId,

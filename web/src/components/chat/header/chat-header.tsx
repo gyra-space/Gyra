@@ -164,7 +164,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({ isScrollToTop = false, isProces
           {messageCount > 0 && (
             <span>{messageCount} 轮对话</span>
           )}
-          <ConversationUsageChip convId={currentConvSessionId} onClick={() => openCallDetail()} />
+          <ConversationUsageChip conversationId={currentConvSessionId} onClick={() => openCallDetail()} />
           {metrics && (
             <ContextMetricsDisplay metrics={metrics} compact />
           )}

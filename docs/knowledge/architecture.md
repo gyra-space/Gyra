@@ -665,6 +665,7 @@ class Extractor(Protocol):
 | `pdf` | `application/pdf` | pdfplumber（页分隔） |
 | `docx` | `application/vnd.openxmlformats-...wordprocessingml` | python-docx |
 | `pptx` | `application/vnd.openxmlformats-...presentationml` | python-pptx |
+| `excel` | `application/vnd.openxmlformats-...spreadsheetml`（.xlsx）, `application/vnd.ms-excel`（.xls） | openpyxl / xlrd → markdown 表格 |
 | `image` | `image/*`, `image/webp` | model_caller 调多模态模型描述 |
 | `audio` | `audio/*` | model_caller 调 Whisper 或类似 |
 

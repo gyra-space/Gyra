@@ -194,7 +194,7 @@ export default function TabAgents() {
   };
 
   const handleCreateAgent = () => {
-    window.open('/application/app', '_blank');
+    window.open('/application/explore', '_blank');
   };
 
   const loading = loadingBuiltIn || loadingAppList;

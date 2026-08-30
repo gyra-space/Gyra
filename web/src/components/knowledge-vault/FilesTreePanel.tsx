@@ -3,12 +3,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiInterceptors } from '@/client/api';
 import {
+  getLearningStatus,
   getRawTree,
   listIngestJobs,
   listVerbats,
   uploadFile,
 } from '@/client/api/knowledge-vault';
-import type { IngestJob, TreeNode, VerbatOut } from '@/types/knowledge-vault';
+import type {
+  FileLearningStatusMap,
+  IngestJob,
+  TreeNode,
+  VerbatOut,
+} from '@/types/knowledge-vault';
 import {
   CloudDownloadOutlined,
   FileAddOutlined,
@@ -28,6 +34,7 @@ const STATUS_LABEL: Record<string, string> = {
   extracting: '抽取中',
   embedding: '向量化',
   generating_wiki: '生成 wiki',
+  generating_graph: '图抽取',
   done: '完成',
   failed: '失败',
 };
@@ -37,8 +44,16 @@ const STATUS_COLOR: Record<string, string> = {
   extracting: 'processing',
   embedding: 'processing',
   generating_wiki: 'processing',
+  generating_graph: 'processing',
   done: 'success',
   failed: 'error',
+};
+
+const LEARN_STATUS_META: Record<string, { label: string; color: string }> = {
+  pending: { label: '挂起', color: 'default' },
+  running: { label: '进行中', color: 'processing' },
+  done: { label: '完成', color: 'success' },
+  failed: { label: '失败', color: 'error' },
 };
 
 export default function FilesTreePanel({
@@ -54,6 +69,7 @@ export default function FilesTreePanel({
   const [verbats, setVerbats] = useState<VerbatOut[]>([]);
   const [loading, setLoading] = useState(false);
   const [jobs, setJobs] = useState<IngestJob[]>([]);
+  const [learnStatus, setLearnStatus] = useState<FileLearningStatusMap>({});
   const [wikiSyncOpen, setWikiSyncOpen] = useState(false);
 
   const loadAll = useCallback(async () => {
@@ -70,10 +86,12 @@ export default function FilesTreePanel({
 
   const pollJobs = useCallback(async () => {
     const [, data] = await apiInterceptors(listIngestJobs(slug, 30));
+    const [, learn] = await apiInterceptors(getLearningStatus(slug));
     setJobs(data?.items || []);
-    const hasPending = (data?.items || []).some(
-      (j) => j.status !== 'done' && j.status !== 'failed',
-    );
+    setLearnStatus(learn ?? {});
+    const hasPending =
+      (data?.items || []).some((j) => j.status !== 'done' && j.status !== 'failed') ||
+      Object.values(learn ?? {}).some((s) => s.status === 'running');
     if (hasPending) {
       setTimeout(pollJobs, 2000);
     }
@@ -162,6 +180,10 @@ export default function FilesTreePanel({
                 selectedKey={selectedRaw || undefined}
                 height="auto"
                 className="flex-1 min-h-0"
+                statusOf={(n) => {
+                  const st = learnStatus[n.path]?.status;
+                  return st ? LEARN_STATUS_META[st] : undefined;
+                }}
               />
             ) : (
               <Empty description="raw/ 为空" imageStyle={{ height: 40 }} />

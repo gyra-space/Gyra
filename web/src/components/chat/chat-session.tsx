@@ -122,7 +122,7 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
   // 轮询恢复：重新打开运行中对话时，降级为轮询模式获取 vis_final
   const [isPollingMode, setIsPollingMode] = useState(false);
   const { isPolling, data: pollingData, stopPolling } = useChatPolling({
-    convId: chatId || null,
+    conversationId: chatId || null,
     enabled: !isChatDefault && !sseActive,
     interval: 2500,
     visRender: currentVisRender || undefined,
@@ -272,9 +272,9 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
 
   // 实时刷新最新轮:用 queryChatStatus 的 vis_final 覆盖最新一条 view 消息的 context,
   // 避免依赖保存时落库的 view 串(convert 逻辑演进后会与实时不一致)。失败静默保留 DB 历史。
-  const refreshLatestView = useCallback(async (convId: string) => {
+  const refreshLatestView = useCallback(async (conversationId: string) => {
     try {
-      const qr = await queryChatStatus(convId, currentVisRender || undefined);
+      const qr = await queryChatStatus(conversationId, currentVisRender || undefined);
       const result = qr?.data?.data;
       // 终态会话(COMPLETE/FAILED)也必须用 queryChatStatus 的完整 vis_final 覆盖:
       // DB 保存的 view 串可能因异步子任务恢复/后续轮次未同步而截断,漏掉子 Agent 回复
@@ -717,7 +717,7 @@ const resourceValueForContext = resourceValue as Record<string, unknown> | null;
 const showHistoryPanel = !props.minimal && !workspaceId && !!app_code;
 
 const sessionContent = (
-    <ContextMetricsProvider convId={chatId}>
+    <ContextMetricsProvider conversationId={chatId}>
       <ChatContentContext.Provider
         value={{
           history,
@@ -784,7 +784,7 @@ const sessionContent = (
     </ContextMetricsProvider>
   );
 
-  return <CallDetailProvider convId={chatId}>{sessionContent}</CallDetailProvider>;
+  return <CallDetailProvider conversationId={chatId}>{sessionContent}</CallDetailProvider>;
 });
 
 export default ChatSession;

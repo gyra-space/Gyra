@@ -1,4 +1,8 @@
-"""Agent 资源目录 Provider：向 RBAC 提供 Agent 可选列表。"""
+"""Agent 资源目录 Provider：向 RBAC 提供 Agent 可选列表。
+
+数据源为 gpts_app 应用表（用户实际看到/对话的应用）,app_code 即
+``require_permission("agent", ..., resource_id=app_code)`` 判定时用的资源 ID。
+"""
 
 import logging
 from typing import List, Optional
@@ -9,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class AgentCatalogProvider(ResourceCatalogProvider):
-    """Agent 资源目录。"""
+    """Agent 资源目录（gpts_app 应用）。"""
 
     def resource_type(self) -> str:
         return "agent"
@@ -24,30 +28,33 @@ class AgentCatalogProvider(ResourceCatalogProvider):
         limit: int = 100,
     ) -> List[ResourceCatalogItem]:
         try:
-            from gyra_core.config import ConfigManager
-
-            cfg = ConfigManager.get()
-            agents = cfg.agents or {}
+            from gyra.storage.metadata.db_manager import db
+            from gyra_serve.building.app.models.models import ServeEntity
 
             items = []
-            for name, agent in agents.items():
-                if keyword and keyword.lower() not in name.lower():
-                    continue
-                desc = getattr(agent, "description", "") or ""
-                items.append(
-                    ResourceCatalogItem(
-                        id=name,
-                        name=name,
-                        description=desc[:100] if desc else None,
-                        metadata={
-                            "max_steps": getattr(agent, "max_steps", None),
-                            "tools": getattr(agent, "tools", None),
-                        },
+            with db.session(commit=False) as s:
+                q = s.query(ServeEntity).order_by(ServeEntity.id.desc())
+                if keyword:
+                    like = f"%{keyword}%"
+                    q = q.filter(
+                        (ServeEntity.app_name.like(like))
+                        | (ServeEntity.app_code.like(like))
                     )
-                )
-                if len(items) >= limit:
-                    break
+                for r in q.limit(limit).all():
+                    if not r.app_code:
+                        continue
+                    items.append(
+                        ResourceCatalogItem(
+                            id=r.app_code,
+                            name=r.app_name or r.app_code,
+                            description=(r.app_describe or "")[:100] or None,
+                            metadata={
+                                "published": r.published,
+                                "team_mode": r.team_mode,
+                            },
+                        )
+                    )
             return items
         except Exception as e:
-            logger.warning(f"[AgentCatalogProvider] list agents failed: {e}")
+            logger.warning(f"[AgentCatalogProvider] list apps failed: {e}")
             return []

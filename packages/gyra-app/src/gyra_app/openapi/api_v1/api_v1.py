@@ -722,6 +722,13 @@ async def chat_completions(
                     SandboxFileRef,
                 )
 
+                # 获取 FileStorageClient 实例（用于从 gyra-fs metadata 还原原始文件名）
+                fs = None
+                try:
+                    fs = FileStorageClient.get_instance(CFG.SYSTEM_APP, default_component=None)
+                except Exception:
+                    pass
+
                 user_inputs = []
                 if isinstance(in_message.content, list):
                     for media in in_message.content:
@@ -762,6 +769,46 @@ async def chat_completions(
                                     {
                                         "type": "file_url",
                                         "file_url": {
+                                            "url": url_str,
+                                            "file_name": file_name,
+                                        },
+                                    }
+                                )
+                            elif (
+                                media.type == "audio"
+                                and media.object.format.startswith("url")
+                            ):
+                                url_str = str(media.object.data)
+                                file_name = _get_file_name_from_url_or_metadata(
+                                    url_str, fs
+                                )
+                                if not file_name:
+                                    file_name = f"audio_{uuid.uuid4().hex[:8]}"
+
+                                user_inputs.append(
+                                    {
+                                        "type": "audio_url",
+                                        "audio_url": {
+                                            "url": url_str,
+                                            "file_name": file_name,
+                                        },
+                                    }
+                                )
+                            elif (
+                                media.type == "video"
+                                and media.object.format.startswith("url")
+                            ):
+                                url_str = str(media.object.data)
+                                file_name = _get_file_name_from_url_or_metadata(
+                                    url_str, fs
+                                )
+                                if not file_name:
+                                    file_name = f"video_{uuid.uuid4().hex[:8]}"
+
+                                user_inputs.append(
+                                    {
+                                        "type": "video_url",
+                                        "video_url": {
                                             "url": url_str,
                                             "file_name": file_name,
                                         },

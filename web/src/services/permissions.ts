@@ -82,6 +82,8 @@ export interface PermissionDefinition {
   action: string;
   effect: string;
   is_active: boolean;
+  scope_type?: string;
+  grantable?: boolean;
   gmt_create?: string | null;
   gmt_modify?: string | null;
 }
@@ -93,6 +95,17 @@ export interface PermissionDefinitionCreateBody {
   resource_id?: string;
   action: string;
   effect?: string;
+}
+
+export interface ResourceGrant {
+  id: number;
+  user_id: number;
+  permission_key: string;
+  resource_type: string;
+  resource_id: string;
+  expires_at?: string | null;
+  granted_by?: number | null;
+  gmt_create?: string | null;
 }
 
 export interface PermissionDefinitionUpdateBody {
@@ -316,7 +329,9 @@ class PermissionsService {
   }
 
   async getUserPermissions(userId: number): Promise<UserPermissionsResponse> {
-    const res = await axios.get(`${API_BASE}/permissions/users/${userId}/permissions`);
+    // 注意路径:该端点在 users_api(/api/v1/users/{id}/permissions),
+    // 不是 /permissions/users/{id}/permissions(不存在,曾导致面板恒 404)
+    const res = await axios.get(`${API_BASE}/users/${userId}/permissions`);
     return res.data.data as UserPermissionsResponse;
   }
 
@@ -328,6 +343,30 @@ class PermissionsService {
   }): Promise<PermissionDefinition[]> {
     const res = await axios.get(`${API_BASE}/permissions/definitions`, { params });
     return (res.data?.data ?? []) as PermissionDefinition[];
+  }
+
+  // ========== Resource Grants（实例级授权） ==========
+  async listGrants(params?: {
+    user_id?: number;
+    resource_type?: string;
+    resource_id?: string;
+  }): Promise<ResourceGrant[]> {
+    const res = await axios.get(`${API_BASE}/permissions/grants`, { params });
+    return (res.data?.data ?? []) as ResourceGrant[];
+  }
+
+  async createGrant(body: {
+    user_id: number;
+    permission_key: string;
+    resource_id: string;
+    expires_at?: string | null;
+  }): Promise<ResourceGrant> {
+    const res = await axios.post(`${API_BASE}/permissions/grants`, body);
+    return res.data.data as ResourceGrant;
+  }
+
+  async deleteGrant(grantId: number): Promise<void> {
+    await axios.delete(`${API_BASE}/permissions/grants/${grantId}`);
   }
 
   async createPermissionDefinition(

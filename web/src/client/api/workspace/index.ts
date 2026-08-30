@@ -42,6 +42,12 @@ export const renameConversation = (conv_uid: string, title: string) =>
 export const deleteConversation = (data: { workspace_id: number; conv_uid: string }) =>
   POST(`/api/v1/serve_workspace_service/conversations/${data.conv_uid}/delete`, { workspace_id: data.workspace_id });
 
+export const favoriteConversation = (data: { workspace_id: number; conv_uid: string; favorited: boolean }) =>
+  POST(`/api/v1/serve_workspace_service/conversations/${data.conv_uid}/favorite`, {
+    workspace_id: data.workspace_id,
+    favorited: data.favorited,
+  });
+
 export const resolveAndExecuteIntervention = (
   intervention_id: number,
   data: { decision: Record<string, any>; distillation?: Record<string, any>; resolved_by_user_id?: number; linked_asset_id?: number },

@@ -74,6 +74,46 @@ class TestMaskDictRows:
         assert out == rows and masked == []  # 脱敏失败永不破坏查询
 
 
+class TestMaskDictRowsInternalCatalogGate:
+    """系统目录白名单门控:内部表跳过脱敏,混合查询仍保守脱敏。"""
+
+    def test_internal_catalog_sql_skips_masking(self, patch_mask):
+        columns = ["id", "table_name"]
+        rows = [{"id": 1, "table_name": "USERS"}]
+        out, masked = _mask_dict_rows(
+            7, columns, rows, sql="SELECT table_name FROM all_tables"
+        )
+        assert out == rows and masked == []
+
+    def test_internal_catalog_table_name_skips_masking(self, patch_mask):
+        columns = ["id", "table_name"]
+        rows = [{"id": 1, "table_name": "USERS"}]
+        out, masked = _mask_dict_rows(
+            7, columns, rows, table_name="pg_catalog.pg_class"
+        )
+        assert out == rows and masked == []
+
+    def test_business_sql_still_masked(self, patch_mask):
+        columns = ["id", "name"]
+        rows = [{"id": 1, "name": "张伟"}]
+        out, masked = _mask_dict_rows(7, columns, rows, sql="SELECT name FROM users")
+        assert masked == ["name"]
+        assert out[0]["name"] == "MASKED_张伟"
+
+    def test_mixed_query_still_masked(self, patch_mask):
+        columns = ["table_name", "name"]
+        rows = [{"table_name": "A", "name": "张伟"}]
+        out, masked = _mask_dict_rows(
+            7,
+            columns,
+            rows,
+            sql="SELECT t.table_name, u.name FROM all_tables t "
+            "JOIN users u ON u.tid = t.tid",
+        )
+        assert masked == ["name"]
+        assert out[0]["name"] == "MASKED_张伟"
+
+
 class TestExecuteRawSqlMasking:
     @pytest.mark.asyncio
     async def test_result_is_masked(self, monkeypatch):
@@ -99,6 +139,11 @@ class TestExecuteRawSqlMasking:
             [1, "张伟"],
             [2, "李丽"],
         ]
+        # 安全层执行路径走 query_ex(超时 + max_rows 截断)
+        fake_connector.query_ex.return_value = (
+            ["id", "name"],
+            [[1, "张伟"], [2, "李丽"]],
+        )
         monkeypatch.setattr(
             ConnectConfigDao, "get_one",
             lambda *a, **k: SimpleNamespace(db_name="test_db"),

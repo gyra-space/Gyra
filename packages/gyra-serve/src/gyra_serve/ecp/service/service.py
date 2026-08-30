@@ -9,11 +9,20 @@ Write rules (docs/ECP.md 3.4), enforced here at a single point:
    flagged by callers.
 5. Cross-entity queries without a confirmed relation are rejected (enforced in
    the executor, P1).
+
+模块结构(Service 为门面,各领域协作者均为无状态、持有 svc 引用):
+- 本文件:提案生命周期(propose/confirm/reject/deprecate/add_from_sql)、
+  契约 admin、读模型、确认人
+- miss.py           miss 飞轮(聚类/学习标记/学习上下文)
+- graph.py          资产全景图(写时物化 + 查询时实时投影)
+- alignment_ops.py  语义对齐运营(LLM 候选固化/确认/手工兜底)
+- assets.py         资产引用注册 + readiness
+- workspace.py      软层 space 供给 + workspace 配置
+- transfer.py       资产导出/导入
+- knowledge_bridge.py  knowledge 软层只读桥梁(图谱/对齐共用)
 """
 
-import copy
 import logging
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from gyra.component import SystemApp
@@ -23,12 +32,9 @@ from ..api.schemas import (
     AssetRefVO,
     CatalogEntryVO,
     ConfirmerVO,
-    GraphLinkVO,
-    GraphNodeVO,
     GraphVO,
     MissLearnVO,
     OpLogVO,
-    ReadinessCheckVO,
     ReadinessVO,
     SemanticAlignmentVO,
     SemanticObjectListVO,
@@ -39,12 +45,15 @@ from ..api.schemas import (
 from ..config import (
     DEFAULT_WORKSPACE_ID,
     OBJECT_TYPES,
+    ORIGIN_MANUAL_SQL,
     SERVE_SERVICE_COMPONENT_NAME,
     STATUS_CONFIRMED,
     STATUS_DEPRECATED,
     STATUS_PROPOSED,
     STATUS_REJECTED,
     ServeConfig,
+    carry_provenance,
+    make_provenance,
 )
 from ..models.models import (
     AssetRefDao,
@@ -58,62 +67,16 @@ from ..models.models import (
     SemanticObjectDao,
     WorkspaceConfigDao,
 )
+from .alignment_ops import AlignmentOps
+from .assets import AssetOps
+from .graph import GraphOps
+
+# 兼容 re-export:聚类纯函数已迁至 miss.py,历史调用方(tests/tools)仍从这里 import
+from .miss import MissFlywheel, _normalize_sql_pattern, cluster_fallbacks  # noqa: F401
+from .transfer import TransferOps
+from .workspace import WorkspaceOps
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_sql_pattern(sql: str, max_len: int = 200) -> str:
-    """SQL 归一化为聚类模式键:小写、去字符串/数字字面值、压缩空白、截断。"""
-    import re
-
-    s = (sql or "").lower()
-    s = re.sub(r"'[^']*'", "?", s)  # 字符串字面值
-    s = re.sub(r"\b\d+(\.\d+)?\b", "?", s)  # 数字字面值
-    s = re.sub(r"\s*([=<>(),;])\s*", r"\1", s)  # 操作符周围空白(Store = 1 vs Store=1)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s[:max_len]
-
-
-def cluster_fallbacks(entries: List[Any]) -> List[dict]:
-    """把 op_log fallback 条目按归一化模式聚类(频次降序,全量)。
-
-    kind 分流(db/doc,ECP-unstructured P0):
-    - db 条目(detail.sql):按归一化 SQL 模式聚类
-    - doc 条目(detail.question):按归一化问题模式聚类
-    Service.miss_report 与 get_miss_report 工具共用的聚类核心;截断由调用方做。
-    """
-    from .resolver import normalize_question
-
-    clusters: dict = {}
-    for e in entries:
-        detail = e.detail or {}
-        if detail.get("kind") == "doc" or "question" in detail:
-            kind = "doc"
-            pattern = normalize_question(detail.get("question") or "")
-            example = detail.get("question") or ""
-        else:
-            kind = "db"
-            pattern = _normalize_sql_pattern(detail.get("sql") or "")
-            example = detail.get("sql") or ""
-        key = (kind, detail.get("datasource_id"), pattern)
-        c = clusters.setdefault(
-            key,
-            {
-                "kind": kind,
-                "datasource_id": detail.get("datasource_id"),
-                "spaces": detail.get("spaces"),
-                "pattern": pattern,
-                "count": 0,
-                "example_sql": example,
-                "reasonings": [],
-                "last_seen": e.ts,
-            },
-        )
-        c["count"] += 1
-        reasoning = detail.get("reasoning")
-        if reasoning and reasoning not in c["reasonings"]:
-            c["reasonings"].append(reasoning)
-    return sorted(clusters.values(), key=lambda x: -x["count"])
 
 
 class Service(BaseService[EcpSemanticObjectEntity, None, None]):
@@ -162,9 +125,38 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
     def oplog_dao(self) -> OpLogDao:
         return self._oplog_dao
 
+    @property
+    def asset_dao(self) -> AssetRefDao:
+        return self._asset_dao
+
     @staticmethod
     def _ws(workspace_id: Optional[str]) -> str:
         return workspace_id or DEFAULT_WORKSPACE_ID
+
+    # -------------------------------------- collaborators(无状态,按需构造)
+    @property
+    def _miss(self) -> MissFlywheel:
+        return MissFlywheel(self)
+
+    @property
+    def _graph(self) -> GraphOps:
+        return GraphOps(self)
+
+    @property
+    def _alignment(self) -> AlignmentOps:
+        return AlignmentOps(self)
+
+    @property
+    def _assets(self) -> AssetOps:
+        return AssetOps(self)
+
+    @property
+    def _workspace(self) -> WorkspaceOps:
+        return WorkspaceOps(self)
+
+    @property
+    def _transfer(self) -> TransferOps:
+        return TransferOps(self)
 
     # ---------------------------------------------------------------- proposals
     def propose(
@@ -177,13 +169,36 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         evidence: Optional[list] = None,
         created_by: str = "llm",
         source: Optional[str] = None,
+        provenance: Optional[dict] = None,
+        gate_level: Optional[str] = None,
     ) -> SemanticObjectVO:
-        """Create a proposal. Write rule 1: always lands in `proposed`."""
+        """Create a proposal. Write rule 1: always lands in `proposed`.
+
+        唯一提案写入口(API/工具/批量管线/执行门禁全部汇聚于此):
+        - ``gate_level="executable"``:入库前过可执行级契约校验(与 confirm
+          晋升门禁同标准),不满足抛 ContractViolation——避免不可确认的
+          "死提案"堆积进收件箱(Agent 工具路径用);None 则只做类型校验
+          (批量管线已自行过 proposal 级契约)。
+        - entity 确定性兜底(Oracle owner 补全 + 时间列 role=time)在此
+          统一执行,三条写入路径质量拉齐(原仅在 ecp_tools 路径有)。
+        """
         if obj_type not in OBJECT_TYPES:
             raise ValueError(
                 f"Invalid obj_type '{obj_type}', must be one of {OBJECT_TYPES}"
             )
         ws = self._ws(workspace_id)
+        if gate_level == "executable":
+            from .contracts import (
+                ContractViolation,
+                normalize_payload,
+                validate_payload,
+            )
+
+            payload = normalize_payload(obj_type, payload)
+            self._normalize_entity_binding_fallback(payload, obj_type)
+            problems = validate_payload(obj_type, payload, level="executable")
+            if problems:
+                raise ContractViolation(problems)
         vo = self._object_dao.create_proposal(
             object_id=object_id,
             obj_type=obj_type,
@@ -193,6 +208,7 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             evidence=evidence,
             created_by=created_by,
             source=source,
+            provenance=provenance,
         )
         # 去重命中时 create_proposal 返回已有 confirmed VO(status=confirmed),
         # 不记 propose oplog(实际未产生新提案)。
@@ -205,6 +221,28 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             )
         self._refresh_edges(vo, ws)
         return vo
+
+    @staticmethod
+    def _normalize_entity_binding_fallback(payload: dict, obj_type: str) -> None:
+        """entity 提案确定性兜底(就地修改,best-effort 不阻塞提案)。
+
+        Oracle 多 schema 表名 owner 补全 + 时间列 role=time——LLM 提案的
+        系统性缺陷(见 propose.normalize_entity_binding)。
+        """
+        if obj_type != "entity":
+            return
+        try:
+            from .propose import normalize_entity_binding
+
+            ds_id = (payload.get("binding") or {}).get("datasource_id")
+            specs = None
+            if ds_id:
+                from gyra_serve.datasource.manages.table_spec_db import TableSpecDao
+
+                specs = TableSpecDao().get_all_by_datasource(ds_id) or []
+            normalize_entity_binding(payload, specs)
+        except Exception:  # noqa: BLE001 兜底失败不阻塞提案(契约校验仍生效)
+            pass
 
     async def add_from_sql(
         self,
@@ -277,6 +315,13 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                         user_id=user_id,
                         evidence=vo.evidence,
                         source=f"sql_manual:{ws}",
+                        provenance=make_provenance(
+                            ORIGIN_MANUAL_SQL,
+                            actor=f"user:{user_id}",
+                            origin_sql=[sql],
+                            note=description,
+                            derived_from=f"sql_proposal:{pid}",
+                        ),
                     )
                     confirmed_ids.append(confirmed_vo.id)
                     self._cache_dao.invalidate_referencing(pid, ws)
@@ -297,7 +342,7 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             "workspace_id": ws,
             "added": len(confirmed_ids),
             "confirmed_ids": confirmed_ids,
-            "duplicate_existing": [] if run.proposal_ids else [],
+            "duplicate_existing": [],
             "errors": errors,
         }
 
@@ -350,6 +395,9 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                 supersedes=None,
                 evidence=target.evidence,
                 source=f"edit_of:{object_id}@v{version}",
+                provenance=carry_provenance(
+                    getattr(target, "provenance", None), f"edit_of:{object_id}@v{version}"
+                ),
             )
         else:
             proposed = self._object_dao.get_version(object_id, version, ws)
@@ -379,6 +427,9 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                     supersedes=None,
                     evidence=proposed.evidence,
                     source=f"normalize_of:{object_id}@v{version}",
+                    provenance=carry_provenance(
+                        getattr(proposed, "provenance", None), f"normalize_of:{object_id}@v{version}"
+                    ),
                 )
             else:
                 vo = self._object_dao.confirm_version(object_id, version, ws, user_id)
@@ -440,7 +491,8 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         )
         invalidated = self._cache_dao.invalidate_referencing(object_id, ws)
         self._oplog_dao.append(
-            "deprecate", ws,
+            "deprecate",
+            ws,
             {"id": object_id, "version": confirmed.version, "by": user_id,
              "reason": reason, "cache_invalidated": invalidated},
         )
@@ -508,6 +560,9 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                 supersedes=None,
                 evidence=vo.evidence,
                 source="admin:normalize_confirmed",
+                provenance=carry_provenance(
+                    getattr(vo, "provenance", None), "admin:normalize_confirmed"
+                ),
             )
             self._refresh_edges(new_vo, ws)
             fixed.append({"id": vo.id, "version": new_vo.version})
@@ -523,254 +578,6 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             "skipped": skipped,
         }
 
-    # ------------------------------------------------------- admin(miss 飞轮)
-    def miss_report(
-        self,
-        workspace_id: Optional[str] = None,
-        limit: int = 20,
-        scan_size: int = 500,
-    ) -> dict:
-        """聚类 op_log fallback miss(execute_raw_sql 兜底记录)。
-
-        按归一化 SQL 模式分组(忽略字面值/空白差异),按频次排序——
-        "大家在裸查什么"的可见化,learn_from_misses 的输入。
-
-        已学习的聚类(ecp_miss_learn 中有对应标记)会被排除,避免每天重复
-        喂给提案 agent 已经覆盖过的概念;learned 字段返回被过滤的标记数量。
-        """
-        ws = self._ws(workspace_id)
-        entries = self._oplog_dao.list(ws, op="fallback", page=1, page_size=scan_size)
-        all_clusters = cluster_fallbacks(entries)
-        learned = self._miss_learn_dao.learned_keys(ws)
-        open_clusters = [
-            c
-            for c in all_clusters
-            if (c.get("kind"), c.get("datasource_id"), c.get("pattern")) not in learned
-        ]
-        return {
-            "workspace_id": ws,
-            "total_fallbacks": len(entries),
-            "cluster_count": len(open_clusters),
-            "learned_count": len(all_clusters) - len(open_clusters),
-            "clusters": open_clusters[:limit],
-        }
-
-    def _learned_cluster_keys(self, workspace_id: str) -> set:
-        return self._miss_learn_dao.learned_keys(self._ws(workspace_id))
-
-    def miss_detail(
-        self,
-        kind: str,
-        pattern: str,
-        datasource_id: Optional[int] = None,
-        workspace_id: Optional[str] = None,
-        scan_size: int = 500,
-    ) -> "MissDetailVO":
-        """单个 miss 聚类的学习档案(飞轮视图点击聚类行展开详情)。
-
-        聚合四类数据,还原"这条问题从兜底到沉淀"的完整轨迹:
-        - cluster: 摘要(频次/首末时间/未命中原因)
-        - records: 原始兜底记录(op_log fallback 按同一归一化键过滤,时间倒序)
-        - learned: 已学习标记(ecp_miss_learn,可为空=待学习)
-        - learn_events: 标记生命周期事件(op_log miss_learned/miss_learn_clear)
-        """
-        from .resolver import normalize_question
-        from ..api.schemas import (
-            MissClusterSummaryVO,
-            MissDetailVO,
-            MissLearnEventVO,
-            MissRecordVO,
-        )
-
-        ws = self._ws(workspace_id)
-        key = (kind, datasource_id, pattern)
-
-        def entry_key(detail: dict) -> tuple:
-            if detail.get("kind") == "doc" or "question" in detail:
-                return ("doc", detail.get("datasource_id"),
-                        normalize_question(detail.get("question") or ""))
-            return ("db", detail.get("datasource_id"),
-                    _normalize_sql_pattern(detail.get("sql") or ""))
-
-        records: List[MissRecordVO] = []
-        for e in self._oplog_dao.list(ws, op="fallback", page=1, page_size=scan_size):
-            detail = e.detail or {}
-            if entry_key(detail) != key:
-                continue
-            records.append(
-                MissRecordVO(
-                    ts=e.ts,
-                    sql=detail.get("sql"),
-                    question=detail.get("question"),
-                    reasoning=detail.get("reasoning"),
-                    datasource_id=detail.get("datasource_id"),
-                    spaces=detail.get("spaces"),
-                )
-            )
-        records.sort(key=lambda r: r.ts or "", reverse=True)
-
-        reasonings: List[str] = []
-        for r in records:
-            if r.reasoning and r.reasoning not in reasonings:
-                reasonings.append(r.reasoning)
-        newest = records[0] if records else None
-        cluster = MissClusterSummaryVO(
-            kind=kind,
-            datasource_id=datasource_id,
-            pattern=pattern,
-            count=len(records),
-            example_sql=(
-                (newest.question if kind == "doc" else newest.sql) if newest else None
-            ),
-            reasonings=reasonings,
-            spaces=newest.spaces if newest else None,
-            first_seen=records[-1].ts if records else None,
-            last_seen=newest.ts if newest else None,
-        )
-
-        learned = self._miss_learn_dao.get(ws, kind, pattern, datasource_id)
-
-        events: List[MissLearnEventVO] = []
-        for op in ("miss_learned", "miss_learn_clear"):
-            for e in self._oplog_dao.list(ws, op=op, page=1, page_size=50):
-                d = e.detail or {}
-                if op == "miss_learned":
-                    marks = d.get("mark") or []
-                    if any(
-                        m.get("kind") == kind
-                        and m.get("pattern") == pattern
-                        and m.get("datasource_id") == datasource_id
-                        for m in marks
-                    ):
-                        events.append(
-                            MissLearnEventVO(
-                                ts=e.ts,
-                                op=op,
-                                trigger=d.get("trigger"),
-                                proposals=d.get("proposals") or [],
-                            )
-                        )
-                elif (
-                    d.get("kind") == kind
-                    and d.get("pattern") == pattern
-                    and d.get("datasource_id") == datasource_id
-                ):
-                    events.append(MissLearnEventVO(ts=e.ts, op=op))
-        events.sort(key=lambda x: x.ts or "")
-
-        return MissDetailVO(
-            workspace_id=ws,
-            cluster=cluster,
-            records=records,
-            learned=learned,
-            learn_events=events,
-        )
-
-    def mark_miss_learned(
-        self,
-        clusters: List[dict],
-        workspace_id: Optional[str] = None,
-        proposal_ids: Optional[List[str]] = None,
-        trigger: str = "agent",
-    ) -> List[MissLearnVO]:
-        """把 miss 聚类标记为"已学习"(幂等),下一次报告不再曝光。
-
-        ``clusters`` 是 miss_report/get_miss_report 返回的聚类对象列表(含
-        kind/pattern/datasource_id)。提案 agent 在成功为某个 miss 聚类提案后
-        调用 mark_miss_learned 落盘,飞轮的学习侧才有持久记忆。
-        """
-        ws = self._ws(workspace_id)
-        marked: List[MissLearnVO] = []
-        for c in clusters or []:
-            kind = c.get("kind")
-            pattern = c.get("pattern")
-            if not kind or not pattern:
-                continue
-            vo = self._miss_learn_dao.mark_learned(
-                ws,
-                kind,
-                pattern,
-                datasource_id=c.get("datasource_id"),
-                example=(c.get("example_sql") or c.get("example")),
-                proposal_ids=proposal_ids,
-                trigger=trigger,
-            )
-            marked.append(vo)
-        if marked:
-            self._oplog_dao.append(
-                "miss_learned",
-                ws,
-                {
-                    "mark": [{"kind": v.kind, "pattern": v.pattern,
-                              "datasource_id": v.datasource_id}
-                             for v in marked],
-                    "trigger": trigger,
-                    "proposals": proposal_ids or [],
-                },
-            )
-        return marked
-
-    def list_miss_learned(
-        self, workspace_id: Optional[str] = None, kind: Optional[str] = None
-    ) -> List[MissLearnVO]:
-        """列出工作空间所有已学习的 miss 标记(按学习时间倒序)。"""
-        return self._miss_learn_dao.list(self._ws(workspace_id), kind)
-
-    def clear_miss_learned(
-        self,
-        workspace_id: Optional[str] = None,
-        kind: Optional[str] = None,
-        pattern: Optional[str] = None,
-        datasource_id: Optional[int] = None,
-    ) -> int:
-        """清除已学习标记(允许对应 miss 重新曝光)。返回清除数。"""
-        ws = self._ws(workspace_id)
-        removed = self._miss_learn_dao.clear(ws, kind, pattern, datasource_id)
-        if removed:
-            self._oplog_dao.append(
-                "miss_learn_clear",
-                ws,
-                {
-                    "removed": removed,
-                    "kind": kind,
-                    "pattern": pattern,
-                    "datasource_id": datasource_id,
-                },
-            )
-        return removed
-
-    @staticmethod
-    def build_miss_context(clusters: List[dict], max_items: int = 10) -> str:
-        """把 miss 聚类构建成提案 agent 的领域上下文(问题驱动的提案素材)。"""
-        if not clusters:
-            return ""
-        lines = [
-            "【未覆盖的真实问题(miss 聚类,按频次排序)】",
-            "以下是用户真实问过、但语义目录无法覆盖而走了 execute_raw_sql 兜底的查询。",
-            "请优先为这些高频问题提炼可确认的语义资产(指标/维度/值字典),",
-            "使后续同类问题能走 execute_metric_query 可信路径:",
-        ]
-        for i, c in enumerate(clusters[:max_items], 1):
-            kind = c.get("kind", "db")
-            if kind == "doc":
-                lines.append(
-                    f"\n{i}. [出现 {c['count']} 次] 文档问题(空间: "
-                    f"{','.join(c.get('spaces') or ['?'])})"
-                )
-                example = (c.get("example_sql") or "").strip()
-                if example:
-                    lines.append(f"   问题: {example[:300]}")
-            else:
-                lines.append(
-                    f"\n{i}. [出现 {c['count']} 次] 数据源 #{c.get('datasource_id')}"
-                )
-                example = (c.get("example_sql") or "").strip()
-                if example:
-                    lines.append(f"   SQL: {example[:400]}")
-            for r in (c.get("reasonings") or [])[:3]:
-                lines.append(f"   未命中原因: {r}")
-        return "\n".join(lines)
-
     # -------------------------------------------------------------------- reads
     def inbox(
         self,
@@ -778,15 +585,17 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         obj_type: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
+        include_view: bool = False,
     ) -> SemanticObjectListVO:
         """Confirmation inbox: latest proposed versions."""
-        return self._object_dao.list_latest(
+        result = self._object_dao.list_latest(
             workspace_id=self._ws(workspace_id),
             obj_type=obj_type,
             status=STATUS_PROPOSED,
             page=page,
             page_size=page_size,
         )
+        return self._attach_views(result, "brief") if include_view else result
 
     def list_objects(
         self,
@@ -796,8 +605,9 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         keyword: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
+        include_view: bool = False,
     ) -> SemanticObjectListVO:
-        return self._object_dao.list_latest(
+        result = self._object_dao.list_latest(
             workspace_id=self._ws(workspace_id),
             obj_type=obj_type,
             status=status,
@@ -805,6 +615,7 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             page=page,
             page_size=page_size,
         )
+        return self._attach_views(result, "brief") if include_view else result
 
     def get_object(
         self, object_id: str, workspace_id: Optional[str] = None
@@ -863,6 +674,65 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         self, object_id: str, workspace_id: Optional[str] = None
     ) -> List[SemanticObjectVO]:
         return self._object_dao.version_history(object_id, self._ws(workspace_id))
+
+    # ------------------------------------------------------- proposal view(业务视图)
+    @staticmethod
+    def _ds_name_resolver():
+        """datasource_id → 数据源名(带请求级缓存;基础设施不可用降级 None)。"""
+        cache: Dict[Any, Optional[str]] = {}
+
+        def resolve(ds_id: Any) -> Optional[str]:
+            if ds_id not in cache:
+                name = None
+                try:
+                    from gyra_serve.datasource.manages.connect_config_db import (
+                        ConnectConfigDao,
+                    )
+
+                    cfg = ConnectConfigDao().get_one({"id": ds_id})
+                    name = getattr(cfg, "db_name", None) or getattr(cfg, "name", None)
+                except Exception:  # noqa: BLE001
+                    name = None
+                cache[ds_id] = name
+            return cache[ds_id]
+
+        return resolve
+
+    def _attach_views(
+        self, list_vo: SemanticObjectListVO, level: str = "brief"
+    ) -> SemanticObjectListVO:
+        """为列表各项挂业务视图(读时派生;单项失败不阻塞列表)。"""
+        from .proposal_view import build_proposal_view
+
+        resolver = self._ds_name_resolver()
+        for item in list_vo.items or []:
+            try:
+                item.view = build_proposal_view(
+                    item,
+                    objects=self._object_dao,
+                    ds_name_resolver=resolver,
+                    level=level,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("build view failed for %s", item.id, exc_info=True)
+        return list_vo
+
+    def get_proposal_view(
+        self, object_id: str, version: int, workspace_id: Optional[str] = None
+    ):
+        """单个对象版本的完整业务视图(含静态 SQL 预览),详情页数据源。"""
+        from .proposal_view import build_proposal_view
+
+        ws = self._ws(workspace_id)
+        vo = self._object_dao.get_version(object_id, version, ws)
+        if not vo:
+            raise ValueError(f"Object {object_id}@v{version} not found")
+        return build_proposal_view(
+            vo,
+            objects=self._object_dao,
+            ds_name_resolver=self._ds_name_resolver(),
+            level="full",
+        )
 
     def catalog(
         self, workspace_id: Optional[str] = None, keyword: Optional[str] = None
@@ -938,719 +808,110 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
     ) -> List[OpLogVO]:
         return self._oplog_dao.list(self._ws(workspace_id), op, page, page_size)
 
-    # -------------------------------------------------------------- asset refs
-    @property
-    def asset_dao(self) -> AssetRefDao:
-        return self._asset_dao
+    # ====================================== 领域协作者委托(门面 API 保持不变)
+    # ------------------------------------------------------- admin(miss 飞轮)
+    def miss_report(
+        self,
+        workspace_id: Optional[str] = None,
+        limit: int = 20,
+        scan_size: int = 500,
+    ) -> dict:
+        return self._miss.report(workspace_id, limit, scan_size)
 
-    def register_asset(
+    def _learned_cluster_keys(self, workspace_id: str) -> set:
+        return self._miss.learned_cluster_keys(workspace_id)
+
+    def miss_detail(
         self,
         kind: str,
-        ref_id: str,
+        pattern: str,
+        datasource_id: Optional[int] = None,
         workspace_id: Optional[str] = None,
-        ref_meta: Optional[dict] = None,
-    ) -> AssetRefVO:
-        ws = self._ws(workspace_id)
-        vo = self._asset_dao.register(kind, ref_id, ws, ref_meta)
-        self._oplog_dao.append(
-            "asset_register", ws, {"kind": kind, "ref_id": ref_id}
-        )
-        return vo
+        scan_size: int = 500,
+    ):
+        return self._miss.detail(kind, pattern, datasource_id, workspace_id, scan_size)
 
-    def list_assets(
-        self, workspace_id: Optional[str] = None, kind: Optional[str] = None
-    ) -> List[AssetRefVO]:
-        return self._asset_dao.list(self._ws(workspace_id), kind)
-
-    def remove_asset(
+    def mark_miss_learned(
         self,
-        asset_id: int,
+        clusters: List[dict],
         workspace_id: Optional[str] = None,
-    ) -> bool:
-        """Unregister an asset reference from a workspace.
+        proposal_ids: Optional[List[str]] = None,
+        trigger: str = "agent",
+    ) -> List[MissLearnVO]:
+        return self._miss.mark_learned(clusters, workspace_id, proposal_ids, trigger)
 
-        ECP owns only the reference, so this does NOT touch the original
-        asset (DB / space / document). Used by the ECP asset list "delete"
-        action. Returns True if a row was removed.
-        """
-        ws = self._ws(workspace_id)
-        removed = self._asset_dao.delete_in_workspace(asset_id, ws)
-        if removed is None:
-            return False
-        self._oplog_dao.append(
-            "asset_remove", ws, {"kind": removed.kind, "ref_id": removed.ref_id}
-        )
-        return True
+    def list_miss_learned(
+        self, workspace_id: Optional[str] = None, kind: Optional[str] = None
+    ) -> List[MissLearnVO]:
+        return self._miss.list_learned(workspace_id, kind)
 
-    def readiness(
-        self, datasource_id: int, workspace_id: Optional[str] = None
-    ) -> ReadinessVO:
-        """Check whether a DB asset is ready for proposal generation.
+    def clear_miss_learned(
+        self,
+        workspace_id: Optional[str] = None,
+        kind: Optional[str] = None,
+        pattern: Optional[str] = None,
+        datasource_id: Optional[int] = None,
+    ) -> int:
+        return self._miss.clear_learned(workspace_id, kind, pattern, datasource_id)
 
-        Assets arrive incrementally (DB configured -> schema learned -> docs
-        ingested); proposals must not run on incomplete material.
-        """
-        from gyra_serve.datasource.manages.connect_config_db import (
-            ConnectConfigDao,
-        )
-        from gyra_serve.datasource.manages.table_spec_db import TableSpecDao
-
-        ws = self._ws(workspace_id)
-        checks: List[ReadinessCheckVO] = []
-
-        config = ConnectConfigDao().get_one({"id": datasource_id})
-        ds_ok = config is not None
-        checks.append(
-            ReadinessCheckVO(
-                item="datasource_exists",
-                ready=ds_ok,
-                detail=getattr(config, "db_name", None) if ds_ok else "数据源不存在",
-            )
-        )
-
-        spec_count = 0
-        if ds_ok:
-            spec_count = len(TableSpecDao().get_all_by_datasource(datasource_id))
-        checks.append(
-            ReadinessCheckVO(
-                item="schema_learned",
-                ready=spec_count > 0,
-                detail=f"已学习 {spec_count} 张表"
-                if spec_count
-                else "尚未完成 Schema 学习，请先在数据源管理中执行学习",
-            )
-        )
-
-        # Document assets are optional but recommended (industry knowledge
-        # feeds proposal quality and confirmation evidence).
-        doc_refs = [a for a in self._asset_dao.list(ws) if a.kind in ("document", "space")]
-        checks.append(
-            ReadinessCheckVO(
-                item="documents",
-                ready=True,
-                detail=f"已登记 {len(doc_refs)} 个文档资产"
-                if doc_refs
-                else "未登记文档资产（可选；行业口径文档可提升提案质量）",
-            )
-        )
-
-        ready = all(c.ready for c in checks if c.item != "documents")
-        return ReadinessVO(
-            kind="db", ref_id=str(datasource_id), ready=ready, checks=checks
-        )
+    @staticmethod
+    def build_miss_context(clusters: List[dict], max_items: int = 10) -> str:
+        """把 miss 聚类构建成提案 agent 的领域上下文(问题驱动的提案素材)。"""
+        return MissFlywheel.build_context(clusters, max_items)
 
     # -------------------------------------------------------------------- graph
     def _refresh_edges(self, vo: SemanticObjectVO, ws: str) -> None:
-        """写时物化:重算该对象的**对象→对象**出边进边表。
-
-        挂在所有产生新版本的写路径上(propose / confirm / normalize_confirmed),
-        replace_out_edges 删旧插新,天然增量;reject/deprecate 只改 status,
-        边不动(状态由节点渲染)。资产边不进物化表(ref_id 可达 256 字符,
-        超出边表 String(128);资产边只服务可视化,由 graph() 实时投影)。
-        Best-effort:投影失败不阻塞业务写入(边表不是 source of truth,
-        rebuild_edges 可全量重建)。
-        """
-        try:
-            from .graph_projection import project_edges
-
-            edges, _refs = project_edges(vo.obj_type, vo.payload or {})
-            obj_edges = [
-                e for e in edges if not e["dst"].startswith("asset:")
-            ]
-            self._edge_dao.replace_out_edges(vo.id, ws, vo.version, obj_edges)
-        except Exception:  # noqa: BLE001
-            logger.exception("edge projection failed for %s@v%s", vo.id, vo.version)
+        self._graph.refresh_edges(vo, ws)
 
     def rebuild_edges(self, workspace_id: Optional[str] = None) -> dict:
-        """幂等全量重建 workspace 的物化边投影(对象→对象边)。
+        return self._graph.rebuild_edges(workspace_id)
 
-        物化投影不是 source of truth:边永远可以从对象 payload 重算,
-        丢了大不了重建。投影规则升级后一次调用即可对存量生效。
-        (graph() 已改为查询时实时投影,本方法服务边表消费方——
-        Agent 图遍历 / lint 影响分析。)
-        """
-        ws = self._ws(workspace_id)
-        from .graph_projection import project_edges
-
-        total_edges = 0
-        objects = 0
-        page = 1
-        while True:
-            result = self._object_dao.list_latest(
-                workspace_id=ws, page=page, page_size=500
-            )
-            if not result.items:
-                break
-            for o in result.items:
-                edges, _refs = project_edges(o.obj_type, o.payload or {})
-                obj_edges = [
-                    e for e in edges if not e["dst"].startswith("asset:")
-                ]
-                self._edge_dao.replace_out_edges(o.id, ws, o.version, obj_edges)
-                total_edges += len(obj_edges)
-                objects += 1
-            if len(result.items) < 500:
-                break
-            page += 1
-        self._oplog_dao.append(
-            "graph_rebuild", ws, {"objects": objects, "edges": total_edges}
+    async def _knowledge_subgraph(self, ws, registered, referenced, alignment_index=None):
+        return await self._graph.knowledge_subgraph(
+            ws, registered, referenced, alignment_index
         )
-        return {"workspace_id": ws, "objects": objects, "edges": total_edges}
-
-    async def _knowledge_subgraph(
-        self,
-        ws: str,
-        registered: Dict[tuple, AssetRefVO],
-        referenced: Dict[tuple, None],
-        alignment_index: Optional[Dict[tuple, List[tuple]]] = None,
-    ) -> tuple[List[GraphNodeVO], List[GraphLinkVO]]:
-        """聚合知识空间 L2 图(wiki/doc/跨文档实体)为 kn 节点与边。
-
-        查询时聚合路线:不落边表、零同步任务——vault 的边自带 valid_to
-        时间有效性,文档重 ingest 旧边自动失效,聚合永远拿到当前有效图。
-
-        端点映射(三层连通的关键):
-
-        - ``verbat:<id>`` → 若 ``{slug}:{id}`` 是已知资产(已登记或被
-          claim 引用),映射到**稳定资产节点 id**(与 claim 的 ref 边
-          指向同一节点——资源层与知识层在此连通);否则降级为 kn 节点。
-        - ``doc:<id>`` → kn 节点(wiki 页)。
-        - 其他端点(实体名等裸标识) → kn 实体节点(``kn:<slug>:entity:<name>``)。
-
-        知识实体 → 硬层对象的对齐:从 ``alignment_index``(语义对齐表
-        投影,键 ``(slug, align_key(entity_name))``,由 graph() 从
-        semantic_alignment 表构建)读 ``aligns_to`` 边——对齐关系是
-        LLM 推理产出后固化入库的数据,查询时零 LLM 依赖;
-        GraphLinkVO.status 携带 proposed/confirmed 供前端区分展示。
-
-        节点来自 ``graph_query().nodes ∪ edges 端点``:孤立文档/实体
-        (没有任何 L2 边)也会成为 kn 节点——刚 ingest 完还没建边的
-        空间在全景图里立即可见。
-
-        聚合空间来源(不依赖资产登记完整性):ECP 软层(ecp-<ws>) +
-        已登记 space/document 资产 + 被 claim 引用的空间 + 场景空间
-        派生的文档空间(workspace_id 形如 ecp_<code> → docs-<code>)。
-        """
-        from ..api.schemas import GraphLinkVO
-        from .graph_projection import ALIGNMENT_EDGE, align_key, asset_node_id
-
-        alignment_index = alignment_index or {}
-        slugs = {f"ecp-{ws}"}
-        for kind, ref_id in list(registered) + list(referenced):
-            if kind == "space":
-                slugs.add(ref_id)
-            elif kind == "document" and ":" in ref_id:
-                slugs.add(ref_id.split(":", 1)[0])
-        # 场景空间派生:ECP workspace_id = ecp_<workspace_code>,
-        # 文档空间 slug 约定 docs-<workspace_code>(workspace 模块上传入口)
-        if ws.startswith("ecp_"):
-            slugs.add(f"docs-{ws[len('ecp_') :]}")
-
-        known_docs = set(registered) | set(referenced)
-        nodes: Dict[str, GraphNodeVO] = {}
-        links: List[GraphLinkVO] = []
-        seen: set = set()
-
-        try:
-            from gyra_serve.knowledge.config import (
-                SERVE_SERVICE_COMPONENT_NAME as KNOWLEDGE_SERVICE,
-            )
-            from gyra_serve.knowledge.service.service import (
-                Service as KnowledgeService,
-            )
-
-            ks = self._system_app.get_component(KNOWLEDGE_SERVICE, KnowledgeService)
-        except Exception:  # noqa: BLE001
-            return [], []
-
-        for slug in sorted(slugs):
-            try:
-                vault = await ks.get_vault(slug)
-                sub = await vault.graph_query()
-            except Exception:  # noqa: BLE001
-                continue  # 空间不存在或暂不可达:跳过,不阻塞全景图
-
-            def _map(endpoint: str) -> Optional[str]:
-                if not endpoint:
-                    return None
-                if endpoint.startswith("verbat:"):
-                    vid = endpoint.split(":", 1)[1]
-                    if ("document", f"{slug}:{vid}") in known_docs:
-                        return asset_node_id("document", f"{slug}:{vid}")
-                if endpoint.startswith(("doc:", "verbat:")):
-                    ep_type, ep_id = endpoint.split(":", 1)
-                    kn_id = f"kn:{slug}:{endpoint}"
-                    if kn_id not in nodes:
-                        nodes[kn_id] = GraphNodeVO(
-                            id=kn_id,
-                            obj_type="wiki" if ep_type == "doc" else "verbat",
-                            name=ep_id,
-                            status="confirmed",
-                            node_kind="kn",
-                        )
-                    return kn_id
-                # 实体名等裸标识端点(如 curation 的实体名) → kn 实体节点
-                kn_id = f"kn:{slug}:entity:{endpoint}"
-                if kn_id not in nodes:
-                    nodes[kn_id] = GraphNodeVO(
-                        id=kn_id,
-                        obj_type="entity",
-                        name=endpoint,
-                        status="confirmed",
-                        node_kind="kn",
-                    )
-                    # 语义对齐边:LLM 推理产出并固化在 semantic_alignment
-                    # 表的数据,此处按 (slug, 归一实体名) 查表投影
-                    for obj_id, a_status in alignment_index.get(
-                        (slug, align_key(endpoint)), ()
-                    ):
-                        links.append(
-                            GraphLinkVO(
-                                source=kn_id,
-                                target=obj_id,
-                                edge_type=ALIGNMENT_EDGE,
-                                status=a_status,
-                            )
-                        )
-                return kn_id
-
-            # 孤立节点(不在任何边上的 doc/verbat/实体)也纳入全景图
-            for n in sub.nodes or []:
-                _map(n)
-
-            for e in sub.edges:
-                src = _map(e.subject)
-                dst = _map(e.object)
-                if not src or not dst or src == dst:
-                    continue
-                key = (src, e.predicate, dst)
-                if key in seen:
-                    continue
-                seen.add(key)
-                links.append(
-                    GraphLinkVO(source=src, target=dst, edge_type=e.predicate)
-                )
-        return list(nodes.values()), links
 
     async def graph(
         self, workspace_id: Optional[str] = None, entity: Optional[str] = None
     ) -> GraphVO:
-        """Asset-panorama graph view for one workspace.
-
-        边**查询时实时投影**(纯函数,单空间 ≤ 千对象成本可忽略)——图
-        永远反映当前对象/资产状态,不依赖物化边表是否跟上(存量数据
-        冷启动也有连线)。物化边表只服务 Agent 图遍历/lint。
-
-        节点三类(实时查询,零同步):硬层对象 + 资产节点(已登记 enrich
-        名称/状态,被引用未登记 → 虚拟节点 status=unregistered) +
-        知识层 kn 节点(L2 图聚合涌现)。kn 实体节点与硬层对象之间按
-        semantic_alignment 表(LLM 推理固化 + 人工确认)投影
-        ``aligns_to`` 对齐边,status 区分 proposed/confirmed。
-
-        ``entity`` 给定时返回检索视图:命中节点(id/name/别名归一匹配)
-        及其一跳邻域——一次调用同时取回「硬层对象 ↔ 对齐的 kn 实体 ↔
-        提及它的 wiki 文档」。
-        """
-        from .graph_projection import align_key, asset_node_id, project_edges
-
-        ws = self._ws(workspace_id)
-        objects = self._object_dao.list_latest(
-            workspace_id=ws, page=1, page_size=1000
-        ).items
-
-        # ---- 语义对齐索引:LLM 推理产出 + 人工确认后固化的对齐数据,
-        #      键 (slug, align_key(entity_name)) → [(对象 id, 状态)]。
-        #      rejected 不投影;这里只读表,不做任何语义判断。
-        alignment_index: Dict[tuple, List[tuple]] = {}
-        try:
-            for d in self._alignment_dao.decisions(ws):
-                key = align_key(d.entity_name)
-                if key:
-                    alignment_index.setdefault((d.slug, key), []).append(
-                        (d.object_id, d.status)
-                    )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[ecp] build alignment index failed: {e}")
-
-        # ---- 检索索引:归一(name/aliases)→ 对象 id 列表,仅供
-        #      entity 检索视图命中,不参与连边。
-        semantic_index: Dict[str, List[str]] = {}
-        for o in objects:
-            payload = o.payload or {}
-            for nm in [o.name, *(payload.get("aliases") or [])]:
-                key = align_key(nm)
-                if key:
-                    bucket = semantic_index.setdefault(key, [])
-                    if o.id not in bucket:
-                        bucket.append(o.id)
-
-        # ---- 实时投影:对象→对象边 + 对象→资产边(稳定资产节点 id)
-        links: List[GraphLinkVO] = []
-        seen: set = set()
-        referenced: Dict[tuple, None] = {}
-        for o in objects:
-            edges, refs = project_edges(o.obj_type, o.payload or {})
-            for key in refs:
-                referenced[key] = None
-            for e in edges:
-                key = (o.id, e["edge_type"], e["dst"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                links.append(
-                    GraphLinkVO(
-                        source=o.id, target=e["dst"], edge_type=e["edge_type"]
-                    )
-                )
-
-        # ---- 资产节点:已登记(enrich) ∪ 被引用(未登记 → 虚拟节点)
-        registered = {
-            (a.kind, a.ref_id): a for a in self._asset_dao.list(ws)
-        }
-        nodes = [
-            GraphNodeVO(
-                id=o.id, obj_type=o.obj_type, name=o.name,
-                status=o.status, version=o.version,
-            )
-            for o in objects
-        ]
-        for key in {**registered, **referenced}:
-            kind, ref_id = key
-            a = registered.get(key)
-            nodes.append(
-                GraphNodeVO(
-                    id=asset_node_id(kind, ref_id),
-                    obj_type=kind,
-                    name=(
-                        (a.ref_meta or {}).get("name") or ref_id if a else ref_id
-                    ),
-                    status=(a.status or "active") if a else "unregistered",
-                    version=0,
-                    node_kind="asset",
-                )
-            )
-
-        # ---- knowledge 层聚合(kn 节点 + L2 边 + aligns_to 对齐边),
-        #      best-effort 不阻塞
-        try:
-            kn_nodes, kn_links = await self._knowledge_subgraph(
-                ws, registered, referenced, alignment_index
-            )
-            nodes.extend(kn_nodes)
-            for lk in kn_links:
-                key = (lk.source, lk.edge_type, lk.target)
-                if key not in seen:
-                    seen.add(key)
-                    links.append(lk)
-        except Exception:  # noqa: BLE001
-            pass
-
-        vo = GraphVO(nodes=nodes, links=links)
-        if entity:
-            vo = self._graph_focus(vo, entity, semantic_index)
-            # 检索增强:命中的 kn 实体附图上下文证据(一跳关联 + 来源
-            # 文档片段),与对齐推理共用同一套收集——纯图查询+文档读取,
-            # 零 LLM,前端详情面板与下游 LLM 复用同一份证据。
-            hits = [
-                (n.id, n.name)
-                for n in vo.nodes
-                if n.obj_type == "entity"
-                and n.node_kind == "kn"
-                and (
-                    n.id == entity
-                    or (n.name and align_key(n.name) == align_key(entity))
-                )
-            ]
-            slug_names: Dict[str, List[str]] = {}
-            for nid, name in hits:
-                # kn:<slug>:entity:<name>(maxsplit 保实体名完整)
-                parts = nid.split(":", 3)
-                if len(parts) == 4 and name:
-                    slug_names.setdefault(parts[1], []).append(name)
-            if slug_names:
-                try:
-                    grouped = await self._entity_graph_context(slug_names)
-                except Exception:  # noqa: BLE001
-                    grouped = {}
-                flat = {k: v for m in grouped.values() for k, v in m.items()}
-                if flat:
-                    vo.entity_context = flat
-            return vo
-        return vo
+        return await self._graph.graph(workspace_id, entity)
 
     @staticmethod
     def _graph_focus(
         vo: GraphVO, entity: str, semantic_index: Dict[str, List[str]]
     ) -> GraphVO:
-        """按实体检索:命中节点(id/name/别名归一匹配) + 一跳邻域。
-
-        命中来源三路:语义索引(对象 name/aliases)、节点 id 精确匹配、
-        节点 name 归一匹配(覆盖 kn/asset 节点)。邻域经 aligns_to 边
-        可同时拉进对齐的另一侧(如 kn 实体 → ent.order),实现一次
-        检索取回「对象 ↔ 知识实体 ↔ wiki 文档」完整关系链。
-        """
-        from .graph_projection import align_key
-
-        key = align_key(entity)
-        matched = set(semantic_index.get(key, ()))
-        for n in vo.nodes:
-            if n.id == entity or (n.name and align_key(n.name) == key):
-                matched.add(n.id)
-        keep = set(matched)
-        for lk in vo.links:
-            if lk.source in matched or lk.target in matched:
-                keep.add(lk.source)
-                keep.add(lk.target)
-        return GraphVO(
-            nodes=[n for n in vo.nodes if n.id in keep],
-            links=[
-                lk
-                for lk in vo.links
-                if lk.source in keep and lk.target in keep
-            ],
-        )
+        return GraphOps.focus(vo, entity, semantic_index)
 
     # ------------------------------------------------- semantic alignment
-    async def _entity_graph_context(
-        self, slug_entities: Dict[str, List[str]]
-    ) -> Dict[str, Dict[str, str]]:
-        """实体 → 图上下文证据(一跳关联 + 来源文档片段),对齐/检索共用。
+    async def _entity_graph_context(self, slug_entities):
+        from .knowledge_bridge import entity_graph_context
 
-        对每个实体 vault.graph_query 一跳:收集邻居实体名(消歧)与边的
-        source_verbat_id,反查原文片段(业务含义证据主体)。**纯图查询
-        + 文档读取,零 LLM**;全部 best-effort——空间不可达/实体无图/
-        读文失败都降级为无上下文,不阻塞对齐与检索主流程。
-        """
-        from .alignment import fold_context
+        return await entity_graph_context(self, slug_entities)
 
-        try:
-            from gyra_serve.knowledge.config import (
-                SERVE_SERVICE_COMPONENT_NAME as KNOWLEDGE_SERVICE,
-            )
-            from gyra_serve.knowledge.service.service import (
-                Service as KnowledgeService,
-            )
+    async def _kn_entity_names(self, ws: str):
+        from .knowledge_bridge import kn_entity_names
 
-            ks = self._system_app.get_component(KNOWLEDGE_SERVICE, KnowledgeService)
-        except Exception:  # noqa: BLE001
-            return {}
-
-        out: Dict[str, Dict[str, str]] = {}
-        for slug, names in slug_entities.items():
-            try:
-                vault = await ks.get_vault(slug)
-            except Exception:  # noqa: BLE001
-                continue
-            for name in names:
-                try:
-                    sub = await vault.graph_query(name, hop=1)
-                except Exception:  # noqa: BLE001
-                    continue
-                neighbors: List[str] = []
-                verbat_ids: List[str] = []
-                for e in sub.edges:
-                    for ep in (e.subject, e.object):
-                        if (
-                            ep
-                            and ep != name
-                            and not ep.startswith(("doc:", "verbat:"))
-                            and ep not in neighbors
-                        ):
-                            neighbors.append(ep)
-                    vid = getattr(e, "source_verbat_id", None)
-                    if vid and vid not in verbat_ids:
-                        verbat_ids.append(vid)
-                snippets: List[str] = []
-                for vid in verbat_ids[:2]:
-                    try:
-                        v = await vault.verbat_get(vid)
-                    except Exception:  # noqa: BLE001
-                        continue
-                    text = str(
-                        getattr(v, "content", None) or getattr(v, "text", None) or ""
-                    ).strip()
-                    if text:
-                        snippets.append(text)
-                ctx = fold_context(neighbors, snippets)
-                if ctx:
-                    out.setdefault(slug, {})[name] = ctx
-        return out
-
-    async def _kn_entity_names(self, ws: str) -> Dict[str, List[str]]:
-        """收集各知识空间的实体名(裸标识端点)——LLM 对齐的输入。
-
-        与 _knowledge_subgraph 同一套 slug 聚合与端点规则:非
-        ``doc:``/``verbat:`` 前缀的端点即实体名。
-        """
-        from .graph_projection import project_edges
-
-        objects = self._object_dao.list_latest(
-            workspace_id=ws, page=1, page_size=1000
-        ).items
-        registered = {(a.kind, a.ref_id): a for a in self._asset_dao.list(ws)}
-        referenced: Dict[tuple, None] = {}
-        for o in objects:
-            _, refs = project_edges(o.obj_type, o.payload or {})
-            for key in refs:
-                referenced[key] = None
-
-        slugs = {f"ecp-{ws}"}
-        for kind, ref_id in list(registered) + list(referenced):
-            if kind == "space":
-                slugs.add(ref_id)
-            elif kind == "document" and ":" in ref_id:
-                slugs.add(ref_id.split(":", 1)[0])
-        if ws.startswith("ecp_"):
-            slugs.add(f"docs-{ws[len('ecp_') :]}")
-
-        try:
-            from gyra_serve.knowledge.config import (
-                SERVE_SERVICE_COMPONENT_NAME as KNOWLEDGE_SERVICE,
-            )
-            from gyra_serve.knowledge.service.service import (
-                Service as KnowledgeService,
-            )
-
-            ks = self._system_app.get_component(KNOWLEDGE_SERVICE, KnowledgeService)
-        except Exception:  # noqa: BLE001
-            return {}
-
-        result: Dict[str, List[str]] = {}
-        for slug in sorted(slugs):
-            try:
-                vault = await ks.get_vault(slug)
-                sub = await vault.graph_query()
-            except Exception:  # noqa: BLE001
-                continue
-            names = set()
-            for ep in list(sub.nodes or []):
-                if ep and not ep.startswith(("doc:", "verbat:")):
-                    names.add(ep)
-            for e in sub.edges:
-                for ep in (e.subject, e.object):
-                    if ep and not ep.startswith(("doc:", "verbat:")):
-                        names.add(ep)
-            if names:
-                result[slug] = sorted(names)
-        return result
+        return await kn_entity_names(self, ws)
 
     async def align_entities(
         self, workspace_id: Optional[str] = None, user_id: Optional[str] = None
     ) -> dict:
-        """LLM 语义对齐 runner:知识实体 × 硬层对象 → 推理候选固化(写路径)。
-
-        对齐关系是推理产物:LLM 基于对象 name/description/aliases 与
-        实体的**图上下文证据**(一跳关联 + 来源文档片段,见
-        _entity_graph_context)做语义判断,候选过确定性校验闸门
-        (object_id 白名单 + 实体归属)后入库为 proposed,等人工确认——
-        与对象提案同一状态机哲学。人工已决定的(confirmed/rejected)实体
-        不再推理;proposed 复跑只刷新置信度与理由(幂等)。
-        """
-        from .alignment import EntityAligner
-
-        ws = self._ws(workspace_id)
-        objects = self._object_dao.list_latest(
-            workspace_id=ws, page=1, page_size=1000
-        ).items
-        if not objects:
-            return {
-                "workspace_id": ws,
-                "entities": 0,
-                "candidates": 0,
-                "errors": ["工作空间暂无硬层语义对象"],
-            }
-
-        try:
-            rows = self._alignment_dao.list(ws)
-        except Exception:  # noqa: BLE001
-            rows = []
-        decided = {
-            (r.slug, r.entity_name)
-            for r in rows
-            if r.status in (STATUS_CONFIRMED, STATUS_REJECTED)
-        }
-
-        slug_entities = await self._kn_entity_names(ws)
-        todo = {
-            slug: [n for n in names if (slug, n) not in decided]
-            for slug, names in slug_entities.items()
-        }
-        todo = {slug: names for slug, names in todo.items() if names}
-        total = sum(len(v) for v in todo.values())
-        if not total:
-            return {
-                "workspace_id": ws,
-                "entities": 0,
-                "candidates": 0,
-                "errors": [],
-            }
-
-        aligner = EntityAligner()
-        candidates: List[SemanticAlignmentVO] = []
-        errors: List[str] = []
-        # 图上下文证据:LLM 推理的输入增强(查询时收集,失败降级为裸实体名)
-        entity_ctx = await self._entity_graph_context(todo)
-        for slug, names in sorted(todo.items()):
-            try:
-                cands = await aligner.align(
-                    names, objects, context=entity_ctx.get(slug)
-                )
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"{slug}: {e}")
-                continue
-            if cands:
-                candidates.extend(
-                    self._alignment_dao.upsert_candidates(ws, slug, cands)
-                )
-            if aligner.last_error:
-                errors.append(f"{slug}: {aligner.last_error}")
-        self._oplog_dao.append(
-            "alignment_run",
-            ws,
-            {"entities": total, "candidates": len(candidates), "errors": errors[:5]},
-        )
-        return {
-            "workspace_id": ws,
-            "entities": total,
-            "candidates": len(candidates),
-            "errors": errors,
-        }
+        return await self._alignment.run(workspace_id, user_id)
 
     def list_alignments(
         self, workspace_id: Optional[str] = None, status: Optional[str] = None
     ) -> List[SemanticAlignmentVO]:
-        """对齐候选/决定列表(待确认抽屉的数据源)。"""
-        return self._alignment_dao.list(self._ws(workspace_id), status=status)
+        return self._alignment.list(workspace_id, status)
 
     def confirm_alignment(
         self, alignment_id: int, user_id: Optional[str] = None
     ) -> SemanticAlignmentVO:
-        vo = self._alignment_dao.set_status(
-            alignment_id, STATUS_CONFIRMED, decided_by=user_id
-        )
-        if not vo:
-            raise ValueError(f"对齐记录 {alignment_id} 不存在")
-        self._oplog_dao.append(
-            "alignment_confirm",
-            vo.workspace_id,
-            {"id": alignment_id, "entity": vo.entity_name, "object_id": vo.object_id},
-        )
-        return vo
+        return self._alignment.confirm(alignment_id, user_id)
 
     def reject_alignment(
         self, alignment_id: int, user_id: Optional[str] = None
     ) -> SemanticAlignmentVO:
-        vo = self._alignment_dao.set_status(
-            alignment_id, STATUS_REJECTED, decided_by=user_id
-        )
-        if not vo:
-            raise ValueError(f"对齐记录 {alignment_id} 不存在")
-        self._oplog_dao.append(
-            "alignment_reject",
-            vo.workspace_id,
-            {"id": alignment_id, "entity": vo.entity_name, "object_id": vo.object_id},
-        )
-        return vo
+        return self._alignment.reject(alignment_id, user_id)
 
     async def add_alignment(
         self,
@@ -1659,195 +920,73 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         object_id: str = "",
         user_id: Optional[str] = None,
     ) -> SemanticAlignmentVO:
-        """手工添加对齐(直通 confirmed):LLM 不可用时的确定性兜底。
-
-        object_id 必须是本工作空间真实存在的语义对象(校验防手误);
-        slug 自动定位到实体名实际出现的知识空间(找不到则挂 ECP 软层)。
-        """
-        ws = self._ws(workspace_id)
-        entity_name = (entity_name or "").strip()
-        object_id = (object_id or "").strip()
-        if not entity_name or not object_id:
-            raise ValueError("entity_name 和 object_id 不能为空")
-        obj = self.get_object(object_id, workspace_id=ws)
-        if not obj:
-            raise ValueError(f"语义对象 {object_id} 不存在")
-        slug_entities = await self._kn_entity_names(ws)
-        slug = next(
-            (
-                s
-                for s, names in sorted(slug_entities.items())
-                if entity_name in names
-            ),
-            f"ecp-{ws}",
+        return await self._alignment.add_manual(
+            workspace_id, entity_name, object_id, user_id
         )
-        vo = self._alignment_dao.add_manual(
-            ws, slug, entity_name, object_id, decided_by=user_id
-        )
-        self._oplog_dao.append(
-            "alignment_manual",
-            ws,
-            {"id": vo.id, "entity": entity_name, "object_id": object_id, "slug": slug},
-        )
-        return vo
 
     def remove_alignment(self, alignment_id: int) -> bool:
-        return self._alignment_dao.remove(alignment_id)
+        return self._alignment.remove(alignment_id)
+
+    # -------------------------------------------------------------- asset refs
+    def register_asset(
+        self,
+        kind: str,
+        ref_id: str,
+        workspace_id: Optional[str] = None,
+        ref_meta: Optional[dict] = None,
+    ) -> AssetRefVO:
+        return self._assets.register(kind, ref_id, workspace_id, ref_meta)
+
+    def list_assets(
+        self, workspace_id: Optional[str] = None, kind: Optional[str] = None
+    ) -> List[AssetRefVO]:
+        return self._assets.list(workspace_id, kind)
+
+    def remove_asset(
+        self,
+        asset_id: int,
+        workspace_id: Optional[str] = None,
+    ) -> bool:
+        return self._assets.remove(asset_id, workspace_id)
+
+    def readiness(
+        self, datasource_id: int, workspace_id: Optional[str] = None
+    ) -> ReadinessVO:
+        return self._assets.readiness(datasource_id, workspace_id)
 
     # ------------------------------------------------------------- ECP space
     async def get_or_create_space(
         self, workspace_id: Optional[str] = None, owner_id: Optional[str] = None
     ) -> SpaceInfoVO:
-        """Get-or-create the ECP soft-layer knowledge space for a workspace.
+        return await self._workspace.get_or_create_space(workspace_id, owner_id)
 
-        The soft layer IS a knowledge space (llm-wiki); ECP only customizes
-        its schema.md (P3). Slug convention: ecp-<workspace_id>.
-        """
-        ws = self._ws(workspace_id)
-        slug = f"ecp-{ws}"
-        from gyra_serve.knowledge.config import (
-            SERVE_SERVICE_COMPONENT_NAME as KNOWLEDGE_SERVICE,
-        )
-        from gyra_serve.knowledge.service.service import Service as KnowledgeService
-
-        ks = self._system_app.get_component(KNOWLEDGE_SERVICE, KnowledgeService)
-        created = False
-        try:
-            await ks.get_space_config(slug)
-        except Exception:  # noqa: BLE001
-            await ks.create_space(slug, owner_id=owner_id, space_type="personal")
-            created = True
-            self._oplog_dao.append("space_create", ws, {"slug": slug})
-        self._asset_dao.register("space", slug, ws, ref_meta={"name": slug})
-        return SpaceInfoVO(slug=slug, workspace_id=ws, created=created)
+    def _ensure_default_proposal_agent(self, workspace_id: str) -> None:
+        self._workspace.ensure_default_proposal_agent(workspace_id)
 
     # ------------------------------------------------------ workspace config
     def get_workspace_config(
         self, workspace_id: Optional[str] = None
     ) -> WorkspaceConfigVO:
-        return self._ws_config_dao.get(self._ws(workspace_id))
+        return self._workspace.get_config(workspace_id)
 
     def save_workspace_config(
         self,
         workspace_id: Optional[str] = None,
         proposal_agent_id: Optional[str] = None,
     ) -> WorkspaceConfigVO:
-        ws = self._ws(workspace_id)
-        vo = self._ws_config_dao.upsert(ws, proposal_agent_id)
-        self._oplog_dao.append(
-            "config_update", ws, {"proposal_agent_id": proposal_agent_id}
-        )
-        return vo
+        return self._workspace.save_config(workspace_id, proposal_agent_id)
 
     # -------------------------------------------------- 资产迁移(导出 / 导入)
-    # 语义资产是一份可携带的 JSON 快照;跨系统迁移时只需把 payload 里的
-    # binding.datasource_id 换成目标系统的 datasource_id,其余(对象 id/
-    # 版本链/状态/口径)原样保留,即可"点了就能用"。
-
     @staticmethod
     def _object_to_export_dict(vo: SemanticObjectVO) -> Dict[str, Any]:
-        return {
-            "id": vo.id,
-            "version": vo.version,
-            "workspace_id": vo.workspace_id,
-            "obj_type": vo.obj_type,
-            "status": vo.status,
-            "name": vo.name,
-            "payload": dict(vo.payload or {}),
-            "confidence": vo.confidence,
-            "evidence": vo.evidence,
-            "created_by": vo.created_by,
-            "created_at": vo.created_at,
-            "confirmed_by": vo.confirmed_by,
-            "confirmed_at": vo.confirmed_at,
-            "source": vo.source,
-            "supersedes": vo.supersedes,
-        }
+        return TransferOps.object_to_export_dict(vo)
 
     @staticmethod
     def _asset_to_export_dict(vo: AssetRefVO) -> Dict[str, Any]:
-        return {
-            "id": vo.id,
-            "workspace_id": vo.workspace_id,
-            "kind": vo.kind,
-            "ref_id": vo.ref_id,
-            "ref_meta": dict(vo.ref_meta or {}),
-            "status": vo.status,
-            "last_checked_at": vo.last_checked_at,
-        }
-
-    @staticmethod
-    def _coerce_datasource_id(value: Any) -> Any:
-        """Coerce a datasource mapping value to int when possible.
-
-        DB executor resolves connections by ``datasource_id`` (int column); a
-        stray string "99" from the import UI would still usually coerce, but we
-        normalise here so the imported payload is strictly well-typed.
-        """
-        if value is None:
-            return value
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return value
-
-    @staticmethod
-    def _collect_datasource_refs(
-        objects: List[Dict[str, Any]], assets: List[Dict[str, Any]]
-    ) -> Dict[str, dict]:
-        """Collect the DB datasource ids referenced by an export snapshot.
-
-        Returns ``{str(datasource_id): {datasource_id, tables?, db_name?, db_type?}}``
-        so the import UI can offer an old→new mapping per datasource.
-        """
-        refs: Dict[str, dict] = {}
-        for o in objects:
-            payload = o.get("payload") or {}
-            if o.get("obj_type") == "entity":
-                binding = payload.get("binding") or {}
-                if binding.get("kind", "db") != "db":
-                    continue
-                ds = binding.get("datasource_id")
-                if ds is None:
-                    continue
-                info = refs.setdefault(
-                    str(ds), {"datasource_id": str(ds), "tables": []}
-                )
-                table = binding.get("table")
-                if table and table not in info["tables"]:
-                    info["tables"].append(table)
-        for a in assets:
-            if a.get("kind") != "db":
-                continue
-            ds = a.get("ref_id")
-            info = refs.setdefault(
-                str(ds), {"datasource_id": str(ds), "tables": []}
-            )
-            meta = a.get("ref_meta") or {}
-            if meta.get("db_name"):
-                info["db_name"] = meta["db_name"]
-            if meta.get("db_type"):
-                info["db_type"] = meta["db_type"]
-        return refs
+        return TransferOps.asset_to_export_dict(vo)
 
     def export_workspace(self, workspace_id: Optional[str] = None) -> Dict[str, Any]:
-        """Dump a workspace's semantic assets to a portable JSON snapshot."""
-        ws = self._ws(workspace_id)
-        object_dicts = [
-            self._object_to_export_dict(o) for o in self._object_dao.list_all_versions(ws)
-        ]
-        asset_dicts = [self._asset_to_export_dict(a) for a in self._asset_dao.list(ws)]
-        refs = self._collect_datasource_refs(object_dicts, asset_dicts)
-        self._oplog_dao.append("export", ws, {"objects": len(object_dicts),
-                                              "assets": len(asset_dicts)})
-        return {
-            "format_version": 1,
-            "exported_at": datetime.now().isoformat(),
-            "source_workspace_id": ws,
-            "datasource_refs": list(refs.values()),
-            "objects": object_dicts,
-            "assets": asset_dicts,
-        }
+        return self._transfer.export_workspace(workspace_id)
 
     def import_workspace(
         self,
@@ -1856,92 +995,6 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         datasource_map: Optional[Dict[str, Any]] = None,
         user_id: str = "system",
     ) -> Dict[str, Any]:
-        """Merge an exported snapshot into a workspace (default: the target).
-
-        ``datasource_map`` maps ``str(old_datasource_id) -> new_datasource_id``;
-        every ``entity.binding.datasource_id`` and ``db`` asset ref is rewritten
-        through it so the imported assets bind to the target system's DBs and can
-        be used directly.
-        """
-        ws = self._ws(workspace_id)
-        map_ = datasource_map or {}
-        objects = data.get("objects") or []
-        assets = data.get("assets") or []
-        imported, skipped, errors = 0, 0, []
-
-        for o in objects:
-            obj_type = o.get("obj_type")
-            try:
-                if obj_type not in OBJECT_TYPES:
-                    raise ValueError(f"未知对象类型 {obj_type}")
-                payload = copy.deepcopy(o.get("payload") or {})
-                if obj_type == "entity":
-                    binding = payload.get("binding") or {}
-                    ds = binding.get("datasource_id")
-                    if ds is not None:
-                        binding["datasource_id"] = self._coerce_datasource_id(
-                            map_.get(str(ds), ds)
-                        )
-                    if binding:
-                        payload["binding"] = binding
-                vo = self._object_dao.import_object(
-                    object_id=o.get("id") or "",
-                    version=int(o.get("version") or 1),
-                    obj_type=obj_type,
-                    workspace_id=ws,
-                    status=o.get("status", STATUS_PROPOSED),
-                    name=o.get("name"),
-                    payload=payload,
-                    confidence=o.get("confidence"),
-                    evidence=o.get("evidence"),
-                    created_by=o.get("created_by") or "import",
-                    created_at=o.get("created_at"),
-                    confirmed_by=o.get("confirmed_by"),
-                    confirmed_at=o.get("confirmed_at"),
-                    source=o.get("source"),
-                    supersedes=o.get("supersedes"),
-                )
-                if vo:
-                    imported += 1
-                    self._refresh_edges(vo, ws)
-                else:
-                    skipped += 1
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"{o.get('id')}: {e}")
-
-        assets_imported = 0
-        for a in assets:
-            try:
-                kind = a.get("kind")
-                if kind == "db":
-                    old = a.get("ref_id")
-                    new = map_.get(str(old), old)
-                    self._asset_dao.register(
-                        "db", str(new), ws, ref_meta=a.get("ref_meta") or {}
-                    )
-                elif kind in ("document", "space", "api"):
-                    self._asset_dao.register(
-                        kind,
-                        a.get("ref_id") or "",
-                        ws,
-                        ref_meta=a.get("ref_meta") or {},
-                    )
-                else:
-                    continue
-                assets_imported += 1
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"asset:{a.get('kind')}:{a.get('ref_id')}: {e}")
-
-        self._oplog_dao.append(
-            "import", ws,
-            {"imported": imported, "skipped": skipped,
-             "assets_imported": assets_imported, "errors": errors[:20],
-             "by": user_id},
+        return self._transfer.import_workspace(
+            data, workspace_id, datasource_map, user_id
         )
-        return {
-            "workspace_id": ws,
-            "imported": imported,
-            "skipped": skipped,
-            "assets_imported": assets_imported,
-            "errors": errors,
-        }

@@ -54,16 +54,21 @@ import { toConversationId } from '@/types/context-metrics';
 toConversationId('..._2');    // -> '...'，幂等
 ```
 
-## 四、前端状态（阶段 1）
+## 四、前端状态（阶段 1，已完成）
 
-- ✅ 已完成：`convUid`/`ConvUid` → `conversationId`/`ConversationId`
-  （20 个文件批量替换，API 参数 key `conv_uid` 未动；`convIdBase` → `toConversationId`）
-- ⚠️ **未做**：存量 `convId`（约 125 处）的语义分流。原因：它们的真实语义
-  取决于每处的数据源——例如 `usage/page.tsx` 的 `convId` 传给后端 `conv_id`
-  参数（后端注释明确其为 `会话uuid_段号`，兼容两种），`use-chat-polling.ts`
-  的 `convId` 传给 `queryChatStatus`。逐个追数据源后才能定名，盲改会让
-  变量名撒谎。建议按文件逐步处理，优先 `hooks/use-chat-polling.ts`（23 处）
-  与 `app/usage/page.tsx`（14 处）。
+- ✅ `convUid`/`ConvUid` → `conversationId`/`ConversationId`
+  （20 个文件批量替换，API 参数 key `conv_uid` 未动）
+- ✅ `convIdBase` → `toConversationId`（它是后端归一化函数的前端版）
+- ✅ 存量 `convId` → `conversationId`（23 个文件）。逐文件追踪数据源后确认：
+  除 `MemoryView.tsx` 外，所有 `convId` 的值都来自会话 id
+  （URL `conv_uid` 参数、API 返回的 `conv_uid`/`conv_session_id` 字段、
+  `chatId` 等），其中 `/v1/chat/query` 的 `conv_id` 参数后端注释即为
+  「Agent会话ID」。对外契约保持不变：URL/事件 payload 的 `conv_id=` 字面量、
+  API 响应字段均未改动。
+- ⚠️ 唯一保留：`MemoryView.tsx` 的 `convId` —— 值取自 verbat 元数据的
+  `conv_id` 字段，写入侧语义未能确认（可能轮次），改动前需先追 verbat 写入链路。
+- ✅ `usage/page.tsx` 补了 `toConversationId()` 归一化：URL 上 `conv_id` 可能是
+  轮次 id，归一化后入状态，与后端 usage API 的行为对齐，变量名才名副其实。
 
 ## 五、常见坑
 

@@ -1,9 +1,11 @@
 import React from 'react';
-import { AppstoreOutlined, CheckOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, CheckOutlined, InboxOutlined, UnorderedListOutlined } from '@ant-design/icons';
 import VisTodoList from '@/components/chat/chat-content-components/VisComponents/VisTodoList';
 import type { ITodoListData } from '@/components/chat/chat-content-components/VisComponents/VisTodoList';
 import VisSubagentBoard from '@/components/chat/chat-content-components/VisComponents/VisSubagentBoard';
 import type { ISubagentBoardData, SubagentItemData } from '@/components/chat/chat-content-components/VisComponents/VisSubagentBoard';
+import SceneInputQueue, { InputQueueClearButton } from '@/app/workspaces/detail/scene-input-queue';
+import type { InputQueuePayload } from '@/app/workspaces/detail/scene-input-queue';
 import type { DockWidgetProps, DockWidgetRegistration } from './dock-types';
 
 /**

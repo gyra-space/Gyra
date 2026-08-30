@@ -1,10 +1,37 @@
-import type { PlaybookCommand, SkillRef } from './agent-workspace-types';
+import type { PlaybookCommand, SkillRef, WorkspaceUserAttachment } from './agent-workspace-types';
 import type { MediaParams } from '@/components/chat/input/media-params';
 import type { PlusMenuMcpRef } from '@/components/chat/input/plus-menu';
+import type { SubAgentRef, ResourceRef } from '@/components/chat/input/trigger-types';
+
+/** 输入框上传资源项(与 agent-workspace-input 的 ResourceItem 同构):
+ *  type 标记资源类别,URL 载荷按模态挂载在对应字段 */
+export interface SceneAgentResource {
+  type: string;
+  image_url?: { url: string; preview_url?: string; file_name?: string };
+  file_url?: { url: string; preview_url?: string; file_name?: string };
+  audio_url?: { url: string; preview_url?: string; file_name?: string };
+  video_url?: { url: string; preview_url?: string; file_name?: string };
+}
+
+/** 未随消息发出的上传附件暂存(按空间维度,跨输入框重挂载存活):
+ *  欢迎态↔运行态分支切换/会话切换会重建输入组件,实例 state 归零导致
+ *  已上传附件从发送 payload 中丢失(文件已传 gyra-fs 但消息未携带引用)。 */
+const pendingResourcesByScope = new Map<string, SceneAgentResource[]>();
+
+/** 读取某空间的未发送附件(无则返回空数组) */
+export function getPendingResources(scopeKey: string): SceneAgentResource[] {
+  return pendingResourcesByScope.get(scopeKey) ?? [];
+}
+
+/** 覆写某空间的未发送附件;空数组时清除条目 */
+export function setPendingResources(scopeKey: string, resources: SceneAgentResource[]): void {
+  if (resources.length > 0) pendingResourcesByScope.set(scopeKey, resources);
+  else pendingResourcesByScope.delete(scopeKey);
+}
 
 export interface SceneAgentSendPayload {
   text: string;
-  resources?: unknown[];
+  resources?: SceneAgentResource[];
   model?: string;
   playbookCommand?: PlaybookCommand;
   /** 本次对话选用的技能(随 chat_in_params 下发,sub_type='skill(gyra)') */
@@ -19,6 +46,21 @@ export interface SceneAgentSendPayload {
   /** 主动触发上下文压缩(/压缩上下文 会话命令):写入 ext_info.force_compress,
    *  后端在本轮推理前强制走历史摘要压缩(复用被动压缩逻辑) */
   forceCompress?: boolean;
+  /**
+   * `@` 选中的子 Agent(会话级接管)。随 chat_in_params 以
+   * param_type='subagent' 下发,后端据此覆写本轮主 Agent。
+   */
+  subAgent?: SubAgentRef;
+  /**
+   * `#` 选中的资源引用(交付产物 / 空间资产)。文件已落盘,
+   * 走 param_type='resource' + sub_type='artifact'/'asset',不重复上传。
+   */
+  resourceRefs?: ResourceRef[];
+  /**
+   * 已开启的空间自定义 toggle 命令合并后的键值对,
+   * 直接并入 ext_info(如 {"permission_mode":"plan"})。
+   */
+  commandPayload?: Record<string, unknown>;
 }
 
 export interface SendDataOptions {
@@ -58,6 +100,19 @@ export interface SceneAgentSendData {
   };
 }
 
+/** 资源项 → 用户附件(乐观上屏气泡展示用):按模态取 URL 载荷,mime_type 存模态标记。 */
+export function resourcesToAttachments(resources: SceneAgentResource[]): WorkspaceUserAttachment[] {
+  const out: WorkspaceUserAttachment[] = [];
+  for (const r of resources) {
+    if (!r || typeof r !== 'object') continue;
+    const data = r.image_url || r.video_url || r.audio_url || r.file_url;
+    if (!data || !data.url) continue;
+    const mime = r.image_url ? 'image' : r.video_url ? 'video' : r.audio_url ? 'audio' : 'file';
+    out.push({ name: data.file_name || '附件', url: data.url, mime_type: mime });
+  }
+  return out;
+}
+
 /**
  * 纯函数:构造 scene-agent send 载荷。对齐 chat-session.tsx:306-320 的多模态/参数构造。
  * 从 use-scene-agent-chat.ts 的 send 中抽出,便于单测(node env,无 DOM/依赖链)。
@@ -67,7 +122,7 @@ export function buildSceneAgentSendData(
   options: SendDataOptions,
   conversationId: string,
 ): SceneAgentSendData {
-  const { text, resources = [], model, playbookCommand, skills, mcps, media, permission, forceCompress } = payload;
+  const { text, resources = [], model, playbookCommand, skills, mcps, media, permission, forceCompress, subAgent, resourceRefs = [], commandPayload } = payload;
   const { workspaceId, taskId, focusArtifactId } = options;
   const trimmed = text.trim();
 
@@ -114,6 +169,32 @@ export function buildSceneAgentSendData(
       });
     });
   }
+  // @ 接管:param_type='subagent',后端据此覆写本轮主 Agent(独立于 resource 通道,
+  // 避免被 chat_in_params_to_resource 当成资源物化)
+  if (subAgent) {
+    chatInParams.push({
+      param_type: 'subagent',
+      sub_type: 'app',
+      param_value: JSON.stringify({
+        app_code: subAgent.physical_ref,
+        app_name: subAgent.name,
+      }),
+    });
+  }
+  // # 引用的交付资源:文件已落盘,按 artifact / asset 分流,不重复走上传通道
+  resourceRefs
+    .filter((r) => r.kind === 'artifact' || r.kind === 'asset')
+    .forEach((ref) => {
+      chatInParams.push({
+        param_type: 'resource',
+        sub_type: ref.kind,
+        param_value: JSON.stringify({
+          ...(ref.kind === 'artifact' ? { artifact_id: ref.ref_id } : { asset_id: ref.ref_id }),
+          title: ref.label,
+          content_ref: ref.content_ref,
+        }),
+      });
+    });
   if (media && Object.keys(media).length > 0) {
     chatInParams.push({
       param_type: 'media',
@@ -141,11 +222,19 @@ export function buildSceneAgentSendData(
       // workbench 对话不受影响(路由对 task_id 已有时跳过)。
       ...(playbookCommand ? { playbook_id: Number(playbookCommand.playbook_id) } : {}),
       ...(focusArtifactId !== undefined ? { focus_artifact_id: Number(focusArtifactId) } : {}),
+      // 自定义 toggle 命令的 payload:放在显式模式开关之前,让 plan/compact 可覆盖
+      ...(commandPayload && Object.keys(commandPayload).length ? commandPayload : {}),
       // 工具权限级别:写入 extra.permission_mode,接入 Agent 5 级权限链
       // (plan=只读放行/写 ASK, auto=全放行, manual=全部 ASK)
       ...(permission ? { permission_mode: permission } : {}),
       // 主动触发上下文压缩:写入 extra.force_compress,后端本轮推理前强制摘要压缩
       ...(forceCompress ? { force_compress: true } : {}),
+      // @ 接管态:供 UI 与审计;main_app_code 由后端在覆写 gpts_name 时补上
+      ...(subAgent
+        ? { active_agent: { app_code: subAgent.physical_ref, app_name: subAgent.name } }
+        : {}),
+      // # 引用明细(含 start/end 区间),P1 内联化后由渲染层消费
+      ...(resourceRefs.length ? { refs: resourceRefs } : {}),
     },
   };
 }

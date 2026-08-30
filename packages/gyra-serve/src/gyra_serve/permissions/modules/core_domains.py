@@ -10,6 +10,9 @@ from gyra_serve.permissions.protocol import PermDef, PermissionModule
 class SystemPermModule(PermissionModule):
     name = "system"
     permissions = [
+        PermDef("system.read", "系统配置查看", "查看用户/角色/分组等系统配置",
+                risk_level="read"),
+        PermDef("system.write", "系统配置编辑", "编辑用户/角色/分组等系统配置"),
         PermDef("system.admin", "系统管理", "系统/用户/角色等全局管理",
                 risk_level="dangerous"),
     ]
@@ -92,4 +95,6 @@ class DatabasePermModule(PermissionModule):
                 risk_level="read", grantable=True),
         PermDef("database.manage", "数据库管理", "管理数据库连接（含数据查询）",
                 grantable=True),
+        PermDef("database.admin", "数据库完全管理", "数据库全部权限（覆盖所有表读写）",
+                risk_level="dangerous"),
     ]

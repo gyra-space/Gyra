@@ -20,16 +20,30 @@ serve multiple datasources).
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from gyra.agent.resource.tool.base import FunctionTool
 
-from ..config import DEFAULT_WORKSPACE_ID, OBJECT_TYPES, STATUS_PROPOSED
-from ..models.models import OpLogDao, SemanticObjectDao
+from ..config import DEFAULT_WORKSPACE_ID
 
 logger = logging.getLogger(__name__)
 
 _MAX_DISTINCT = 31  # LIMIT 31 -> keep as dimension candidate if <= 30 distinct
+_READ_REPORT_MAX_LINES = 1000  # read_report_file 单次读取行数上限
+
+
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _decode_report_text(raw: bytes) -> str:
+    """解码报表文件:优先 UTF-8,失败回退 GB18030(老式中文报表脚本常见)。"""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("gb18030", errors="replace")
 
 
 def _get_connector(datasource_id: int):
@@ -82,52 +96,20 @@ def build_proposal_tools() -> List[FunctionTool]:
         obj_type: str,
         payload: Dict[str, Any],
         confidence: Optional[float] = None,
+        miss_ref: Optional[Dict[str, Any]] = None,
+        origin_sql: Optional[List[str]] = None,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
     ) -> str:
-        from ..service.contracts import normalize_payload, validate_payload
+        from ..tools.ecp_tools import propose_semantic as _impl
 
-        if obj_type not in OBJECT_TYPES:
-            return json.dumps(
-                {"error": f"obj_type 必须是 {OBJECT_TYPES} 之一"}, ensure_ascii=False
-            )
-        # 入库前归一 + 可执行级契约校验(与 confirm 晋升门禁同标准):不满足则拒绝入库,
-        # 避免不可确认的"死提案"堆积进收件箱。agent 拿到 contract_gaps 后补全重提即可。
-        normalized = normalize_payload(obj_type, payload)
-        problems = validate_payload(obj_type, normalized, level="executable")
-        if problems:
-            return json.dumps(
-                {
-                    "error": "提案不满足可执行契约,未入库;请补全后重提",
-                    "contract_gaps": problems,
-                },
-                ensure_ascii=False,
-            )
-        vo = SemanticObjectDao().create_proposal(
+        return await _impl(
             object_id=object_id,
             obj_type=obj_type,
-            payload=normalized,
-            workspace_id=workspace_id,
+            payload=payload,
             confidence=confidence,
-            created_by="llm",
-            source="agent:propose_semantic",
-        )
-        if vo.status == STATUS_PROPOSED:
-            OpLogDao().append(
-                "propose", workspace_id,
-                {"id": object_id, "version": vo.version, "type": obj_type,
-                 "source": "agent:propose_semantic"},
-            )
-            note = "提案已进入确认收件箱，确认前不影响任何查询"
-        else:
-            # 去重命中:返回已有 confirmed VO,未产生新提案
-            note = "已存在相同的已确认版本,未重复提案"
-        return json.dumps(
-            {
-                "proposal_id": f"{vo.id}@v{vo.version}",
-                "status": vo.status,
-                "note": note,
-            },
-            ensure_ascii=False,
+            miss_ref=miss_ref,
+            origin_sql=origin_sql,
+            workspace_id=workspace_id,
         )
 
     async def _search_semantics(
@@ -155,6 +137,44 @@ def build_proposal_tools() -> List[FunctionTool]:
         from ..tools.ecp_tools import mark_miss_learned as _impl
 
         return await _impl(clusters=clusters, workspace_id=workspace_id)
+
+    async def _read_report_file(
+        file_path: str, start_line: int = 1, max_lines: int = 400
+    ) -> str:
+        """分段读取已上传的报表文件(仅限 ECP 导入目录,防路径穿越)。"""
+        from ..config import ecp_import_dir
+
+        root = os.path.realpath(ecp_import_dir())
+        path = os.path.realpath(file_path)
+        if not path.startswith(root + os.sep):
+            return json.dumps(
+                {"error": "仅允许读取 ECP 导入目录下的文件"}, ensure_ascii=False
+            )
+        if not os.path.isfile(path):
+            return json.dumps(
+                {"error": f"文件不存在: {file_path}"}, ensure_ascii=False
+            )
+        try:
+            raw = await asyncio.to_thread(_read_bytes, path)
+            text = _decode_report_text(raw)
+        except Exception as e:  # noqa: BLE001
+            return json.dumps({"error": f"读取失败: {e}"}, ensure_ascii=False)
+        lines = text.splitlines()
+        total = len(lines)
+        start = max(1, start_line)
+        span = max(1, min(max_lines, _READ_REPORT_MAX_LINES))
+        end = min(total, start + span - 1)
+        return json.dumps(
+            {
+                "file_path": path,
+                "start_line": start,
+                "end_line": end,
+                "total_lines": total,
+                "has_more": end < total,
+                "content": "\n".join(lines[start - 1 : end]),
+            },
+            ensure_ascii=False,
+        )
 
     return [
         FunctionTool(
@@ -205,7 +225,7 @@ def build_proposal_tools() -> List[FunctionTool]:
         FunctionTool(
             "propose_semantic",
             _propose_semantic,
-            description="落地一个语义资产提案(唯一写入口)。提案进入确认收件箱(status=proposed)，确认前不影响查询。",
+            description="落地一个语义资产提案(唯一写入口)。提案进入确认收件箱(status=proposed)，确认前不影响查询。从 miss 聚类学习时必传 miss_ref 与 origin_sql。",
             args={
                 "object_id": {"type": "string", "description": "对象 id(ent./mtr./dim./rel. 前缀)"},
                 "obj_type": {
@@ -218,9 +238,41 @@ def build_proposal_tools() -> List[FunctionTool]:
                     "description": "置信度 0-1",
                     "required": False,
                 },
+                "miss_ref": {
+                    "type": "object",
+                    "description": (
+                        "MISS 学习溯源(从 get_miss_report 聚类学习时必传):"
+                        "{kind, pattern, datasource_id} 聚类键,提案详情可回链原始 miss 轨迹"
+                    ),
+                    "required": False,
+                },
+                "origin_sql": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "产生该提案的原始 SQL 快照(MISS 学习/手工 SQL 时传入,确认人可见)",
+                    "required": False,
+                },
                 "workspace_id": {
                     "type": "string",
                     "description": "ECP 工作空间 id(默认 default)",
+                    "required": False,
+                },
+            },
+        ),
+        FunctionTool(
+            "read_report_file",
+            _read_report_file,
+            description="分段读取已上传的报表文件(SQL 脚本/代码)。返回指定行区间内容、总行数与 has_more;has_more=true 时用 start_line=end_line+1 继续读下一段,直到通读全文。",
+            args={
+                "file_path": {"type": "string", "description": "任务消息中给出的文件路径"},
+                "start_line": {
+                    "type": "integer",
+                    "description": "起始行(从 1 开始),默认 1",
+                    "required": False,
+                },
+                "max_lines": {
+                    "type": "integer",
+                    "description": "本次读取行数,默认 400,上限 1000",
                     "required": False,
                 },
             },

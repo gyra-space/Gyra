@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Input, Modal, Drawer } from 'antd';
 import { CloseOutlined, LeftOutlined, MenuFoldOutlined, MenuUnfoldOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation, getAppInfo, listResources, deleteTask, deleteConversation, renameConversation } from '@/client/api';
+import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation, getAppInfo, listResources, deleteTask, deleteConversation, favoriteConversation, renameConversation } from '@/client/api';
 import { getUsageConversationSummary, type ConversationUsageSummary } from '@/client/api/usage';
 import { toConversationId } from '@/types/context-metrics';
 import { getUserId } from '@/utils';
@@ -16,6 +16,7 @@ import type { WorkspaceEvent } from '@/hooks/use-chat';
 import type { AgentStep, DetailContext } from './agent-types';
 import { AgentWorkspace } from './agent-workspace';
 import { AgentWorkspaceInput } from './agent-workspace-input';
+import { inputQueueActions } from './scene-input-queue';
 import DockPanel from '@/components/chat/dock/dock-panel';
 import { CallDetailProvider } from '@/components/chat/call-detail/CallDetailProvider';
 import { SceneSpace } from './scene-space';
@@ -55,6 +56,13 @@ interface SceneWorkspaceShellProps {
   pendingTaskId?: number | null | undefined;
   /** 视图模式(由页面 header 持有,记忆到 localStorage) */
   viewMode: WorkspaceViewMode;
+  /**
+   * 仅把「当前打开的会话/任务」回写地址栏,不改任何 React state。
+   * 刷新恢复的唯一通道:状态切换即写入 URL,刷新后由上层把 URL 还原成同一现场。
+   */
+  onUrlSync?: (patch: { convUid?: string | null; taskId?: number | null }) => void;
+  /** 简洁模式欢迎页初始值:URL 不带深链(conv_uid/task_id)时才展示欢迎页 */
+  initialShowWelcome?: boolean;
   /** 简洁模式抽屉状态(header 待办角标 / 左栏「待办收件箱」共用) */
   simpleDrawer?: 'inbox' | 'overview' | null;
   onSimpleDrawerChange?: (drawer: 'inbox' | 'overview' | null) => void;
@@ -73,6 +81,8 @@ export function SceneWorkspaceShell({
   retryLoadConv,
   pendingTaskId,
   viewMode,
+  onUrlSync,
+  initialShowWelcome = true,
   simpleDrawer,
   onSimpleDrawerChange,
 }: SceneWorkspaceShellProps) {
@@ -124,8 +134,15 @@ export function SceneWorkspaceShell({
   const [simpleAppCard, setSimpleAppCard] = useState<any>(null);
   const prevActiveTaskId = useRef<number | null>(null);
   const agentInputRef = useRef<AgentWorkspaceInputHandle>(null);
-  // 简洁模式:中间区是否显示欢迎页(无会话/任务时 true,有内容时 false)
-  const [simpleShowWelcome, setSimpleShowWelcome] = useState(true);
+  // URL 回写通道用 ref 持有:onUrlSync 依赖 searchParams 会随 URL 变化重建,
+  // 若直接进入下方任务的 effect 依赖数组,会导致任务详情被反复重新拉取。
+  const onUrlSyncRef = useRef(onUrlSync);
+  useEffect(() => {
+    onUrlSyncRef.current = onUrlSync;
+  }, [onUrlSync]);
+  // 简洁模式:中间区是否显示欢迎页(无会话/任务时 true,有内容时 false)。
+  // 初始值由 URL 深链决定:带 conv_uid/task_id 说明是刷新恢复或分享进入,直达会话内容。
+  const [simpleShowWelcome, setSimpleShowWelcome] = useState(initialShowWelcome);
   // 简洁模式输入框共享的选中模型:提升到 shell 层,避免欢迎态→运行态切换、
   // 会话切换(key 重挂载 SceneSimpleWorkspace)后输入框内部模型 state 丢失回退默认
   const [simpleInputModel, setSimpleInputModel] = useState<string>('');
@@ -223,7 +240,7 @@ export function SceneWorkspaceShell({
   // refreshDeps 含 workspaceConvUid/taskConvUid:清理(新开会话)/切换会话/进入任务对话后自动刷新,
   // 新会话按 gmt_modified 倒序自然置顶。listsRefreshKey:对话开始(onConversationStart)即刷新,
   // 让后端兜底 link 的新会话/出错对话第一时间进入任务列表。
-  const { data: conversations } = useRequest(
+  const { data: conversations, mutate: mutateConversations } = useRequest(
     async () => {
       if (!workspaceId) return [];
       const [, data] = await apiInterceptors(listConversations({ workspace_id: workspaceId, user_id: Number(getUserId()) || undefined, limit: 200 }));
@@ -240,6 +257,8 @@ export function SceneWorkspaceShell({
       setTaskConvUid('');
       setActiveTask(null);
       setSwitchingTask(false);
+      // 退出任务对话:清掉 URL 上的 task_id,刷新后停在会话工作台而非回到旧任务
+      onUrlSyncRef.current?.({ taskId: null });
       return;
     }
 
@@ -252,6 +271,11 @@ export function SceneWorkspaceShell({
           setTaskConvUid(res?.conv_session_id || '');
           setActiveTask(res || null);
           setSwitchingTask(false);
+          // 任务会话 conv 解析完成后补齐 URL:刷新时右侧 Agent 直接用它渲染,
+          // 不再先闪一下 workspace 级会话再去换任务会话。
+          if (res?.conv_session_id) {
+            onUrlSyncRef.current?.({ convUid: res.conv_session_id, taskId: activeTaskId });
+          }
         }
       })
       .catch(() => {
@@ -280,6 +304,11 @@ export function SceneWorkspaceShell({
 
   const handleEnterConversation = (taskId: number) => {
     setActiveTaskId(taskId);
+    // 刷新恢复路径(pendingTaskId)也走这里:关闭简洁模式欢迎页,直达任务会话
+    setSimpleShowWelcome(false);
+    // 进任务对话立刻把 task_id 写进 URL:即便后续 getTaskInfo 失败,
+    // 刷新也能靠 task_id 重新走一遍 handleEnterConversation 恢复现场。
+    onUrlSync?.({ taskId });
     const task = tasks.find((t) => t.id === taskId);
     if (task) {
       setPreviewItem(task);
@@ -544,6 +573,10 @@ export function SceneWorkspaceShell({
 
   // 简洁模式历史项:任务 + 大厅会话统一按时间倒序
   const simpleItems = useMemo<SimpleHistoryItem[]>(() => {
+    // 收藏状态统一以 conversations 的 conv 为准:任务项按 conv_session_id 回查
+    const favSet = new Set(
+      (conversations || []).filter((c: any) => c.is_favorited).map((c: any) => String(c.conv_uid)),
+    );
     const taskItems: SimpleHistoryItem[] = (tasks || []).map((t) => ({
       key: `task-${t.id}`,
       kind: 'task',
@@ -564,6 +597,7 @@ export function SceneWorkspaceShell({
       updatedAt: t.gmt_created || t.started_at || t.gmt_modified || '',
       conversationId: t.conv_session_id || undefined,
       taskId: t.id,
+      isFavorited: t.conv_session_id ? favSet.has(String(t.conv_session_id)) : false,
     }));
     const lobbyItems: SimpleHistoryItem[] = (conversations || [])
       .filter((c: any) => c.task_id == null)
@@ -579,6 +613,7 @@ export function SceneWorkspaceShell({
           updatedAt: c.gmt_created || c.gmt_modified || '',
           conversationId: c.conv_uid,
           taskId: null,
+          isFavorited: favSet.has(String(c.conv_uid)),
         };
       });
     return [...taskItems, ...lobbyItems].sort((a, b) => {
@@ -683,6 +718,30 @@ export function SceneWorkspaceShell({
     }
   };
 
+  // 简洁模式:收藏/取消收藏(任务/会话统一挂到其 conv 上)。
+  // 成功后仅本地替换该会话的收藏状态,避免整表刷新导致列表跳动。
+  const handleSimpleToggleFavorite = async (item: SimpleHistoryItem) => {
+    const wsId = workspaceId;
+    if (!wsId || !item.conversationId) return;
+    const conversationId = item.conversationId;
+    const nextFav = !item.isFavorited;
+    const [err] = await apiInterceptors(
+      favoriteConversation({ workspace_id: wsId, conv_uid: conversationId, favorited: nextFav }),
+    );
+    if (err) {
+      message.error(err.message);
+      return;
+    }
+    message.success(nextFav ? '已收藏' : '已取消收藏');
+    mutateConversations((list: any[] = []) =>
+      list.map((c: any) =>
+        c.conv_uid === conversationId
+          ? { ...c, is_favorited: nextFav, favorited_at: nextFav ? new Date().toISOString() : null }
+          : c,
+      ),
+    );
+  };
+
   // 简洁模式:重命名会话(lobby 项)。弹窗收集新名称 -> renameConversation -> 刷新列表。
   const [renameItem, setRenameItem] = useState<SimpleHistoryItem | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
@@ -713,8 +772,56 @@ export function SceneWorkspaceShell({
   };
 
   // 简洁模式:输入框发送后隐藏欢迎页;
-  // 运行中追问复用与运维模式一致的「补充输入」链路(投递到后端队列,不开新 SSE)
-  const { submitUserInput } = useUserInput(rightConvUid);
+  // 运行中追问复用与运维模式一致的「补充输入」链路(投递到后端队列,不开新 SSE)。
+  // 队列条:对话运行中轮询拉取权威 queue 计数,展示「排队 N 条 + 具体消息」,
+  // 被消费后由轮询回显为独立用户气泡。
+  const {
+    submitUserInput,
+    hasPendingInput,
+    queueLength,
+    getPendingInputs,
+    clearQueue,
+    startPolling: startQueuePolling,
+    stopPolling: stopQueuePolling,
+  } = useUserInput(rightConvUid);
+  // 对话运行中开启队列轮询(每 2s 拉取 queueState 刷新计数),停运即停,
+  // 让「排队 N 条」随后端消费进度实时变化。
+  useEffect(() => {
+    if (isRunning) startQueuePolling(2000);
+    else stopQueuePolling();
+  }, [isRunning, startQueuePolling, stopQueuePolling]);
+  // 「取消排队」真实动作注入到 widget 注册表(input_queue 的「取消排队」按钮经它调用),
+  // 避免把 hook 依赖带进组件注册表;clearQueue 清空后端队列并复位本地计数。
+  useEffect(() => {
+    inputQueueActions.onClear = clearQueue;
+    return () => {
+      inputQueueActions.onClear = undefined;
+    };
+  }, [clearQueue]);
+  // 运行中补充输入队列作为 Composer Dock 的 input_queue widget:与待办/子任务同处
+  // 输入框上方的 dock 容器(单行摘要 + 向上展开),不再割裂成独立卡片。无排队时不注入。
+  const queueDockWidget = useMemo(() => {
+    if (!hasPendingInput || queueLength <= 0) return null;
+    const items = getPendingInputs().map((i) => i.content);
+    // 后端按 FIFO 消费:仍在排队的是本地提交列表末尾 queueLength 条。
+    const shown = items.slice(Math.max(0, items.length - queueLength));
+    return {
+      id: 'input-queue',
+      type: 'input_queue',
+      payload: { items: shown, total: queueLength },
+    } as const;
+  }, [hasPendingInput, queueLength, getPendingInputs]);
+  const simpleDockWidgets = useMemo(() => {
+    const base = simpleChat.dockWidgets || {};
+    return queueDockWidget ? { ...base, 'input-queue': queueDockWidget } : base;
+  }, [simpleChat.dockWidgets, queueDockWidget]);
+  // 上传附件用:优先复用空间当前会话;仅在连当前会话都没有时才懒创建。
+  // 上传接口本身不落会话(文件存 gyra-fs,引用随消息载荷下发),此处会话
+  // 只为满足上传请求的参数上下文,避免为上传无谓产生空会话。
+  const ensureConversationForUpload = async (): Promise<string | null> => {
+    if (rightConvUid) return rightConvUid;
+    return ensureConversation();
+  };
   const handleSimpleSend = async (payload: any) => {
     if (simpleChat.loading || simpleChat.convState === 'RUNNING') {
       setSimpleShowWelcome(false);
@@ -739,7 +846,7 @@ export function SceneWorkspaceShell({
   // ── 渲染 ────────────────────────────────────────────────────────────
 
   return (
-    <CallDetailProvider convId={rightConvUid}>
+    <CallDetailProvider conversationId={rightConvUid}>
       <div
         className={`ws-scene-shell${railOpen ? '' : ' ws-scene-shell--rail-closed'}${spaceCollapsed ? ' ws-scene-shell--space-collapsed' : ''}${spaceMaximized ? ' ws-scene-shell--space-maximized' : ''}${isSimple ? ' ws-scene-shell--simple' : ''}`}
         data-pane={mobilePane}
@@ -770,9 +877,11 @@ export function SceneWorkspaceShell({
               usageMap={convUsageMap}
               onDeleteItem={handleSimpleDelete}
               onRenameItem={handleSimpleRename}
+              onToggleFavorite={handleSimpleToggleFavorite}
               canDeleteTask={canManageTask}
               canDeleteConversation={canUseChat}
               canRenameConversation={canUseChat}
+              canFavoriteConversation={canUseChat}
             />
           </div>
           {/* 中间:欢迎态 或 运行态双栏(输入条在左侧步骤流卡片内底部) */}
@@ -801,6 +910,9 @@ export function SceneWorkspaceShell({
                   <AgentWorkspaceInput
                     ref={agentInputRef}
                     conversationId={rightConvUid}
+                    workspaceId={workspaceId}
+                    attachmentScopeKey={workspaceId != null ? `ws:${workspaceId}` : undefined}
+                    onEnsureConversation={ensureConversationForUpload}
                     appInfo={appInfo}
                     model={simpleInputModel}
                     defaultModel={spaceDefaultModel}
@@ -867,11 +979,15 @@ export function SceneWorkspaceShell({
                   }}
                   inputSlot={
                     <div className="ws-agent-workspace__input">
-                      {/* Composer Dock:独立卡片贴合在输入框上方,与运维模式同一组件/协议 */}
-                      <DockPanel widgets={simpleChat.dockWidgets} />
+                      {/* Composer Dock:输入框上方贴合的「单行摘要 + 向上展开」容器,
+                          待办/子任务/排队消息(运行中补充输入队列)同处一条 dock */}
+                      <DockPanel widgets={simpleDockWidgets} />
                       <AgentWorkspaceInput
                         ref={agentInputRef}
                         conversationId={rightConvUid}
+                        workspaceId={workspaceId}
+                        attachmentScopeKey={workspaceId != null ? `ws:${workspaceId}` : undefined}
+                        onEnsureConversation={ensureConversationForUpload}
                         appInfo={appInfo}
                         model={simpleInputModel}
                         defaultModel={spaceDefaultModel}

@@ -162,7 +162,9 @@ class EditorService(BaseComponent):
 
                     conn = cfg.local_db_manager.get_connector(db_name)
                     table_value = conn.run(find_chart["chart_sql"])
-                    table_value = _mask_chart_table_value(db_name, table_value)
+                    table_value = _mask_chart_table_value(
+                        db_name, table_value, find_chart["chart_sql"]
+                    )
                     detail: ChartDetail = ChartDetail(
                         chart_uid=find_chart["chart_uid"],
                         chart_type=find_chart["chart_type"],
@@ -177,12 +179,15 @@ class EditorService(BaseComponent):
         return Result.failed(msg="Can't Find Chart Detail Info!")
 
 
-def _mask_chart_table_value(db_name: str, table_value):
+def _mask_chart_table_value(db_name: str, table_value, sql: str = None):
     """Apply privacy masking to a chart's raw table result.
 
     ``conn.run()`` returns ``[column_tuple, row1, row2, ...]``. We resolve the
     datasource from ``db_name`` and mask the data rows, preserving the
     header-first structure expected by the chart renderer.
+
+    当 ``sql`` 仅查询系统目录表(ALL_TABLES/INFORMATION_SCHEMA 等)时跳过脱敏,
+    避免列名兜底匹配误伤。
     """
     if not table_value or len(table_value) <= 1:
         return table_value
@@ -190,7 +195,13 @@ def _mask_chart_table_value(db_name: str, table_value):
         from gyra_serve.datasource.manages.connect_config_db import (
             ConnectConfigDao,
         )
-        from gyra_serve.sql_guard.masking import mask_run_result
+        from gyra_serve.sql_guard.masking import (
+            is_internal_catalog_sql,
+            mask_run_result,
+        )
+
+        if sql and is_internal_catalog_sql(sql):
+            return table_value
 
         ds_id = None
         entity = ConnectConfigDao().get_by_names(db_name)

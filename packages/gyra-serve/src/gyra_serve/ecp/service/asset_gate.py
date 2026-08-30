@@ -104,7 +104,8 @@ def ecp_gate_message(
             "2. execute_metric_query 执行指标查询(✅ 可信口径)\n"
             "3. 确无对应指标时,用 execute_raw_sql 执行原生 SQL,"
             "并向用户声明结果为 ⚠️ 未验证口径\n"
-            "表结构仍可用 get_table_spec / list_tables 查阅(只读 schema 不受限)。"
+            "表结构仍可用 get_table_spec / list_tables / search_tables 查阅"
+            "(只读 schema 不受限)。"
         )
     except Exception:  # noqa: BLE001
         return None
@@ -225,7 +226,7 @@ def build_managed_assets_text(workspace_id: str) -> str:
                 f"  数据源 {label}:已纳入语义层管理,直连查询(execute_sql)已禁用。"
             )
     lines.append(
-        "  表结构可用 get_table_spec / list_tables 查阅;"
+        "  表结构可用 get_table_spec / list_tables / search_tables 查阅;"
         "数据查询统一走 ECP 工具(execute_metric_query 优先,"
         "execute_raw_sql 兜底须声明 ⚠️ 未验证口径)。"
     )

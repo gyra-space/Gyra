@@ -1,5 +1,5 @@
 # Define your Pydantic schemas here
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from gyra._private.pydantic import BaseModel, ConfigDict, Field, model_to_dict
 
@@ -259,6 +259,12 @@ class MessageVo(BaseModel):
         examples=[
             "{}",
         ],
+    )
+
+    attachments: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="User uploaded file attachments (name/url/mime_type), "
+        "extracted from multimodal message content for history echo.",
     )
 
     def to_dict(self, **kwargs) -> Dict[str, Any]:

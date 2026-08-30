@@ -205,7 +205,7 @@ function ChatContent() {
   }, [appInfo?.layout?.chat_in_layout]);
 
   return (
-    <ContextMetricsProvider convId={chatId}>
+    <ContextMetricsProvider conversationId={chatId}>
       <ChatContentContext.Provider
         value={{
           history,

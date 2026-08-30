@@ -12,6 +12,7 @@ metric expression — the LLM picks catalog IDs, code assembles the SQL.
 
 import logging
 import re
+import unicodedata
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -33,17 +34,31 @@ def _is_time_type(col_type: Any) -> bool:
     return bool(_TIME_TYPE_RE.search(col_type))
 
 
+def _normalize_anchor(text: Optional[str]) -> str:
+    """锚点归一化: NFKC + 去全部空白 + casefold。
+
+    冻结摘录与当前原文常因排版差异(全半角/不可见空白/大小写)造成
+    "假漂移";归一化后再做子串比较,只把真实的内容改动判为 drift。
+    """
+    if not text:
+        return ""
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text))).casefold()
+
+
 def _mask_dict_rows(
     datasource_id: Optional[int],
     columns,
     rows: List[Dict[str, Any]],
     *,
     table_name: Optional[str] = None,
+    sql: Optional[str] = None,
 ):
     """对 dict 行结果统一走脱敏入口(-- 隐私脱敏,与 execute_sql 一致)。
 
     rows 为 ``[dict]`` 结构;脱敏按列索引作用,需先按 ``columns`` 顺序重排成
     list,脱敏完成后再按不变的 ``columns`` 重建 dict,保证键与顺序不丢失。
+
+    sql/table_name 命中系统目录白名单时跳过脱敏,避免列名兜底误伤。
 
     Returns:
         (masked_rows, masked_column_names): 脱敏后的 dict 行 + 实际被脱敏列名。
@@ -52,7 +67,18 @@ def _mask_dict_rows(
     if not rows or not columns:
         return rows, []
     try:
-        from gyra_serve.sql_guard.masking import mask_run_result
+        from gyra_serve.sql_guard.masking import (
+            is_internal_catalog_sql,
+            is_internal_catalog_table,
+            mask_run_result,
+        )
+
+        # 系统目录表(ALL_TABLES/PG_CATALOG 等)无业务数据,跳过脱敏。
+        if sql:
+            if is_internal_catalog_sql(sql):
+                return rows, []
+        elif table_name and is_internal_catalog_table(table_name):
+            return rows, []
 
         list_rows = [[r.get(c) for c in columns] for r in rows]
         _, list_rows, masked = mask_run_result(
@@ -277,7 +303,7 @@ class DbBindingExecutor(BindingExecutor):
             if rows:
                 rows, _ = _mask_dict_rows(
                     datasource_id, columns, rows,
-                    table_name=binding.get("table"),
+                    table_name=binding.get("table"), sql=sql,
                 )
         if len(rows) > cap:
             rows = rows[:cap]
@@ -378,6 +404,8 @@ class DbBindingExecutor(BindingExecutor):
         # Auto-propose the missing relation, then reject.
         proposal_id = f"rel.{from_id.split('.', 1)[-1]}__{to_id.split('.', 1)[-1]}"
         try:
+            from ..config import ORIGIN_RULE5_GATE, make_provenance
+
             daos.objects.create_proposal(
                 proposal_id,
                 "relation",
@@ -385,6 +413,11 @@ class DbBindingExecutor(BindingExecutor):
                 workspace_id=workspace_id,
                 created_by="llm",
                 source="gate:rule5",
+                provenance=make_provenance(
+                    ORIGIN_RULE5_GATE,
+                    actor="executor:rule5",
+                    note=f"跨实体查询缺已确认关系({from_id} → {to_id}),执行门禁自动提案",
+                ),
             )
         except Exception:  # noqa: BLE001
             pass
@@ -519,10 +552,12 @@ class DocBindingExecutor(BindingExecutor):
     与 DB 侧"SQL 确定性组装"对称,文档侧是**证据确定性回放**:
       ① claim/terminology/policy 必须 confirmed(同 metric 门禁)
       ② binding 契约校验(contracts 单一事实来源)
-      ③ anchor 回放:经 doc_fetcher 取原文,校验冻结 source_quote 为子串
-         (找到但不含 → ANCHOR_DRIFT(文档改版信号);基础设施不可用 →
-          best-effort 跳过,lineage 记 anchor_verified=None)
-      ④ 返回带引用的答案,trust=verified + 血缘
+      ③ anchor 回放:经 doc_fetcher 取原文,归一化后校验冻结 source_quote
+         为子串;每条独立标注 anchor_status(verified/drift/unquoted/
+         unchecked),单条漂移不阻断整批,仅记入 warnings(文档改版信号);
+         基础设施不可用 → best-effort 标 unchecked
+      ④ 返回带引用的答案,trust 按核查结果取 verified(全部核实)/
+         partial(有漂移)/inferred(未核实) + 血缘
     """
 
     binding_kind = "doc"
@@ -562,6 +597,7 @@ class DocBindingExecutor(BindingExecutor):
         self, daos, object_ids: List[str], workspace_id: str
     ) -> Dict[str, Any]:
         answers: List[Dict[str, Any]] = []
+        warnings: List[str] = []
         for oid in object_ids:
             obj = daos.objects.get_confirmed(oid, workspace_id)
             if not obj or obj.obj_type not in self._DOC_TYPES:
@@ -574,18 +610,24 @@ class DocBindingExecutor(BindingExecutor):
                 )
             binding = p.get("binding") or {}
             quote = p.get("source_quote")
-            anchor_verified: Optional[bool] = None
+            n_quote = _normalize_anchor(quote)
             original = await self._doc_fetcher(
                 binding.get("space", ""), binding.get("doc_id", "")
             )
-            if original is not None:
-                if quote and quote not in original:
-                    raise GateError(
-                        f"条目 {oid} 锚点漂移:原文中未找到冻结摘录"
-                        f"(文档可能已改版),请重新确认或更新 anchor",
-                        code="ANCHOR_DRIFT",
-                    )
-                anchor_verified = True
+            if not n_quote:
+                anchor_status = "unquoted"
+            elif original is None:
+                # 基础设施不可用 → best-effort,不阻断,标 unchecked
+                anchor_status = "unchecked"
+            elif n_quote in _normalize_anchor(original):
+                anchor_status = "verified"
+            else:
+                # 单条漂移不炸批:条目保留在 answers 中,warnings 记改版信号
+                anchor_status = "drift"
+                warnings.append(
+                    f"条目 {oid} 锚点漂移:原文中未找到冻结摘录"
+                    f"(文档可能已改版),请重新确认或更新 anchor"
+                )
             answers.append(
                 {
                     "id": oid,
@@ -594,17 +636,29 @@ class DocBindingExecutor(BindingExecutor):
                     "text": p.get("text") or p.get("definition") or p.get("rule"),
                     "condition": p.get("condition"),
                     "quote": quote,
+                    "anchor_status": anchor_status,
                     "citation": {
                         "space": binding.get("space"),
                         "doc_id": binding.get("doc_id"),
                         "anchor": binding.get("anchor"),
-                        "anchor_verified": anchor_verified,
+                        "anchor_status": anchor_status,
+                        "anchor_verified": anchor_status == "verified",
                     },
                 }
             )
+        # 诚实 trust:全部核实才算 verified;有漂移降为 partial;
+        # 全部未核实(基础设施不可用/未冻结摘录)降为 inferred。
+        statuses = {a["anchor_status"] for a in answers}
+        if not statuses or statuses == {"verified"}:
+            trust = "verified"
+        elif "drift" in statuses:
+            trust = "partial"
+        else:
+            trust = "inferred"
         return {
             "answers": answers,
-            "trust": "verified",
+            "trust": trust,
+            "warnings": warnings,
             "lineage": {
                 "workspace_id": workspace_id,
                 "executed_at": datetime.now().isoformat(),
@@ -632,7 +686,7 @@ async def execute_claim_query(
     """The gated ✅ path for document canon (P0 文档扩展)。
 
     与 execute_metric_query 对称:confirmed 条目 → 契约校验 → anchor 回放
-    → 带引用答案(trust=verified + 血缘)。
+    → 带引用答案(trust 按核查结果 verified/partial/inferred + 血缘)。
     """
     daos = _ExecutorDaos()
     executor = DocBindingExecutor(doc_fetcher=doc_fetcher)
@@ -771,7 +825,7 @@ def _preview_run(sql: str, datasource_id: int, obj: Any,
         rows = [dict(zip(columns, r)) for r in raw[1:]]
     # 隐私脱敏:preview(confirm 试跑)同样遵守脱敏原则,与其他 DB 出口一致。
     if rows:
-        rows, _ = _mask_dict_rows(datasource_id, columns, rows)
+        rows, _ = _mask_dict_rows(datasource_id, columns, rows, sql=sql)
     result.update(columns=columns, rows=rows, row_count=len(rows))
     return result
 
@@ -1003,10 +1057,11 @@ async def preview_canon(
         binding.get("space", ""), binding.get("doc_id", "")
     )
     anchor_verified = None
+    n_quote = _normalize_anchor(quote)
     if original is None:
         warnings.append("基础设施不可用或文档缺失,无法校验出处")
     else:
-        anchor_verified = bool(quote and quote in original)
+        anchor_verified = bool(n_quote and n_quote in _normalize_anchor(original))
         if not anchor_verified:
             warnings.append("锚点漂移:原文中未找到冻结摘录(文档可能已改版)")
     return {

@@ -14,7 +14,13 @@ import re
 from typing import Any, Dict, List, Optional
 
 from ..api.schemas import GenerateProposalsVO
-from ..config import DEFAULT_WORKSPACE_ID, OBJECT_TYPES, STATUS_PROPOSED
+from ..config import (
+    DEFAULT_WORKSPACE_ID,
+    OBJECT_TYPES,
+    ORIGIN_DISCOVERY,
+    STATUS_PROPOSED,
+    make_provenance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +140,11 @@ class DbSemanticsProposer(SemanticsProposer):
                         evidence=p.get("evidence"),
                         created_by="llm",
                         source=f"discovery:ds{datasource_id}",
+                        provenance=make_provenance(
+                            ORIGIN_DISCOVERY,
+                            actor="pipeline:db",
+                            note=f"数据源 #{datasource_id} 初始扫描",
+                        ),
                     )
                     # 去重命中(返回已有 confirmed VO)不计为新提案
                     if vo.status == STATUS_PROPOSED:
@@ -600,6 +611,11 @@ class DocSemanticsProposer(DbSemanticsProposer):
                         evidence=p.get("evidence"),
                         created_by="llm",
                         source=f"discovery:doc:{space_slug}",
+                        provenance=make_provenance(
+                            ORIGIN_DISCOVERY,
+                            actor="pipeline:doc",
+                            note=f"空间 {space_slug} 文档 {doc_id} 初始扫描",
+                        ),
                     )
                     result.proposals_created += 1
                     result.proposal_ids.append(p["id"])

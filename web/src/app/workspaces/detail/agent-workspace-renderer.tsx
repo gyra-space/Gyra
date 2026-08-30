@@ -33,6 +33,7 @@ import type {
   WorkspaceDeliverableFile,
   WorkspaceExecutionStep,
   WorkspaceTaskFile,
+  WorkspaceUserAttachment,
   WorkspaceView,
 } from './agent-workspace-types';
 
@@ -43,11 +44,68 @@ const CAPSULE_STEP_TYPES = new Set(['tool_call', 'thinking', 'artifact', 'delive
 const NO_DELIVERABLES: WorkspaceDeliverableFile[] = [];
 const NO_TASK_FILES: WorkspaceTaskFile[] = [];
 
-/** 用户消息气泡(manus left panel 风格):气泡 + 用户头像(右侧) */
-function UserBubble({ text, avatarUrl, name }: { text: string; avatarUrl?: string | null; name?: string | null }) {
+/** 用户消息气泡(manus left panel 风格):气泡(文本+附件) + 用户头像(右侧) */
+function UserBubble({
+  text,
+  attachments,
+  avatarUrl,
+  name,
+  onAttachmentsClick,
+}: {
+  text: string;
+  attachments?: WorkspaceUserAttachment[] | null;
+  avatarUrl?: string | null;
+  name?: string | null;
+  onAttachmentsClick?: () => void;
+}) {
+  const files = (attachments || []).filter((a) => a && a.url);
+  const images = files.filter((a) => (a.mime_type || '').startsWith('image'));
+  const docs = files.filter((a) => !(a.mime_type || '').startsWith('image'));
   return (
     <div className="ws-step-user">
-      <div className="ws-step-user__bubble">{text}</div>
+      <div className="ws-step-user__bubble">
+        {text}
+        {files.length > 0 && (
+          <div className="ws-step-user__attachments">
+            {images.map((a, i) => (
+              <a
+                key={`${a.url}-${i}`}
+                className="ws-step-user__attachment-img"
+                href={resolveFileDownloadUrl(a.url)}
+                target="_blank"
+                rel="noreferrer"
+                title={a.name}
+              >
+                <img src={transformFileUrl(a.url)} alt={a.name} loading="lazy" />
+              </a>
+            ))}
+            {docs.map((a, i) => (
+              <a
+                key={`${a.url}-${i}`}
+                className="ws-step-user__attachment-file"
+                href={resolveFileDownloadUrl(a.url)}
+                target="_blank"
+                rel="noreferrer"
+                title={a.name}
+              >
+                <FileOutlined />
+                <span className="ws-step-user__attachment-name">{a.name}</span>
+              </a>
+            ))}
+            {onAttachmentsClick && (
+              <button
+                type="button"
+                className="ws-step-user__attachment-jump"
+                onClick={onAttachmentsClick}
+                title="跳转到右侧任务文件"
+              >
+                <FolderOpenOutlined />
+                <span>查看任务文件</span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
       <span className="ws-step-user__avatar">
         <UserAvatar avatarUrl={avatarUrl} name={name} size={28} />
       </span>
@@ -408,6 +466,8 @@ export interface AgentWorkspaceRendererProps {
   onTaskClick?: (taskId: number) => void;
   /** 点击异步子 agent 卡片:在中间容器内联展开子会话(不传则默认新标签) */
   onSubagentClick?: (subConvId: string) => void;
+  /** 点击用户附件「查看任务文件」入口:跳转右侧任务文件 tab(仅简洁模式生效) */
+  onAttachmentsClick?: () => void;
   /** ask_user 交互确认后续跑 Agent 对话(复用同一 conv_uid 恢复 WAITING 会话) */
   onInteractionResume?: (userMessage: string) => void;
   /** Agent 头像 icon(appCode 对应 app 的 icon) */
@@ -477,7 +537,7 @@ function DeliverablesBlock({ files, onDeliverableClick }: { files: WorkspaceDeli
   );
 }
 
-export function AgentWorkspaceRenderer({ view, running = false, onStepClick, selectedStepId, onDeliverableClick, onTaskClick, onSubagentClick, onInteractionResume, agentIcon, agentName, modelName }: AgentWorkspaceRendererProps) {
+export function AgentWorkspaceRenderer({ view, running = false, onStepClick, selectedStepId, onDeliverableClick, onTaskClick, onSubagentClick, onAttachmentsClick, onInteractionResume, agentIcon, agentName, modelName }: AgentWorkspaceRendererProps) {
   // 单次调用还原（排查定位）：深层组件通过 context 打开抽屉，未挂 Provider 时为 no-op
   const { openCallDetail, enabled: callDetailEnabled } = useCallDetail();
   const deliverable_files = useMemo(() => view.deliverable_files ?? [], [view.deliverable_files]);
@@ -740,8 +800,10 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
             {round.user && (
               <UserBubble
                 text={round.user.output || ''}
+                attachments={round.user.attachments}
                 avatarUrl={userInfo?.avatar_url}
                 name={userInfo?.nick_name}
+                onAttachmentsClick={onAttachmentsClick}
               />
             )}
             {/* 上下文注入:插到用户消息之后、Agent 回复之前(仅首个用户轮次展示) */}

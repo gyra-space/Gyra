@@ -25,6 +25,7 @@ import {
   InboxOutlined,
   LeftOutlined,
   RightOutlined,
+  ShrinkOutlined,
 } from '@ant-design/icons';
 import markdownComponents, { markdownPlugins, preprocessLaTeX } from '@/components/chat/chat-content-components/config';
 import {
@@ -526,6 +527,8 @@ export function SceneSimpleWorkspace({
   const [selectedStep, setSelectedStep] = useState<WorkspaceExecutionStep | null>(null);
   // 右侧工作空间预览:默认收起(对话流全宽,结果为主),点击步骤/文件触发展开,可手动收起
   const [rightOpen, setRightOpen] = useState(false);
+  // 右侧工作空间全屏:展开后占满整个壳区,隐藏左侧对话流,可随时还原
+  const [rightMaximized, setRightMaximized] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
   const deliverables = useMemo(() => view.deliverable_files ?? [], [view]);
@@ -645,6 +648,14 @@ export function SceneSimpleWorkspace({
     setRightOpen(true);
   };
 
+  // 点击用户附件「查看任务文件」入口 → 展开右侧并切到任务文件 tab
+  const handleOpenAttachments = () => {
+    setActiveFileKey(null);
+    setSelectedStep(null);
+    setRightTab('task_files');
+    setRightOpen(true);
+  };
+
   // 点击胶囊内步骤 → 触发展开右侧,展示该步骤的执行结果(专用渲染器优先)
   const handleStepClick = (step: WorkspaceExecutionStep) => {
     setActiveFileKey(null);
@@ -658,6 +669,7 @@ export function SceneSimpleWorkspace({
     setRightOpen(false);
     setSelectedStep(null);
     setActiveFileKey(null);
+    setRightMaximized(false);
   };
 
   const clearStepSelection = () => setSelectedStep(null);
@@ -707,7 +719,7 @@ export function SceneSimpleWorkspace({
   );
 
   return (
-    <div className={`ws-simple-workspace${rightOpen ? ' ws-simple-workspace--right-open' : ''}`}>
+    <div className={`ws-simple-workspace${rightOpen ? ' ws-simple-workspace--right-open' : ''}${rightMaximized ? ' ws-simple-workspace--right-maximized' : ''}`}>
       {/* 左侧:对话 feed(用户消息 → 执行胶囊 → 回答/交付),右侧收起时占满全宽 */}
       <section className="ws-simple-chat">
         <div className="ws-simple-chat__hd">
@@ -744,6 +756,7 @@ export function SceneSimpleWorkspace({
               onStepClick={handleStepClick}
               selectedStepId={selectedStep?.id ?? null}
               onDeliverableClick={handleOpenDeliverable}
+              onAttachmentsClick={handleOpenAttachments}
               onInteractionResume={onInteractionResume}
               agentIcon={agentIcon}
               agentName={agentName}
@@ -791,7 +804,14 @@ export function SceneSimpleWorkspace({
                   onClick={clearStepSelection}
                 />
               )}
-              <Button type="text" size="small" icon={<ExpandOutlined />} title="全屏" />
+              <Button
+                type="text"
+                size="small"
+                icon={rightMaximized ? <ShrinkOutlined /> : <ExpandOutlined />}
+                title={rightMaximized ? '还原' : '全屏'}
+                aria-label={rightMaximized ? '还原' : '全屏'}
+                onClick={() => setRightMaximized((v) => !v)}
+              />
               <Button
                 type="text"
                 size="small"

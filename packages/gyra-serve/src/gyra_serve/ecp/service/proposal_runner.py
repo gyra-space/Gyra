@@ -14,6 +14,7 @@ its ReAct loop until all assets are done. Mirrors chat flow build + initiate_cha
 """
 
 import logging
+import os
 import uuid
 from typing import Optional
 
@@ -208,6 +209,90 @@ async def run_proposal_agent(
     return result
 
 
+async def _run_proposal_agent_task(
+    system_app,
+    app_code: str,
+    workspace_id: Optional[str],
+    conv_prefix: str,
+    task: str,
+) -> GenerateProposalsVO:
+    """Shared body for focused proposal runs (single SQL / imported file).
+
+    Builds the proposal agent with all registered assets as dynamic resources,
+    sends ``task``, and returns the diff of newly proposed ids.
+    """
+    from gyra.agent import AgentContext, UserProxyAgent
+    from gyra.core import HumanMessage
+    from gyra_serve.agent.agents.chat.agent_chat import get_app_service
+
+    ws = workspace_id or DEFAULT_WORKSPACE_ID
+    # datasource_id=0 marks a workspace-level (non-table-batch) run
+    result = GenerateProposalsVO(datasource_id=0)
+
+    dyn = _assets_to_dynamic_resources(ws, result)
+    if not dyn:
+        if not result.errors:
+            result.errors.append(f"工作空间 {ws} 无可用登记资产(涉及的表需已接入 ECP)")
+        return result
+
+    try:
+        from gyra_serve.agent.agents.chat.agent_chat_simple import SimpleAgentChat
+
+        agent_chat = SimpleAgentChat(system_app)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"AgentChat 不可用: {e}")
+        return result
+
+    try:
+        app = await get_app_service().app_detail(app_code, building_mode=False)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"找不到提案 Agent {app_code}: {e}")
+        return result
+
+    conv_id = f"{conv_prefix}_{ws}_{uuid.uuid4().hex[:8]}"
+    context = AgentContext(
+        conv_id=conv_id,
+        conv_session_id=conv_id,
+        gpts_app_code=app_code,
+        gpts_app_name=getattr(app, "app_name", app_code) or app_code,
+        agent_app_code=app_code,
+        extra={"dynamic_resources": dyn},
+    )
+    agent_memory = agent_chat.get_or_build_agent_memory(conv_id, app.app_name)
+
+    logger.info(f"[ecp-proposal-runner] build agent {app_code} ws={ws} conv={conv_id}")
+    try:
+        recipient = await agent_chat.build_agent_by_app_code(
+            app_code, context, agent_memory
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"[ecp-proposal-runner] build agent failed: {e}")
+        result.errors.append(f"构建 Agent 失败: {e}")
+        return result
+
+    before = _proposed_ids(ws)
+    user_proxy = await UserProxyAgent().bind(context).bind(agent_memory).build()
+
+    logger.info(f"[ecp-proposal-runner] initiate_chat task for ws={ws}")
+    try:
+        await user_proxy.initiate_chat(
+            recipient=recipient, message=HumanMessage(content=task)
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"[ecp-proposal-runner] agent run failed: {e}")
+        result.errors.append(f"Agent 运行失败: {e}")
+
+    after = _proposed_ids(ws)
+    new_ids = sorted(after - before)
+    result.proposals_created = len(new_ids)
+    result.proposal_ids = new_ids
+    logger.info(
+        f"[ecp-proposal-runner] done ws={ws}: +{result.proposals_created} "
+        f"proposals {new_ids}"
+    )
+    return result
+
+
 async def run_sql_proposal(
     system_app,
     app_code: str,
@@ -225,60 +310,7 @@ async def run_sql_proposal(
     workspace. Returns the newly proposed ids so the caller can confirm them
     ("添加即确认").
     """
-    from gyra.agent import AgentContext, UserProxyAgent
-    from gyra.core import HumanMessage
-    from gyra_serve.agent.agents.chat.agent_chat import get_app_service
-
     ws = workspace_id or DEFAULT_WORKSPACE_ID
-    # datasource_id=0 marks a workspace-level (non-table-batch) run
-    result = GenerateProposalsVO(datasource_id=0)
-
-    dyn = _assets_to_dynamic_resources(ws, result)
-    if not dyn:
-        if not result.errors:
-            result.errors.append(f"工作空间 {ws} 无可用登记资产(SQL 涉及的表需已接入 ECP)")
-        return result
-
-    try:
-        from gyra_serve.agent.agents.chat.agent_chat_simple import SimpleAgentChat
-
-        agent_chat = SimpleAgentChat(system_app)
-    except Exception as e:  # noqa: BLE001
-        result.errors.append(f"AgentChat 不可用: {e}")
-        return result
-
-    try:
-        app = await get_app_service().app_detail(app_code, building_mode=False)
-    except Exception as e:  # noqa: BLE001
-        result.errors.append(f"找不到提案 Agent {app_code}: {e}")
-        return result
-
-    conv_id = f"ecp_sql_{ws}_{uuid.uuid4().hex[:8]}"
-    context = AgentContext(
-        conv_id=conv_id,
-        conv_session_id=conv_id,
-        gpts_app_code=app_code,
-        gpts_app_name=getattr(app, "app_name", app_code) or app_code,
-        agent_app_code=app_code,
-        extra={"dynamic_resources": dyn},
-    )
-    agent_memory = agent_chat.get_or_build_agent_memory(conv_id, app.app_name)
-
-    logger.info(
-        f"[ecp-sql-runner] build agent {app_code} ws={ws} conv={conv_id}"
-    )
-    try:
-        recipient = await agent_chat.build_agent_by_app_code(
-            app_code, context, agent_memory
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.exception(f"[ecp-sql-runner] build agent failed: {e}")
-        result.errors.append(f"构建 Agent 失败: {e}")
-        return result
-
-    before = _proposed_ids(ws)
-    user_proxy = await UserProxyAgent().bind(context).bind(agent_memory).build()
-
     task = (
         f"用户想把下面这条 SQL 固化为企业语义资产(通常是指标 metric,或它依赖的 "
         f"entity/dimension)。\n"
@@ -294,25 +326,52 @@ async def run_sql_proposal(
         task = f"【用户说明】{description.strip()}\n\n{task}"
     if domain_hint:
         task = f"【领域背景】{domain_hint}\n\n{task}"
-
-    logger.info(f"[ecp-sql-runner] initiate_chat task for ws={ws}")
-    try:
-        await user_proxy.initiate_chat(
-            recipient=recipient, message=HumanMessage(content=task)
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.exception(f"[ecp-sql-runner] agent run failed: {e}")
-        result.errors.append(f"Agent 运行失败: {e}")
-
-    after = _proposed_ids(ws)
-    new_ids = sorted(after - before)
-    result.proposals_created = len(new_ids)
-    result.proposal_ids = new_ids
-    logger.info(
-        f"[ecp-sql-runner] done ws={ws}: +{result.proposals_created} "
-        f"proposals {new_ids}"
+    return await _run_proposal_agent_task(
+        system_app, app_code, workspace_id, "ecp_sql", task
     )
-    return result
+
+
+async def run_file_proposal(
+    system_app,
+    app_code: str,
+    workspace_id: Optional[str],
+    file_name: str,
+    file_path: str,
+    description: Optional[str] = None,
+    domain_hint: Optional[str] = None,
+) -> GenerateProposalsVO:
+    """Run the proposal Agent over an imported report file (whole-file learning).
+
+    与 :func:`run_sql_proposal` 对称,但输入是整份文件(传统报表 SQL 脚本/代码,
+    可能含多条查询):文件已落盘,Agent 用 read_report_file 工具分段通读全文
+    (不受提示词长度限制),整理学习出全部可识别的 metric/entity/dimension
+    提案。产出默认留在待确认收件箱(调用方不做自动确认)。
+    """
+    ws = workspace_id or DEFAULT_WORKSPACE_ID
+    task = (
+        f"用户上传了一份报表脚本文件「{file_name}」(传统报表的完整 SQL 脚本或"
+        f"生成报表的代码,可能包含多条查询)。\n"
+        f"文件已保存到: {file_path}\n"
+        f"请先用 read_report_file(file_path=\"{file_path}\", start_line=1, max_lines=400) "
+        f"分段读取;返回 has_more=true 时以 start_line=end_line+1 继续读下一段,"
+        f"直到通读全文。然后整理学习其中蕴含的业务口径:\n"
+        f"1. 识别文件中每条查询对应的业务指标(metric),及其依赖的实体(entity)/"
+        f"维度(dimension);\n"
+        f"2. 只围绕文件涉及的表/列,用 get_table_spec(datasource_id=<database.datasource_id>, "
+        f"table_name='表名') 读取必要结构(禁止全量扫描无关表),必要时用 "
+        f"sample_distinct_values 采样低基数维度列;\n"
+        f"3. 用 propose_semantic(..., workspace_id={ws}) 逐条落地提案;多条查询指向"
+        f"同一口径时只提案一次;提案会进待确认收件箱由人工确认,宁可少提、不可编造。\n"
+        f"表名必须与 get_table_spec 返回完全一致(多 schema 库保留 owner 前缀);"
+        f"日期/时间类型列在 entity 的 fields 中标注 role=time。"
+    )
+    if description and description.strip():
+        task = f"【用户说明】{description.strip()}\n\n{task}"
+    if domain_hint:
+        task = f"【领域背景】{domain_hint}\n\n{task}"
+    return await _run_proposal_agent_task(
+        system_app, app_code, workspace_id, "ecp_file", task
+    )
 
 
 # --------------------------------------------------------------------- async
@@ -437,5 +496,90 @@ async def enqueue_proposal(service, request) -> str:
     logger.info(
         f"[ecp-proposal-runner] enqueued async task {task_id} "
         f"ws={request.workspace_id or 'default'}"
+    )
+    return task_id
+
+
+_ECP_FILE_TASK_KIND = "ecp_file_import"
+
+
+async def enqueue_file_import(
+    service,
+    file_name: str,
+    file_path: str,
+    workspace_id: Optional[str] = None,
+    description: Optional[str] = None,
+) -> str:
+    """提交报表文件导入任务(异步),立即返回 task_id。
+
+    与 :func:`enqueue_proposal` 同一套异步任务引擎;resume 闭包执行
+    :func:`run_file_proposal`(Agent 用 read_report_file 分段通读全文),
+    产出留在待确认收件箱,不做自动确认。未配置提案 Agent 时直接抛
+    ValueError(fail fast,与 add_from_sql 一致)。任务结束后删除落盘文件
+    (提案与任务记录已含文件名溯源,无需保留原件)。
+    """
+    from gyra.agent.util.async_task_manager import AsyncTaskManager, AsyncTaskSpec
+
+    ws = workspace_id or DEFAULT_WORKSPACE_ID
+    try:
+        cfg = service.get_workspace_config(ws)
+        agent_id = getattr(cfg, "proposal_agent_id", None) if cfg else None
+    except Exception:  # noqa: BLE001
+        agent_id = None
+    if not agent_id:
+        raise ValueError(
+            "工作空间未配置提案 Agent(proposal_agent_id),"
+            "请先在 ECP「治理」中配置提案 Agent 后再导入文件"
+        )
+
+    task_id = f"ecp_file_{ws}_{uuid.uuid4().hex[:8]}"
+    result_box: dict = {}
+    context: dict = {"artifact": result_box}
+
+    async def _resume() -> str:
+        try:
+            result = await run_file_proposal(
+                system_app=service._system_app,
+                app_code=agent_id,
+                workspace_id=ws,
+                file_name=file_name,
+                file_path=file_path,
+                description=description,
+            )
+        finally:
+            try:
+                os.unlink(file_path)
+            except OSError:
+                pass
+        if result.errors and not result.proposals_created:
+            raise RuntimeError(result.errors[0])
+        result_box.update(
+            {
+                "file_name": file_name,
+                "proposals_created": result.proposals_created,
+                "proposal_ids": result.proposal_ids,
+                "errors": result.errors,
+            }
+        )
+        return (
+            f"从文件 {file_name} 提炼 {result.proposals_created} 条提案"
+            f"(已进待确认收件箱)"
+        )
+
+    spec = AsyncTaskSpec(
+        task_id=task_id,
+        conv_id=ws,
+        kind=_ECP_FILE_TASK_KIND,
+        model=agent_id,
+        task_description=f"从报表文件 {file_name} 提炼语义提案",
+        timeout=3600,
+        context=context,
+        resume=_resume,
+        deliver=_deliver,
+    )
+    task_id = await AsyncTaskManager.media_instance().spawn(spec)
+    logger.info(
+        f"[ecp-proposal-runner] enqueued file import task {task_id} "
+        f"ws={ws} file={file_name}"
     )
     return task_id

@@ -1,4 +1,9 @@
-"""FastAPI dependency factories for permission checking."""
+"""FastAPI dependency factories for permission checking.
+
+``require_permission`` 是 ``gyra_serve.permissions.has`` 的依赖包装:
+统一走协议判定(注册表 fail-closed + deny 否决 + 实例级 grant),
+旁路语义(插件关闭放行 / legacy admin / superadmin)由 has() 保证。
+"""
 
 from typing import Optional
 
@@ -26,72 +31,33 @@ def require_permission(
         ):
             ...
 
-        # 检查对特定 agent 的 chat 权限（资源范围）
-        @router.post("/agents/{agent_name}/chat")
-        async def chat_with_agent(
-            agent_name: str,
-            user: UserRequest = Depends(require_permission("agent", "chat", resource_id=agent_name)),
-        ):
-            ...
+        # 检查对特定资源的权限时,resource_id 在依赖构造期传入
+        # (路径参数需在端点函数体内用 has_permission 判定,
+        #  依赖工厂拿不到路径参数)
 
-    插件关闭时：直接放行（user.permissions 为 None）
-    插件开启时：检查 RBAC，无权限返回 403
-
-    注意：如果用户 role 字段为 "admin"，也允许通过（兼容旧版 admin 用户）
-
-    权限检查优先级：
-    1. superadmin 角色绕过所有检查
-    2. 精确匹配 resource_id 的权限
-    3. 通配符 resource_id="*" 的权限
+    判定语义(与 gyra_serve.permissions.has 一致):
+    1. 未注册的权限 key → 拒绝(fail-closed)
+    2. 插件关闭(permissions 为 None)→ 放行(开发模式)
+    3. legacy role=="admin" / superadmin 角色 → 放行
+    4. deny 命中(scoped 或通配)→ 拒绝
+    5. 角色权限:精确 resource_id → 通配 → "admin" 动作覆盖
+    6. 资源实例级 grant(resource_grant 表)
+    7. 全部未命中 → 403
     """
+    permission_key = f"{resource_type}.{action}"
 
     def dependency(user: UserRequest = Depends(get_user_from_headers)) -> UserRequest:
-        # 插件关闭 → permissions 为 None → 不做检查
-        if user.permissions is None:
+        if has_permission(user, permission_key, resource_id=resource_id):
             return user
-
-        # 用户表中 role 为 admin 的用户也允许通过（兼容旧版）
-        if user.role == "admin":
-            return user
-
-        # superadmin 角色绕过所有权限检查
-        if "superadmin" in (user.roles or []):
-            return user
-
-        # 检查权限：支持资源范围权限和通配符权限
-        # 权限格式：user.permissions 是 dict，value 是 list of strings
-        # 例如：{"agent": ["read", "chat"], "agent:financial-advisor": ["read"]}
-
-        # 1. 先检查精确匹配（resource_id 指定的资源）
-        if resource_id and resource_id != "*":
-            scoped_key = f"{resource_type}:{resource_id}"
-            scoped_actions = user.permissions.get(scoped_key, [])
-            if action in scoped_actions or "admin" in scoped_actions:
-                return user
-
-        # 2. 检查通配符权限（resource_id="*" 或 resource_type 本身）
-        allowed = user.permissions.get(resource_type, [])
-        wildcard = user.permissions.get("*", [])
-
-        if (
-            action in allowed
-            or "admin" in allowed
-            or action in wildcard
-            or "admin" in wildcard
-        ):
-            return user
-
-        # 3. 无权限
         if resource_id and resource_id != "*":
             raise HTTPException(
                 status_code=403,
                 detail=f"Permission denied: {action} on {resource_type}:{resource_id}",
             )
-        else:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Permission denied: {action} on {resource_type}",
-            )
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission denied: {action} on {resource_type}",
+        )
 
     return dependency
 

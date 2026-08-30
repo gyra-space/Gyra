@@ -1734,7 +1734,7 @@ const [recommendedMcps, setRecommendedMcps] = useState<any[]>([]);
             text="自定义智能体"
             isOutline={true}
             iconColor="text-gray-400 dark:text-gray-500"
-            onClick={() => router.push('/application/app')}
+            onClick={() => router.push('/application/explore')}
           />
         </div>
       </div>

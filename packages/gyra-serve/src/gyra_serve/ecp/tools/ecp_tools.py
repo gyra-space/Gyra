@@ -13,6 +13,7 @@ Tools are stateless: workspace_id is an argument (default 'default').
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from gyra.agent.tools.decorators import tool
@@ -20,14 +21,30 @@ from gyra.agent.tools.base import ToolCategory, ToolRiskLevel
 from gyra.agent.resource.tool.base import FunctionTool
 from gyra.vis import Vis
 
-from ..config import DEFAULT_WORKSPACE_ID
-from ..models.models import MissLearnDao, OpLogDao, SemanticObjectDao
+from ..config import DEFAULT_WORKSPACE_ID, STATUS_CONFIRMED
+from ..models.models import (
+    MissLearnDao,
+    OpLogDao,
+    SemanticAlignmentDao,
+    SemanticObjectDao,
+)
+from ..service.query_understanding import expand_query_terms
 
 logger = logging.getLogger(__name__)
 
 
 def _ws(workspace_id: Optional[str]) -> str:
     return workspace_id or DEFAULT_WORKSPACE_ID
+
+
+def _service():
+    """ECP Service 组件(tools 无状态,经 SYSTEM_APP 按需获取)。"""
+    from gyra._private.config import Config
+
+    from ..config import SERVE_SERVICE_COMPONENT_NAME
+    from ..service.service import Service
+
+    return Config().SYSTEM_APP.get_component(SERVE_SERVICE_COMPONENT_NAME, Service)
 
 
 # d-sql-query VIS 围栏的 JSON 上限:保证围栏完整、不被外层截断,避免前端渲染成残缺组件。
@@ -83,12 +100,18 @@ def _cap_sql_display_rows(
     "search_semantics",
     description=(
         "Search CONFIRMED enterprise semantic objects (metrics/entities/"
-        "dimensions/relations) by keyword. Always search here first when "
+        "dimensions/relations). Accepts natural language: the query is "
+        "expanded via LLM (synonyms/aliases/CN-EN variants, returned as "
+        "expanded_terms) and matched against object names/aliases/descriptions "
+        "plus confirmed alignment synonyms. Always search here first when "
         "answering business-number questions; only use execute_raw_sql if "
         "nothing matches."
     ),
     args={
-        "query": {"type": "string", "description": "关键词（名称/别名/id）"},
+        "query": {
+            "type": "string",
+            "description": "关键词或自然语言短语（名称/别名/id，中英文均可）",
+        },
         "workspace_id": {
             "type": "string",
             "description": "工作空间 id，默认 default",
@@ -100,27 +123,76 @@ def _cap_sql_display_rows(
 )
 async def search_semantics(query: str, workspace_id: Optional[str] = None, **kwargs) -> str:
     ws = _ws(workspace_id)
-    entries = SemanticObjectDao().list_catalog(ws, keyword=query)
-    results = [
-        {
-            "id": e.id,
-            "type": e.obj_type,
-            "name": e.name,
-            "aliases": e.aliases,
-            "one_line": e.one_line,
-        }
-        for e in entries
-    ]
+    entries = SemanticObjectDao().list_catalog(ws)
+    # 查询理解:本地分词 + LLM 语义扩展(同义词/别名/中英对照),失败降级本地分词
+    terms = await expand_query_terms(query)
+    term_set = [t.casefold() for t in terms if t and t.strip()]
+    ql = (query or "").strip().casefold()
+    # 已确认语义对齐:object_id → [实体名],LLM 推理产物(人工确认)补齐跨命名映射
+    aligned_map: Dict[str, List[str]] = {}
+    try:
+        for avo in SemanticAlignmentDao().list(ws, status=STATUS_CONFIRMED):
+            aligned_map.setdefault(avo.object_id, []).append(avo.entity_name.casefold())
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[ecp] search_semantics alignment load failed: {e}")
+
+    scored = []
+    for e in entries:
+        id_l = (e.id or "").casefold()
+        names_l = [n.casefold() for n in [e.name or "", *(e.aliases or [])] if n]
+        haystack = " ".join(
+            [id_l, e.name or "", *(e.aliases or []), e.one_line or ""]
+        ).casefold()
+        hit_terms = [t for t in term_set if t in haystack]
+        exact = bool(ql) and (any(ql in n for n in names_l) or ql in id_l)
+        ens = aligned_map.get(e.id) or []
+        aligned_hit = any(
+            t in en or en in t for t in term_set for en in ens
+        ) or bool(ql) and any(ql in en or en in ql for en in ens)
+        if not exact and not hit_terms and not aligned_hit:
+            continue
+        score = len(hit_terms) / len(term_set) if term_set else 0.0
+        match_type = "expanded"
+        if aligned_hit:
+            score += 1.5
+            match_type = "aligned"
+        if exact:
+            score += 2.0
+            match_type = "exact"
+        scored.append(
+            (
+                round(score, 4),
+                e.id or "",
+                {
+                    "id": e.id,
+                    "type": e.obj_type,
+                    "name": e.name,
+                    "aliases": e.aliases,
+                    "one_line": e.one_line,
+                    "score": round(score, 4),
+                    "match_type": match_type,
+                },
+            )
+        )
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    results = [item[2] for item in scored[:50]]
     # vis 输出:右面板独立渲染(类型徽章+结果卡片);失败回退裸 JSON
     try:
         vis = Vis.of("d-ecp-search")
         if vis:
             return vis.sync_display(
-                query=query, workspace_id=ws, total=len(results), results=results
+                query=query,
+                workspace_id=ws,
+                total=len(results),
+                results=results,
+                expanded_terms=terms,
             )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[ecp] search_semantics vis display failed: {e}")
-    return json.dumps(results, ensure_ascii=False)
+    return json.dumps(
+        {"expanded_terms": terms, "total": len(results), "results": results},
+        ensure_ascii=False,
+    )
 
 
 @tool(
@@ -324,7 +396,11 @@ async def execute_metric_query_tool(
         "distributions/correlations/custom calibers. This is how the "
         "semantic layer learns: your reasoning feeds miss clustering. "
         "You MUST tell the user results are unverified caliber, and "
-        "propose_semantic valuable reusable calibers you discovered."
+        "propose_semantic valuable reusable calibers you discovered. "
+        "SQL 编写规范: 性能优先——禁止 SELECT *;单次查询返回不超过 2000 行"
+        "(系统自动封顶 LIMIT 并截断超限结果,超过 30s 的查询会被终止);"
+        "大表必须带时间过滤,单次查询时间跨度不超过 1 年,跨年分批查询再汇总;"
+        "WHERE 优先使用索引列,聚合在库内完成(GROUP BY + LIMIT)。"
     ),
     args={
         "datasource_id": {"type": "integer", "description": "数据源 id"},
@@ -379,6 +455,8 @@ async def execute_raw_sql(
         await ensure_auto_learn_cron(ws)
     except Exception:  # noqa: BLE001
         pass
+    truncated = False
+    row_limit = 0
     try:
         from gyra_serve.datasource.manages.connect_config_db import (
             ConnectConfigDao,
@@ -392,8 +470,30 @@ async def execute_raw_sql(
                 {"error": f"数据源 {datasource_id} 不存在", "trust": "none"},
                 ensure_ascii=False,
             )
-        connector = Config().local_db_manager.get_connector(db_name)
-        raw = connector.run(sql)
+        cfg = Config()
+        connector = cfg.local_db_manager.get_connector(db_name)
+        # 执行安全层:LIMIT 注入/封顶 + 语句超时 + 流式截断(与 execute_sql 一致)
+        from gyra_serve.sql_guard.safe_exec import (
+            apply_select_limit,
+            run_select_with_limits,
+            timeout_error_message,
+        )
+
+        row_limit = cfg.SQL_MAX_ROWS
+        dialect = getattr(connector, "dialect", getattr(connector, "db_type", ""))
+        sql = apply_select_limit(sql, dialect, row_limit)
+        try:
+            raw, truncated = run_select_with_limits(
+                connector, sql, timeout=cfg.SQL_QUERY_TIMEOUT, max_rows=row_limit
+            )
+        except TimeoutError:
+            return json.dumps(
+                {
+                    "error": timeout_error_message(cfg.SQL_QUERY_TIMEOUT, row_limit),
+                    "trust": "none",
+                },
+                ensure_ascii=False,
+            )
     except Exception as e:  # noqa: BLE001
         return json.dumps({"error": str(e), "trust": "none"}, ensure_ascii=False)
     columns, rows = [], []
@@ -407,13 +507,18 @@ async def execute_raw_sql(
 
     # 隐私脱敏:与 execute_sql 一致,结果统一走脱敏入口后再进入展示/导出,
     # 保证 ECP 兜底的 execute_raw_sql 也遵守数据库脱敏原则。
+    # 系统目录表(all_tables 等)只含元数据、无业务数据,且其列名易与
+    # 业务脱敏规则撞名(触发 masker 按列名的兜底匹配),故跳过脱敏;
+    # 混合查询(系统表 + 业务表)仍保守脱敏。
     if rows:
         try:
-            from gyra_serve.sql_guard.masking import mask_run_result
-
-            columns, rows, _masked = mask_run_result(
-                datasource_id, columns, rows
+            from gyra_serve.sql_guard.masking import (
+                is_internal_catalog_sql,
+                mask_run_result,
             )
+
+            if not is_internal_catalog_sql(sql):
+                columns, rows, _masked = mask_run_result(datasource_id, columns, rows)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[execute_raw_sql] masking skipped: {e}")
 
@@ -445,6 +550,12 @@ async def execute_raw_sql(
         "trust": "inferred",
         "warning": "⚠️ 未验证口径：此结果未经语义层确认",
     }
+
+    if truncated:
+        result_data["result_truncation_note"] = (
+            f"结果已按安全上限截断为 {row_limit} 行(实际还有更多数据)。"
+            "请加大时间过滤(单次时间跨度不超过 1 年)、库内聚合或分批查询。"
+        )
 
     try:
         vis = Vis.of("d-sql-query")
@@ -587,7 +698,11 @@ async def mark_miss_learned(
         "THE gated ✅ path for factual questions about managed documents "
         "(policies/definitions/rules). Execute CONFIRMED canon entries "
         "(claim/terminology/policy from search_semantics) and get answers "
-        "with citations. Returns trust=verified with full lineage."
+        "with citations + full lineage. Each answer carries anchor_status "
+        "(verified/drift/unquoted/unchecked) and top-level trust is honest: "
+        "verified = all anchors replayed OK, partial = some drifted (doc may "
+        "have changed), inferred = could not verify. Surface drift warnings "
+        "and propose updating the anchor."
     ),
     args={
         "question": {"type": "string", "description": "原始事实型问题"},
@@ -707,6 +822,18 @@ async def explore_docs(
     except Exception:  # noqa: BLE001
         pass
 
+    # 查询理解:扩展查询变体多路召回(主问句 hybrid + 扩展词 keyword),RRF 合并
+    try:
+        terms = await expand_query_terms(question, max_terms=8)
+    except Exception:  # noqa: BLE001
+        terms = []
+    variants = [question]
+    for t in terms:
+        if t and t not in variants:
+            variants.append(t)
+        if len(variants) >= 3:
+            break
+
     # 检索各空间 verbat(L0 原文块)
     hits: List[Dict[str, Any]] = []
     try:
@@ -721,19 +848,38 @@ async def explore_docs(
         )
 
         ks = system_app.get_component(KNOWLEDGE_SERVICE, KnowledgeService)
+
+        def _rrf(rank: int) -> float:
+            return 1.0 / (60 + rank)
+
         for sp in spaces:
             try:
                 vault = await ks.get_vault(sp)
-                for h in await vault.verbat_search(question, limit=limit, mode="hybrid"):
-                    hits.append(
-                        {
-                            "space": sp,
-                            "verbat_id": h.verbat_id,
-                            "score": round(getattr(h, "score", 0) or 0, 3),
-                            "snippet": getattr(h, "snippet", ""),
-                            "source_file": getattr(h, "source_file", ""),
-                        }
-                    )
+                merged: Dict[str, Dict[str, Any]] = {}
+                for vi, variant in enumerate(variants):
+                    mode = "hybrid" if vi == 0 else "keyword"
+                    try:
+                        found = await vault.verbat_search(
+                            variant, limit=limit * 2, mode=mode
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.info(
+                            f"[explore_docs] variant {variant!r} on space {sp} failed: {e}"
+                        )
+                        continue
+                    for rank, h in enumerate(found):
+                        entry = merged.setdefault(
+                            h.verbat_id,
+                            {
+                                "space": sp,
+                                "verbat_id": h.verbat_id,
+                                "score": 0.0,
+                                "snippet": getattr(h, "snippet", ""),
+                                "source_file": getattr(h, "source_file", ""),
+                            },
+                        )
+                        entry["score"] += _rrf(rank)
+                hits.extend(merged.values())
             except Exception as e:  # noqa: BLE001
                 logger.info(f"[explore_docs] search space {sp} failed: {e}")
     except Exception as e:  # noqa: BLE001
@@ -741,13 +887,199 @@ async def explore_docs(
             {"error": f"知识服务不可用: {e}", "trust": "none"}, ensure_ascii=False
         )
 
+    for h in hits:
+        h["score"] = round(h["score"], 4)
     hits = sorted(hits, key=lambda x: -x["score"])[:limit]
     return json.dumps(
         {
             "hits": hits,
             "spaces_searched": spaces,
+            "query_variants": variants,
             "trust": "inferred",
             "warning": "⚠️ 未验证口径:结果来自临时检索,未经语义层确认",
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def _sheet_headers(content: str) -> List[str]:
+    """提取内容中的 Excel sheet 块标题(## Sheet: <name> (N rows))。"""
+    names: List[str] = []
+    for m in re.finditer(r"(?m)^## Sheet:\s*(.+?)\s*$", content):
+        name = re.sub(r"\s*\(\d+\s*rows\)\s*$", "", m.group(1)).strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _extract_sheet_block(content: str, sheet: str) -> Optional[str]:
+    """按 sheet 名取 Excel 分块:从 ## Sheet: <name> 表头到下一个 ## 标题或文末。"""
+    marker = f"## Sheet: {sheet}"
+    idx = content.find(marker)
+    if idx == -1:
+        return None
+    nxt = content.find("\n## ", idx + len(marker))
+    return content[idx:] if nxt == -1 else content[idx:nxt]
+
+
+@tool(
+    "get_verbat",
+    description=(
+        "Read the FULL content of a located knowledge document (verbat) by id. "
+        "explore_docs only returns short snippets — use this after it to get "
+        "the complete rows/data. For spreadsheet-derived docs read one sheet "
+        "block at a time (names in the response's sheets); large docs page via "
+        "offset/limit. Always trust=inferred."
+    ),
+    args={
+        "verbat_id": {"type": "string", "description": "verbat id(来自 explore_docs 命中的 verbat_id)"},
+        "space": {
+            "type": "string",
+            "description": "限定知识空间 slug;不填则在本工作空间全部托管空间内查找",
+            "required": False,
+        },
+        "sheet": {
+            "type": "string",
+            "description": "只读取该 sheet 的分块内容(Excel/表格类文档,名字见响应里的 sheets)",
+            "required": False,
+        },
+        "offset": {
+            "type": "integer",
+            "description": "内容字符偏移(配合 limit 分页读大文档),默认 0",
+            "required": False,
+        },
+        "limit": {
+            "type": "integer",
+            "description": "单次最多返回字符数,默认 6000;超出置 truncated 并提示分页/sheet 精读",
+            "required": False,
+        },
+        "workspace_id": {
+            "type": "string",
+            "description": "工作空间 id，默认 default",
+            "required": False,
+        },
+    },
+    category=ToolCategory.SEARCH,
+    risk_level=ToolRiskLevel.SAFE,
+)
+async def get_verbat(
+    verbat_id: str,
+    space: Optional[str] = None,
+    sheet: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 6000,
+    workspace_id: Optional[str] = None,
+    **kwargs,
+) -> str:
+    from ..models.models import AssetRefDao
+
+    ws = _ws(workspace_id)
+    # 目标空间解析:与 explore_docs 一致
+    if space:
+        spaces = [space]
+    else:
+        try:
+            spaces = [
+                a.ref_id
+                for a in AssetRefDao().list(ws, kind="space") or []
+                if getattr(a, "status", "active") == "active"
+            ]
+        except Exception:  # noqa: BLE001
+            spaces = []
+    if not spaces:
+        return json.dumps(
+            {"error": f"工作空间 {ws} 无托管知识空间", "trust": "none"},
+            ensure_ascii=False,
+        )
+
+    try:
+        from gyra._private.config import Config
+        from gyra_serve.knowledge.config import (
+            SERVE_SERVICE_COMPONENT_NAME as KNOWLEDGE_SERVICE,
+        )
+        from gyra_serve.knowledge.service.service import (
+            Service as KnowledgeService,
+        )
+
+        ks = Config().SYSTEM_APP.get_component(KNOWLEDGE_SERVICE, KnowledgeService)
+    except Exception as e:  # noqa: BLE001
+        return json.dumps(
+            {"error": f"知识服务不可用: {e}", "trust": "none"}, ensure_ascii=False
+        )
+
+    # 按 id 在目标空间内定位 verbat
+    hit_space: Optional[str] = None
+    v = None
+    for sp in spaces:
+        try:
+            vault = await ks.get_vault(sp)
+        except Exception as e:  # noqa: BLE001
+            logger.info(f"[get_verbat] space {sp} failed: {e}")
+            continue
+        try:
+            v = await vault.verbat_get(verbat_id)
+        except Exception as e:  # noqa: BLE001
+            logger.info(f"[get_verbat] verbat_get {verbat_id} on {sp} failed: {e}")
+            continue
+        if v is not None:
+            hit_space = sp
+            break
+    if v is None:
+        return json.dumps(
+            {"error": f"未找到 verbat {verbat_id}", "trust": "none"},
+            ensure_ascii=False,
+        )
+
+    full = v.content or ""
+    total_len = len(full)
+    sheets = _sheet_headers(full)
+
+    # 内容源:sheet 分块(若指定)或全文;offset/limit 统一分页截断
+    if sheet:
+        block = _extract_sheet_block(full, sheet)
+        if block is None:
+            return json.dumps(
+                {
+                    "error": f"未找到 sheet {sheet!r}",
+                    "available_sheets": sheets,
+                    "trust": "none",
+                },
+                ensure_ascii=False,
+            )
+        source = block
+        source_label = f"sheet {sheet!r} 分块"
+    else:
+        source = full
+        source_label = "全文"
+    source_len = len(source)
+    start = max(0, int(offset or 0))
+    max_chars = max(0, int(limit or 0))
+    seg = source[start : start + max_chars] if max_chars else source[start:]
+    truncated = start + len(seg) < source_len
+
+    note = f"内容源: {source_label}({source_len} 字符);本次返回 {len(seg)} 字符"
+    if truncated:
+        note += ";已截断,可调 offset/limit 继续读,或按 sheets 精读分块"
+    if sheet:
+        note += f";可用 sheets: {sheets}"
+
+    return json.dumps(
+        {
+            "space": hit_space,
+            "verbat_id": v.id,
+            "source_file": v.source_file,
+            "extract_mode": getattr(v.extract_mode, "value", str(v.extract_mode)),
+            "deprecated": v.deprecated,
+            "filed_at": v.filed_at.isoformat() if v.filed_at else None,
+            "sheets": sheets,
+            "total_len": total_len,
+            "returned_len": len(seg),
+            "truncated": truncated,
+            "content": seg,
+            "note": note,
+            "trust": "inferred",
+            "warning": "⚠️ 未验证口径:此为知识库原始文档内容(L0),未经语义层确认",
         },
         ensure_ascii=False,
         default=str,
@@ -802,6 +1134,20 @@ async def get_ecp_catalog(workspace_id: Optional[str] = None, **kwargs) -> str:
             ),
         },
         "confidence": {"type": "number", "description": "置信度 0-1", "required": False},
+        "miss_ref": {
+            "type": "object",
+            "description": (
+                "MISS 学习溯源(从 get_miss_report 聚类学习时必传):"
+                "{kind, pattern, datasource_id} 聚类键,提案详情可回链原始 miss 轨迹"
+            ),
+            "required": False,
+        },
+        "origin_sql": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "产生该提案的原始 SQL 快照(MISS 学习/手工 SQL 时传入,确认人可见)",
+            "required": False,
+        },
         "workspace_id": {
             "type": "string",
             "description": "工作空间 id，默认 default",
@@ -816,59 +1162,53 @@ async def propose_semantic(
     obj_type: str,
     payload: Dict[str, Any],
     confidence: Optional[float] = None,
+    miss_ref: Optional[Dict[str, Any]] = None,
+    origin_sql: Optional[List[str]] = None,
     workspace_id: Optional[str] = None,
     **kwargs,
 ) -> str:
-    from ..config import OBJECT_TYPES, STATUS_PROPOSED
-    from ..service.contracts import normalize_payload, validate_payload
+    """提案工具薄壳:统一经 Service.propose 唯一写入口(契约门禁/兜底/边投影)。
+
+    miss_ref 给定时 origin=miss_learn(并回链 miss 聚类),否则 origin=agent。
+    """
+    from ..config import (
+        ORIGIN_AGENT,
+        ORIGIN_MISS_LEARN,
+        STATUS_PROPOSED,
+        make_provenance,
+    )
+    from ..service.contracts import ContractViolation
 
     ws = _ws(workspace_id)
-    if obj_type not in OBJECT_TYPES:
-        return json.dumps(
-            {"error": f"obj_type 必须是 {OBJECT_TYPES} 之一"}, ensure_ascii=False
+    origin = ORIGIN_MISS_LEARN if miss_ref else ORIGIN_AGENT
+    try:
+        vo = _service().propose(
+            object_id=object_id,
+            obj_type=obj_type,
+            payload=payload,
+            workspace_id=ws,
+            confidence=confidence,
+            created_by="llm",
+            source="agent:propose_semantic",
+            provenance=make_provenance(
+                origin,
+                actor="agent:propose_semantic",
+                origin_sql=origin_sql,
+                miss_ref=miss_ref,
+            ),
+            gate_level="executable",
         )
-    # 入库前归一 + 可执行级契约校验(与 confirm 晋升门禁同标准):不满足则拒绝入库,
-    # 避免不可确认的"死提案"堆积进收件箱。agent 拿到 contract_gaps 后补全重提即可。
-    normalized = normalize_payload(obj_type, payload)
-    # entity 确定性兜底:Oracle 多 schema 表名 owner 补全 + 时间列 role=time
-    # (LLM 提案系统性缺陷,见 propose.normalize_entity_binding)
-    if obj_type == "entity":
-        try:
-            from ..service.propose import normalize_entity_binding
-
-            ds_id = (normalized.get("binding") or {}).get("datasource_id")
-            specs = None
-            if ds_id:
-                from gyra_serve.datasource.manages.table_spec_db import TableSpecDao
-
-                specs = TableSpecDao().get_all_by_datasource(ds_id) or []
-            normalize_entity_binding(normalized, specs)
-        except Exception:  # noqa: BLE001 兜底失败不阻塞提案(契约校验仍生效)
-            pass
-    problems = validate_payload(obj_type, normalized, level="executable")
-    if problems:
+    except ContractViolation as e:
         return json.dumps(
             {
                 "error": "提案不满足可执行契约,未入库;请补全后重提",
-                "contract_gaps": problems,
+                "contract_gaps": e.problems,
             },
             ensure_ascii=False,
         )
-    vo = SemanticObjectDao().create_proposal(
-        object_id,
-        obj_type,
-        normalized,
-        workspace_id=ws,
-        confidence=confidence,
-        created_by="llm",
-        source="agent:propose_semantic",
-    )
+    except ValueError as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
     if vo.status == STATUS_PROPOSED:
-        OpLogDao().append(
-            "propose", ws,
-            {"id": object_id, "version": vo.version, "type": obj_type,
-             "source": "agent:propose_semantic"},
-        )
         note = "提案已进入确认收件箱，确认前不影响任何查询"
     else:
         # 去重命中:返回已有 confirmed VO,未产生新提案
@@ -884,7 +1224,7 @@ async def propose_semantic(
 
 
 def build_ecp_agent_tools(workspace_id: Optional[str] = None) -> List[FunctionTool]:
-    """Build the 6 ECP agent tools with ``workspace_id`` bound by closure.
+    """Build the ECP agent tools with ``workspace_id`` bound by closure.
 
     Mirrors ``build_scene_management_tools``: workspace_id is captured so the agent
     never passes it (cannot get it wrong -- catalog injected by ECPCapability and
@@ -948,17 +1288,37 @@ def build_ecp_agent_tools(workspace_id: Optional[str] = None) -> List[FunctionTo
             workspace_id=ws,
         )
 
+    async def _get_verbat(
+        verbat_id: str,
+        space: Optional[str] = None,
+        sheet: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 6000,
+    ) -> str:
+        return await get_verbat(
+            verbat_id=verbat_id,
+            space=space,
+            sheet=sheet,
+            offset=offset,
+            limit=limit,
+            workspace_id=ws,
+        )
+
     async def _propose(
         object_id: str,
         obj_type: str,
         payload: Dict[str, Any],
         confidence: Optional[float] = None,
+        miss_ref: Optional[Dict[str, Any]] = None,
+        origin_sql: Optional[List[str]] = None,
     ) -> str:
         return await propose_semantic(
             object_id=object_id,
             obj_type=obj_type,
             payload=payload,
             confidence=confidence,
+            miss_ref=miss_ref,
+            origin_sql=origin_sql,
             workspace_id=ws,
         )
 
@@ -1096,6 +1456,41 @@ def build_ecp_agent_tools(workspace_id: Optional[str] = None) -> List[FunctionTo
             },
         ),
         FunctionTool(
+            "get_verbat",
+            _get_verbat,
+            description=(
+                "按 verbat_id 读取已定位知识文档的完整内容(explore_docs 只给片段)。"
+                "explore_docs 命中后用它拿完整行/数据;Excel 类文档支持 sheet 精读分块,"
+                "大文档支持 offset/limit 分页。结果须声明未验证口径。"
+            ),
+            args={
+                "verbat_id": {
+                    "type": "string",
+                    "description": "来自 explore_docs 命中的 verbat_id",
+                },
+                "space": {
+                    "type": "string",
+                    "description": "限定知识空间 slug,不填则在全部托管空间查找",
+                    "required": False,
+                },
+                "sheet": {
+                    "type": "string",
+                    "description": "只读取该 sheet 分块(Excel/表格类文档)",
+                    "required": False,
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "内容字符偏移,默认 0",
+                    "required": False,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "单次最多返回字符数,默认 6000",
+                    "required": False,
+                },
+            },
+        ),
+        FunctionTool(
             "propose_semantic",
             _propose,
             description="提案新语义对象(指标/实体/维度/关系)。只进确认收件箱,确认前不影响查询。",
@@ -1121,6 +1516,20 @@ def build_ecp_agent_tools(workspace_id: Optional[str] = None) -> List[FunctionTo
                 "confidence": {
                     "type": "number",
                     "description": "置信度 0-1",
+                    "required": False,
+                },
+                "miss_ref": {
+                    "type": "object",
+                    "description": (
+                        "MISS 学习溯源(从 get_miss_report 聚类学习时必传):"
+                        "{kind, pattern, datasource_id} 聚类键"
+                    ),
+                    "required": False,
+                },
+                "origin_sql": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "产生该提案的原始 SQL 快照(MISS 学习/手工 SQL 时传入)",
                     "required": False,
                 },
             },

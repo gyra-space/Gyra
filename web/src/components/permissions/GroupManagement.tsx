@@ -215,6 +215,33 @@ export default function GroupManagement({ roles }: GroupManagementProps) {
     }
   };
 
+  // ========== 编辑组(改名/描述) ==========
+  const [editGroup, setEditGroup] = useState<UserGroupRow | null>(null);
+  const [editForm] = Form.useForm();
+
+  const openEdit = (row: UserGroupRow) => {
+    setEditGroup(row);
+    editForm.setFieldsValue({ name: row.name, description: row.description });
+  };
+
+  const handleEdit = async () => {
+    if (!editGroup) return;
+    try {
+      const v = await editForm.validateFields();
+      await userGroupsService.updateGroup(editGroup.id, {
+        name: v.name,
+        description: v.description,
+      });
+      message.success(t('plugin_user_groups_updated') || '用户组已更新');
+      setEditGroup(null);
+      editForm.resetFields();
+      await loadGroups();
+    } catch (e: unknown) {
+      if ((e as { errorFields?: unknown })?.errorFields) return;
+      message.error(String(e));
+    }
+  };
+
   const handleAddMembers = async () => {
     if (!activeGroup || selectedUserIds.length === 0) return;
     try {
@@ -417,6 +444,10 @@ export default function GroupManagement({ roles }: GroupManagementProps) {
                   {t('permissions_add_authorization') || '新增授权'}
                 </Button>
                 <Divider type="vertical" className="mx-0" />
+                <Button type="link" size="small" onClick={() => openEdit(row)} className="px-0">
+                  {t('edit') || '编辑'}
+                </Button>
+                <Divider type="vertical" className="mx-0" />
                 <Popconfirm
                   title={t('plugin_user_groups_delete_confirm')}
                   onConfirm={() => handleDelete(row.id)}
@@ -444,6 +475,32 @@ export default function GroupManagement({ roles }: GroupManagementProps) {
         width={600}
       >
         <Form form={createForm} layout="vertical">
+          <Form.Item
+            name="name"
+            label={t('plugin_user_groups_col_name') || '组名称'}
+            rules={[{ required: true, message: t('plugin_user_groups_name_required') }]}
+          >
+            <Input maxLength={128} />
+          </Form.Item>
+          <Form.Item name="description" label={t('plugin_user_groups_col_desc') || '描述'}>
+            <Input.TextArea rows={3} maxLength={2000} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* Edit Group Modal */}
+      <Modal
+        title={t('plugin_user_groups_edit_group') || '编辑用户组'}
+        open={!!editGroup}
+        onOk={handleEdit}
+        onCancel={() => {
+          setEditGroup(null);
+          editForm.resetFields();
+        }}
+        destroyOnClose
+        width={600}
+      >
+        <Form form={editForm} layout="vertical">
           <Form.Item
             name="name"
             label={t('plugin_user_groups_col_name') || '组名称'}

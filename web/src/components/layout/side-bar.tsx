@@ -23,7 +23,6 @@ import Icon, {
   MoonOutlined,
   SunOutlined,
   RightOutlined,
-  CompassOutlined,
   DeploymentUnitOutlined,
   BarChartOutlined,
 } from '@ant-design/icons';
@@ -188,7 +187,7 @@ function SideBar() {
   );
 
   const navSections = useMemo(() => {
-    // ── 核心入口:场景空间 / 智能体空间 ──
+    // ── 核心入口:场景空间 / 历史记录 ──
     const mainItems: RouteItem[] = [
       {
         key: 'workspaces',
@@ -197,13 +196,6 @@ function SideBar() {
         icon: navIcon(<TeamOutlined />),
         path: '/workspaces',
       },
-      ...(hasResourceRead('agent') ? [{
-        key: 'explore',
-        name: t('agent_space'),
-        isActive: pathname.startsWith('/application/explore'),
-        icon: navIcon(<CompassOutlined />),
-        path: '/application/explore',
-      }] : []),
       {
         key: 'history',
         name: t('chat_history'),
@@ -213,25 +205,30 @@ function SideBar() {
       },
     ];
 
-    // ── 能力:Agent / Skill / MCP / 定时任务 / 任务引擎 / 消息渠道 ──
+    // 中文模式下菜单名显示为 中文名(英文名)
+    const isZh = i18n.language === 'zh';
+    const menuName = (zhName: string, enName: string) =>
+      isZh ? `${zhName}(${enName})` : enName;
+
+    // ── 能力:专家(Agent) / 技能(Skill) / 链接(MCP) / 定时任务 / 任务引擎 / 消息渠道 ──
     const capabilityItems: RouteItem[] = [
       ...(hasResourceRead('agent') ? [{
         key: 'agents',
-        name: t('Agents'),
-        isActive: pathname.startsWith('/application/app'),
+        name: menuName('专家', 'Agent'),
+        isActive: pathname.startsWith('/application'),
         icon: navIcon(<RobotOutlined />),
-        path: '/application/app',
+        path: '/application/explore',
       }] : []),
       ...(hasResourceRead('tool') ? [{
         key: 'agent_skills',
-        name: t('agent_skills'),
+        name: menuName('技能', 'Skill'),
         isActive: pathname.startsWith('/agent-skills'),
         icon: navIcon(<ExperimentOutlined />),
         path: '/agent-skills',
       }] : []),
       ...(hasResourceRead('tool') ? [{
         key: 'MCP',
-        name: 'MCP',
+        name: menuName('链接', 'MCP'),
         isActive: pathname.startsWith('/mcp'),
         icon: navIcon(<ApiOutlined />),
         path: '/mcp',
@@ -343,7 +340,7 @@ function SideBar() {
       { key: 'assets', label: t('assets'), icon: navIcon(<DatabaseOutlined />), items: assetItems, defaultOpen: false },
       { key: 'settings', label: t('settings_group'), icon: navIcon(<SettingOutlined />), items: settingItems, defaultOpen: false },
     ].filter(s => s.items.length > 0);
-  }, [t, pathname, hasResourceRead, hasPermission, historyOpen, handleOpenHistory]);
+  }, [t, i18n.language, pathname, hasResourceRead, hasPermission, historyOpen, handleOpenHistory]);
 
   useEffect(() => {
     const language = i18n.language;
@@ -506,13 +503,13 @@ function SideBar() {
             // 场景空间等一级单项:导航链接或点击项(如历史记录)
             if ((section as any).flat) {
               return section.items.map(item => item.path ? (
-                <Link href={item.path} className={cls(linkCls(item.isActive), 'h-9 px-3')} key={item.key}>
+                <Link href={item.path} className={cls(linkCls(item.isActive), 'h-9 px-3 font-medium')} key={item.key}>
                   <span className={iconCls(item.isActive)}>{item.icon}</span>
                   <span className='text-[13px] truncate'>{item.name}</span>
                 </Link>
               ) : (
                 <div
-                  className={cls(linkCls(item.isActive), 'h-9 px-3')}
+                  className={cls(linkCls(item.isActive), 'h-9 px-3 font-medium')}
                   key={item.key}
                   onClick={item.onClick}
                 >
@@ -537,7 +534,7 @@ function SideBar() {
                   <span className={cls('mr-2.5 flex items-center justify-center flex-shrink-0', anyActive ? 'text-[#3b4154]' : 'text-[#5d6577]')}>
                     {(section as any).icon}
                   </span>
-                  <span className={cls('text-[13px] truncate flex-1', anyActive ? 'font-semibold text-[#14161c]' : 'font-medium text-[#14161c]')}>
+                  <span className='text-[13px] truncate flex-1 font-medium text-[#14161c] dark:text-gray-300'>
                     {section.label}
                   </span>
                   <RightOutlined className={cls(

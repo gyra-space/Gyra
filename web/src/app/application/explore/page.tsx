@@ -5,11 +5,13 @@ import {
   newDialogue,
 } from '@/client/api';
 import { IApp } from '@/types/app';
-import { ReloadOutlined, SearchOutlined, GlobalOutlined, RocketFilled, FireFilled, AppstoreOutlined, UnorderedListOutlined, MessageOutlined } from '@ant-design/icons';
+import { ReloadOutlined, SearchOutlined, GlobalOutlined, RocketFilled, FireFilled, AppstoreOutlined, UnorderedListOutlined, MessageOutlined, PlusOutlined, EditOutlined } from '@ant-design/icons';
 import { useDebounceFn } from 'ahooks';
 import { App as AntdApp, Spin } from 'antd';
 import moment from 'moment';
+import { useRouter } from 'next/navigation';
 import { AgentAvatar } from '@/components/common/agent-avatar';
+import CreateAppModal from '@/components/create-app-modal';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import './explore-page.css';
@@ -18,7 +20,8 @@ type TabKey = 'all' | 'published' | 'unpublished';
 
 export default function ExplorePage() {
   const { notification } = AntdApp.useApp();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const router = useRouter();
   const [spinning, setSpinning] = useState<boolean>(false);
   const [loadingMore, setLoadingMore] = useState<boolean>(false);
   const [hasMore, setHasMore] = useState<boolean>(true);
@@ -26,6 +29,7 @@ export default function ExplorePage() {
   const [apps, setApps] = useState<IApp[]>([]);
   const [filterValue, setFilterValue] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [createModalOpen, setCreateModalOpen] = useState(false);
   const totalRef = useRef<{
     current_page: number;
     total_count: number;
@@ -136,6 +140,20 @@ export default function ExplorePage() {
     }
   };
 
+  const handleEdit = (app: IApp) => {
+    router.push(`/application/app?app_code=${app.app_code}`);
+  };
+
+  const handleCreateSuccess = (newApp?: IApp) => {
+    if (newApp?.app_code) {
+      router.push(`/application/app?app_code=${newApp.app_code}`);
+      return;
+    }
+    getListFiltered();
+  };
+
+  const pageTitle = i18n.language === 'zh' ? '专家(Agent)' : 'Agents';
+
   useEffect(() => {
     getListFiltered();
   }, [getListFiltered]);
@@ -168,13 +186,20 @@ export default function ExplorePage() {
                 </svg>
               </div>
               <div>
-                <h1 className='explore-title'>{t('explore_agents')}</h1>
+                <h1 className='explore-title'>{pageTitle}</h1>
                 <p className='explore-subtitle'>
                   {t('explore_page_subtitle') || 'Discover and explore available agents'}
                 </p>
               </div>
             </div>
             <div className='explore-header-actions'>
+              <button
+                className='explore-btn-create'
+                onClick={() => setCreateModalOpen(true)}
+              >
+                <PlusOutlined style={{ marginRight: 6 }} />
+                {t('create_app')}
+              </button>
               <button
                 className='explore-btn-refresh'
                 onClick={() => getListFiltered()}
@@ -310,16 +335,28 @@ export default function ExplorePage() {
                           </span>
                         )}
                       </div>
-                      <button
-                        className='explore-chat-btn'
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleChat(item);
-                        }}
-                      >
-                        <MessageOutlined style={{ marginRight: 6 }} />
-                        {t('start_chat') || 'Chat'}
-                      </button>
+                      <div className='explore-card-footer-actions'>
+                        <button
+                          className='explore-edit-btn'
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEdit(item);
+                          }}
+                        >
+                          <EditOutlined style={{ marginRight: 6 }} />
+                          {t('edit_application')}
+                        </button>
+                        <button
+                          className='explore-chat-btn'
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleChat(item);
+                          }}
+                        >
+                          <MessageOutlined style={{ marginRight: 6 }} />
+                          {t('start_chat') || 'Chat'}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -339,6 +376,13 @@ export default function ExplorePage() {
                 <p className='explore-empty-desc'>
                   {t('try_adjusting_filters') || 'Try adjusting your search or filters'}
                 </p>
+                <button
+                  className='explore-btn-create'
+                  onClick={() => setCreateModalOpen(true)}
+                >
+                  <PlusOutlined style={{ marginRight: 6 }} />
+                  {t('create_app')}
+                </button>
               </div>
             )
           )}
@@ -350,6 +394,13 @@ export default function ExplorePage() {
           )}
         </div>
       </div>
+      <CreateAppModal
+        open={createModalOpen}
+        onCancel={() => setCreateModalOpen(false)}
+        refresh={handleCreateSuccess}
+        type="add"
+        skipRedirect={true}
+      />
     </Spin>
   );
 }

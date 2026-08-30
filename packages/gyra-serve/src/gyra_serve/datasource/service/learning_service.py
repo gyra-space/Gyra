@@ -1528,7 +1528,10 @@ class SchemaLearningService:
         sensitive values.
         """
         try:
-            from gyra_serve.sql_guard.masking import mask_run_result
+            from gyra_serve.sql_guard.masking import (
+                is_internal_catalog_table,
+                mask_run_result,
+            )
 
             specs = self._table_spec_dao.get_all_by_datasource(datasource_id)
             for spec in specs:
@@ -1540,6 +1543,9 @@ class SchemaLearningService:
                 if not cols or not rows:
                     continue
                 table_name = spec.get("table_name", "")
+                # 系统目录表无业务数据,无需脱敏落库(避免列名兜底误伤)。
+                if is_internal_catalog_table(table_name):
+                    continue
                 _, masked_rows, masked_cols = mask_run_result(
                     datasource_id, cols, rows, table_name=table_name
                 )

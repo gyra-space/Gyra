@@ -88,6 +88,20 @@ async def list_job_types(service: Service = Depends(get_service)):
     return Result.succ([JobType(**m) for m in service.handler_meta()])
 
 
+@router.get("/jobs/stats", response_model=Result[JobStatsResponse])
+async def job_stats(service: Service = Depends(get_service)):
+    s = service.dao.stats()
+    return Result.succ(
+        JobStatsResponse(
+            total=s.get("total", 0),
+            by_status=s.get("by_status", {}),
+            by_type=s.get("by_type", {}),
+            by_type_status=s.get("by_type_status", {}),
+            by_executor=s.get("by_executor", {}),
+        )
+    )
+
+
 @router.get("/jobs/{job_id}", response_model=Result[ServeResponse])
 async def get_job(job_id: str, service: Service = Depends(get_service)):
     row = service.dao.get(job_id)
@@ -123,20 +137,6 @@ async def delete_job(job_id: str, service: Service = Depends(get_service)):
     if not ok:
         raise HTTPException(status_code=404, detail="job not found")
     return Result.succ(True)
-
-
-@router.get("/jobs/stats", response_model=Result[JobStatsResponse])
-async def job_stats(service: Service = Depends(get_service)):
-    s = service.dao.stats()
-    return Result.succ(
-        JobStatsResponse(
-            total=s.get("total", 0),
-            by_status=s.get("by_status", {}),
-            by_type=s.get("by_type", {}),
-            by_type_status=s.get("by_type_status", {}),
-            by_executor=s.get("by_executor", {}),
-        )
-    )
 
 
 def init_endpoints(system_app: SystemApp, config: ServeConfig) -> None:

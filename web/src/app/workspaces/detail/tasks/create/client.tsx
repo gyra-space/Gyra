@@ -18,6 +18,8 @@ import {
 } from '@ant-design/icons';
 import Link from 'next/link';
 import CronEditor from './cron-editor';
+import { TriggerTextArea } from '@/components/chat/input/trigger-textarea';
+import type { ResourceRef } from '@/components/chat/input/trigger-types';
 import { useSpaceRole } from '@/hooks/use-space-role';
 import '../../../workspaces.css';
 
@@ -117,6 +119,8 @@ export default function TaskCreatePage() {
   const initialType: TriggerType = rawType && TYPE_CONFIG[rawType] ? rawType : 'adhoc';
   const [selectedType, setSelectedType] = useState<TriggerType>(initialType);
   const [cronExpr, setCronExpr] = useState('0 9 * * *');
+  /** 指令框里 `#` 引用的交付资源(随表单一起提交) */
+  const [instructionRefs, setInstructionRefs] = useState<ResourceRef[]>([]);
   const editTriggerId = searchParams?.get('trigger_id')
     ? Number(searchParams.get('trigger_id'))
     : null;
@@ -190,10 +194,25 @@ export default function TaskCreatePage() {
       if (!ws?.id) return;
       setSubmitting(true);
 
+      // `#` 引用的资源以结构化清单追加进指令文本。
+      // 后端接口暂不认 resource_refs 字段,但 Agent 仍能从指令里看到引用了什么;
+      // 待后端支持后改读 resource_refs 即可,这里无需再动。
+      const refsBlock = instructionRefs.length
+        ? `\n\n引用的资源：\n${instructionRefs
+            .map(
+              (r) =>
+                `- [${r.kind === 'artifact' ? '交付产物' : '空间资产'}] ${r.label}${
+                  r.content_ref ? `（${r.content_ref}）` : ''
+                }`,
+            )
+            .join('\n')}`
+        : '';
+      const finalInstruction = `${values.instruction ?? ''}${refsBlock}`;
+
       if (selectedType === 'adhoc') {
         const [cerr, res] = await apiInterceptors(createTask({
           workspace_id: ws.id,
-          title: values.instruction,
+          title: finalInstruction,
           description: '',
           type: 'adhoc',
           triggered_by: 'manual',
@@ -224,7 +243,9 @@ export default function TaskCreatePage() {
         type: selectedType,
         name: values.name || values.instruction?.slice(0, 30) || '未命名触发器',
         target_playbook_id: values.target_playbook_id,
-        instruction: values.instruction,
+        instruction: finalInstruction,
+        // 结构化引用:后端支持后可直接消费,不必再反解指令文本
+        resource_refs: instructionRefs,
         is_active: values.is_active ?? true,
         config,
       };
@@ -377,10 +398,13 @@ export default function TaskCreatePage() {
                   label={<span className="font-medium text-[var(--ws-ink)]">任务指令 <span className="text-[var(--ws-ink-3)] text-xs font-normal">本次要完成的目标</span></span>}
                   rules={[{ required: true, message: '请输入任务指令' }]}
                 >
-                  <TextArea
+                  <TriggerTextArea
+                    triggers={['#']}
+                    workspaceId={ws?.id}
+                    refs={instructionRefs}
+                    onRefsChange={setInstructionRefs}
                     rows={3}
-                    placeholder="例如：排查 prod-db-01 的 CPU 飙高并产出根因报告"
-                    className="!rounded-lg"
+                    placeholder="例如：排查 prod-db-01 的 CPU 飙高并产出根因报告（输入 # 可引用交付资源）"
                   />
                 </Form.Item>
 

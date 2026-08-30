@@ -77,6 +77,17 @@ def register_enabled_feature_plugin_routers(app: FastAPI) -> None:
     app.include_router(permissions_router, prefix="/api/v1")
     logger.info("Feature plugin mounted: permissions at /api/v1/permissions")
 
+    # 注册 RBAC 管理 Agent 工具(@tool auto_register 进全局工具 registry)。
+    # 工具本身 fail-closed(继承提问者身份校验 system.admin),注册不依赖插件开关。
+    try:
+        from gyra_app.feature_plugins.permissions import (
+            agent_tools as _rbac_agent_tools,  # noqa: F401
+        )
+
+        logger.info("RBAC admin agent tools registered")
+    except Exception as e:
+        logger.warning(f"RBAC admin agent tools registration failed: {e}")
+
     if permissions_enabled:
         from gyra_app.feature_plugins.permissions.seed import (
             ensure_default_roles,
@@ -96,9 +107,11 @@ def register_enabled_feature_plugin_routers(app: FastAPI) -> None:
         # 关闭（默认开启）；表结构交由外部 DDL 管理时设为 false。
         if _permission_setting("auto_schema_upgrade", True):
             ensure_schema_upgrades()
-        # 代码注册的权限协议 -> permission_definition 表（幂等 upsert）
-        sync_permission_definitions()
+        # 先 seed 角色/旧版定义,再同步协议定义——sync 末尾会把旧版蛇形
+        # 命名定义置为失效,顺序反了会当晚重建、次日才收敛。
         ensure_default_roles()
+        # 代码注册的权限协议 -> permission_definition 表（幂等 upsert + 失效清理）
+        sync_permission_definitions()
 
         # workspace_member.role -> user_role 空间级绑定（幂等，兜底双写遗漏）
         from gyra_app.feature_plugins.permissions.seed import (

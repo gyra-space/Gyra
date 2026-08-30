@@ -24,7 +24,128 @@ class SemanticObjectVO(BaseModel):
     confirmed_by: Optional[str] = None
     confirmed_at: Optional[str] = None
     source: Optional[str] = None
+    provenance: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "结构化溯源(config.make_provenance):origin(来源枚举)/actor/"
+            "origin_sql(MISS 学习或手工 SQL 的原始 SQL 快照)/miss_ref(聚类回链)/"
+            "derived_from(派生链)。老数据为空,视图层降级用 source"
+        ),
+    )
     supersedes: Optional[int] = None
+    view: Optional["ProposalViewVO"] = Field(
+        default=None,
+        description=(
+            "业务视图(service/proposal_view.py 读时派生,不落库):"
+            "summary 一句话口径 / origin 来源 / lineage 库表字段血缘 / "
+            "sql_preview 静态 SQL 组装效果 / evidence 契约化引文"
+        ),
+    )
+
+
+class OriginVO(BaseModel):
+    """提案来源(业务视角);kind 取 config.ORIGIN_* 枚举。"""
+
+    model_config = ConfigDict(title="EcpOrigin")
+
+    kind: str
+    label: str = Field(description="中文标签(初始扫描/MISS 学习/手工 SQL 等)")
+    actor: Optional[str] = None
+    origin_sql: List[str] = Field(
+        default_factory=list, description="原始 SQL 快照(MISS 学习/手工 SQL)"
+    )
+    miss_ref: Optional[Dict[str, Any]] = Field(
+        default=None, description="miss 聚类回链 {kind, pattern, datasource_id}"
+    )
+    note: Optional[str] = None
+    derived_from: Optional[str] = None
+    legacy_source: Optional[str] = Field(
+        default=None, description="老数据降级:原始 source 字符串"
+    )
+
+
+class ColumnRefVO(BaseModel):
+    """字段级血缘:一列在提案中的用途与业务含义。"""
+
+    model_config = ConfigDict(title="EcpColumnRef")
+
+    column: str
+    meaning: Optional[str] = None
+    role: Optional[str] = None
+    usage: str = Field(
+        default="", description="度量表达式|筛选条件|分组粒度|维度列|主键|时间列"
+    )
+    declared: bool = Field(
+        default=True, description="是否在 entity.fields 中声明(False=口径疑点)"
+    )
+
+
+class ObjectRefVO(BaseModel):
+    """提案引用/参与组装的另一个语义对象(带状态,供前端 ✅/🟡 标识)。"""
+
+    model_config = ConfigDict(title="EcpObjectRef")
+
+    id: str
+    obj_type: Optional[str] = None
+    name: Optional[str] = None
+    status: Optional[str] = None
+    version: Optional[int] = None
+
+
+class LineageVO(BaseModel):
+    """数据血缘:提案从哪个库、哪张表、哪些字段组织起来。"""
+
+    model_config = ConfigDict(title="EcpLineage")
+
+    datasource_id: Optional[int] = None
+    datasource_name: Optional[str] = None
+    tables: List[str] = Field(default_factory=list)
+    columns: List[ColumnRefVO] = Field(default_factory=list)
+    objects: List[ObjectRefVO] = Field(
+        default_factory=list, description="引用链上的语义对象(metric→entity→dimension)"
+    )
+    document: Optional[Dict[str, Any]] = Field(
+        default=None, description="文档类定位 {space, doc_id, anchor}"
+    )
+
+
+class SqlPreviewVO(BaseModel):
+    """静态 SQL 组装效果(不执行;试跑真数据走 /debug 端点)。"""
+
+    model_config = ConfigDict(title="EcpSqlPreview")
+
+    sql: Optional[str] = None
+    scenario: str = Field(default="", description="预览口径说明(时间窗/筛选假设)")
+    participants: List[ObjectRefVO] = Field(
+        default_factory=list, description="参与组装的对象(含版本/状态)"
+    )
+    warnings: List[str] = Field(default_factory=list)
+
+
+class EvidenceItemVO(BaseModel):
+    """契约化证据引文(后端收窄,不再自由 dict)。"""
+
+    model_config = ConfigDict(title="EcpEvidenceItem")
+
+    source: Optional[str] = None
+    quote: Optional[str] = None
+
+
+class ProposalViewVO(BaseModel):
+    """提案业务视图:业务人不看 payload JSON 也能回答
+    「从哪来 / 生成什么 SQL / 怎么被提出来的」。"""
+
+    model_config = ConfigDict(title="EcpProposalView")
+
+    summary: str = ""
+    origin: OriginVO
+    lineage: Optional[LineageVO] = None
+    sql_preview: Optional[SqlPreviewVO] = None
+    evidence: List[EvidenceItemVO] = Field(default_factory=list)
+
+
+# SemanticObjectVO.view 是前向引用,在此解析
+SemanticObjectVO.model_rebuild()
 
 
 class SemanticObjectListVO(BaseModel):
@@ -51,6 +172,9 @@ class ProposeRequest(BaseModel):
     evidence: Optional[List[Dict[str, Any]]] = None
     created_by: str = "llm"
     source: Optional[str] = None
+    provenance: Optional[Dict[str, Any]] = Field(
+        default=None, description="结构化溯源(config.make_provenance 构造)"
+    )
 
 
 class SqlAddRequest(BaseModel):

@@ -1,43 +1,37 @@
 'use client';
 
-import { forwardRef, useImperativeHandle, useMemo, useState } from 'react';
-import { Popover } from 'antd';
+/**
+ * `/` 菜单(能力编排):剧本 / 技能 / MCP / 命令 四类 + 添加文件。
+ *
+ * 交互与浮层全部委托给通用 TriggerMenu,本文件只负责「按 `/` 语义构建分组」。
+ * 与 + 菜单(PlusMenu)共享同一份数据与选中结果:`/` 是键盘入口,`+` 是鼠标入口。
+ *
+ * 「命令」组承载会话级行为命令(压缩上下文/清理会话/规划模式等),
+ * 与剧本/技能/MCP 的"资源引用"语义不同:命令选中即执行或切换模式,不随消息发送。
+ */
+
+import { forwardRef, useMemo } from 'react';
 import {
   ApiOutlined,
   AppstoreOutlined,
   ClearOutlined,
   CompressOutlined,
   FileOutlined,
-  LoadingOutlined,
   RocketOutlined,
-  SearchOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import classNames from 'classnames';
+import { TriggerMenu } from './trigger-menu';
+import type { TriggerMenuGroup, TriggerMenuItem } from './trigger-menu';
 import type {
-  PlusMenuCommandRef,
   PlusMenuMcpRef,
   PlusMenuPlaybookRef,
   PlusMenuSkillRef,
 } from './plus-menu';
+import type { SessionCommandAction, SessionCommandItem } from './trigger-types';
 
-/**
- * 统一斜杠命令菜单(/ 唤起):剧本(场景)/技能/MCP/命令 四类。
- * 与 + 菜单(PlusMenu)共享同一份数据与选中结果,/ 是键盘快捷入口,+ 是鼠标入口。
- * 触发词(输入框开头 / 后的文本)即搜索词,实时过滤;支持 ↑↓ 导航、Enter 选中、Esc 关闭。
- * 布局按类型分组(分组小标题 + 每行 图标/名称/描述),同类目聚合展示。
- *
- * 「命令」组承载会话级行为命令(压缩上下文/清理会话/规划模式等),
- * 与剧本/技能/MCP 的"资源引用"语义不同:命令选中即执行或切换模式,不随消息发送。
- */
-
-/** 会话命令标识 */
-export type SessionCommandAction = 'compact' | 'clear' | 'plan';
-
-/** 会话命令项(命令组数据,带行为标识) */
-export interface SessionCommandItem extends PlusMenuCommandRef {
-  action: SessionCommandAction;
-}
+// 对外保持原有导出,避免调用方改 import 路径
+export type { SessionCommandAction, SessionCommandItem };
 
 export interface SlashMenuSelection {
   type: 'playbook' | 'skill' | 'mcp' | 'command';
@@ -49,7 +43,7 @@ export interface SlashMenuSelection {
 
 interface SlashMenuProps {
   open: boolean;
-  /** 触发词:输入框开头 / 后的文本,作为搜索过滤 */
+  /** 触发词:`/` 后的文本,作为搜索过滤 */
   query: string;
   playbooks?: PlusMenuPlaybookRef[];
   skills?: PlusMenuSkillRef[];
@@ -69,33 +63,15 @@ export interface SlashMenuHandle {
   handleKey: (e: React.KeyboardEvent) => boolean;
 }
 
-type ItemType = SlashMenuSelection['type'] | 'addFile';
-
-interface FlatItem {
-  key: string;
-  type: ItemType;
-  icon: React.ReactNode;
-  title: string;
-  description?: string;
-  mono?: boolean;
-}
-
-interface Group {
-  type: ItemType;
-  label: string;
-  items: FlatItem[];
-}
+/** 回传给 onSelect 的原始引用,避免再按 key 反查列表 */
+type SlashItemData =
+  | { kind: 'addFile' }
+  | { kind: 'playbook'; ref: PlusMenuPlaybookRef }
+  | { kind: 'skill'; ref: PlusMenuSkillRef }
+  | { kind: 'mcp'; ref: PlusMenuMcpRef }
+  | { kind: 'command'; ref: SessionCommandItem };
 
 const mcpKey = (m: PlusMenuMcpRef) => String(m.id || m.uuid || m.name);
-
-const rowCls =
-  'flex w-full items-center gap-3 px-3 py-2.5 text-left rounded-lg transition-colors cursor-pointer';
-
-function matches(q: string, ...fields: (string | undefined)[]) {
-  if (!q) return true;
-  const needle = q.toLowerCase();
-  return fields.some((f) => (f || '').toLowerCase().includes(needle));
-}
 
 function IconBox({ icon, fallback, gradient }: { icon?: string; fallback: React.ReactNode; gradient: string }) {
   return (
@@ -124,193 +100,103 @@ export const SlashMenu = forwardRef<SlashMenuHandle, SlashMenuProps>(function Sl
   { open, query, playbooks, skills, mcps, mcpsLoading, commands, onSelect, onAddFile, onClose, children },
   ref,
 ) {
-  const [active, setActive] = useState(0);
-
-  const q = query.trim();
-
-  // 分组构建:文件/剧本/技能/MCP/命令,同类目聚合,带分组小标题
-  const groups = useMemo<Group[]>(() => {
-    const out: Group[] = [];
+  const groups = useMemo<TriggerMenuGroup<SlashItemData>[]>(() => {
+    const out: TriggerMenuGroup<SlashItemData>[] = [];
 
     if (onAddFile) {
-      const items: FlatItem[] = matches(q, '添加文件', '文件', 'file', 'upload')
-        ? [{ key: 'addFile', type: 'addFile', icon: <FileOutlined className="text-base text-gray-500 dark:text-gray-400" />, title: '添加文件', description: '上传本地文件作为上下文' }]
-        : [];
-      if (items.length) out.push({ type: 'addFile', label: '文件', items });
+      out.push({
+        key: 'addFile',
+        label: '文件',
+        items: [
+          {
+            key: 'addFile',
+            icon: <FileOutlined className="text-base text-gray-500 dark:text-gray-400" />,
+            title: '添加文件',
+            description: '上传本地文件作为上下文',
+            keywords: ['file', 'upload', '文件'],
+            data: { kind: 'addFile' },
+          },
+        ],
+      });
     }
 
-    const pbItems: FlatItem[] = (playbooks ?? [])
-      .filter((pb) => matches(q, pb.playbook_name))
-      .map((pb) => ({
+    out.push({
+      key: 'playbook',
+      label: '剧本',
+      items: (playbooks ?? []).map<TriggerMenuItem<SlashItemData>>((pb) => ({
         key: `playbook:${pb.playbook_id}`,
-        type: 'playbook',
         icon: <IconBox gradient="bg-gradient-to-br from-indigo-500 to-blue-600" fallback={<RocketOutlined className="text-sm" />} />,
         title: pb.playbook_name,
         description: '以该剧本发起任务',
-      }));
-    if (pbItems.length) out.push({ type: 'playbook', label: '剧本', items: pbItems });
+        data: { kind: 'playbook', ref: pb },
+      })),
+    });
 
-    const skillItems: FlatItem[] = (skills ?? [])
-      .filter((s) => matches(q, s.name, s.description))
-      .map((s) => ({
+    out.push({
+      key: 'skill',
+      label: '技能',
+      items: (skills ?? []).map<TriggerMenuItem<SlashItemData>>((s) => ({
         key: `skill:${s.skill_code}`,
-        type: 'skill',
         icon: <IconBox icon={s.icon} gradient="bg-gradient-to-br from-violet-500 to-indigo-600" fallback={<AppstoreOutlined className="text-sm" />} />,
         title: s.name,
         description: s.description,
-      }));
-    if (skillItems.length) out.push({ type: 'skill', label: '技能', items: skillItems });
+        data: { kind: 'skill', ref: s },
+      })),
+    });
 
-    const mcpItems: FlatItem[] = (mcps ?? [])
-      .filter((m) => matches(q, m.name, m.description))
-      .map((m) => ({
+    out.push({
+      key: 'mcp',
+      label: 'MCP',
+      loading: mcpsLoading,
+      items: (mcps ?? []).map<TriggerMenuItem<SlashItemData>>((m) => ({
         key: `mcp:${mcpKey(m)}`,
-        type: 'mcp',
         icon: <IconBox icon={m.icon} gradient="bg-gradient-to-br from-emerald-500 to-teal-600" fallback={<ApiOutlined className="text-sm" />} />,
         title: m.name,
         description: m.description,
-      }));
-    if (mcpItems.length || mcpsLoading) out.push({ type: 'mcp', label: 'MCP', items: mcpItems });
+        data: { kind: 'mcp', ref: m },
+      })),
+    });
 
-    const cmdItems: FlatItem[] = (commands ?? [])
-      .filter((c) => matches(q, c.command, c.name, c.description))
-      .map((c) => ({
+    out.push({
+      key: 'command',
+      label: '命令',
+      items: (commands ?? []).map<TriggerMenuItem<SlashItemData>>((c) => ({
         key: `command:${c.command}`,
-        type: 'command',
         icon: <SessionCommandIcon action={c.action} />,
         title: `/${c.command}`,
         description: c.description || c.name,
         mono: true,
-      }));
-    if (cmdItems.length) out.push({ type: 'command', label: '命令', items: cmdItems });
+        data: { kind: 'command', ref: c },
+      })),
+    });
 
     return out;
-  }, [q, playbooks, skills, mcps, mcpsLoading, commands, onAddFile]);
+  }, [playbooks, skills, mcps, mcpsLoading, commands, onAddFile]);
 
-  // 扁平化用于键盘导航(保持分组顺序)
-  const flatItems = useMemo<FlatItem[]>(() => groups.flatMap((g) => g.items), [groups]);
-  const itemCount = flatItems.length;
-  const clampedActive = itemCount === 0 ? 0 : Math.min(active, itemCount - 1);
-
-  const choose = (item: FlatItem | undefined) => {
-    if (!item) return;
-    if (item.type === 'addFile') {
+  const handleSelect = (item: TriggerMenuItem<SlashItemData>) => {
+    const d = item.data;
+    if (!d) return;
+    if (d.kind === 'addFile') {
       onAddFile?.();
-      onClose();
       return;
     }
-    if (item.type === 'playbook') {
-      const pb = (playbooks ?? []).find((p) => `playbook:${p.playbook_id}` === item.key);
-      if (pb) onSelect({ type: 'playbook', playbook: pb });
-    } else if (item.type === 'skill') {
-      const s = (skills ?? []).find((x) => `skill:${x.skill_code}` === item.key);
-      if (s) onSelect({ type: 'skill', skill: s });
-    } else if (item.type === 'mcp') {
-      const m = (mcps ?? []).find((x) => `mcp:${mcpKey(x)}` === item.key);
-      if (m) onSelect({ type: 'mcp', mcp: m });
-    } else if (item.type === 'command') {
-      const c = (commands ?? []).find((x) => `command:${x.command}` === item.key);
-      if (c) onSelect({ type: 'command', command: c });
-    }
-    onClose();
+    if (d.kind === 'playbook') onSelect({ type: 'playbook', playbook: d.ref });
+    else if (d.kind === 'skill') onSelect({ type: 'skill', skill: d.ref });
+    else if (d.kind === 'mcp') onSelect({ type: 'mcp', mcp: d.ref });
+    else if (d.kind === 'command') onSelect({ type: 'command', command: d.ref });
   };
-
-  useImperativeHandle(ref, () => ({
-    handleKey: (e) => {
-      if (!open) return false;
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setActive((a) => (itemCount === 0 ? 0 : (a + 1) % itemCount));
-        return true;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setActive((a) => (itemCount === 0 ? 0 : (a - 1 + itemCount) % itemCount));
-        return true;
-      }
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        choose(flatItems[clampedActive]);
-        return true;
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-        return true;
-      }
-      return false;
-    },
-  }));
-
-  // 渲染分组:小标题 + 行;给每行分配全局序号以对齐键盘高亮
-  let rowIndex = -1;
-  const renderRow = (item: FlatItem) => {
-    rowIndex += 1;
-    const idx = rowIndex;
-    return (
-      <button
-        type="button"
-        key={item.key}
-        className={classNames(rowCls, idx === clampedActive && 'bg-indigo-50 dark:bg-indigo-900/20')}
-        onMouseEnter={() => setActive(idx)}
-        onClick={() => choose(item)}
-        title={item.description || item.title}
-      >
-        {item.icon}
-        <span className="min-w-0 flex-1">
-          <span className={classNames('block truncate text-[13px] font-medium text-gray-800 dark:text-gray-100', item.mono && 'font-mono')}>
-            {item.title}
-          </span>
-          {item.description && <span className="block truncate text-[12px] text-gray-400 dark:text-gray-500">{item.description}</span>}
-        </span>
-      </button>
-    );
-  };
-
-  const content = (
-    <div className="w-[380px]">
-      {/* 搜索词提示 */}
-      <div className="flex items-center gap-1.5 px-3 pt-2.5 pb-1 border-b border-gray-100 dark:border-gray-700/60">
-        <SearchOutlined className="text-[11px] text-gray-400" />
-        {q ? (
-          <span className="text-[12px] text-indigo-500 font-medium truncate">/{q}</span>
-        ) : (
-          <span className="text-[12px] text-gray-400">选择类型或输入关键词过滤</span>
-        )}
-      </div>
-      <div className="max-h-[340px] overflow-y-auto py-1.5 px-1.5">
-        {groups.length === 0 && !mcpsLoading && (
-          <div className="px-3 py-8 text-center text-xs text-gray-400">无匹配项</div>
-        )}
-        {groups.map((g) => (
-          <div key={g.type} className="mb-1 last:mb-0">
-            <div className="px-2 pt-1.5 pb-1 text-[11px] font-medium text-gray-400 dark:text-gray-500">{g.label}</div>
-            {g.type === 'mcp' && mcpsLoading && g.items.length === 0 ? (
-              <div className="px-3 py-3 text-xs text-gray-400"><LoadingOutlined className="mr-1" />加载中…</div>
-            ) : (
-              g.items.map(renderRow)
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="px-3 py-1.5 border-t border-gray-100 dark:border-gray-700/60 text-[10px] text-gray-400 flex items-center gap-3">
-        <span>↑↓ 选择</span>
-        <span>Enter 确认</span>
-        <span>Esc 关闭</span>
-      </div>
-    </div>
-  );
 
   return (
-    <Popover
+    <TriggerMenu
+      ref={ref}
       open={open}
-      content={content}
-      placement="topLeft"
-      trigger={[]}
-      arrow={false}
-      overlayClassName="[&_.ant-popover-inner]:!p-0 [&_.ant-popover-inner]:!rounded-xl [&_.ant-popover-inner]:!shadow-xl"
+      query={query}
+      triggerChar="/"
+      groups={groups}
+      onSelect={handleSelect}
+      onClose={onClose}
     >
       {children}
-    </Popover>
+    </TriggerMenu>
   );
 });

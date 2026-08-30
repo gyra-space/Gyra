@@ -1,7 +1,7 @@
 -- ============================================================
 -- PostgreSQL DDL Script for Gyra
 -- Version: 0.6.0
--- Generated: 2026-08-28T23:40:28.286260
+-- Generated: 2026-08-30T23:11:29.133431
 -- ============================================================
 
 -- Table: chat_history
@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS "chat_history" (
   CONSTRAINT "uk_conv_uid" UNIQUE ("conv_uid")
 );
 CREATE INDEX "ix_chat_history_task_id" ON "chat_history" ("task_id");
-CREATE INDEX "ix_chat_history_sys_code" ON "chat_history" ("sys_code");
 CREATE INDEX "ix_chat_history_workspace_id" ON "chat_history" ("workspace_id");
+CREATE INDEX "ix_chat_history_sys_code" ON "chat_history" ("sys_code");
 
 -- Table: chat_history_message
 CREATE TABLE IF NOT EXISTS "chat_history_message" (
@@ -60,11 +60,11 @@ CREATE TABLE IF NOT EXISTS "connect_config" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_db" UNIQUE ("db_name")
 );
-CREATE INDEX "ix_connect_config_user_name" ON "connect_config" ("user_name");
 CREATE INDEX "idx_q_db_type" ON "connect_config" ("db_type");
+CREATE INDEX "ix_connect_config_user_name" ON "connect_config" ("user_name");
+CREATE INDEX "ix_connect_config_sys_code" ON "connect_config" ("sys_code");
 CREATE INDEX "ix_connect_config_user_id" ON "connect_config" ("user_id");
 CREATE INDEX "idx_q_owner_workspace" ON "connect_config" ("owner_workspace_id");
-CREATE INDEX "ix_connect_config_sys_code" ON "connect_config" ("sys_code");
 
 -- Table: db_learning_subtask
 CREATE TABLE IF NOT EXISTS "db_learning_subtask" (
@@ -72,9 +72,9 @@ CREATE TABLE IF NOT EXISTS "db_learning_subtask" (
   "task_id" INTEGER NOT NULL,
   "datasource_id" INTEGER NOT NULL,
   "table_name" VARCHAR(255) NOT NULL,
-  "status" VARCHAR(32) NOT NULL DEFAULT pending,
+  "status" VARCHAR(32) NOT NULL DEFAULT 'pending',
   "worker_id" VARCHAR(128),
-  "attempt_count" INTEGER NOT NULL DEFAULT false,
+  "attempt_count" INTEGER NOT NULL DEFAULT 0,
   "max_attempts" INTEGER NOT NULL DEFAULT 3,
   "error_message" TEXT,
   "claimed_at" TIMESTAMP,
@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS "db_spec" (
   "group_config" TEXT,
   "relations" TEXT,
   "summary" TEXT,
-  "status" VARCHAR(32) NOT NULL DEFAULT generating,
+  "status" VARCHAR(32) NOT NULL DEFAULT 'generating',
   "gmt_created" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id"),
@@ -130,13 +130,13 @@ CREATE TABLE IF NOT EXISTS "db_spec" (
 CREATE TABLE IF NOT EXISTS "db_learning_task" (
   "id" SERIAL,
   "datasource_id" INTEGER NOT NULL,
-  "task_type" VARCHAR(32) NOT NULL DEFAULT full_learn,
-  "status" VARCHAR(32) NOT NULL DEFAULT pending,
-  "progress" INTEGER NOT NULL DEFAULT false,
+  "task_type" VARCHAR(32) NOT NULL DEFAULT 'full_learn',
+  "status" VARCHAR(32) NOT NULL DEFAULT 'pending',
+  "progress" INTEGER NOT NULL DEFAULT 0,
   "total_tables" INTEGER,
-  "processed_tables" INTEGER NOT NULL DEFAULT false,
+  "processed_tables" INTEGER NOT NULL DEFAULT 0,
   "error_message" TEXT,
-  "trigger_type" VARCHAR(32) NOT NULL DEFAULT manual,
+  "trigger_type" VARCHAR(32) NOT NULL DEFAULT 'manual',
   "gmt_created" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
@@ -150,9 +150,9 @@ CREATE TABLE IF NOT EXISTS "server_app_intervention" (
   "task_id" INTEGER,
   "conv_uid" VARCHAR(255),
   "workspace_id" INTEGER NOT NULL,
-  "type" VARCHAR(32) NOT NULL DEFAULT review,
-  "status" VARCHAR(32) NOT NULL DEFAULT requested,
-  "requested_by" VARCHAR(32) NOT NULL DEFAULT system,
+  "type" VARCHAR(32) NOT NULL DEFAULT 'review',
+  "status" VARCHAR(32) NOT NULL DEFAULT 'requested',
+  "requested_by" VARCHAR(32) NOT NULL DEFAULT 'system',
   "assignee_user_id" INTEGER,
   "requested_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "question_json" TEXT,
@@ -167,11 +167,11 @@ CREATE TABLE IF NOT EXISTS "server_app_intervention" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
+CREATE INDEX "ix_server_app_intervention_assignee_user_id" ON "server_app_intervention" ("assignee_user_id");
 CREATE INDEX "ix_server_app_intervention_task_id" ON "server_app_intervention" ("task_id");
 CREATE INDEX "ix_server_app_intervention_workspace_id" ON "server_app_intervention" ("workspace_id");
 CREATE INDEX "ix_server_app_intervention_parent_conv_id" ON "server_app_intervention" ("parent_conv_id");
 CREATE INDEX "ix_server_app_intervention_conv_uid" ON "server_app_intervention" ("conv_uid");
-CREATE INDEX "ix_server_app_intervention_assignee_user_id" ON "server_app_intervention" ("assignee_user_id");
 
 -- Table: server_app_playbook
 CREATE TABLE IF NOT EXISTS "server_app_playbook" (
@@ -179,10 +179,10 @@ CREATE TABLE IF NOT EXISTS "server_app_playbook" (
   "workspace_id" INTEGER NOT NULL,
   "name" VARCHAR(128) NOT NULL,
   "scenario_type" VARCHAR(64),
-  "task_type" VARCHAR(32) NOT NULL DEFAULT routine,
+  "task_type" VARCHAR(32) NOT NULL DEFAULT 'routine',
   "trigger_json" TEXT,
   "declaration_dsl_json" TEXT,
-  "current_version" INTEGER NOT NULL DEFAULT true,
+  "current_version" INTEGER NOT NULL DEFAULT 1,
   "is_active" BOOLEAN NOT NULL DEFAULT true,
   "created_by_user_id" INTEGER,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -211,9 +211,9 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace" (
   "workspace_code" VARCHAR(64) NOT NULL,
   "name" VARCHAR(128) NOT NULL,
   "description" TEXT,
-  "type" VARCHAR(32) NOT NULL DEFAULT scenario,
+  "type" VARCHAR(32) NOT NULL DEFAULT 'scenario',
   "scenario_type" VARCHAR(64),
-  "scene_mode" VARCHAR(32) DEFAULT task_execution,
+  "scene_mode" VARCHAR(32) DEFAULT 'task_execution',
   "owner_user_id" INTEGER NOT NULL,
   "default_agent_app_code" VARCHAR(255),
   "settings_json" TEXT,
@@ -231,7 +231,7 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_member" (
   "id" SERIAL,
   "workspace_id" INTEGER NOT NULL,
   "user_id" INTEGER NOT NULL,
-  "role" VARCHAR(32) NOT NULL DEFAULT contributor,
+  "role" VARCHAR(32) NOT NULL DEFAULT 'contributor',
   "is_home" BOOLEAN NOT NULL DEFAULT false,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -239,8 +239,8 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_member" (
   CONSTRAINT "uk_workspace_member" UNIQUE ("workspace_id", "user_id")
 );
 CREATE INDEX "ix_server_app_workspace_member_workspace_id" ON "server_app_workspace_member" ("workspace_id");
-CREATE INDEX "ix_server_app_workspace_member_is_home" ON "server_app_workspace_member" ("is_home");
 CREATE INDEX "ix_server_app_workspace_member_user_id" ON "server_app_workspace_member" ("user_id");
+CREATE INDEX "ix_server_app_workspace_member_is_home" ON "server_app_workspace_member" ("is_home");
 
 -- Table: server_app_workspace_resource
 CREATE TABLE IF NOT EXISTS "server_app_workspace_resource" (
@@ -248,10 +248,10 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_resource" (
   "workspace_id" INTEGER NOT NULL,
   "type" VARCHAR(32) NOT NULL,
   "name" VARCHAR(128) NOT NULL,
-  "category" VARCHAR(16) NOT NULL DEFAULT scenario_bound,
+  "category" VARCHAR(16) NOT NULL DEFAULT 'scenario_bound',
   "physical_ref" VARCHAR(255),
   "config_json" TEXT,
-  "access_mode" VARCHAR(16) NOT NULL DEFAULT read,
+  "access_mode" VARCHAR(16) NOT NULL DEFAULT 'read',
   "is_active" BOOLEAN NOT NULL DEFAULT true,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -269,15 +269,18 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_conv_link" (
   "user_id" INTEGER,
   "is_current" BOOLEAN NOT NULL DEFAULT false,
   "title" VARCHAR(255),
+  "is_favorited" BOOLEAN NOT NULL DEFAULT false,
+  "favorited_at" TIMESTAMP,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_workspace_conv_link_task_id" ON "server_app_workspace_conv_link" ("task_id");
 CREATE INDEX "ix_server_app_workspace_conv_link_user_id" ON "server_app_workspace_conv_link" ("user_id");
-CREATE INDEX "ix_server_app_workspace_conv_link_is_current" ON "server_app_workspace_conv_link" ("is_current");
+CREATE INDEX "ix_server_app_workspace_conv_link_is_favorited" ON "server_app_workspace_conv_link" ("is_favorited");
 CREATE INDEX "ix_server_app_workspace_conv_link_workspace_id" ON "server_app_workspace_conv_link" ("workspace_id");
+CREATE INDEX "ix_server_app_workspace_conv_link_is_current" ON "server_app_workspace_conv_link" ("is_current");
 CREATE UNIQUE INDEX "ix_server_app_workspace_conv_link_conv_uid" ON "server_app_workspace_conv_link" ("conv_uid");
+CREATE INDEX "ix_server_app_workspace_conv_link_task_id" ON "server_app_workspace_conv_link" ("task_id");
 
 -- Table: server_app_workspace_inbox_item
 CREATE TABLE IF NOT EXISTS "server_app_workspace_inbox_item" (
@@ -288,8 +291,8 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_inbox_item" (
   "source_id" VARCHAR(128) NOT NULL,
   "title" VARCHAR(256) NOT NULL,
   "summary" TEXT,
-  "inbox_status" VARCHAR(32) NOT NULL DEFAULT unread,
-  "visibility" VARCHAR(16) NOT NULL DEFAULT personal,
+  "inbox_status" VARCHAR(32) NOT NULL DEFAULT 'unread',
+  "visibility" VARCHAR(16) NOT NULL DEFAULT 'personal',
   "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "resolved_at" TIMESTAMP,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -298,8 +301,8 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_inbox_item" (
 );
 CREATE INDEX "idx_inbox_user_status" ON "server_app_workspace_inbox_item" ("user_id", "inbox_status");
 CREATE INDEX "ix_server_app_workspace_inbox_item_source_id" ON "server_app_workspace_inbox_item" ("source_id");
-CREATE INDEX "ix_server_app_workspace_inbox_item_workspace_id" ON "server_app_workspace_inbox_item" ("workspace_id");
 CREATE INDEX "ix_server_app_workspace_inbox_item_inbox_status" ON "server_app_workspace_inbox_item" ("inbox_status");
+CREATE INDEX "ix_server_app_workspace_inbox_item_workspace_id" ON "server_app_workspace_inbox_item" ("workspace_id");
 CREATE INDEX "ix_server_app_workspace_inbox_item_user_id" ON "server_app_workspace_inbox_item" ("user_id");
 
 -- Table: server_app_workspace_agent_maturity
@@ -308,7 +311,7 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_agent_maturity" (
   "agent_id" VARCHAR(128) NOT NULL,
   "workspace_id" INTEGER NOT NULL,
   "app_code" VARCHAR(128),
-  "stage" VARCHAR(32) NOT NULL DEFAULT novice,
+  "stage" VARCHAR(32) NOT NULL DEFAULT 'novice',
   "score_json" TEXT,
   "stage_history_json" TEXT,
   "permissions_json" TEXT,
@@ -320,8 +323,8 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_agent_maturity" (
   PRIMARY KEY ("id")
 );
 CREATE INDEX "ix_server_app_workspace_agent_maturity_workspace_id" ON "server_app_workspace_agent_maturity" ("workspace_id");
-CREATE INDEX "ix_server_app_workspace_agent_maturity_agent_id" ON "server_app_workspace_agent_maturity" ("agent_id");
 CREATE UNIQUE INDEX "uk_workspace_agent_maturity" ON "server_app_workspace_agent_maturity" ("workspace_id", "agent_id");
+CREATE INDEX "ix_server_app_workspace_agent_maturity_agent_id" ON "server_app_workspace_agent_maturity" ("agent_id");
 
 -- Table: server_app_workspace_agent_role
 CREATE TABLE IF NOT EXISTS "server_app_workspace_agent_role" (
@@ -334,8 +337,8 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_agent_role" (
   PRIMARY KEY ("id")
 );
 CREATE INDEX "ix_server_app_workspace_agent_role_workspace_id" ON "server_app_workspace_agent_role" ("workspace_id");
-CREATE INDEX "ix_server_app_workspace_agent_role_agent_id" ON "server_app_workspace_agent_role" ("agent_id");
 CREATE UNIQUE INDEX "uk_workspace_agent_role" ON "server_app_workspace_agent_role" ("workspace_id", "agent_id");
+CREATE INDEX "ix_server_app_workspace_agent_role_agent_id" ON "server_app_workspace_agent_role" ("agent_id");
 
 -- Table: server_app_playbook_trace
 CREATE TABLE IF NOT EXISTS "server_app_playbook_trace" (
@@ -349,17 +352,17 @@ CREATE TABLE IF NOT EXISTS "server_app_playbook_trace" (
   "skill_calls_json" TEXT,
   "gates_json" TEXT,
   "skips_json" TEXT,
-  "status" VARCHAR(32) NOT NULL DEFAULT running,
+  "status" VARCHAR(32) NOT NULL DEFAULT 'running',
   "failure_reason" TEXT,
   "analyzed" BOOLEAN NOT NULL DEFAULT false,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_finalized" TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_playbook_trace_task_id" ON "server_app_playbook_trace" ("task_id");
 CREATE INDEX "ix_server_app_playbook_trace_playbook_id" ON "server_app_playbook_trace" ("playbook_id");
-CREATE INDEX "ix_server_app_playbook_trace_workspace_id" ON "server_app_playbook_trace" ("workspace_id");
+CREATE INDEX "ix_server_app_playbook_trace_task_id" ON "server_app_playbook_trace" ("task_id");
 CREATE UNIQUE INDEX "ix_server_app_playbook_trace_trace_id" ON "server_app_playbook_trace" ("trace_id");
+CREATE INDEX "ix_server_app_playbook_trace_workspace_id" ON "server_app_playbook_trace" ("workspace_id");
 
 -- Table: server_app_playbook_evolution_proposal
 CREATE TABLE IF NOT EXISTS "server_app_playbook_evolution_proposal" (
@@ -371,8 +374,8 @@ CREATE TABLE IF NOT EXISTS "server_app_playbook_evolution_proposal" (
   "rationale" TEXT,
   "evidence_json" TEXT,
   "proposed_change_json" TEXT,
-  "confidence" REAL NOT NULL DEFAULT 0.5,
-  "status" VARCHAR(32) NOT NULL DEFAULT proposed,
+  "confidence" REAL NOT NULL DEFAULT '0.5',
+  "status" VARCHAR(32) NOT NULL DEFAULT 'proposed',
   "proposed_by" VARCHAR(128),
   "proposed_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "reviewed_by" VARCHAR(128),
@@ -382,8 +385,8 @@ CREATE TABLE IF NOT EXISTS "server_app_playbook_evolution_proposal" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_playbook_evolution_proposal_workspace_id" ON "server_app_playbook_evolution_proposal" ("workspace_id");
 CREATE INDEX "ix_server_app_playbook_evolution_proposal_playbook_id" ON "server_app_playbook_evolution_proposal" ("playbook_id");
+CREATE INDEX "ix_server_app_playbook_evolution_proposal_workspace_id" ON "server_app_playbook_evolution_proposal" ("workspace_id");
 CREATE UNIQUE INDEX "ix_server_app_playbook_evolution_proposal_proposal_id" ON "server_app_playbook_evolution_proposal" ("proposal_id");
 
 -- Table: server_app_trigger_source
@@ -435,12 +438,12 @@ CREATE TABLE IF NOT EXISTS "skill_sync_task" (
   "repo_url" VARCHAR(500) NOT NULL,
   "branch" VARCHAR(100) NOT NULL,
   "force_update" BOOLEAN DEFAULT false,
-  "status" VARCHAR(50) NOT NULL DEFAULT pending,
-  "progress" INTEGER DEFAULT false,
+  "status" VARCHAR(50) NOT NULL DEFAULT 'pending',
+  "progress" INTEGER DEFAULT 0,
   "current_step" VARCHAR(200),
-  "total_steps" INTEGER DEFAULT false,
-  "steps_completed" INTEGER DEFAULT false,
-  "synced_skills_count" INTEGER DEFAULT false,
+  "total_steps" INTEGER DEFAULT 0,
+  "steps_completed" INTEGER DEFAULT 0,
+  "synced_skills_count" INTEGER DEFAULT 0,
   "skill_codes" TEXT,
   "error_msg" TEXT,
   "error_details" TEXT,
@@ -471,15 +474,15 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_file" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_bucket_file_id" UNIQUE ("bucket", "file_id")
 );
-CREATE INDEX "ix_gyra_serve_file_user_name" ON "gyra_serve_file" ("user_name");
 CREATE INDEX "ix_gyra_serve_file_sys_code" ON "gyra_serve_file" ("sys_code");
+CREATE INDEX "ix_gyra_serve_file_user_name" ON "gyra_serve_file" ("user_name");
 
 -- Table: gyra_serve_config
 CREATE TABLE IF NOT EXISTS "gyra_serve_config" (
   "id" SERIAL,
   "name" VARCHAR(255) NOT NULL,
   "value" VARCHAR(4096),
-  "type" VARCHAR(255) DEFAULT string,
+  "type" VARCHAR(255) DEFAULT 'string',
   "valid_time" INTEGER,
   "operator" VARCHAR(255),
   "creator" VARCHAR(255),
@@ -489,15 +492,15 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_config" (
   "upload_param" VARCHAR(1000),
   "upload_instance" VARCHAR(255),
   "upload_stamp" INTEGER,
-  "upload_retry" INTEGER DEFAULT false,
+  "upload_retry" INTEGER DEFAULT 0,
   "gmt_created" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_config" UNIQUE ("name")
 );
 CREATE INDEX "idx_upload_cls" ON "gyra_serve_config" ("upload_cls");
-CREATE INDEX "idx_creator" ON "gyra_serve_config" ("creator");
 CREATE INDEX "idx_category" ON "gyra_serve_config" ("category");
+CREATE INDEX "idx_creator" ON "gyra_serve_config" ("creator");
 
 -- Table: server_app_workspace_asset
 CREATE TABLE IF NOT EXISTS "server_app_workspace_asset" (
@@ -506,18 +509,18 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_asset" (
   "type" VARCHAR(32) NOT NULL,
   "name" VARCHAR(256) NOT NULL,
   "description" VARCHAR(1024),
-  "scope" VARCHAR(32) NOT NULL DEFAULT workspace,
+  "scope" VARCHAR(32) NOT NULL DEFAULT 'workspace',
   "content_ref" VARCHAR(512),
   "content_text" TEXT,
-  "current_version" INTEGER NOT NULL DEFAULT true,
+  "current_version" INTEGER NOT NULL DEFAULT 1,
   "source_task_id" INTEGER,
   "source_artifact_id" INTEGER,
   "tags_json" TEXT,
   "is_published" BOOLEAN NOT NULL DEFAULT false,
   "created_by" VARCHAR(128),
-  "maturity" VARCHAR(32) NOT NULL DEFAULT draft,
-  "attest_count" INTEGER NOT NULL DEFAULT false,
-  "reference_count" INTEGER NOT NULL DEFAULT false,
+  "maturity" VARCHAR(32) NOT NULL DEFAULT 'draft',
+  "attest_count" INTEGER NOT NULL DEFAULT 0,
+  "reference_count" INTEGER NOT NULL DEFAULT 0,
   "attest_by_json" TEXT,
   "source_agent_id" VARCHAR(128),
   "maturity_at_json" TEXT,
@@ -525,8 +528,8 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_asset" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_workspace_asset_source_task_id" ON "server_app_workspace_asset" ("source_task_id");
 CREATE INDEX "ix_server_app_workspace_asset_workspace_id" ON "server_app_workspace_asset" ("workspace_id");
+CREATE INDEX "ix_server_app_workspace_asset_source_task_id" ON "server_app_workspace_asset" ("source_task_id");
 
 -- Table: server_app_asset_maturity_log
 CREATE TABLE IF NOT EXISTS "server_app_asset_maturity_log" (
@@ -541,8 +544,8 @@ CREATE TABLE IF NOT EXISTS "server_app_asset_maturity_log" (
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_asset_maturity_log_asset_id" ON "server_app_asset_maturity_log" ("asset_id");
 CREATE INDEX "ix_server_app_asset_maturity_log_workspace_id" ON "server_app_asset_maturity_log" ("workspace_id");
+CREATE INDEX "ix_server_app_asset_maturity_log_asset_id" ON "server_app_asset_maturity_log" ("asset_id");
 
 -- Table: server_app_workspace_asset_version
 CREATE TABLE IF NOT EXISTS "server_app_workspace_asset_version" (
@@ -555,8 +558,8 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_asset_version" (
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_workspace_asset_version_asset_id" ON "server_app_workspace_asset_version" ("asset_id");
 CREATE UNIQUE INDEX "uk_workspace_asset_version" ON "server_app_workspace_asset_version" ("asset_id", "version");
+CREATE INDEX "ix_server_app_workspace_asset_version_asset_id" ON "server_app_workspace_asset_version" ("asset_id");
 
 -- Table: server_app_task_asset_link
 CREATE TABLE IF NOT EXISTS "server_app_task_asset_link" (
@@ -567,9 +570,9 @@ CREATE TABLE IF NOT EXISTS "server_app_task_asset_link" (
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
+CREATE INDEX "ix_server_app_task_asset_link_task_id" ON "server_app_task_asset_link" ("task_id");
 CREATE INDEX "ix_server_app_task_asset_link_asset_id" ON "server_app_task_asset_link" ("asset_id");
 CREATE UNIQUE INDEX "uk_task_asset_link" ON "server_app_task_asset_link" ("task_id", "asset_id", "link_type");
-CREATE INDEX "ix_server_app_task_asset_link_task_id" ON "server_app_task_asset_link" ("task_id");
 
 -- Table: server_app_asset_index
 CREATE TABLE IF NOT EXISTS "server_app_asset_index" (
@@ -599,26 +602,26 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_llm_usage" (
   "session_id" VARCHAR(128),
   "trace_id" VARCHAR(128),
   "model_name" VARCHAR(128) NOT NULL,
-  "prompt_tokens" INTEGER DEFAULT false,
-  "completion_tokens" INTEGER DEFAULT false,
-  "total_tokens" INTEGER DEFAULT false,
-  "latency_ms" INTEGER DEFAULT false,
+  "prompt_tokens" INTEGER DEFAULT 0,
+  "completion_tokens" INTEGER DEFAULT 0,
+  "total_tokens" INTEGER DEFAULT 0,
+  "latency_ms" INTEGER DEFAULT 0,
   "first_token_ms" INTEGER,
   "tokens_per_sec" REAL,
-  "cached_tokens" INTEGER DEFAULT false,
-  "stream" INTEGER DEFAULT true,
-  "error_code" INTEGER DEFAULT false,
-  "cost_usd" REAL DEFAULT 0.0,
+  "cached_tokens" INTEGER DEFAULT 0,
+  "stream" INTEGER DEFAULT 1,
+  "error_code" INTEGER DEFAULT 0,
+  "cost_usd" REAL DEFAULT '0.0',
   "started_at" INTEGER NOT NULL,
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_gyra_serve_llm_usage_started_at" ON "gyra_serve_llm_usage" ("started_at");
-CREATE INDEX "idx_usage_conv_time" ON "gyra_serve_llm_usage" ("conv_id", "started_at");
-CREATE INDEX "ix_gyra_serve_llm_usage_agent_id" ON "gyra_serve_llm_usage" ("agent_id");
 CREATE INDEX "ix_gyra_serve_llm_usage_model_name" ON "gyra_serve_llm_usage" ("model_name");
-CREATE INDEX "idx_usage_agent_time" ON "gyra_serve_llm_usage" ("agent_id", "started_at");
+CREATE INDEX "idx_usage_conv_time" ON "gyra_serve_llm_usage" ("conv_id", "started_at");
 CREATE INDEX "ix_gyra_serve_llm_usage_conv_id" ON "gyra_serve_llm_usage" ("conv_id");
+CREATE INDEX "ix_gyra_serve_llm_usage_started_at" ON "gyra_serve_llm_usage" ("started_at");
+CREATE INDEX "idx_usage_agent_time" ON "gyra_serve_llm_usage" ("agent_id", "started_at");
+CREATE INDEX "ix_gyra_serve_llm_usage_agent_id" ON "gyra_serve_llm_usage" ("agent_id");
 
 -- Table: recommend_question
 CREATE TABLE IF NOT EXISTS "recommend_question" (
@@ -629,10 +632,10 @@ CREATE TABLE IF NOT EXISTS "recommend_question" (
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "question" TEXT,
-  "valid" VARCHAR(31) DEFAULT true,
+  "valid" VARCHAR(31) DEFAULT 1,
   "params" TEXT,
   "chat_mode" VARCHAR(31),
-  "is_hot_question" VARCHAR(10) DEFAULT false,
+  "is_hot_question" VARCHAR(10) DEFAULT 0,
   PRIMARY KEY ("id")
 );
 CREATE INDEX "idx_rec_q_app_code" ON "recommend_question" ("app_code");
@@ -671,8 +674,8 @@ CREATE TABLE IF NOT EXISTS "gpts_conversations" (
   CONSTRAINT "uk_gpts_conversations" UNIQUE ("conv_id")
 );
 CREATE INDEX "ix_gpts_conversations_workspace_id" ON "gpts_conversations" ("workspace_id");
-CREATE INDEX "idx_gpts_name" ON "gpts_conversations" ("gpts_name");
 CREATE INDEX "ix_gpts_conversations_task_id" ON "gpts_conversations" ("task_id");
+CREATE INDEX "idx_gpts_name" ON "gpts_conversations" ("gpts_name");
 
 -- Table: gpts_messages
 CREATE TABLE IF NOT EXISTS "gpts_messages" (
@@ -730,8 +733,8 @@ CREATE TABLE IF NOT EXISTS "gpts_plans" (
   "sub_task_agent" VARCHAR(255),
   "resource_name" VARCHAR(255),
   "agent_model" VARCHAR(255),
-  "retry_times" INTEGER DEFAULT false,
-  "max_retry_times" INTEGER DEFAULT false,
+  "retry_times" INTEGER DEFAULT 0,
+  "max_retry_times" INTEGER DEFAULT 0,
   "state" VARCHAR(255),
   "result" TEXT,
   "task_round_title" VARCHAR(255),
@@ -750,7 +753,7 @@ CREATE TABLE IF NOT EXISTS "gpts_work_log" (
   "conv_id" VARCHAR(255) NOT NULL,
   "session_id" VARCHAR(255) NOT NULL,
   "agent_id" VARCHAR(255) NOT NULL,
-  "step_index" INTEGER NOT NULL DEFAULT false,
+  "step_index" INTEGER NOT NULL DEFAULT 0,
   "message_id" VARCHAR(128),
   "tool_call_id" VARCHAR(128),
   "tool" VARCHAR(255) NOT NULL,
@@ -759,17 +762,17 @@ CREATE TABLE IF NOT EXISTS "gpts_work_log" (
   "result" TEXT,
   "full_result_archive" VARCHAR(512),
   "archives" TEXT,
-  "success" INTEGER NOT NULL DEFAULT true,
+  "success" INTEGER NOT NULL DEFAULT 1,
   "tags" TEXT,
-  "tokens" INTEGER NOT NULL DEFAULT false,
-  "status" VARCHAR(32) NOT NULL DEFAULT active,
+  "tokens" INTEGER NOT NULL DEFAULT 0,
+  "status" VARCHAR(32) NOT NULL DEFAULT 'active',
   "timestamp" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_work_log_conv_session" ON "gpts_work_log" ("conv_id", "session_id");
 CREATE INDEX "idx_work_log_conv_tool" ON "gpts_work_log" ("conv_id", "tool");
+CREATE INDEX "idx_work_log_conv_session" ON "gpts_work_log" ("conv_id", "session_id");
 
 -- Table: gpts_cold_segments
 CREATE TABLE IF NOT EXISTS "gpts_cold_segments" (
@@ -777,21 +780,21 @@ CREATE TABLE IF NOT EXISTS "gpts_cold_segments" (
   "session_id" VARCHAR(255) NOT NULL,
   "conv_id" VARCHAR(255) NOT NULL,
   "content_hash" VARCHAR(64) NOT NULL,
-  "segment_index" INTEGER NOT NULL DEFAULT true,
+  "segment_index" INTEGER NOT NULL DEFAULT 1,
   "boundary_message_id" VARCHAR(128),
   "prev_segment_id" INTEGER,
   "summary" TEXT,
   "source_message_ids" TEXT,
-  "original_tokens" INTEGER NOT NULL DEFAULT false,
-  "compressed_tokens" INTEGER NOT NULL DEFAULT false,
-  "degraded" INTEGER NOT NULL DEFAULT false,
+  "original_tokens" INTEGER NOT NULL DEFAULT 0,
+  "compressed_tokens" INTEGER NOT NULL DEFAULT 0,
+  "degraded" INTEGER NOT NULL DEFAULT 0,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_cold_session_hash" UNIQUE ("session_id", "content_hash")
 );
-CREATE INDEX "idx_cold_session" ON "gpts_cold_segments" ("session_id");
 CREATE INDEX "idx_compress_session_seq" ON "gpts_cold_segments" ("session_id", "segment_index");
+CREATE INDEX "idx_cold_session" ON "gpts_cold_segments" ("session_id");
 
 -- Table: gpts_kanban
 CREATE TABLE IF NOT EXISTS "gpts_kanban" (
@@ -801,7 +804,7 @@ CREATE TABLE IF NOT EXISTS "gpts_kanban" (
   "agent_id" VARCHAR(255) NOT NULL,
   "kanban_id" VARCHAR(255) NOT NULL,
   "mission" TEXT NOT NULL,
-  "current_stage_index" INTEGER NOT NULL DEFAULT false,
+  "current_stage_index" INTEGER NOT NULL DEFAULT 0,
   "stages" TEXT,
   "deliverables" TEXT,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -829,7 +832,7 @@ CREATE TABLE IF NOT EXISTS "gpts_todos" (
   "id" SERIAL,
   "conv_id" VARCHAR(255) NOT NULL,
   "session_id" VARCHAR(255) NOT NULL,
-  "agent_id" VARCHAR(255) NOT NULL DEFAULT todo,
+  "agent_id" VARCHAR(255) NOT NULL DEFAULT 'todo',
   "todos" TEXT,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -851,18 +854,18 @@ CREATE TABLE IF NOT EXISTS "authorization_audit_log" (
   "risk_level" VARCHAR(16),
   "risk_score" INTEGER,
   "risk_factors" TEXT,
-  "cached" INTEGER NOT NULL DEFAULT false,
-  "duration_ms" REAL NOT NULL DEFAULT 0.0,
+  "cached" INTEGER NOT NULL DEFAULT 0,
+  "duration_ms" REAL NOT NULL DEFAULT '0.0',
   "created_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_audit_session" ON "authorization_audit_log" ("session_id");
+CREATE INDEX "idx_audit_agent" ON "authorization_audit_log" ("agent_name");
 CREATE INDEX "idx_audit_risk_level" ON "authorization_audit_log" ("risk_level");
+CREATE INDEX "idx_audit_created_at" ON "authorization_audit_log" ("created_at");
+CREATE INDEX "idx_audit_session" ON "authorization_audit_log" ("session_id");
 CREATE INDEX "idx_audit_user" ON "authorization_audit_log" ("user_id");
 CREATE INDEX "idx_audit_tool" ON "authorization_audit_log" ("tool_name");
-CREATE INDEX "idx_audit_created_at" ON "authorization_audit_log" ("created_at");
 CREATE INDEX "idx_audit_decision" ON "authorization_audit_log" ("decision");
-CREATE INDEX "idx_audit_agent" ON "authorization_audit_log" ("agent_name");
 
 -- Table: gpts_async_tasks
 CREATE TABLE IF NOT EXISTS "gpts_async_tasks" (
@@ -872,7 +875,7 @@ CREATE TABLE IF NOT EXISTS "gpts_async_tasks" (
   "kind" VARCHAR(64),
   "model" VARCHAR(255),
   "description" TEXT,
-  "status" VARCHAR(32) NOT NULL DEFAULT pending,
+  "status" VARCHAR(32) NOT NULL DEFAULT 'pending',
   "error" TEXT,
   "result_preview" TEXT,
   "artifact" TEXT,
@@ -884,8 +887,8 @@ CREATE TABLE IF NOT EXISTS "gpts_async_tasks" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_task_id" UNIQUE ("task_id")
 );
-CREATE INDEX "idx_async_tasks_conv" ON "gpts_async_tasks" ("conv_id");
 CREATE INDEX "idx_async_tasks_status" ON "gpts_async_tasks" ("status");
+CREATE INDEX "idx_async_tasks_conv" ON "gpts_async_tasks" ("conv_id");
 
 -- Table: agent_input_queue
 CREATE TABLE IF NOT EXISTS "agent_input_queue" (
@@ -895,19 +898,19 @@ CREATE TABLE IF NOT EXISTS "agent_input_queue" (
   "message_id" VARCHAR(64) NOT NULL,
   "message_content" TEXT NOT NULL,
   "sender_name" VARCHAR(128),
-  "sender_type" VARCHAR(32) DEFAULT user,
-  "status" VARCHAR(20) NOT NULL DEFAULT pending,
+  "sender_type" VARCHAR(32) DEFAULT 'user',
+  "status" VARCHAR(20) NOT NULL DEFAULT 'pending',
   "consumed_at" TIMESTAMP,
   "consumed_by" VARCHAR(64),
-  "priority" INTEGER DEFAULT false,
+  "priority" INTEGER DEFAULT 0,
   "extra" TEXT,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_input_conv_id_status" ON "agent_input_queue" ("conv_id", "status");
 CREATE INDEX "idx_input_conv_session_status" ON "agent_input_queue" ("conv_session_id", "status");
 CREATE INDEX "idx_input_gmt_create" ON "agent_input_queue" ("gmt_create");
+CREATE INDEX "idx_input_conv_id_status" ON "agent_input_queue" ("conv_id", "status");
 
 -- Table: gpts_tool
 CREATE TABLE IF NOT EXISTS "gpts_tool" (
@@ -951,13 +954,13 @@ CREATE TABLE IF NOT EXISTS "gpts_file_metadata" (
   "file_key" VARCHAR(512) NOT NULL,
   "file_name" VARCHAR(512) NOT NULL,
   "file_type" VARCHAR(64) NOT NULL,
-  "file_size" INTEGER NOT NULL DEFAULT false,
+  "file_size" INTEGER NOT NULL DEFAULT 0,
   "local_path" VARCHAR(1024) NOT NULL DEFAULT '',
   "oss_url" VARCHAR(1024),
   "preview_url" VARCHAR(1024),
   "download_url" VARCHAR(1024),
   "content_hash" VARCHAR(128),
-  "status" VARCHAR(32) NOT NULL DEFAULT completed,
+  "status" VARCHAR(32) NOT NULL DEFAULT 'completed',
   "mime_type" VARCHAR(128),
   "is_public" BOOLEAN NOT NULL DEFAULT false,
   "created_by" VARCHAR(255),
@@ -971,8 +974,8 @@ CREATE TABLE IF NOT EXISTS "gpts_file_metadata" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_file_id" UNIQUE ("file_id")
 );
-CREATE INDEX "idx_file_meta_file_key" ON "gpts_file_metadata" ("conv_id", "file_key");
 CREATE INDEX "idx_file_meta_conv_session" ON "gpts_file_metadata" ("conv_id", "conv_session_id");
+CREATE INDEX "idx_file_meta_file_key" ON "gpts_file_metadata" ("conv_id", "file_key");
 CREATE INDEX "idx_file_meta_file_type" ON "gpts_file_metadata" ("conv_id", "file_type");
 
 -- Table: gpts_file_catalog
@@ -992,7 +995,7 @@ CREATE TABLE IF NOT EXISTS "gpts_events" (
   "id" SERIAL,
   "conv_id" VARCHAR(255) NOT NULL,
   "message_id" VARCHAR(255),
-  "sequence" INTEGER NOT NULL DEFAULT false,
+  "sequence" INTEGER NOT NULL DEFAULT 0,
   "event_type" VARCHAR(64) NOT NULL,
   "event_data" TEXT,
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1021,14 +1024,14 @@ CREATE TABLE IF NOT EXISTS "gpts_app" (
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "admins" TEXT,
-  "agent_version" VARCHAR(32) DEFAULT v1,
+  "agent_version" VARCHAR(32) DEFAULT 'v1',
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_gpts_app" UNIQUE ("app_name")
 );
-CREATE INDEX "idx_gpts_app_team_mode" ON "gpts_app" ("team_mode");
 CREATE INDEX "idx_gpts_app_user_code" ON "gpts_app" ("user_code");
-CREATE INDEX "idx_gpts_app_user_published" ON "gpts_app" ("user_code", "published");
+CREATE INDEX "idx_gpts_app_team_mode" ON "gpts_app" ("team_mode");
 CREATE INDEX "idx_gpts_app_published" ON "gpts_app" ("published");
+CREATE INDEX "idx_gpts_app_user_published" ON "gpts_app" ("user_code", "published");
 
 -- Table: gpts_app_detail
 CREATE TABLE IF NOT EXISTS "gpts_app_detail" (
@@ -1062,8 +1065,8 @@ CREATE TABLE IF NOT EXISTS "user_recent_apps" (
   PRIMARY KEY ("id")
 );
 CREATE INDEX "idx_user_code" ON "user_recent_apps" ("user_code");
-CREATE INDEX "idx_last_accessed" ON "user_recent_apps" ("last_accessed");
 CREATE INDEX "idx_user_r_app_code" ON "user_recent_apps" ("app_code");
+CREATE INDEX "idx_last_accessed" ON "user_recent_apps" ("last_accessed");
 
 -- Table: gpts_messages_system
 CREATE TABLE IF NOT EXISTS "gpts_messages_system" (
@@ -1080,13 +1083,13 @@ CREATE TABLE IF NOT EXISTS "gpts_messages_system" (
   "message_id" VARCHAR(255) NOT NULL,
   "content" TEXT,
   "content_extra" VARCHAR(2000),
-  "retry_time" SMALLINT DEFAULT false,
+  "retry_time" SMALLINT DEFAULT 0,
   "final_status" VARCHAR(20),
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_message" ON "gpts_messages_system" ("message_id");
-CREATE INDEX "idx_message_type" ON "gpts_messages_system" ("conv_id", "type", "phase");
 CREATE INDEX "idx_agent_message" ON "gpts_messages_system" ("conv_id", "agent_message_id");
+CREATE INDEX "idx_message_type" ON "gpts_messages_system" ("conv_id", "type", "phase");
+CREATE INDEX "idx_message" ON "gpts_messages_system" ("message_id");
 CREATE INDEX "idx_message_phase" ON "gpts_messages_system" ("conv_id", "phase");
 
 -- Table: gpts_tool_messages
@@ -1106,10 +1109,10 @@ CREATE TABLE IF NOT EXISTS "gpts_tool_messages" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_tool_name_sub_name" ON "gpts_tool_messages" ("name", "sub_name");
 CREATE INDEX "idx_tool_id" ON "gpts_tool_messages" ("tool_id");
 CREATE INDEX "idx_session_id" ON "gpts_tool_messages" ("session_id");
 CREATE INDEX "idx_gpts_tool_messages_name" ON "gpts_tool_messages" ("name");
+CREATE INDEX "idx_tool_name_sub_name" ON "gpts_tool_messages" ("name", "sub_name");
 
 -- Table: gyra_serve_mcp
 CREATE TABLE IF NOT EXISTS "gyra_serve_mcp" (
@@ -1152,15 +1155,15 @@ CREATE TABLE IF NOT EXISTS "sql_audit_log" (
   "execution_time_ms" REAL,
   "row_count" INTEGER,
   "error_message" TEXT,
-  "duration_ms" REAL DEFAULT 0.0,
+  "duration_ms" REAL DEFAULT '0.0',
   "created_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_sql_audit_user" ON "sql_audit_log" ("user_id");
-CREATE INDEX "idx_sql_audit_ds" ON "sql_audit_log" ("datasource_id");
 CREATE INDEX "idx_sql_audit_time" ON "sql_audit_log" ("created_at");
 CREATE INDEX "idx_sql_audit_session" ON "sql_audit_log" ("session_id");
 CREATE INDEX "idx_sql_audit_result" ON "sql_audit_log" ("check_result");
+CREATE INDEX "idx_sql_audit_user" ON "sql_audit_log" ("user_id");
+CREATE INDEX "idx_sql_audit_ds" ON "sql_audit_log" ("datasource_id");
 
 -- Table: sensitive_column_config
 CREATE TABLE IF NOT EXISTS "sensitive_column_config" (
@@ -1169,10 +1172,10 @@ CREATE TABLE IF NOT EXISTS "sensitive_column_config" (
   "table_name" VARCHAR(255) NOT NULL,
   "column_name" VARCHAR(255) NOT NULL,
   "sensitive_type" VARCHAR(32) NOT NULL,
-  "masking_mode" VARCHAR(16) NOT NULL DEFAULT mask,
+  "masking_mode" VARCHAR(16) NOT NULL DEFAULT 'mask',
   "confidence" REAL,
-  "source" VARCHAR(16) NOT NULL DEFAULT auto,
-  "enabled" INTEGER NOT NULL DEFAULT true,
+  "source" VARCHAR(16) NOT NULL DEFAULT 'auto',
+  "enabled" INTEGER NOT NULL DEFAULT 1,
   "gmt_created" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id"),
@@ -1200,19 +1203,19 @@ CREATE TABLE IF NOT EXISTS "chat_feed_back" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_conv_uid" ON "chat_feed_back" ("conv_uid");
 CREATE INDEX "idx_gmt_create" ON "chat_feed_back" ("gmt_create");
+CREATE INDEX "idx_conv_uid" ON "chat_feed_back" ("conv_uid");
 
 -- Table: gyra_serve_channel_config
 CREATE TABLE IF NOT EXISTS "gyra_serve_channel_config" (
   "id" VARCHAR(64) NOT NULL,
   "name" VARCHAR(255) NOT NULL,
   "channel_type" VARCHAR(32) NOT NULL,
-  "enabled" INTEGER DEFAULT true,
+  "enabled" INTEGER DEFAULT 1,
   "agent_app_code" VARCHAR(255),
   "workspace_id" INTEGER,
   "config" JSON NOT NULL,
-  "status" VARCHAR(32) DEFAULT disconnected,
+  "status" VARCHAR(32) DEFAULT 'disconnected',
   "last_connected" TIMESTAMP,
   "last_error" TEXT,
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1262,7 +1265,7 @@ CREATE TABLE IF NOT EXISTS "prompt_manage" (
   "response_schema" TEXT,
   "model" VARCHAR(128),
   "prompt_language" VARCHAR(32),
-  "prompt_format" VARCHAR(32) DEFAULT f-string,
+  "prompt_format" VARCHAR(32) DEFAULT 'f-string',
   "prompt_desc" VARCHAR(512),
   "user_code" VARCHAR(128),
   "user_name" VARCHAR(128),
@@ -1273,22 +1276,22 @@ CREATE TABLE IF NOT EXISTS "prompt_manage" (
   CONSTRAINT "uk_prompt_name_sys_code" UNIQUE ("prompt_name", "sys_code", "prompt_language", "model")
 );
 CREATE INDEX "ix_prompt_manage_sys_code" ON "prompt_manage" ("sys_code");
+CREATE INDEX "ix_prompt_manage_user_code" ON "prompt_manage" ("user_code");
 CREATE INDEX "ix_prompt_manage_user_name" ON "prompt_manage" ("user_name");
 CREATE INDEX "ix_prompt_manage_prompt_language" ON "prompt_manage" ("prompt_language");
 CREATE INDEX "ix_prompt_manage_prompt_format" ON "prompt_manage" ("prompt_format");
-CREATE INDEX "ix_prompt_manage_user_code" ON "prompt_manage" ("user_code");
 
 -- Table: server_app_task
 CREATE TABLE IF NOT EXISTS "server_app_task" (
   "id" SERIAL,
   "workspace_id" INTEGER NOT NULL,
   "parent_task_id" INTEGER,
-  "type" VARCHAR(32) NOT NULL DEFAULT adhoc,
+  "type" VARCHAR(32) NOT NULL DEFAULT 'adhoc',
   "title" VARCHAR(256) NOT NULL,
   "description" TEXT,
-  "status" VARCHAR(32) NOT NULL DEFAULT draft,
+  "status" VARCHAR(32) NOT NULL DEFAULT 'draft',
   "priority" VARCHAR(16),
-  "triggered_by" VARCHAR(32) NOT NULL DEFAULT manual,
+  "triggered_by" VARCHAR(32) NOT NULL DEFAULT 'manual',
   "trigger_ref" VARCHAR(128),
   "playbook_id" INTEGER,
   "playbook_version_id" INTEGER,
@@ -1306,8 +1309,8 @@ CREATE TABLE IF NOT EXISTS "server_app_task" (
   PRIMARY KEY ("id")
 );
 CREATE INDEX "ix_server_app_task_workspace_id" ON "server_app_task" ("workspace_id");
-CREATE INDEX "ix_server_app_task_playbook_id" ON "server_app_task" ("playbook_id");
 CREATE UNIQUE INDEX "ix_server_app_task_conv_session_id" ON "server_app_task" ("conv_session_id");
+CREATE INDEX "ix_server_app_task_playbook_id" ON "server_app_task" ("playbook_id");
 CREATE INDEX "ix_server_app_task_created_by_user_id" ON "server_app_task" ("created_by_user_id");
 CREATE INDEX "ix_server_app_task_assignee_user_id" ON "server_app_task" ("assignee_user_id");
 CREATE INDEX "ix_server_app_task_parent_task_id" ON "server_app_task" ("parent_task_id");
@@ -1318,13 +1321,13 @@ CREATE TABLE IF NOT EXISTS "server_app_task_relation" (
   "id" SERIAL,
   "parent_task_id" INTEGER NOT NULL,
   "child_task_id" INTEGER NOT NULL,
-  "relation_type" VARCHAR(32) NOT NULL DEFAULT spawned_by,
+  "relation_type" VARCHAR(32) NOT NULL DEFAULT 'spawned_by',
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
 CREATE INDEX "idx_task_relation" ON "server_app_task_relation" ("parent_task_id", "child_task_id");
-CREATE INDEX "ix_server_app_task_relation_child_task_id" ON "server_app_task_relation" ("child_task_id");
 CREATE INDEX "ix_server_app_task_relation_parent_task_id" ON "server_app_task_relation" ("parent_task_id");
+CREATE INDEX "ix_server_app_task_relation_child_task_id" ON "server_app_task_relation" ("child_task_id");
 
 -- Table: gpts_app_config
 CREATE TABLE IF NOT EXISTS "gpts_app_config" (
@@ -1339,7 +1342,7 @@ CREATE TABLE IF NOT EXISTS "gpts_app_config" (
   "version_info" VARCHAR(1000) NOT NULL,
   "creator" VARCHAR(255),
   "description" VARCHAR(1000),
-  "is_published" SMALLINT DEFAULT false,
+  "is_published" SMALLINT DEFAULT 0,
   "gmt_last_edit" TIMESTAMP,
   "editor" VARCHAR(255),
   "ext_config" TEXT,
@@ -1354,7 +1357,7 @@ CREATE TABLE IF NOT EXISTS "gpts_app_config" (
   "resource_agent" TEXT,
   "resource_memory" TEXT,
   "context_config" VARCHAR(2000),
-  "agent_version" VARCHAR(32) DEFAULT v1,
+  "agent_version" VARCHAR(32) DEFAULT 'v1',
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id"),
@@ -1368,9 +1371,9 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_job" (
   "job_type" VARCHAR(64) NOT NULL,
   "space_slug" VARCHAR(128),
   "payload" JSON NOT NULL,
-  "status" VARCHAR(16) NOT NULL DEFAULT pending,
+  "status" VARCHAR(16) NOT NULL DEFAULT 'pending',
   "priority" INTEGER NOT NULL DEFAULT 5,
-  "attempts" INTEGER NOT NULL DEFAULT false,
+  "attempts" INTEGER NOT NULL DEFAULT 0,
   "max_attempts" INTEGER NOT NULL DEFAULT 3,
   "claimed_by" VARCHAR(128),
   "claimed_at" TIMESTAMP,
@@ -1386,11 +1389,11 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_job" (
   "gmt_modified" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_gyra_serve_job_not_before" ON "gyra_serve_job" ("not_before");
-CREATE INDEX "ix_gyra_serve_job_job_type" ON "gyra_serve_job" ("job_type");
+CREATE INDEX "ix_gyra_serve_job_lease_until" ON "gyra_serve_job" ("lease_until");
 CREATE INDEX "ix_gyra_serve_job_space_slug" ON "gyra_serve_job" ("space_slug");
 CREATE INDEX "ix_gyra_serve_job_status" ON "gyra_serve_job" ("status");
-CREATE INDEX "ix_gyra_serve_job_lease_until" ON "gyra_serve_job" ("lease_until");
+CREATE INDEX "ix_gyra_serve_job_not_before" ON "gyra_serve_job" ("not_before");
+CREATE INDEX "ix_gyra_serve_job_job_type" ON "gyra_serve_job" ("job_type");
 
 -- Table: server_app_delivery
 CREATE TABLE IF NOT EXISTS "server_app_delivery" (
@@ -1398,14 +1401,14 @@ CREATE TABLE IF NOT EXISTS "server_app_delivery" (
   "artifact_id" INTEGER,
   "task_id" INTEGER NOT NULL,
   "workspace_id" INTEGER NOT NULL,
-  "category" VARCHAR(32) NOT NULL DEFAULT notify,
+  "category" VARCHAR(32) NOT NULL DEFAULT 'notify',
   "channel" VARCHAR(32) NOT NULL,
   "target" VARCHAR(512) NOT NULL,
   "title" VARCHAR(256),
   "message" TEXT,
-  "format" VARCHAR(32) NOT NULL DEFAULT message_card,
-  "status" VARCHAR(32) NOT NULL DEFAULT pending,
-  "require_intervention" VARCHAR(32) NOT NULL DEFAULT none,
+  "format" VARCHAR(32) NOT NULL DEFAULT 'message_card',
+  "status" VARCHAR(32) NOT NULL DEFAULT 'pending',
+  "require_intervention" VARCHAR(32) NOT NULL DEFAULT 'none',
   "intervention_id" INTEGER,
   "scheduled_at" TIMESTAMP,
   "sent_at" TIMESTAMP,
@@ -1428,7 +1431,7 @@ CREATE TABLE IF NOT EXISTS "server_app_artifact" (
   "title" VARCHAR(256) NOT NULL,
   "content_ref" VARCHAR(512),
   "content_text" TEXT,
-  "current_version" INTEGER NOT NULL DEFAULT true,
+  "current_version" INTEGER NOT NULL DEFAULT 1,
   "provenance_json" TEXT,
   "is_shared" BOOLEAN NOT NULL DEFAULT false,
   "created_by_agent" VARCHAR(128),
@@ -1452,8 +1455,8 @@ CREATE TABLE IF NOT EXISTS "server_app_artifact_version" (
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE UNIQUE INDEX "uk_artifact_version" ON "server_app_artifact_version" ("artifact_id", "version");
 CREATE INDEX "ix_server_app_artifact_version_artifact_id" ON "server_app_artifact_version" ("artifact_id");
+CREATE UNIQUE INDEX "uk_artifact_version" ON "server_app_artifact_version" ("artifact_id", "version");
 
 -- Table: gyra_serve_gyras_my
 CREATE TABLE IF NOT EXISTS "gyra_serve_gyras_my" (
@@ -1463,8 +1466,8 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_gyras_my" (
   "version" VARCHAR(255) NOT NULL,
   "user_name" VARCHAR(255),
   "file_name" VARCHAR(255),
-  "use_count" INTEGER DEFAULT false,
-  "succ_count" INTEGER DEFAULT false,
+  "use_count" INTEGER DEFAULT 0,
+  "succ_count" INTEGER DEFAULT 0,
   "sys_code" VARCHAR(128),
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1487,7 +1490,7 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_gyras_hub" (
   "download_param" VARCHAR(255),
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  "installed" INTEGER DEFAULT false,
+  "installed" INTEGER DEFAULT 0,
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_name" UNIQUE ("name")
 );
@@ -1498,12 +1501,12 @@ CREATE TABLE IF NOT EXISTS "server_app_app_card" (
   "workspace_id" INTEGER NOT NULL,
   "name" VARCHAR(256) NOT NULL,
   "description" VARCHAR(1024),
-  "kind" VARCHAR(32) NOT NULL DEFAULT dashboard,
-  "status" VARCHAR(32) NOT NULL DEFAULT draft,
+  "kind" VARCHAR(32) NOT NULL DEFAULT 'dashboard',
+  "status" VARCHAR(32) NOT NULL DEFAULT 'draft',
   "code" TEXT NOT NULL,
   "config_json" TEXT,
   "queries_json" TEXT,
-  "current_version" INTEGER NOT NULL DEFAULT true,
+  "current_version" INTEGER NOT NULL DEFAULT 1,
   "source_task_id" INTEGER,
   "created_by" VARCHAR(128),
   "icon" VARCHAR(64),
@@ -1536,18 +1539,18 @@ CREATE TABLE IF NOT EXISTS "app_card_record" (
   "id" SERIAL,
   "workspace_id" INTEGER NOT NULL,
   "app_card_id" INTEGER NOT NULL,
-  "collection" VARCHAR(64) NOT NULL DEFAULT records,
+  "collection" VARCHAR(64) NOT NULL DEFAULT 'records',
   "record_id" VARCHAR(64) NOT NULL,
   "dedupe_key" VARCHAR(128),
-  "data_json" TEXT NOT NULL DEFAULT {},
+  "data_json" TEXT NOT NULL DEFAULT '{}',
   "created_by" VARCHAR(128),
   "gmt_created" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_app_card_record_workspace_id" ON "app_card_record" ("workspace_id");
-CREATE UNIQUE INDEX "uk_app_card_record_dedupe" ON "app_card_record" ("workspace_id", "app_card_id", "collection", "dedupe_key");
 CREATE INDEX "ix_app_card_record_app_card_id" ON "app_card_record" ("app_card_id");
+CREATE UNIQUE INDEX "uk_app_card_record_dedupe" ON "app_card_record" ("workspace_id", "app_card_id", "collection", "dedupe_key");
+CREATE INDEX "ix_app_card_record_workspace_id" ON "app_card_record" ("workspace_id");
 CREATE UNIQUE INDEX "uk_app_card_record_rid" ON "app_card_record" ("workspace_id", "app_card_id", "collection", "record_id");
 
 -- Table: app_card_kv
@@ -1562,17 +1565,17 @@ CREATE TABLE IF NOT EXISTS "app_card_kv" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_app_card_kv_workspace_id" ON "app_card_kv" ("workspace_id");
 CREATE UNIQUE INDEX "uk_app_card_kv" ON "app_card_kv" ("workspace_id", "app_card_id", "key");
 CREATE INDEX "ix_app_card_kv_app_card_id" ON "app_card_kv" ("app_card_id");
+CREATE INDEX "ix_app_card_kv_workspace_id" ON "app_card_kv" ("workspace_id");
 
 -- Table: gyra_serve_cron_job
 CREATE TABLE IF NOT EXISTS "gyra_serve_cron_job" (
   "id" VARCHAR(64) NOT NULL,
   "name" VARCHAR(255) NOT NULL,
   "description" TEXT,
-  "enabled" INTEGER DEFAULT true,
-  "delete_after_run" INTEGER DEFAULT false,
+  "enabled" INTEGER DEFAULT 1,
+  "delete_after_run" INTEGER DEFAULT 0,
   "schedule_kind" VARCHAR(32) NOT NULL,
   "schedule_at" VARCHAR(64),
   "schedule_every_ms" INTEGER,
@@ -1581,7 +1584,7 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_cron_job" (
   "schedule_tz" VARCHAR(64),
   "payload_kind" VARCHAR(32) NOT NULL,
   "payload_data" JSON,
-  "session_mode" VARCHAR(16) DEFAULT isolated,
+  "session_mode" VARCHAR(16) DEFAULT 'isolated',
   "conv_session_id" VARCHAR(64),
   "next_run_at_ms" BIGINTEGER,
   "running_at_ms" BIGINTEGER,
@@ -1589,7 +1592,7 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_cron_job" (
   "last_status" VARCHAR(32),
   "last_error" TEXT,
   "last_duration_ms" BIGINTEGER,
-  "consecutive_errors" INTEGER DEFAULT false,
+  "consecutive_errors" INTEGER DEFAULT 0,
   "created_by_user_id" VARCHAR(128),
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modified" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1604,7 +1607,7 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_cron_job_log" (
   "status" VARCHAR(32) NOT NULL,
   "duration_ms" BIGINTEGER,
   "error" TEXT,
-  "trigger" VARCHAR(32) DEFAULT scheduled,
+  "trigger" VARCHAR(32) DEFAULT 'scheduled',
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
@@ -1614,33 +1617,34 @@ CREATE INDEX "ix_gyra_serve_cron_job_log_job_id" ON "gyra_serve_cron_job_log" ("
 CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_semantic_object" (
   "id" VARCHAR(128) NOT NULL,
   "version" SERIAL,
-  "workspace_id" VARCHAR(128) NOT NULL DEFAULT default,
+  "workspace_id" VARCHAR(128) NOT NULL DEFAULT 'default',
   "obj_type" VARCHAR(32) NOT NULL,
-  "status" VARCHAR(32) NOT NULL DEFAULT proposed,
+  "status" VARCHAR(32) NOT NULL DEFAULT 'proposed',
   "name" VARCHAR(256),
   "payload" JSON NOT NULL,
   "confidence" REAL,
   "evidence" JSON,
-  "created_by" VARCHAR(64) NOT NULL DEFAULT llm,
+  "created_by" VARCHAR(64) NOT NULL DEFAULT 'llm',
   "created_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "confirmed_by" VARCHAR(64),
   "confirmed_at" TIMESTAMP,
   "source" VARCHAR(256),
+  "provenance" JSON,
   "supersedes" INTEGER,
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id", "version")
 );
-CREATE INDEX "idx_ecp_obj_type_status" ON "gyra_serve_ecp_semantic_object" ("obj_type", "status");
 CREATE INDEX "idx_ecp_obj_ws_status" ON "gyra_serve_ecp_semantic_object" ("workspace_id", "status");
+CREATE INDEX "idx_ecp_obj_type_status" ON "gyra_serve_ecp_semantic_object" ("obj_type", "status");
 
 -- Table: gyra_serve_ecp_resolution_cache
 CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_resolution_cache" (
   "question_norm" VARCHAR(512) NOT NULL,
-  "workspace_id" VARCHAR(128) NOT NULL DEFAULT default,
+  "workspace_id" VARCHAR(128) NOT NULL DEFAULT 'default',
   "resolution" JSON NOT NULL,
   "validated_by" VARCHAR(128),
-  "hit_count" INTEGER DEFAULT false,
+  "hit_count" INTEGER DEFAULT 0,
   "created_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("question_norm", "workspace_id")
@@ -1651,7 +1655,7 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_semantic_edge" (
   "src" VARCHAR(128) NOT NULL,
   "edge_type" VARCHAR(64) NOT NULL,
   "dst" VARCHAR(128) NOT NULL,
-  "workspace_id" VARCHAR(128) NOT NULL DEFAULT default,
+  "workspace_id" VARCHAR(128) NOT NULL DEFAULT 'default',
   "src_version" INTEGER,
   "status" VARCHAR(32),
   "created_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1662,7 +1666,7 @@ CREATE INDEX "idx_ecp_edge_dst" ON "gyra_serve_ecp_semantic_edge" ("workspace_id
 -- Table: gyra_serve_ecp_confirmer
 CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_confirmer" (
   "id" SERIAL,
-  "workspace_id" VARCHAR(128) NOT NULL DEFAULT default,
+  "workspace_id" VARCHAR(128) NOT NULL DEFAULT 'default',
   "user_id" VARCHAR(128) NOT NULL,
   "scope" VARCHAR(128),
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1673,7 +1677,7 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_confirmer" (
 -- Table: gyra_serve_ecp_op_log
 CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_op_log" (
   "id" SERIAL,
-  "workspace_id" VARCHAR(128) NOT NULL DEFAULT default,
+  "workspace_id" VARCHAR(128) NOT NULL DEFAULT 'default',
   "ts" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "op" VARCHAR(64) NOT NULL,
   "detail" JSON,
@@ -1684,11 +1688,11 @@ CREATE INDEX "idx_ecp_oplog_ws_ts" ON "gyra_serve_ecp_op_log" ("workspace_id", "
 -- Table: gyra_serve_ecp_asset_ref
 CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_asset_ref" (
   "id" SERIAL,
-  "workspace_id" VARCHAR(128) NOT NULL DEFAULT default,
+  "workspace_id" VARCHAR(128) NOT NULL DEFAULT 'default',
   "kind" VARCHAR(32) NOT NULL,
   "ref_id" VARCHAR(256) NOT NULL,
   "ref_meta" JSON,
-  "status" VARCHAR(32) NOT NULL DEFAULT active,
+  "status" VARCHAR(32) NOT NULL DEFAULT 'active',
   "last_checked_at" TIMESTAMP,
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1699,13 +1703,13 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_asset_ref" (
 -- Table: gyra_serve_ecp_miss_learn
 CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_miss_learn" (
   "id" SERIAL,
-  "workspace_id" VARCHAR(128) NOT NULL DEFAULT default,
+  "workspace_id" VARCHAR(128) NOT NULL DEFAULT 'default',
   "kind" VARCHAR(32) NOT NULL,
   "datasource_id" INTEGER,
   "pattern" VARCHAR(512) NOT NULL,
   "example" VARCHAR(1024),
   "proposal_ids" JSON,
-  "trigger" VARCHAR(32) NOT NULL DEFAULT agent,
+  "trigger" VARCHAR(32) NOT NULL DEFAULT 'agent',
   "learned_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1716,14 +1720,14 @@ CREATE INDEX "idx_ecp_miss_learn_ws" ON "gyra_serve_ecp_miss_learn" ("workspace_
 -- Table: gyra_serve_ecp_semantic_alignment
 CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_semantic_alignment" (
   "id" SERIAL,
-  "workspace_id" VARCHAR(128) NOT NULL DEFAULT default,
+  "workspace_id" VARCHAR(128) NOT NULL DEFAULT 'default',
   "slug" VARCHAR(128) NOT NULL,
   "entity_name" VARCHAR(256) NOT NULL,
   "object_id" VARCHAR(128) NOT NULL,
-  "status" VARCHAR(32) NOT NULL DEFAULT proposed,
+  "status" VARCHAR(32) NOT NULL DEFAULT 'proposed',
   "confidence" REAL,
   "rationale" VARCHAR(1024),
-  "source" VARCHAR(16) NOT NULL DEFAULT llm,
+  "source" VARCHAR(16) NOT NULL DEFAULT 'llm',
   "decided_by" VARCHAR(64),
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1734,7 +1738,7 @@ CREATE INDEX "idx_ecp_alignment_ws_status" ON "gyra_serve_ecp_semantic_alignment
 
 -- Table: gyra_serve_ecp_workspace_config
 CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_workspace_config" (
-  "workspace_id" VARCHAR(128) NOT NULL DEFAULT default,
+  "workspace_id" VARCHAR(128) NOT NULL DEFAULT 'default',
   "proposal_agent_id" VARCHAR(256),
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1756,7 +1760,7 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_flow" (
   "source" VARCHAR(64),
   "source_url" VARCHAR(512),
   "version" VARCHAR(32),
-  "define_type" VARCHAR(32) DEFAULT json,
+  "define_type" VARCHAR(32) DEFAULT 'json',
   "editable" INTEGER,
   "variables" TEXT,
   "user_name" VARCHAR(128),
@@ -1766,11 +1770,11 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_flow" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_uid" UNIQUE ("uid")
 );
-CREATE INDEX "ix_gyra_serve_flow_user_name" ON "gyra_serve_flow" ("user_name");
 CREATE INDEX "ix_gyra_serve_flow_sys_code" ON "gyra_serve_flow" ("sys_code");
 CREATE INDEX "ix_gyra_serve_flow_uid" ON "gyra_serve_flow" ("uid");
-CREATE INDEX "ix_gyra_serve_flow_name" ON "gyra_serve_flow" ("name");
 CREATE INDEX "ix_gyra_serve_flow_dag_id" ON "gyra_serve_flow" ("dag_id");
+CREATE INDEX "ix_gyra_serve_flow_name" ON "gyra_serve_flow" ("name");
+CREATE INDEX "ix_gyra_serve_flow_user_name" ON "gyra_serve_flow" ("user_name");
 
 -- Table: gyra_serve_variables
 CREATE TABLE IF NOT EXISTS "gyra_serve_variables" (
@@ -1780,12 +1784,12 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_variables" (
   "label_info" VARCHAR(128),
   "value" TEXT,
   "value_type" VARCHAR(32),
-  "category" VARCHAR(32) DEFAULT common,
+  "category" VARCHAR(32) DEFAULT 'common',
   "encryption_method" VARCHAR(32),
   "salt" VARCHAR(128),
-  "scope" VARCHAR(32) DEFAULT global,
+  "scope" VARCHAR(32) DEFAULT 'global',
   "scope_key" VARCHAR(256),
-  "enabled" INTEGER DEFAULT true,
+  "enabled" INTEGER DEFAULT 1,
   "description" TEXT,
   "user_name" VARCHAR(128),
   "sys_code" VARCHAR(128),
@@ -1794,9 +1798,9 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_variables" (
   PRIMARY KEY ("id")
 );
 CREATE INDEX "ix_gyra_serve_variables_name" ON "gyra_serve_variables" ("name");
-CREATE INDEX "ix_gyra_serve_variables_sys_code" ON "gyra_serve_variables" ("sys_code");
 CREATE INDEX "ix_gyra_serve_variables_key_info" ON "gyra_serve_variables" ("key_info");
 CREATE INDEX "ix_gyra_serve_variables_user_name" ON "gyra_serve_variables" ("user_name");
+CREATE INDEX "ix_gyra_serve_variables_sys_code" ON "gyra_serve_variables" ("sys_code");
 
 -- Table: user
 CREATE TABLE IF NOT EXISTS "user" (
@@ -1808,8 +1812,8 @@ CREATE TABLE IF NOT EXISTS "user" (
   "email" VARCHAR(255),
   "avatar" VARCHAR(512),
   "password_hash" VARCHAR(255),
-  "role" VARCHAR(20) DEFAULT normal,
-  "is_active" INTEGER NOT NULL DEFAULT true,
+  "role" VARCHAR(20) DEFAULT 'normal',
+  "is_active" INTEGER NOT NULL DEFAULT 1,
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
@@ -1844,7 +1848,7 @@ CREATE TABLE IF NOT EXISTS "system_config" (
   "id" SERIAL,
   "config_key" VARCHAR(128) NOT NULL,
   "config_value" TEXT,
-  "config_type" VARCHAR(32) DEFAULT feature_plugin,
+  "config_type" VARCHAR(32) DEFAULT 'feature_plugin',
   "description" VARCHAR(512),
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1857,8 +1861,8 @@ CREATE TABLE IF NOT EXISTS "role" (
   "id" SERIAL,
   "name" VARCHAR(64) NOT NULL,
   "description" TEXT,
-  "is_system" INTEGER DEFAULT false,
-  "scope_type" VARCHAR(16) NOT NULL DEFAULT global,
+  "is_system" INTEGER DEFAULT 0,
+  "scope_type" VARCHAR(16) NOT NULL DEFAULT 'global',
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id"),
@@ -1870,9 +1874,9 @@ CREATE TABLE IF NOT EXISTS "role_permission" (
   "id" SERIAL,
   "role_id" INTEGER NOT NULL,
   "resource_type" VARCHAR(64) NOT NULL,
-  "resource_id" VARCHAR(255) DEFAULT *,
+  "resource_id" VARCHAR(255) DEFAULT '*',
   "action" VARCHAR(32) NOT NULL,
-  "effect" VARCHAR(16) DEFAULT allow,
+  "effect" VARCHAR(16) DEFAULT 'allow',
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_role_perm" UNIQUE ("role_id", "resource_type", "resource_id", "action")
@@ -1910,11 +1914,11 @@ CREATE TABLE IF NOT EXISTS "permission_definition" (
   "name" VARCHAR(64) NOT NULL,
   "description" TEXT,
   "resource_type" VARCHAR(32) NOT NULL,
-  "resource_id" VARCHAR(128) DEFAULT *,
+  "resource_id" VARCHAR(128) DEFAULT '*',
   "action" VARCHAR(32) NOT NULL,
-  "effect" VARCHAR(16) DEFAULT allow,
+  "effect" VARCHAR(16) DEFAULT 'allow',
   "is_active" BOOLEAN DEFAULT true,
-  "scope_type" VARCHAR(16) NOT NULL DEFAULT global,
+  "scope_type" VARCHAR(16) NOT NULL DEFAULT 'global',
   "grantable" BOOLEAN NOT NULL DEFAULT false,
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1931,8 +1935,8 @@ CREATE TABLE IF NOT EXISTS "role_permission_def" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_role_perm_def" UNIQUE ("role_id", "permission_def_id")
 );
-CREATE INDEX "ix_role_permission_def_permission_def_id" ON "role_permission_def" ("permission_def_id");
 CREATE INDEX "ix_role_permission_def_role_id" ON "role_permission_def" ("role_id");
+CREATE INDEX "ix_role_permission_def_permission_def_id" ON "role_permission_def" ("permission_def_id");
 
 -- Table: resource_grant
 CREATE TABLE IF NOT EXISTS "resource_grant" (
@@ -1959,7 +1963,7 @@ CREATE TABLE IF NOT EXISTS "permission_request" (
   "resource_id" VARCHAR(255),
   "action" VARCHAR(32),
   "reason" TEXT,
-  "status" VARCHAR(16) DEFAULT pending,
+  "status" VARCHAR(16) DEFAULT 'pending',
   "reviewer_id" INTEGER,
   "review_comment" TEXT,
   "gmt_create" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1996,11 +2000,11 @@ CREATE INDEX "ix_user_group_member_group_id" ON "user_group_member" ("group_id")
 -- Table: oauth2_config
 CREATE TABLE IF NOT EXISTS "oauth2_config" (
   "id" SERIAL,
-  "config_key" VARCHAR(64) NOT NULL DEFAULT global,
-  "enabled" INTEGER NOT NULL DEFAULT false,
+  "config_key" VARCHAR(64) NOT NULL DEFAULT 'global',
+  "enabled" INTEGER NOT NULL DEFAULT 0,
   "providers_json" TEXT,
   "admin_users_json" TEXT,
-  "default_role" VARCHAR(32) DEFAULT viewer,
+  "default_role" VARCHAR(32) DEFAULT 'viewer',
   "sso_auto_login_provider" VARCHAR(64),
   "gmt_create" TIMESTAMP,
   "gmt_modify" TIMESTAMP,

@@ -12,6 +12,7 @@ verbatim delete, wiki rebuild, ingest job polling, and lint.
 from __future__ import annotations
 
 import asyncio
+import csv
 import logging
 import mimetypes
 import shutil
@@ -64,6 +65,7 @@ from .schemas import (
     FeishuWikiSyncResponse,
     FeishuWikiTestRequest,
     FeishuWikiTestResponse,
+    FileLearningStatus,
     IngestJobListResponse,
     IngestJobResponse,
     LintResponse,
@@ -414,16 +416,80 @@ async def asset_read(
 # ---------------------------------------------------------------------------
 
 
-def _normalize_raw_path(path: str) -> str:
-    """Validate and normalize a path relative to raw/."""
+_RAW_EDITABLE_EXTS = (".md", ".txt", ".markdown", ".text")
+_RAW_SPREADSHEET_EXTS = {".xlsx", ".xls"}
+_RAW_DELIMITED_EXTS = {".csv", ".tsv"}
+_RAW_BINARY_EXTS = {
+    ".pdf", ".doc", ".docx", ".ppt", ".pptx",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tiff",
+    ".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm",
+    ".zip", ".gz", ".tar", ".rar", ".7z",
+    ".bin", ".exe", ".dll", ".so", ".dylib",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+}
+
+
+def _normalize_raw_path(path: str, *, mode: str = "any") -> str:
+    """Validate and normalize a path relative to raw/.
+
+    Also strips a leading ``raw/`` segment so callers may pass either the
+    bare path (``sources/foo.md``) or the path as returned by the raw tree
+    endpoint (``raw/sources/foo.md``), mirroring ``normalize_wiki_path``.
+
+    ``mode`` controls the extension gate: ``"any"`` (read/delete) accepts
+    every extension, ``"editable"`` (edit) restricts to text files, and
+    ``"md"`` (create) keeps the historical md-only behaviour.
+    """
     if not path or not path.strip():
         raise HTTPException(status_code=400, detail="path is required")
-    path = path.strip()
-    if path.startswith("/") or ".." in path:
+    path = path.strip().lstrip("/")
+    if path.startswith("raw/"):
+        path = path[len("raw/"):]
+    if not path or ".." in path:
         raise HTTPException(status_code=400, detail="invalid path")
-    if not path.endswith(".md"):
+    lower = path.lower()
+    if mode == "md" and not lower.endswith(".md"):
         raise HTTPException(status_code=400, detail="only .md files are supported")
+    if mode == "editable" and not lower.endswith(_RAW_EDITABLE_EXTS):
+        raise HTTPException(
+            status_code=400, detail="only text files (.md/.txt) can be edited"
+        )
     return path
+
+
+def _delimited_to_markdown(path: Path, delimiter: str) -> str:
+    """CSV/TSV → a GitHub markdown table (first non-empty row is the header)."""
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            rows = [row for row in csv.reader(f, delimiter=delimiter)]
+    except (csv.Error, UnicodeDecodeError, OSError):
+        return ""
+    rows = [r for r in rows if any(str(c).strip() for c in r)]
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    rows = [list(r) + [""] * (width - len(r)) for r in rows]
+
+    def cell(v: object) -> str:
+        return str(v).strip().replace("\n", " ").replace("|", "\\|")
+
+    lines = ["| " + " | ".join(cell(c) for c in row) + " |" for row in rows]
+    lines.insert(1, "| " + " | ".join(["---"] * width) + " |")
+    return "\n".join(lines)
+
+
+async def _spreadsheet_to_markdown(path: Path) -> str:
+    """XLSX/XLS → markdown tables via ExcelExtractor (no model needed)."""
+    from gyra_ext.knowledge.extractors.builtin import ExcelExtractor
+
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    try:
+        specs = await ExcelExtractor().extract(path, mime, None, None)
+    except Exception:  # noqa: BLE001
+        logger.warning("spreadsheet preview failed: %s", path.name, exc_info=True)
+        return ""
+    return specs[0].content if specs else ""
 
 
 async def _deprecate_verbats_by_source_file(vault, source_file: str) -> None:
@@ -442,13 +508,35 @@ async def raw_file_read(
     path: str = Query(...),
     service: Service = Depends(get_service),
 ):
-    """Read the raw content of a file under raw/."""
+    """Read the raw content of a file under raw/ for preview.
+
+    Spreadsheets are returned as markdown tables and CSV/TSV as a markdown
+    table; text files are returned as-is. Known binary formats return empty
+    content (the UI keeps showing status + rebuild actions) instead of 500.
+    """
     path = _normalize_raw_path(path)
     vault = await service.get_vault(slug)
-    content = await vault._raw_read(f"raw/{path}")
-    # Fallback: older pipelines placed source files under wiki/sources/.
-    if not content:
-        content = await vault._raw_read(f"wiki/{path}")
+
+    full_path = vault.root / "raw" / path
+    if not full_path.exists():
+        # Fallback: older pipelines placed source files under wiki/sources/.
+        full_path = vault.root / "wiki" / path
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail="file not found")
+
+    ext = full_path.suffix.lower()
+    if ext in _RAW_SPREADSHEET_EXTS:
+        content = await _spreadsheet_to_markdown(full_path)
+    elif ext in _RAW_DELIMITED_EXTS:
+        delimiter = "\t" if ext == ".tsv" else ","
+        content = await asyncio.to_thread(_delimited_to_markdown, full_path, delimiter)
+    elif ext in _RAW_BINARY_EXTS:
+        content = ""
+    else:
+        try:
+            content = full_path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            content = ""
     return Result.succ(RawFileReadResponse(content=content))
 
 
@@ -493,7 +581,7 @@ async def raw_file_edit(
     service: Service = Depends(get_service),
 ):
     """Edit a raw file under raw/ and re-ingest it."""
-    path = _normalize_raw_path(path)
+    path = _normalize_raw_path(path, mode="editable")
     vault = await service.get_vault(slug)
     space = await service.get_space_config(slug)
 
@@ -540,6 +628,137 @@ async def raw_file_delete(
     await _deprecate_verbats_by_source_file(vault, path)
     await vault._raw_delete(f"raw/{path}")
     return Result.succ({"ok": True})
+
+
+@router.get(
+    "/spaces/{slug}/raw/learning-status",
+    response_model=Result[Dict[str, FileLearningStatus]],
+)
+async def raw_learning_status(slug: str, service: Service = Depends(get_service)):
+    """Derive per-raw-file wiki learning status from ingest jobs.
+
+    Returns ``{tree_path: FileLearningStatus}`` for every file under raw/.
+    The coarse ``status`` shown in the UI: pending(挂起/未学习) |
+    running(进行中) | done(完成) | failed(失败). Jobs are associated with
+    files via job.source_file and via the job's verbat_ids, matched first
+    on the raw-relative path, then on the basename.
+    """
+    vault = await service.get_vault(slug)
+
+    raw_root = vault.root / "raw"
+    tree_paths: List[str] = []
+    if raw_root.exists():
+        for p in sorted(raw_root.rglob("*")):
+            if p.is_file():
+                tree_paths.append(f"raw/{p.relative_to(vault.root).as_posix()}")
+
+    verbats = await vault.verbat_list(limit=10000)
+    verbat_source: Dict[str, str] = {}
+    active_by_source: Dict[str, int] = {}
+    for v in verbats:
+        verbat_source[str(v.id)] = v.source_file
+        if not v.deprecated:
+            active_by_source[v.source_file] = active_by_source.get(v.source_file, 0) + 1
+
+    jobs = await service.orchestrator.list_jobs(slug, vault, limit=200)
+    latest: Dict[str, Dict[str, Any]] = {}
+
+    def _register(key: str, job: Any) -> None:
+        if not key:
+            return
+        prev = latest.get(key)
+        if prev is None or (job.started_at or "") >= (prev["started_at"] or ""):
+            latest[key] = {"started_at": job.started_at or "", "job": job}
+
+    for j in jobs:
+        keys = set()
+        src = j.source_file or ""
+        if src and not src.startswith(("rebuild:", "feishu-wiki:")):
+            keys.add(src.strip().lstrip("/"))
+            keys.add(src.strip().rsplit("/", 1)[-1])
+        for vid in j.verbat_ids or []:
+            sf = verbat_source.get(str(vid))
+            if sf:
+                keys.add(sf.strip().lstrip("/"))
+                keys.add(sf.strip().rsplit("/", 1)[-1])
+        for k in keys:
+            _register(k, j)
+
+    running_statuses = {
+        "pending",
+        "extracting",
+        "embedding",
+        "generating_wiki",
+        "generating_graph",
+    }
+    out: Dict[str, FileLearningStatus] = {}
+    for tp in tree_paths:
+        rel = tp[len("raw/"):]
+        basename = rel.rsplit("/", 1)[-1]
+        job = None
+        for key in (rel, basename):
+            entry = latest.get(key)
+            if entry is not None:
+                job = entry["job"]
+                break
+        verbat_count = active_by_source.get(rel, 0) or active_by_source.get(basename, 0)
+        if job is not None:
+            if job.status in running_statuses:
+                status = "running"
+            elif job.status == "failed":
+                status = "failed"
+            else:
+                status = "done"
+            out[tp] = FileLearningStatus(
+                path=tp,
+                status=status,
+                job_id=job.id,
+                job_status=job.status,
+                error=job.error,
+                started_at=job.started_at,
+                finished_at=job.finished_at,
+                verbat_count=verbat_count,
+            )
+        else:
+            out[tp] = FileLearningStatus(
+                path=tp,
+                status="done" if verbat_count > 0 else "pending",
+                verbat_count=verbat_count,
+            )
+    return Result.succ(out)
+
+
+@router.post(
+    "/spaces/{slug}/raw/files/rebuild", response_model=Result[UploadResponse]
+)
+async def raw_file_rebuild(
+    slug: str,
+    path: str = Query(...),
+    llm_model: Optional[str] = Query(None),
+    service: Service = Depends(get_service),
+):
+    """Re-trigger wiki generation + graph extraction for one raw file."""
+    path = _normalize_raw_path(path)
+    vault = await service.get_vault(slug)
+    space = await service.get_space_config(slug)
+
+    full_path = vault.root / "raw" / path
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="file not found")
+
+    try:
+        job = await service.orchestrator.rebuild_wiki_for_file(
+            space, vault, path, llm_model_override=llm_model
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Result.succ(
+        UploadResponse(
+            job_id=job.id,
+            verbat_ids=[str(v) for v in job.verbat_ids],
+            wiki_doc_ids=[str(d) for d in job.wiki_doc_ids],
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

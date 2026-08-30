@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import classNames from 'classnames';
+import copy from 'copy-to-clipboard';
 
 interface SqlQueryData {
   sql: string;
@@ -104,13 +105,11 @@ const VisSqlQuery: FC<VisSqlQueryProps> = ({ data }) => {
   }, [columns]);
 
   // Copy SQL to clipboard
-  const handleCopySql = async () => {
-    try {
-      await navigator.clipboard.writeText(sql);
+  const handleCopySql = () => {
+    const success = copy(sql);
+    if (success) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy SQL:', err);
     }
   };
 

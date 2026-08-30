@@ -1,6 +1,10 @@
 """KnowledgeCapability —— 知识库自管理资源能力(RFC-006 Stage 7/8 + Phase D)。
 
-知识库是 Consumer:declare 库列表 SYSTEM + consume 检索结果回注(TURN)。
+知识库是 Consumer:declare 库列表 SYSTEM + 检索工具(TOOLS) + consume 检索结果回注(TURN)。
+
+TOOLS:绑定了知识空间(_knowledge_ids 非空)时,declare 注入 search_knowledge/
+read_knowledge_document 两个闭包工具(依赖本能力实例),保证场景对话里 agent
+真正拥有可调用的知识工具——而非仅看到库列表却无从检索。
 
 prepare 自管 hydrate:按 _knowledge_ids 调 KnowledgeService.get_knowledge_space 水合
 空间元数据(name/desc)存 _spaces,供 declare 渲染。facade 时序已改 prepare 先于 declare
@@ -87,6 +91,107 @@ _RETRIEVE_DEFAULTS = {
 }
 
 
+def _build_knowledge_tools(cap: "KnowledgeCapability") -> List[Any]:
+    """构造知识检索闭包工具(search_knowledge/read_knowledge_document)。
+
+    与 ECP 工具群同构:依赖闭包绑定 cap 实例,agent 只传业务入参,无需感知
+    knowledge_id 之外的基建细节。RAG service 不可用时检索降级返回空/错误
+    JSON(工具仍在,行为诚实),不再静默缺失。
+    """
+    import json
+
+    from gyra.agent.resource.tool.base import FunctionTool
+
+    async def _search(query: str, knowledge_id: Optional[str] = None) -> str:
+        try:
+            knowledge_ids = [knowledge_id] if knowledge_id else list(cap._knowledge_ids)
+            res = await cap._retrieve(query=query, knowledge_ids=knowledge_ids)
+            docs = getattr(res, "document_response_list", None) or []
+            items = []
+            for doc in docs:
+                items.append(
+                    {
+                        "content": (getattr(doc, "content", "") or "")[:800],
+                        "score": getattr(doc, "score", 0.0),
+                        "source_url": getattr(doc, "yuque_url", "") or "",
+                        "doc_uuid": getattr(doc, "doc_uuid", "") or "",
+                    }
+                )
+            if not items:
+                return json.dumps(
+                    {
+                        "results": [],
+                        "note": "知识库检索无结果。可换关键词重试一次;仍为空才可向用户如实说明知识库未覆盖。",
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps({"results": items}, ensure_ascii=False)
+        except Exception as e:  # noqa: BLE001
+            return json.dumps({"error": f"search_knowledge failed: {e}"}, ensure_ascii=False)
+
+    async def _read(doc_uuid: str, query: str = "", header: str = "") -> str:
+        try:
+            res = await cap.read_document(
+                query=query or doc_uuid,
+                selected_knowledge_ids=list(cap._knowledge_ids),
+                doc_uuids=[doc_uuid],
+                header=header or None,
+            )
+            contents = [str(c) for c in (getattr(res, "document_contents", None) or [])]
+            if not contents:
+                return json.dumps(
+                    {
+                        "contents": [],
+                        "note": "未读到文档内容:确认 doc_uuid 来自 search_knowledge 结果;若持续为空说明知识库服务不可用。",
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps({"contents": contents}, ensure_ascii=False)
+        except Exception as e:  # noqa: BLE001
+            return json.dumps({"error": f"read_knowledge_document failed: {e}"}, ensure_ascii=False)
+
+    return [
+        FunctionTool(
+            "search_knowledge",
+            _search,
+            description=(
+                "检索绑定的知识库空间(RAG)。涉及规范/制度/案例/合规/历史结论等"
+                "知识性问题,或语义目录与数据工具查不到背景依据时使用。"
+                "返回相关片段(content/score/来源链接/doc_uuid)。"
+            ),
+            args={
+                "query": {"type": "string", "description": "检索问题或关键词"},
+                "knowledge_id": {
+                    "type": "string",
+                    "description": "可选,限定单个知识空间 id;缺省检索全部绑定空间",
+                    "required": False,
+                },
+            },
+        ),
+        FunctionTool(
+            "read_knowledge_document",
+            _read,
+            description=(
+                "精读知识库文档原文。先用 search_knowledge 找到 doc_uuid,"
+                "再用本工具读取完整内容(可按章节标题 header 定位)。"
+            ),
+            args={
+                "doc_uuid": {"type": "string", "description": "文档 id(来自 search_knowledge 结果)"},
+                "query": {
+                    "type": "string",
+                    "description": "阅读目的(便于定位相关章节)",
+                    "required": False,
+                },
+                "header": {
+                    "type": "string",
+                    "description": "可选,只读指定章节标题下的内容",
+                    "required": False,
+                },
+            },
+        ),
+    ]
+
+
 class KnowledgeCapability(Capability):
     """知识库自管理能力:declare 库列表 + consume 检索回注。
 
@@ -140,19 +245,44 @@ class KnowledgeCapability(Capability):
         return "knowledge"
 
     def declare(self, config: Any = None) -> List[Contribution]:
+        """注入知识库清单(SYSTEM)+ 检索工具(TOOLS,绑定知识空间时)。
+
+        纯函数:清单文本由 prepare 预载;工具对象构造无 I/O。
+        """
+        contribs: List[Contribution] = []
+
         text = self._render_spaces()
-        if not text:
-            return []
-        return [
-            Contribution(
-                capability_id=self.capability_id,
-                slot=Slot.SYSTEM,
-                content=text,
-                lifetime=Lifetime.CONFIG_STATIC,
-                cache_scope=CacheScope.USER,
-                order=50,
+        if text:
+            contribs.append(
+                Contribution(
+                    capability_id=self.capability_id,
+                    slot=Slot.SYSTEM,
+                    content=text,
+                    lifetime=Lifetime.CONFIG_STATIC,
+                    cache_scope=CacheScope.USER,
+                    order=50,
+                )
             )
-        ]
+
+        # TOOLS: 绑定了知识空间才注入检索工具(无空间可查时注入只会误导 agent)
+        if self._knowledge_ids:
+            try:
+                tools = _build_knowledge_tools(self)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[knowledge-capability] build knowledge tools failed: {e}")
+                tools = []
+            for tool in tools:
+                contribs.append(
+                    Contribution(
+                        capability_id=f"{self.capability_id}:tool:{tool.name}",
+                        slot=Slot.TOOLS,
+                        content=tool,
+                        lifetime=Lifetime.CONFIG_STATIC,
+                        cache_scope=CacheScope.NONE,
+                        order=50,
+                    )
+                )
+        return contribs
 
     def _render_spaces(self) -> str:
         if self._spaces is not None:

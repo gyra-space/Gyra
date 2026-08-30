@@ -343,7 +343,7 @@ describe('deliverable_files / task_files(追问轮不丢前轮交付物)', () =>
     expect(view.deliverable_files![0].file_name).toBe('report-v2.pdf');
   });
 
-  test('同 file_id 不同 ts(跨轮重新交付/多次修改)按 file_id 去重,保留 ts 最新的一份', () => {
+  test('同 file_id 内容相同仅 ts 被后端刷新时,保留最早 ts 作为产出时间锚点', () => {
     const prev: WorkspaceView = {
       planning: null,
       execution: [],
@@ -352,7 +352,27 @@ describe('deliverable_files / task_files(追问轮不丢前轮交付物)', () =>
         { file_id: 'f1', file_name: 'report.pdf', file_size: 1024, mime_type: 'application/pdf', render_type: 'pdf', ts: '2026-08-01T10:00:00' },
       ],
     };
-    // 追问轮重新交付同一 file_id,ts 更新(文件被修改/重复交付)→ 只保留最新一份
+    // 后端每帧/新轮重复下发同一文件,仅 ts 刷新为当前时间
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      deliverable_files: [
+        { file_id: 'f1', file_name: 'report.pdf', file_size: 1024, mime_type: 'application/pdf', render_type: 'pdf', ts: '2026-08-10T10:00:00' },
+      ],
+    }, prev);
+    expect(view.deliverable_files).toHaveLength(1);
+    expect(view.deliverable_files![0].file_name).toBe('report.pdf');
+    expect(view.deliverable_files![0].ts).toBe('2026-08-01T10:00:00');
+  });
+
+  test('同 file_id 内容真正变化(新版本)时保留最新内容与对应 ts', () => {
+    const prev: WorkspaceView = {
+      planning: null,
+      execution: [],
+      summary: null,
+      deliverable_files: [
+        { file_id: 'f1', file_name: 'report.pdf', file_size: 1024, mime_type: 'application/pdf', render_type: 'pdf', ts: '2026-08-01T10:00:00' },
+      ],
+    };
     const view = parseWorkspaceView({
       ...baseChunk,
       deliverable_files: [
@@ -376,6 +396,59 @@ describe('deliverable_files / task_files(追问轮不丢前轮交付物)', () =>
       task_files: [file('t2', 'b.log', 'text')],
     }, prev);
     expect(view.task_files!.map(f => f.file_id)).toEqual(['t2', 't1']);
+  });
+
+  test('追问轮后端重复下发前轮交付文件且刷新 ts 时,最早产出 ts 不变', () => {
+    const prev: WorkspaceView = {
+      planning: null,
+      execution: [
+        { id: 'u1', type: 'user', title: '我', status: 'done', output: '第一问', ts: '2026-08-01T09:00:00' },
+        { id: 'a1', type: 'answer', title: '回复', status: 'done', output: 'ok', ts: '2026-08-01T09:00:02' },
+      ],
+      summary: null,
+      deliverable_files: [
+        { file_id: 'f1', file_name: 'index.html', file_size: 2800, mime_type: 'text/html', render_type: 'iframe', ts: '2026-08-01T09:00:01.500' },
+      ],
+    };
+    // 第二轮已开始,后端新 chunk 把 f1 又带了一遍且 ts 刷成第二轮时间
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      execution: [
+        { id: 'u2', type: 'user', title: '我', status: 'done', output: '追问', ts: '2026-08-01T09:10:00' },
+      ],
+      deliverable_files: [
+        { file_id: 'f1', file_name: 'index.html', file_size: 2800, mime_type: 'text/html', render_type: 'iframe', ts: '2026-08-01T09:10:00.500' },
+      ],
+    }, prev);
+    expect(view.deliverable_files).toHaveLength(1);
+    expect(view.deliverable_files![0].file_id).toBe('f1');
+    // 关键:f1 仍用第一轮的产出 ts,后续 groupDeliverablesByRound 能正确归到第一轮
+    expect(view.deliverable_files![0].ts).toBe('2026-08-01T09:00:01.500');
+  });
+
+  test('后端未下发 ts 时补上首次进入视图的时间戳(否则永远落不到任何轮次)', () => {
+    const view = parseWorkspaceView({
+      ...baseChunk,
+      deliverable_files: [
+        { file_id: 'f1', file_name: 'index.html', file_size: 2800, mime_type: 'text/html', render_type: 'iframe' },
+      ],
+    }, null);
+    expect(view.deliverable_files).toHaveLength(1);
+    expect(view.deliverable_files![0].ts).toBeTruthy();
+  });
+
+  test('补过 ts 的文件在后续 chunk 重复下发(仍无 ts)时保留最早锚点', () => {
+    const chunk = {
+      ...baseChunk,
+      deliverable_files: [
+        { file_id: 'f1', file_name: 'index.html', file_size: 2800, mime_type: 'text/html', render_type: 'iframe' },
+      ],
+    };
+    const first = parseWorkspaceView(chunk, null);
+    const firstTs = first.deliverable_files![0].ts;
+    const second = parseWorkspaceView(chunk, first);
+    expect(second.deliverable_files).toHaveLength(1);
+    expect(second.deliverable_files![0].ts).toBe(firstTs);
   });
 
   test('chunk 未携带 deliverable_files 时保留 prev', () => {

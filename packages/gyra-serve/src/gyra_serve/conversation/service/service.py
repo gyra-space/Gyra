@@ -560,6 +560,9 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                 msg_role = gpts_msg.role if hasattr(gpts_msg, 'role') and gpts_msg.role else "assistant"
                 msg_sender = gpts_msg.sender if hasattr(gpts_msg, 'sender') else ""
                 msg_round = gpts_msg.rounds
+                # round_index 必须 >= 1(_split_messages_by_round 要求),0/None 兜底为 1
+                if not msg_round or msg_round < 1:
+                    msg_round = 1
 
                 # 用户消息(含异步恢复注入的 Human 通知):角色可能为 "Human"/"user"，统一小写判定
                 is_user_msg = (
@@ -572,6 +575,11 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                     base_msg = HumanMessage(content=gpts_msg.content or "")
                     base_msg.round_index = msg_round
                     base_msg.additional_kwargs["message_id"] = gpts_msg.message_id
+                    # 提取用户上传附件(历史回显):多模态 content 或 📎 清单文本
+                    from gyra_serve.agent.utils.file_dispatch import extract_attachments_from_content
+                    _attachments = extract_attachments_from_content(gpts_msg.content)
+                    if _attachments:
+                        base_msg.additional_kwargs["attachments"] = _attachments
                     base_messages.append(base_msg)
                 elif msg_round in view_messages_by_round:
                     # 有 chat_history 的 view 消息，使用完整的 VIS 数据
@@ -619,6 +627,7 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                         model_name=None,
                         feedback={},
                         time_stamp=round_time_map.get(msg.round_index),
+                        attachments=msg.additional_kwargs.get("attachments"),
                     )
                 )
             logger.info(

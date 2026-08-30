@@ -340,8 +340,8 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
                     modelName={modelValue}
                     onStepClick={(step) => {
                       if (step.type !== 'tool_call') return;
-                      const convId = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('conv_uid') || '' : '';
-                      ee.emit(EVENTS.CLICK_FOLDER, { uid: step.id, conv_id: convId });
+                      const conversationId = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('conv_uid') || '' : '';
+                      ee.emit(EVENTS.CLICK_FOLDER, { uid: step.id, conv_id: conversationId });
                       ee.emit(EVENTS.OPEN_PANEL);
                     }}
                     onDeliverableClick={(file) => {
@@ -358,7 +358,12 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
                     // content-visibility:auto 让浏览器跳过屏外消息的渲染,
                     // 长会话(200 条滑动窗口)下大幅降低布局/绘制成本
                     <div key={content.key} className="[content-visibility:auto] [contain-intrinsic-size:auto_200px] animate-rise">
-                      <ChatContent content={content} messages={showMessages} compact />
+                      <ChatContent
+                        content={content}
+                        messages={showMessages}
+                        compact
+                        onAttachmentsClick={() => ee.emit(EVENTS.SWITCH_TAB, { tab: 'task_files' })}
+                      />
                       {compressionPoints[index] && (
                         <CompressionPoint segment={compressionPoints[index]} />
                       )}

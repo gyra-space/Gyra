@@ -5,7 +5,8 @@ import { AppContext } from '@/contexts';
 import { IApp } from '@/types/app';
 import { useRequest } from 'ahooks';
 import { Spin, App, Tooltip } from 'antd';
-import { useCallback, useRef, useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Suspense, useCallback, useRef, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import AgentList from './components/agent-list';
 import AgentHeader from './components/agent-header';
@@ -20,11 +21,22 @@ import TabAssets from './components/tab-assets';
 import TabRuntime from './components/tab-runtime';
 import TabHooks from './components/tab-hooks';
 import ChatContent from './components/chat-content';
-import { AppstoreOutlined, EditOutlined, MessageOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, ArrowLeftOutlined, EditOutlined, MessageOutlined } from '@ant-design/icons';
+import Link from 'next/link';
 
-export default function AgentBuilder() {
+export default function AgentBuilderPage() {
+  return (
+    <Suspense fallback={null}>
+      <AgentBuilder />
+    </Suspense>
+  );
+}
+
+function AgentBuilder() {
   const { message, notification } = App.useApp();
   const { t } = useTranslation();
+  const searchParams = useSearchParams();
+  const targetAppCode = searchParams.get('app_code');
 
   // Agent selection
   const [selectedAppCode, setSelectedAppCode] = useState<string | null>(null);
@@ -151,6 +163,29 @@ export default function AgentBuilder() {
     [selectedAppCode, queryAppInfo, initChatId],
   );
 
+  // 从卡片页带 app_code 进入时:直接加载该 Agent 的编辑页,不展示全量列表
+  const hasLoadedTarget = useRef(false);
+  useEffect(() => {
+    if (targetAppCode && !hasLoadedTarget.current) {
+      hasLoadedTarget.current = true;
+      setSelectedAppCode(targetAppCode);
+      queryAppInfo(targetAppCode);
+      initChatId(targetAppCode);
+    }
+  }, [targetAppCode, queryAppInfo, initChatId]);
+
+  // 单 Agent 编辑模式下的返回卡片页入口
+  const backToExplore = targetAppCode ? (
+    <Tooltip title={t('back_to_agent_list')} placement='right'>
+      <Link
+        href='/application/explore'
+        className='fixed left-3 top-3 z-20 w-8 h-8 flex items-center justify-center rounded-xl bg-white/80 backdrop-blur-xl border border-white/60 shadow-[0_4px_16px_rgba(0,0,0,0.08)] text-gray-400 hover:text-blue-500 transition-colors'
+      >
+        <ArrowLeftOutlined />
+      </Link>
+    </Tooltip>
+  ) : null;
+
   // Render the active tab content
   const renderTabContent = () => {
     if (!selectedAppCode || !appInfo?.app_code) return null;
@@ -200,14 +235,17 @@ export default function AgentBuilder() {
       }}
     >
       <div className="flex h-screen w-full bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30 overflow-hidden">
-        {/* Column 1: Agent List */}
-        <div className={`flex-shrink-0 p-3 pr-0 ${
-          screenSize === 'small' ? 'w-[200px]' : 
-          screenSize === 'medium' ? 'w-[240px]' : 
-          'w-[280px]'
-        }`}>
-          <AgentList selectedAppCode={selectedAppCode} onSelect={handleSelectAgent} onListLoaded={handleListLoaded} />
-        </div>
+        {backToExplore}
+        {/* Column 1: Agent List(带 app_code 的单 Agent 编辑模式下隐藏) */}
+        {!targetAppCode && (
+          <div className={`flex-shrink-0 p-3 pr-0 ${
+            screenSize === 'small' ? 'w-[200px]' :
+            screenSize === 'medium' ? 'w-[240px]' :
+            'w-[280px]'
+          }`}>
+            <AgentList selectedAppCode={selectedAppCode} onSelect={handleSelectAgent} onListLoaded={handleListLoaded} />
+          </div>
+        )}
 
         {/* Column 2 & 3: Editor and Chat - responsive layout */}
         {isSmallScreen ? (

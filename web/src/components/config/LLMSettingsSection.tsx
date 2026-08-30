@@ -45,6 +45,12 @@ type Props = {
   onChange: () => void;
 };
 
+type GlobalDefaultProviderCfg = {
+  provider?: string;
+  enabled?: boolean;
+  models?: Array<{ name?: string; model_type?: string }>;
+};
+
 const BUILTIN_PROVIDER_OPTIONS = [
   { value: "openai", label: "OpenAI" },
   { value: "alibaba", label: "Alibaba / DashScope" },
@@ -145,6 +151,9 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
   const [keyModalVisible, setKeyModalVisible] = useState(false);
   const [keyForm] = Form.useForm();
   const [saving, setSaving] = useState(false);
+  // 全局默认模型（系统级兜底）：值为 "provider/model" 复合键，
+  // 持久化到 AppConfig.default_model，后端同步 agent.default_llm 供知识库等场景兜底
+  const [globalDefaultModel, setGlobalDefaultModel] = useState<string>("");
   // 媒体生成协议（由后端 provider 注册表动态下发，避免新增协议需重新构建前端）
   const [mediaProtocolOptions, setMediaProtocolOptions] = useState<
     Array<{ value: string; label: string }>
@@ -196,6 +205,13 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
           }) || [],
       },
     });
+    // 回显全局默认模型（系统级兜底）
+    const defaultModelCfg = config.default_model;
+    setGlobalDefaultModel(
+      defaultModelCfg?.model_id
+        ? `${normalizeProviderName(defaultModelCfg.provider)}/${defaultModelCfg.model_id}`
+        : ""
+    );
   }, [config, form]);
 
   useEffect(() => {
@@ -250,6 +266,25 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
           BUILTIN_PROVIDER_OPTIONS.find((item) => item.value === value)?.label ||
           value,
       }));
+  }, [configuredProviders]);
+
+  // 全局默认模型候选：仅启用 Provider 下的 LLM 类型模型，按 Provider 分组
+  const globalDefaultOptions = useMemo(() => {
+    return ((configuredProviders || []) as GlobalDefaultProviderCfg[])
+      .filter((p) => p?.provider && (p?.enabled ?? true))
+      .map((p) => {
+        const providerName = normalizeProviderName(p.provider);
+        return {
+          label: providerName,
+          options: (p.models || [])
+            .filter((m) => m?.name && (m.model_type || "llm") === "llm")
+            .map((m) => ({
+              value: `${providerName}/${m.name}`,
+              label: m.name,
+            })),
+        };
+      })
+      .filter((g) => g.options.length > 0);
   }, [configuredProviders]);
 
   // 接入协议下拉：LLM 协议（前端内置）+ 媒体协议（后端动态下发）合并去重
@@ -431,6 +466,15 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
 
       // 模型/LLM 配置持久化到数据库（分布式共享），并同步到运行时/ModelConfigCache
       await configService.saveAgentLLM(nextConfig.agent_llm);
+
+      // 保存全局默认模型（系统级兜底 → AppConfig.default_model → agent.default_llm）。
+      // 未选择时提交空 model_id，后端会清空 agent.default_llm（运行时回退第一个可用模型）
+      const sepIndex = (globalDefaultModel || "").indexOf("/");
+      await configService.updateModelConfig({
+        provider: sepIndex > 0 ? globalDefaultModel.slice(0, sepIndex) : "openai",
+        model_id: sepIndex > 0 ? globalDefaultModel.slice(sepIndex + 1) : "",
+      });
+
       // 若保存过程中写入了新的 API Key，刷新 key 状态
       await loadLLMKeys();
       try {
@@ -478,6 +522,25 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
       />
 
       <Form form={form} layout="vertical" onFinish={handleSave}>
+        <Form.Item
+          label="全局默认模型（系统兜底）"
+          required
+          tooltip="知识库空间创建、文档处理等未显式指定模型的场景优先使用此模型兜底；保存后立即生效，无需重启"
+          extra="留空时后端自动回退到第一个可用模型。与下方模型卡片上的「默认」开关（对话输入框默认模型）相互独立"
+        >
+          <Select
+            showSearch
+            allowClear
+            style={{ maxWidth: 480 }}
+            placeholder="未设置（自动回退第一个可用模型）"
+            value={globalDefaultModel || undefined}
+            onChange={(value) => setGlobalDefaultModel(value || "")}
+            options={globalDefaultOptions}
+            optionFilterProp="label"
+            notFoundContent="暂无可用 LLM 模型，请先在下方添加 Provider 与模型"
+          />
+        </Form.Item>
+
         <Form.Item
           name={["agent_llm", "temperature"]}
           label="Agent LLM 全局默认 Temperature"

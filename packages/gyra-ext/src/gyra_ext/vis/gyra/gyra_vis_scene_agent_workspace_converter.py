@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from gyra_ext.vis.gyra.gyra_vis_manus_converter import (
     GyraIncrVisManusConverter,
+    _file_meta_ts,
 )
 
 logger = logging.getLogger(__name__)
@@ -279,9 +280,19 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                     # 工具动作 start_time。若直接用动作 start_time,同一文件在增量
                     # 推送与全量收集两条路径下 ts 不同,前端按 file_id+ts 合并时
                     # 会把同一次交付识别成两条,交付文件重复展示。
-                    "ts": self._ts_str(
-                        file_info.get("created_at")
-                        or self._report_get(report, "start_time")
+                    #
+                    # ⚠️ 两个来源时区基准不同,必须分开处理:
+                    #   - 文件 created_at 出自 gpts_file_metadata(DB 用 datetime.utcnow
+                    #     写入)→ UTC,需补 +00:00(_file_meta_ts)
+                    #   - 动作 start_time 由 datetime.now() 生成 → 本地时间,原样输出
+                    # 两者都是不带时区的 naive 字符串,前端 Date.parse 一律按浏览器
+                    # 本地时区解析;若不标注 UTC,交付文件会比轮次起始早一个时区偏移
+                    # (UTC+8 即早 8 小时),落在所有轮次之前而无法归属,沉到 feed 底部
+                    # —— 表现为第一轮交付看似正常,一发起第二轮提问就跑到最新一轮后面。
+                    "ts": (
+                        _file_meta_ts(file_info.get("created_at"))
+                        if file_info.get("created_at")
+                        else self._ts_str(self._report_get(report, "start_time"))
                     ),
                 })
                 existing_ids.add(file_id)
@@ -442,20 +453,89 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         }, self._ts_str(ts) or prev_ts)
 
     def _ingest_user_message(self, msg: Any) -> None:
-        """用户消息 → user 步骤(展示用户问题,气泡渲染)。"""
+        """用户消息 → user 步骤(展示用户问题,气泡渲染)。
+
+        附件回显:content 为 list/JSON 字符串(路径 B 多模态入库形态)时,
+        提取 file/image/audio/video 媒体块生成 attachments,使刷新后
+        用户气泡仍能展示上传附件(此前仅乐观上屏期间可见)。
+        """
         content = getattr(msg, "content", None)
-        text = ""
+        # content 可能是 str / list / dict;str 且为 JSON 数组时还原为 list
+        raw_items: List[Any] = []
         if isinstance(content, str):
-            text = content
+            stripped = content.strip()
+            if stripped.startswith("["):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, list):
+                        raw_items = parsed
+                except Exception:  # noqa: BLE001
+                    raw_items = []
         elif isinstance(content, list):
-            # 多模态:拼接 text 片段
+            raw_items = content
+
+        text = ""
+        if isinstance(content, str) and not raw_items:
+            text = content
+        elif raw_items:
             parts = []
-            for item in content:
+            for item in raw_items:
                 if isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(str(item.get("text") or ""))
+                    # OpenAI 风格 {"type":"text","text":...} 或
+                    # MediaContent 序列化 {"type":"text","object":{"data":...}}
+                    if "text" in item:
+                        parts.append(str(item.get("text") or ""))
+                    else:
+                        parts.append(str((item.get("object") or {}).get("data") or ""))
             text = " ".join(p for p in parts if p)
         if not text.strip():
             return
+
+        # 从媒体块提取附件(file_url/image_url/audio_url/video_url
+        # 或 MediaContent 序列化的 file/image/audio/video)
+        attachments: List[Dict[str, Any]] = []
+        _MODAL_KEY = {
+            "file_url": "file_url", "image_url": "image_url",
+            "audio_url": "audio_url", "video_url": "video_url",
+        }
+        _MODAL_TYPE = {"file": "file", "image": "image", "audio": "audio", "video": "video"}
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "")
+            payload = None
+            modal = None
+            if item_type in _MODAL_KEY and isinstance(item.get(_MODAL_KEY[item_type]), dict):
+                payload = item[_MODAL_KEY[item_type]]
+                modal = _MODAL_KEY[item_type].rsplit("_", 1)[0]
+            elif item_type in _MODAL_TYPE and isinstance(item.get("object"), dict):
+                # MediaContent 序列化形态: {"type":"file","object":{"data":url,"format":...}}
+                obj = item["object"]
+                payload = {"url": obj.get("data"), "file_name": obj.get("file_name")}
+                modal = _MODAL_TYPE[item_type]
+            if not payload:
+                continue
+            url = payload.get("url") or payload.get("oss_url")
+            if not url:
+                continue
+            attachments.append({
+                "name": payload.get("file_name") or payload.get("name") or "附件",
+                "url": url,
+                "mime_type": modal or "file",
+            })
+
+        # 路径 A 兜底:content 为纯文本且含 📎 **User uploaded files** 清单时,
+        # 从清单行提取沙箱路径/URL 生成附件(此时 raw_items 为空,上面循环不命中)。
+        if not attachments and isinstance(content, str) and "User uploaded files" in content:
+            import re
+            # 清单行格式: "1. `/abs/path/uploads/xxx.xls` (URL: /api/...)"
+            for line in content.splitlines():
+                m = re.search(r"`(/[^`]+)`\s*\(URL:\s*([^)]+)\)", line)
+                if m:
+                    sandbox_path, url = m.group(1), m.group(2).strip()
+                    name = sandbox_path.rsplit("/", 1)[-1] if sandbox_path else "附件"
+                    attachments.append({"name": name, "url": url or sandbox_path, "mime_type": "file"})
+
         mid = getattr(msg, "message_id", None) or uuid.uuid4().hex
         key = f"user-{mid}"
         self._scene_items[key] = ({
@@ -468,6 +548,7 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             "output": text.strip()[:_MAX_OUTPUT_CHARS],
             "artifact": None,
             "vis": None,
+            **({"attachments": attachments} if attachments else {}),
         }, self._ts_str(getattr(msg, "created_at", None)))
 
     def _ingest_message(self, msg: Any) -> None:
@@ -680,6 +761,50 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             deliverable_files = list(deliverable_files) + list(msg_deliverable_files)
 
         self._task_files = [self._task_file_to_dict(f) for f in task_files]
+        # 用户上传文件(feature:附件回显)并入任务文件列表。
+        # 复用 _ingest_user_message 已从消息 content 提取的 user 步骤附件
+        # (对路径 A sandbox_file_refs / 路径 B chat_in_params 均生效,不依赖
+        # gpts_file_metadata 表,避免路径 A 不落元数据导致上传文件缺失)。
+        # 以 url 派生稳定 file_id,同 url 去重,file_type 标记为 user_upload。
+        if self._scene_items:
+            _up_task: Dict[str, Dict[str, Any]] = {}
+            _up_id: Dict[str, str] = {}
+            import hashlib
+            for _step, _ts in self._scene_items.values():
+                if not isinstance(_step, dict) or _step.get("type") != "user":
+                    continue
+                for _att in _step.get("attachments") or []:
+                    if not isinstance(_att, dict):
+                        continue
+                    _url = _att.get("url") or ""
+                    if not _url:
+                        continue
+                    _name = _att.get("name") or "附件"
+                    _dedup_key = _url.rsplit("?", 1)[0]
+                    if _dedup_key in _up_id:
+                        continue
+                    _uid = "user_upload_" + hashlib.md5(_dedup_key.encode("utf-8")).hexdigest()[:16]
+                    _up_id[_dedup_key] = _uid
+                    _up_task[_uid] = {
+                        "file_id": _uid,
+                        "file_name": _name,
+                        "file_type": "user_upload",
+                        "file_size": _att.get("file_size") or 0,
+                        "mime_type": _att.get("mime_type") or "file",
+                        "oss_url": _url,
+                        "preview_url": _url,
+                        "download_url": _url,
+                        "description": None,
+                        "created_at": _ts or None,
+                        "object_path": None,
+                    }
+            if _up_task:
+                _existing = {self._file_id_of(f): f for f in self._task_files}
+                _merged = list(_existing.values())
+                for _uid, _f in _up_task.items():
+                    if _uid not in _existing:
+                        _merged.append(_f)
+                self._task_files = [self._task_file_to_dict(f) for f in _merged]
         # 合并而非覆盖:terminate 收尾已在 _upsert_tool_step 收集过交付文件,
         # 此处按 file_id 并入 gpts_memory/messages 的全量结果(新值优先),
         # 避免 messages/gpts_memory 路径为空时把 terminate 收集的交付文件清空。

@@ -24,7 +24,76 @@ export interface EcpSemanticObject {
   confirmed_by?: string | null;
   confirmed_at?: string | null;
   source?: string | null;
+  /** 结构化溯源(origin/actor/origin_sql/miss_ref/derived_from) */
+  provenance?: Record<string, any> | null;
   supersedes?: number | null;
+  /** 业务视图(include_view 时由后端读时派生) */
+  view?: EcpProposalView | null;
+}
+
+// =============================================================================
+// 提案业务视图(后端 service/proposal_view.py 读时派生)
+// =============================================================================
+
+export interface EcpOrigin {
+  /** discovery|miss_learn|manual_sql|rule5_gate|edit|agent|import|legacy */
+  kind: string;
+  /** 中文标签(初始扫描/MISS 学习/手工 SQL 等) */
+  label: string;
+  actor?: string | null;
+  /** 原始 SQL 快照(MISS 学习/手工 SQL) */
+  origin_sql: string[];
+  /** miss 聚类回链 {kind, pattern, datasource_id} */
+  miss_ref?: { kind?: string; pattern?: string; datasource_id?: number | null } | null;
+  note?: string | null;
+  derived_from?: string | null;
+  /** 老数据降级:原始 source 字符串 */
+  legacy_source?: string | null;
+}
+
+export interface EcpColumnRef {
+  column: string;
+  meaning?: string | null;
+  role?: string | null;
+  /** 度量表达式|筛选条件|分组粒度|维度列|主键|时间列(可组合) */
+  usage: string;
+  /** false = expression 引用但 entity.fields 未声明(口径疑点) */
+  declared: boolean;
+}
+
+export interface EcpObjectRef {
+  id: string;
+  obj_type?: string | null;
+  name?: string | null;
+  status?: string | null;
+  version?: number | null;
+}
+
+export interface EcpLineage {
+  datasource_id?: number | null;
+  datasource_name?: string | null;
+  tables: string[];
+  columns: EcpColumnRef[];
+  /** 引用链上的语义对象(metric→entity→dimension),带状态 */
+  objects: EcpObjectRef[];
+  /** 文档类定位 */
+  document?: { space?: string; doc_id?: string; anchor?: string } | null;
+}
+
+export interface EcpSqlPreview {
+  sql?: string | null;
+  /** 预览口径说明(时间窗/筛选假设) */
+  scenario: string;
+  participants: EcpObjectRef[];
+  warnings: string[];
+}
+
+export interface EcpProposalView {
+  summary: string;
+  origin: EcpOrigin;
+  lineage?: EcpLineage | null;
+  sql_preview?: EcpSqlPreview | null;
+  evidence: Array<{ source?: string | null; quote?: string | null }>;
 }
 
 export interface EcpObjectListResult {
@@ -91,6 +160,28 @@ export const getEcpObjectVersions = (id: string, workspace_id?: string) =>
     `${API_PREFIX}/objects/${encodeURIComponent(id)}/versions`,
     { workspace_id },
   );
+
+/** 单个版本的完整业务视图(含静态 SQL 预览),详情页数据源。 */
+export const getEcpProposalView = (id: string, version: number, workspace_id?: string) =>
+  GET<{ workspace_id?: string }, EcpProposalView>(
+    `${API_PREFIX}/objects/${encodeURIComponent(id)}/versions/${version}/view`,
+    { workspace_id },
+  );
+
+export interface EcpContractRule {
+  path: string;
+  message: string;
+}
+
+export interface EcpContractSpec {
+  proposal: EcpContractRule[];
+  executable: EcpContractRule[];
+  notes: string[];
+}
+
+/** 各对象类型的 payload 契约清单(编辑表单的单一事实来源)。 */
+export const getEcpContracts = () =>
+  GET<Record<string, never>, Record<string, EcpContractSpec>>(`${API_PREFIX}/contracts`);
 
 // =============================================================================
 // Debug preview (确认页调试验证, trust=preview 只读 dry-run)
@@ -205,6 +296,15 @@ export const addEcpObjectFromSql = (data: {
   user_id: string;
   confirm?: boolean;
 }) => POST<typeof data, EcpSqlAddResult>(`${API_PREFIX}/objects/manual`, data);
+
+/**
+ * 导入报表文件(SQL 脚本/代码),异步提炼语义提案(默认进待确认收件箱)。
+ * 立即返回 task_id,可用 getEcpProposalTask 轮询进度。
+ */
+export const importEcpObjectFromFile = (data: FormData) =>
+  POST<FormData, { task_id: string }>(`${API_PREFIX}/objects/manual/file`, data, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
 
 export const getEcpCatalog = (params?: { workspace_id?: string; keyword?: string }) =>
   GET<typeof params, EcpCatalogEntry[]>(`${API_PREFIX}/catalog`, params);

@@ -851,7 +851,7 @@ class PostgreSQLAdapter(DialectAdapter):
 
         # DEFAULT
         if col_def.default is not None and not (col_def.primary_key and col_def.autoincrement):
-            default_val = self._process_default_value(col_def.default)
+            default_val = self._process_default_value(col_def.default, parts[1])
             parts.append(f"DEFAULT {default_val}")
 
         return " ".join(parts)
@@ -900,7 +900,7 @@ class PostgreSQLAdapter(DialectAdapter):
 
         return mapped_type
 
-    def _process_default_value(self, default: str) -> str:
+    def _process_default_value(self, default: str, target_type: str = "") -> str:
         """Process default value for PostgreSQL."""
         # 空字符串默认值需显式加引号，避免生成 DEFAULT （非法）
         if default == "":
@@ -909,11 +909,14 @@ class PostgreSQLAdapter(DialectAdapter):
         if 'now' in default.lower() or 'datetime' in default.lower():
             return "CURRENT_TIMESTAMP"
 
-        # Handle boolean defaults (PostgreSQL supports true/false literals)
+        # Handle boolean defaults：按目标列类型出字面量——
+        # BOOLEAN 列用 true/false;INTEGER 列(如 is_active)必须用 1/0,
+        # 否则生成 INTEGER DEFAULT true 在 PG 上类型非法
+        is_bool_col = target_type.upper() == "BOOLEAN"
         if default in ("True", "1"):
-            return "true"
+            return "true" if is_bool_col else "1"
         if default in ("False", "0"):
-            return "false"
+            return "false" if is_bool_col else "0"
 
         # Handle numeric defaults
         if default.lstrip('-').isdigit():
@@ -923,8 +926,10 @@ class PostgreSQLAdapter(DialectAdapter):
         if default in ("None", "null"):
             return "NULL"
 
-        # Default: treat as string literal
-        return default
+        # Default: 字符串字面量必须加引号(并转义内嵌单引号)——
+        # 此前直接裸返回,生成 DEFAULT global / DEFAULT * / DEFAULT allow
+        # 等非法语句,导致整个 PG DDL 文件无法执行
+        return "'" + default.replace("'", "''") + "'"
 
     def _generate_create_index(self, table_name: str, index_def: IndexDef) -> str:
         """Generate CREATE INDEX statement for PostgreSQL."""

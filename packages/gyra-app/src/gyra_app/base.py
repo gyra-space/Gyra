@@ -279,7 +279,12 @@ def _add_missing_columns_sqlite(db):
                 nullable = "NULL" if col.nullable else "NOT NULL"
                 default_clause = ""
                 if col.default is not None and col.default.is_scalar:
-                    default_clause = f" DEFAULT '{col.default.arg}'"
+                    # Python bool 不能直接进 DEFAULT:字符串化后是 'False'/'True',
+                    # SQLite 会存成文本,读取时 bool('False') == True 造成"全量已置位"。
+                    default_val = (
+                        int(col.default.arg) if isinstance(col.default.arg, bool) else col.default.arg
+                    )
+                    default_clause = f" DEFAULT '{default_val}'"
                 try:
                     stmt = text(
                         f"ALTER TABLE {table.name} ADD COLUMN {col.name} {col_type} {nullable}{default_clause}"

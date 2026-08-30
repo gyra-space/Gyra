@@ -125,9 +125,10 @@ class Space:
     multimodal_model: Optional[str] = None
     # v5 retrieval tuning. rerank_model: LLM rerank after hybrid RRF
     # (None = off). embed_verbats: embed L0 verbats on write so
-    # verbat_search supports semantic/hybrid modes (default off).
+    # verbat_search supports semantic/hybrid modes (on by default; the
+    # write path is best-effort and degrades silently without a model).
     rerank_model: Optional[str] = None
-    embed_verbats: bool = False
+    embed_verbats: bool = True
 
 
 @dataclass

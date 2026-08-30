@@ -3,7 +3,7 @@
 /**
  * 单次调用还原（排查定位）的全局入口。
  *
- * Provider 持有「当前会话 convId」并渲染 ConversationCallDetailDrawer；
+ * Provider 持有「当前会话 conversationId」并渲染 ConversationCallDetailDrawer；
  * 任何深层组件（Agent 消息气泡 / 场景空间轮次头）只需调用
  * `useCallDetail().open(activeMessageId?)` 即可打开抽屉，避免层层下钻传 prop。
  * 未挂载 Provider 时 open 为 no-op，不会崩溃。
@@ -25,8 +25,8 @@ const CallDetailContext = createContext<CallDetailContextValue>({
 
 export const useCallDetail = () => useContext(CallDetailContext);
 
-export const CallDetailProvider: React.FC<{ convId?: string; children: React.ReactNode }> = ({
-  convId,
+export const CallDetailProvider: React.FC<{ conversationId?: string; children: React.ReactNode }> = ({
+  conversationId,
   children,
 }) => {
   const [open, setOpen] = useState(false);
@@ -43,7 +43,7 @@ export const CallDetailProvider: React.FC<{ convId?: string; children: React.Rea
     <CallDetailContext.Provider value={value}>
       {children}
       <ConversationCallDetailDrawer
-        convId={convId}
+        conversationId={conversationId}
         open={open}
         onClose={() => setOpen(false)}
         activeMessageId={activeMessageId}

@@ -204,6 +204,7 @@ export default function CustomPermissions({ roles: externalRoles }: CustomPermis
       { value: 'tool', label: t('permissions_resource_tool') },
       { value: 'knowledge', label: t('permissions_resource_knowledge') },
       { value: 'model', label: t('permissions_resource_model') },
+      { value: 'database', label: t('permissions_resource_database') },
       { value: 'system', label: t('permissions_resource_system') },
       { value: '*', label: t('permissions_resource_wildcard') },
     ],
@@ -502,9 +503,8 @@ export default function CustomPermissions({ roles: externalRoles }: CustomPermis
           effect: values.effect || 'allow',
         });
       } else {
-        if (selectedPolicy.id && selectedPolicy.role_id) {
-          await permissionsService.removeRolePermission(selectedPolicy.role_id, selectedPolicy.id);
-        }
+        // 先加后删:add 幂等(重复返回已有记录),新权限落库成功后再删旧条目,
+        // 避免"先删后加"中途失败导致原权限丢失
         await permissionsService.grantScopedPermission({
           role_id: values.role_id,
           resource_type: values.resource_type,
@@ -512,6 +512,10 @@ export default function CustomPermissions({ roles: externalRoles }: CustomPermis
           action: values.action,
           effect: values.effect || 'allow',
         });
+        if (selectedPolicy.id && selectedPolicy.role_id) {
+          // 旧条目可能属于原角色(角色被改时也要从原角色删除)
+          await permissionsService.removeRolePermission(selectedPolicy.role_id, selectedPolicy.id);
+        }
       }
       message.success(t('permissions_role_updated'));
       setEditOpen(false);

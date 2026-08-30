@@ -30,7 +30,59 @@ class DatabaseCatalogProvider(ResourceCatalogProvider):
     ) -> List[ResourceCatalogItem]:
         if parent_id is None:
             return self._list_datasources(keyword, limit)
+        if "." in parent_id:
+            # parent_id = "{ds_id}.{table}" → 列级
+            return self._list_columns(parent_id, keyword, limit)
         return self._list_tables(parent_id, keyword, limit)
+
+    def _list_columns(
+        self, table_rid: str, keyword: Optional[str], limit: int
+    ) -> List[ResourceCatalogItem]:
+        """列出指定表下的列(parent_id 格式 "{ds_id}.{table}")。
+
+        列元数据来自 table spec(库表学习产物);未学习的表返回空,
+        前端展开时显示无数据,不实时连库探测。
+        """
+        ds_part, _, table_name = table_rid.partition(".")
+        try:
+            ds_id_int = int(ds_part)
+        except (TypeError, ValueError):
+            return []
+        if not table_name:
+            return []
+
+        try:
+            from gyra_serve.datasource.service.spec_service import DbSpecService
+
+            spec = DbSpecService().get_table_spec(ds_id_int, table_name)
+            if not spec:
+                return []
+
+            items = []
+            for col in spec.get("columns") or []:
+                col_name = col.get("name", "")
+                if not col_name:
+                    continue
+                if keyword and keyword.lower() not in col_name.lower():
+                    continue
+                comment = col.get("comment") or col.get("type") or col.get("data_type") or ""
+                items.append(
+                    ResourceCatalogItem(
+                        id=f"{table_rid}.{col_name}",
+                        name=col_name,
+                        parent_id=table_rid,
+                        description=comment[:100] if comment else None,
+                        metadata={
+                            "data_type": col.get("type") or col.get("data_type"),
+                        },
+                    )
+                )
+                if len(items) >= limit:
+                    break
+            return items
+        except Exception as e:
+            logger.debug(f"[DatabaseCatalogProvider] list columns failed: {e}")
+            return []
 
     def _list_datasources(
         self, keyword: Optional[str], limit: int

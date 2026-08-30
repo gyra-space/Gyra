@@ -7,9 +7,9 @@ import {
 } from '@/client/api';
 import { Button, Spin } from 'antd';
 import { useRequest } from 'ahooks';
-import { useSearchParams, usePathname } from 'next/navigation';
+import { useSearchParams, usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { useCallback, useContext, useEffect, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getUserId } from '@/utils';
 import {
@@ -30,16 +30,23 @@ import '../workspaces.css';
 export default function WorkspaceDetailPage() {
   const searchParams = useSearchParams();
   const pathname = usePathname();
+  const router = useRouter();
   const workspaceCode = searchParams?.get('id') || '';
   // 深链打开指定会话(从全局历史会话等入口):?conv_uid=xxx&task_id=xxx
   const urlConvUid = searchParams?.get('conv_uid') || '';
   const urlTaskIdParam = searchParams?.get('task_id');
-  // 深链初始状态:带 conv_uid 时,有 task_id -> 进任务对话;无 -> workspace 级会话
-  const initialPendingTaskId = urlConvUid
-    ? urlTaskIdParam
-      ? Number(urlTaskIdParam)
-      : null
-    : undefined;
+  const urlTaskId = urlTaskIdParam != null && urlTaskIdParam !== '' ? Number(urlTaskIdParam) : NaN;
+  // 深链初始状态:task_id 与 conv_uid 各自独立生效 ——
+  // 有 task_id -> 进任务对话(即便 conv_uid 尚未落到 URL,也能靠 getTaskInfo 还原);
+  // 有 conv_uid 无 task_id -> workspace 级会话(回工作台);两者都无 -> 非深链,走后端当前会话。
+  const initialPendingTaskId = !Number.isNaN(urlTaskId)
+    ? urlTaskId
+    : urlConvUid
+      ? null
+      : undefined;
+  // 深链打开态:URL 带 conv_uid/task_id 时说明用户已打开具体内容,
+  // 简洁模式应直达会话运行态而非欢迎页(刷新恢复的关键)。
+  const hasDeepLink = !!urlConvUid || !Number.isNaN(urlTaskId);
   // 当前子页面导航激活态(分段控件高亮)
   const navActive = (segment: string) =>
     pathname?.includes(`/workspaces/detail/${segment}`) ? ' ws-console-nav-link--active' : '';
@@ -55,6 +62,41 @@ export default function WorkspaceDetailPage() {
   const [pendingTaskId, setPendingTaskId] = useState<number | null | undefined>(initialPendingTaskId);
   // 简洁模式抽屉:待办收件箱(header 待办角标与左栏「待办收件箱」共用同一状态)
   const [simpleDrawer, setSimpleDrawer] = useState<'inbox' | 'overview' | null>(null);
+
+  /**
+   * 把当前打开的会话/任务写回地址栏(router.replace,不堆积浏览历史),
+   * 使刷新、分享、新标签打开都能回到同一现场,而不是回到新建页。
+   * 只改 URL query,不改任何 React state —— 避免与 pendingTaskId 恢复链路互相触发。
+   * patch 里未出现的字段保持原样;显式传 null 表示从 URL 移除该参数。
+   */
+  const syncUrl = useCallback(
+    (patch: { convUid?: string | null; taskId?: number | null }) => {
+      if (!pathname) return;
+      const params = new URLSearchParams(searchParams?.toString() || '');
+      let changed = false;
+      if (patch.convUid !== undefined) {
+        const next = patch.convUid || '';
+        if ((params.get('conv_uid') || '') !== next) {
+          if (next) params.set('conv_uid', next);
+          else params.delete('conv_uid');
+          changed = true;
+        }
+      }
+      if (patch.taskId !== undefined) {
+        const next =
+          patch.taskId != null && Number.isFinite(patch.taskId) ? String(patch.taskId) : '';
+        if ((params.get('task_id') || '') !== next) {
+          if (next) params.set('task_id', next);
+          else params.delete('task_id');
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [pathname, searchParams, router],
+  );
 
   // 场景空间三列布局需要宽度,进入时自动折叠左侧菜单
   const { setIsMenuExpand } = useContext(ChatContext);
@@ -89,6 +131,9 @@ export default function WorkspaceDetailPage() {
       const [, current] = await apiInterceptors(getCurrentConversation(workspaceId));
       if (current?.conv_uid) {
         setConvUid(current.conv_uid);
+        // 恢复后端「当前会话」后回写地址栏,让 URL 成为刷新恢复的唯一真相源,
+        // 避免其它端改动 current conversation 后本次刷新跳到别的会话。
+        syncUrl({ convUid: current.conv_uid });
         return;
       }
       const [newErr, newConv] = await apiInterceptors(createConversation({}));
@@ -184,7 +229,7 @@ export default function WorkspaceDetailPage() {
   const scenario = ws.scenario_type || ws.type || 'scenario';
 
   return (
-    <CallDetailProvider convId={conversationId}>
+    <CallDetailProvider conversationId={conversationId}>
       <div className="ws-page" style={{ height: '100%', minHeight: 0, overflow: 'hidden' }}>
       <div className="ws-page-bg" />
       <div
@@ -252,7 +297,12 @@ export default function WorkspaceDetailPage() {
           onConvChanged={(uid: string, tid?: number | null) => {
             setConvUid(uid);
             setPendingTaskId(tid ?? null);
+            // tid 为 undefined 表示非列表触发(如新建/清理上下文),只换会话不动 task_id
+            syncUrl({ convUid: uid, taskId: tid === undefined ? undefined : tid });
           }}
+          // 仅回写地址栏、不触碰 state:进入/退出任务对话、任务 conv 解析完成都走这里
+          onUrlSync={syncUrl}
+          initialShowWelcome={!hasDeepLink}
           convLoadError={convLoadError}
           retryLoadConv={retryLoadConv}
           pendingTaskId={pendingTaskId}

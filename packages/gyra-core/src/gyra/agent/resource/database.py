@@ -242,16 +242,26 @@ class RDBMSConnectorResource(DBResource[DBParameters]):
         values = result_lst[1:]
 
         # Apply data masking to sensitive columns (datasource-scoped).
+        # Internal catalog queries (ALL_TABLES / INFORMATION_SCHEMA / ...)
+        # hold no business data, skip masking to avoid column-name fallback
+        # false positives.
         masker = self._get_data_masker()
         if masker and columns and values:
-            session_id = getattr(self, "_session_id", None)
-            datasource_id = getattr(self, "_datasource_id", None)
-            columns, values = masker.mask_results(
-                columns,
-                values,
-                datasource_id=datasource_id,
-                session_id=session_id,
-            )
+            try:
+                from gyra_serve.sql_guard.masking import is_internal_catalog_sql
+
+                internal = is_internal_catalog_sql(sql)
+            except Exception:  # noqa: BLE001
+                internal = False
+            if not internal:
+                session_id = getattr(self, "_session_id", None)
+                datasource_id = getattr(self, "_datasource_id", None)
+                columns, values = masker.mask_results(
+                    columns,
+                    values,
+                    datasource_id=datasource_id,
+                    session_id=session_id,
+                )
 
         return columns, values
 

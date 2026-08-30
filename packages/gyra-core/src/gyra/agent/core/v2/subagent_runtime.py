@@ -10,24 +10,32 @@ P2 wraps the existing AsyncTaskManager for ASYNC mode (lifecycle, cancel,
 wait). SYNC mode just awaits run_step directly.
 """
 from __future__ import annotations
-import uuid
-import time
+
 import asyncio
-from typing import Any, Optional, Dict, TYPE_CHECKING
+import logging
+import time
+import uuid
+from typing import TYPE_CHECKING, Any, Dict, Optional, Set
+
 from gyra._private.pydantic import BaseModel, ConfigDict
-from gyra.agent.core.v2.subagent_handle import (
-    SubAgentHandle, SubAgentMode, SubAgentStatus,
-)
-from gyra.agent.core.v2.run_loop import run_loop
-from gyra.agent.core.v2.subagent_interaction_gateway import SubAgentInteractionGateway
-from gyra.agent.core.v2.permission_gate import PermissionGate
-from gyra.agent.core.v2.permission_mode import PermissionMode
 from gyra.agent.core.v2.event_stream import EventStream
 from gyra.agent.core.v2.harness.seams import SubagentSeam
+from gyra.agent.core.v2.permission_gate import PermissionGate
+from gyra.agent.core.v2.permission_mode import PermissionMode
+from gyra.agent.core.v2.run_loop import run_loop
+from gyra.agent.core.v2.subagent_handle import (
+    SubAgentHandle,
+    SubAgentMode,
+    SubAgentStatus,
+)
+from gyra.agent.core.v2.subagent_interaction_gateway import SubAgentInteractionGateway
 
 if TYPE_CHECKING:
     from gyra.agent.core.v2.state_store import StateStore
+    from gyra.agent.core.v2.subagent_ops_delegate import SubAgentOpsDelegate
     from gyra.agent.util.async_task_manager import AsyncTaskManager
+
+logger = logging.getLogger(__name__)
 
 
 class SubAgentSpawnSpec(BaseModel):
@@ -56,7 +64,8 @@ class SubAgentRuntime(SubagentSeam):
 
     Single entry: spawn(spec) -> SubAgentHandle.
     - SYNC mode: await sub-agent's run_step, return handle with result
-    - ASYNC mode: schedule run_step in background, persist transcript, return immediately
+    - ASYNC mode: schedule run_step in background, persist transcript,
+      return immediately
     - Depth limiting: reject spawn if depth+1 > max_depth
     - Independent context: each spawn creates a new sub_conv_id
 
@@ -77,6 +86,7 @@ class SubAgentRuntime(SubagentSeam):
         default_acting_fn: Optional[Any] = None,
         default_user_id: Optional[str] = None,
         job_registry: Optional[Any] = None,
+        ops_delegate: Optional["SubAgentOpsDelegate"] = None,
     ):
         self._store = state_store
         self._max_depth = max_depth
@@ -86,8 +96,13 @@ class SubAgentRuntime(SubagentSeam):
         self._default_user_id = default_user_id
         # harness.jobs 本地视图：spawn/终态同步（引擎与产品层统一查询）
         self._job_registry = job_registry
+        # 运维委托（gyra-serve CoordinatorOpsDelegate）：看板上板/台账镜像/
+        # 终态回写。None 时引擎行为与未桥接前一致（纯增量，零回归）。
+        self.ops_delegate = ops_delegate
         self._handles: Dict[str, SubAgentHandle] = {}
         self._async_tasks: Dict[str, asyncio.Task] = {}
+        # 已回调 on_terminal 的 task_id（防 finally 与 cancel 兜底重复上报）
+        self._terminal_notified: Set[str] = set()
 
     def _sync_job(self, task_id: str, status: str, **meta: Any) -> None:
         """把子任务状态同步到 harness.jobs（注册或更新）。"""
@@ -115,7 +130,8 @@ class SubAgentRuntime(SubagentSeam):
     async def spawn(self, spec: SubAgentSpawnSpec) -> SubAgentHandle:
         if spec.depth + 1 > self._max_depth:
             raise ValueError(
-                f"spawn depth limit exceeded: depth={spec.depth}, max_depth={self._max_depth}"
+                f"spawn depth limit exceeded: depth={spec.depth}, "
+                f"max_depth={self._max_depth}"
             )
 
         task_id = f"task-{uuid.uuid4().hex[:8]}"
@@ -140,6 +156,22 @@ class SubAgentRuntime(SubagentSeam):
         if mode is SubAgentMode.SYNC:
             await self._run_subagent(handle, spec)
         else:
+            # ASYNC: 先经运维委托登记（上板 + 台账镜像 + 去重），再调度执行体
+            reg = await self._try_register(handle, spec)
+            if reg is not None and not reg.created:
+                # 去重命中：复用在途任务，短路本次 spawn（不建执行体、不镜像
+                # job——V1 台账已有镜像）。改写 sub_conv_id 为已有任务 ID，
+                # LLM 经 check_tasks/wait_tasks 用该 ID 查询/等待。
+                logger.info(
+                    f"[SubAgentRuntime] dedup: reuse in-flight subagent "
+                    f"{reg.sub_conv_id} for spawn {task_id} "
+                    f"(agent={spec.agent_name})"
+                )
+                handle.sub_conv_id = reg.sub_conv_id
+                handle.transcript_id = None
+                handle.status = SubAgentStatus.RUNNING
+                handle.updated_at = time.time()
+                return handle
             # ASYNC: schedule in background, persist transcript
             transcript_id = f"t-{uuid.uuid4().hex[:8]}"
             handle.transcript_id = transcript_id
@@ -155,6 +187,21 @@ class SubAgentRuntime(SubagentSeam):
             )
 
         return handle
+
+    async def _try_register(
+        self, handle: SubAgentHandle, spec: SubAgentSpawnSpec
+    ):
+        """经运维委托登记 ASYNC 子任务；委托缺失/异常时返回 None 不阻断。"""
+        if self.ops_delegate is None:
+            return None
+        try:
+            return await self.ops_delegate.try_register(handle, spec)
+        except Exception as e:  # noqa: BLE001 - 委托故障不阻断引擎主流程
+            logger.warning(
+                f"[SubAgentRuntime] ops try_register failed for "
+                f"{handle.task_id}: {e}"
+            )
+            return None
 
     async def _make_permission_gate(
         self, handle: SubAgentHandle, spec: SubAgentSpawnSpec
@@ -237,7 +284,9 @@ class SubAgentRuntime(SubagentSeam):
         except Exception:  # noqa: BLE001
             pass
 
-    async def _run_subagent(self, handle: SubAgentHandle, spec: SubAgentSpawnSpec) -> None:
+    async def _run_subagent(
+        self, handle: SubAgentHandle, spec: SubAgentSpawnSpec
+    ) -> None:
         """Sync mode: run sub-agent to completion before returning.
 
         子 agent 用 ``run_loop``（多轮循环，非单步 run_step）驱动，收集
@@ -323,6 +372,7 @@ class SubAgentRuntime(SubagentSeam):
                 latest_event_seq=0,
                 payload={"error": handle.error},
             )
+            await self._notify_terminal(handle)
             return
         input_ = self._build_sub_input(
             spec, handle.sub_conv_id, f"subagent-{handle.task_id}"
@@ -333,6 +383,8 @@ class SubAgentRuntime(SubagentSeam):
         try:
             latest_seq = 0
             answer_parts: list = []
+            max_steps = max(self._max_depth * 4, 10)
+            seen_steps: Set[str] = set()
             async for event in run_loop(
                 agent_id=f"subagent-{handle.task_id}",
                 conv_id=handle.sub_conv_id,
@@ -342,7 +394,7 @@ class SubAgentRuntime(SubagentSeam):
                 acting_fn=acting_fn,
                 parent_step_id=handle.parent_step_id,
                 permission_gate=permission_gate,
-                max_steps=max(self._max_depth * 4, 10),
+                max_steps=max_steps,
             ):
                 event.metadata["is_subagent"] = True
                 event.metadata["subagent_depth"] = spec.depth + 1
@@ -355,6 +407,12 @@ class SubAgentRuntime(SubagentSeam):
                     channel = (event.output or {}).get("channel", "content")
                     if token and channel != "thinking":
                         answer_parts.append(token)
+                elif event.step_id and event.step_id not in seen_steps:
+                    # 步级进度上报（step 粒度天然节流，避免 token 流打爆看板）
+                    seen_steps.add(event.step_id)
+                    await self._report_progress(
+                        handle, len(seen_steps), max_steps, event.event_type
+                    )
                 # Persist transcript snapshot every few events
                 await self._store.save_transcript(
                     transcript_id=transcript_id,
@@ -431,8 +489,54 @@ class SubAgentRuntime(SubagentSeam):
                 ),
                 agent_name=handle.agent_name,
             )
+            # 终态回写运维委托（看板终态 + 台账 complete + 全完成触发主 resume）
+            await self._notify_terminal(handle)
 
-    async def wait(self, handle: SubAgentHandle, timeout: Optional[float] = None) -> SubAgentHandle:
+    async def _notify_terminal(self, handle: SubAgentHandle) -> None:
+        """终态回写运维委托（幂等）：委托按 handle.status 分派产品语义。
+
+        先记账后回调去重（finally 与未来 cancel 兜底不重复上报）；
+        ``except Exception`` 不吞 CancelledError（BaseException）。
+        """
+        if self.ops_delegate is None or handle.task_id in self._terminal_notified:
+            return
+        self._terminal_notified.add(handle.task_id)
+        result_text = ""
+        if isinstance(handle.result, dict):
+            result_text = str(handle.result.get("answer") or "")
+        elif isinstance(handle.result, str):
+            result_text = handle.result
+        try:
+            await self.ops_delegate.on_terminal(
+                handle,
+                result_text=result_text,
+                error=handle.error or "",
+            )
+        except Exception as e:  # noqa: BLE001 - 委托故障不影响子任务终态
+            logger.warning(
+                f"[SubAgentRuntime] ops on_terminal failed for "
+                f"{handle.task_id}: {e}"
+            )
+
+    async def _report_progress(
+        self, handle: SubAgentHandle, steps_done: int, max_steps: int,
+        note: str,
+    ) -> None:
+        """按步数折算进度上报运维委托（0-100，封顶 95 留终态给 DONE）。"""
+        if self.ops_delegate is None:
+            return
+        progress = min(95, max(1, steps_done * 100 // max(max_steps, 1)))
+        try:
+            await self.ops_delegate.update_progress(handle, progress, note)
+        except Exception as e:  # noqa: BLE001 - 委托故障不影响执行主流程
+            logger.debug(
+                f"[SubAgentRuntime] ops update_progress failed for "
+                f"{handle.task_id}: {e}"
+            )
+
+    async def wait(
+        self, handle: SubAgentHandle, timeout: Optional[float] = None
+    ) -> SubAgentHandle:
         if handle.mode is SubAgentMode.SYNC:
             return handle  # sync already done
         task = self._async_tasks.get(handle.task_id)
@@ -444,7 +548,9 @@ class SubAgentRuntime(SubagentSeam):
             pass
         return self._handles.get(handle.task_id, handle)
 
-    async def reconstruct_handle_from_transcript(self, task_id: str) -> Optional[SubAgentHandle]:
+    async def reconstruct_handle_from_transcript(
+        self, task_id: str
+    ) -> Optional[SubAgentHandle]:
         """Reconstruct a SubAgentHandle from the persisted async transcript."""
         transcript = await self._store.get_transcript_by_task_id(task_id)
         if transcript is None:

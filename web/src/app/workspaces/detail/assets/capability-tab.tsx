@@ -11,7 +11,7 @@ import {
   getAppList,
 } from '@/client/api';
 import {
-  Alert, App, Button, Empty, Modal, Select, Space, Spin, Switch, Tag,
+  Alert, App, Button, Empty, Input, Modal, Select, Space, Spin, Switch, Tag,
 } from 'antd';
 import {
   ToolOutlined,
@@ -20,6 +20,7 @@ import {
   PlusOutlined,
   ExportOutlined,
   ReloadOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useMemo, useState } from 'react';
@@ -31,6 +32,7 @@ const TYPE_META: Record<string, { label: string; tagColor: string; color: string
   skill: { label: '技能', tagColor: 'geekblue', color: '#6366f1', icon: <ToolOutlined /> },
   mcp: { label: 'MCP', tagColor: 'purple', color: '#8b5cf6', icon: <ApiOutlined /> },
   app: { label: '智能体', tagColor: 'blue', color: '#3b82f6', icon: <RobotOutlined /> },
+  command: { label: '命令', tagColor: 'cyan', color: '#06b6d4', icon: <ThunderboltOutlined /> },
 };
 
 /** 排序:启用在前,最近更新在前。 */
@@ -52,10 +54,15 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
   const { modal, message } = App.useApp();
   const [addOpen, setAddOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [addType, setAddType] = useState<'skill' | 'mcp' | 'app'>('skill');
+  const [addType, setAddType] = useState<'skill' | 'mcp' | 'app' | 'command'>('skill');
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [selectedMcp, setSelectedMcp] = useState<any>(null);
   const [selectedApp, setSelectedApp] = useState<string | null>(null);
+  // 自定义命令表单(workspace_resource type='command' 的新建,非选择已有实体)
+  const [cmdName, setCmdName] = useState('');
+  const [cmdRef, setCmdRef] = useState('');
+  const [cmdDesc, setCmdDesc] = useState('');
+  const [cmdPayload, setCmdPayload] = useState('');
 
   const { data: resources, loading, refresh } = useRequest(async () => {
     const [err, res] = await apiInterceptors(listResources({ workspace_id: workspaceId }));
@@ -104,6 +111,7 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
       { key: 'skill', title: '技能', items: sortCaps(rows.filter((r: any) => r.type === 'skill')) },
       { key: 'mcp', title: 'MCP 服务', items: sortCaps(rows.filter((r: any) => r.type === 'mcp')) },
       { key: 'app', title: '子智能体', items: sortCaps(rows.filter((r: any) => r.type === 'app')) },
+      { key: 'command', title: '命令', items: sortCaps(rows.filter((r: any) => r.type === 'command')) },
     ].filter((s) => s.items.length > 0);
   }, [allResources]);
 
@@ -159,6 +167,30 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
         is_active: true,
         config: {},
       }));
+    } else if (addType === 'command') {
+      if (!cmdName.trim()) { setSaving(false); message.warning('请填写命令名称'); return; }
+      let payload: Record<string, unknown> = {};
+      if (cmdPayload.trim()) {
+        try {
+          const parsed = JSON.parse(cmdPayload);
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            setSaving(false); message.warning('生效参数必须是 JSON 对象'); return;
+          }
+          payload = parsed;
+        } catch {
+          setSaving(false); message.warning('生效参数不是合法 JSON'); return;
+        }
+      }
+      [err] = await apiInterceptors(addResource({
+        workspace_id: workspaceId,
+        type: 'command',
+        name: cmdName.trim(),
+        physical_ref: cmdRef.trim() || cmdName.trim(),
+        category: 'scenario_bound',
+        access_mode: 'read',
+        is_active: true,
+        config: { kind: 'toggle', description: cmdDesc.trim(), payload },
+      }));
     }
     setSaving(false);
     if (err) { message.error(err.message); return; }
@@ -167,6 +199,10 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
     setSelectedSkill(null);
     setSelectedMcp(null);
     setSelectedApp(null);
+    setCmdName('');
+    setCmdRef('');
+    setCmdDesc('');
+    setCmdPayload('');
     refresh();
   };
 
@@ -267,7 +303,7 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
           <div key={s.key} className="ws-asset-section">
             <div className="ws-asset-section__head">
               <span className="ws-asset-section__icon">
-                {s.key === 'skill' ? <ToolOutlined /> : s.key === 'mcp' ? <ApiOutlined /> : <RobotOutlined />}
+                {s.key === 'skill' ? <ToolOutlined /> : s.key === 'mcp' ? <ApiOutlined /> : s.key === 'command' ? <ThunderboltOutlined /> : <RobotOutlined />}
               </span>
               <span className="ws-asset-section__title">{s.title}</span>
               <span className="ws-asset-section__count">{s.items.length}</span>
@@ -293,6 +329,7 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
               { v: 'skill', label: '技能', desc: '指导 Agent 做事的方法', icon: <ToolOutlined /> },
               { v: 'mcp', label: 'MCP', desc: '扩展 Agent 工具能力的服务', icon: <ApiOutlined /> },
               { v: 'app', label: '子智能体', desc: '主 Agent 可调用的协作 Agent', icon: <RobotOutlined /> },
+              { v: 'command', label: '命令', desc: '输入框 / 唤起的会话开关', icon: <ThunderboltOutlined /> },
             ].map((opt) => (
               <div
                 key={opt.v}
@@ -362,7 +399,58 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
             }
           />
         )}
-        {addType === 'skill' ? (
+        {addType === 'command' && (
+          <Alert
+            type="info"
+            showIcon
+            className="mb-3"
+            message="自定义命令会出现在对话输入框 / 菜单的「命令」组"
+            description="选中后作为会话开关(可取消),发送消息时「生效参数」会并入请求 ext_info。内置的 压缩上下文 / 清理会话 / 规划模式 无需在此配置。"
+          />
+        )}
+        {addType === 'command' ? (
+          <div className="space-y-3">
+            <div>
+              <div className="text-sm text-gray-500 mb-2">命令名称(必填)</div>
+              <Input
+                value={cmdName}
+                onChange={(e) => setCmdName(e.target.value)}
+                placeholder="如:开启深度思考"
+                maxLength={20}
+              />
+            </div>
+            <div>
+              <div className="text-sm text-gray-500 mb-2">命令标识(选填,默认同名称)</div>
+              <Input
+                value={cmdRef}
+                onChange={(e) => setCmdRef(e.target.value)}
+                placeholder="如:deep-think"
+                maxLength={32}
+              />
+            </div>
+            <div>
+              <div className="text-sm text-gray-500 mb-2">描述(选填,展示在菜单里)</div>
+              <Input
+                value={cmdDesc}
+                onChange={(e) => setCmdDesc(e.target.value)}
+                placeholder="如:本回合开启更深度的推理"
+                maxLength={50}
+              />
+            </div>
+            <div>
+              <div className="text-sm text-gray-500 mb-2">生效参数(JSON 对象,选填)</div>
+              <Input.TextArea
+                value={cmdPayload}
+                onChange={(e) => setCmdPayload(e.target.value)}
+                placeholder='{"permission_mode":"plan"}'
+                rows={2}
+              />
+              <div className="text-xs text-gray-400 mt-1">
+                选中该命令后发送消息时,这些参数会并入请求 ext_info;留空则仅作为标记。
+              </div>
+            </div>
+          </div>
+        ) : addType === 'skill' ? (
           <div>
             <div className="text-sm text-gray-500 mb-2">选择技能</div>
             <Select

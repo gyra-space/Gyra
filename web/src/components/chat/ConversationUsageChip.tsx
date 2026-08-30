@@ -5,7 +5,7 @@
  *
  * 两种用法：
  * - 传 `summary`：由父级批量拉取后传入（历史列表），纯展示，避免 N+1；
- * - 传 `convId`：自身按单个会话懒加载（会话头部）。
+ * - 传 `conversationId`：自身按单个会话懒加载（会话头部）。
  * 无数据（total_tokens=0）时隐藏，不占位。
  */
 
@@ -15,24 +15,24 @@ import { apiInterceptors } from '@/client/api';
 import { formatTokens } from '@/types/context-metrics';
 
 interface ConversationUsageChipProps {
-  /** 已有汇总数据（批量列表场景），优先于 convId */
+  /** 已有汇总数据（批量列表场景），优先于 conversationId */
   summary?: ConversationUsageSummary | null;
   /** 单个会话懒加载（会话头部场景） */
-  convId?: string;
+  conversationId?: string;
   onClick?: () => void;
 }
 
 export const ConversationUsageChip: React.FC<ConversationUsageChipProps> = ({
   summary,
-  convId,
+  conversationId,
   onClick,
 }) => {
   const [fetched, setFetched] = useState<ConversationUsageSummary | null>(null);
 
   useEffect(() => {
-    if (summary || !convId) return;
+    if (summary || !conversationId) return;
     let cancelled = false;
-    apiInterceptors(getUsageConversationSummary([convId]))
+    apiInterceptors(getUsageConversationSummary([conversationId]))
       .then(([err, res]) => {
         if (cancelled) return;
         setFetched(err ? null : res?.[0] || null);
@@ -43,7 +43,7 @@ export const ConversationUsageChip: React.FC<ConversationUsageChipProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [summary, convId]);
+  }, [summary, conversationId]);
 
   const data = summary || fetched;
   if (!data || !data.total_tokens) return null;

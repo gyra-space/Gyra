@@ -1,13 +1,14 @@
 """Built-in file extractors (RFC 004 §6).
 
 Each extractor is registered via the `@extractor` decorator with one or more
-mime glob patterns. Plain-text extractors (txt/md/pdf/docx/pptx) need no
+mime glob patterns. Plain-text extractors (txt/md/pdf/docx/pptx/excel) need no
 model; image/audio extractors call the `model_caller` supplied by the
 orchestrator.
 
-Heavy deps (pdfplumber, python-docx, python-pptx) are imported lazily inside
-the extract methods so the module imports cleanly even when optional deps
-are missing — the extractor just raises a clear error at extract time.
+Heavy deps (pdfplumber, python-docx, python-pptx, openpyxl, xlrd) are imported
+lazily inside the extract methods so the module imports cleanly even when
+optional deps are missing — the extractor just raises a clear error at extract
+time.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import os
 import re
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -419,6 +420,133 @@ class PptxExtractor(Extractor):
                 meta={"mime": mime, "slides": len(slides_text), "images": img_idx},
             )
         ]
+
+
+# ---------------------------------------------------------------------------
+# Spreadsheet extractors
+# ---------------------------------------------------------------------------
+
+
+def _cell_str(v) -> str:
+    """Render one spreadsheet cell as markdown-table-safe text."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, (datetime, date)):
+        return v.isoformat(sep=" ") if isinstance(v, datetime) else v.isoformat()
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip().replace("\n", " ").replace("|", "\\|")
+
+
+@extractor("excel", [
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+])
+class ExcelExtractor(Extractor):
+    """XLSX/XLS → markdown tables via openpyxl (xlsx) or xlrd (xls).
+
+    One `## Sheet: <name> (N rows)` block per sheet, rendered as a GitHub
+    markdown table. Formula cells resolve to their cached values (xlsx,
+    `data_only=True`); fully-empty rows are dropped.
+    """
+
+    async def extract(
+        self,
+        path: Path,
+        mime: str,
+        model: Optional[str],
+        model_caller: Optional[ModelCaller],
+        asset_store: Optional[AssetStore] = None,
+    ) -> List[VerbatimSpec]:
+        if path.suffix.lower() == ".xls":
+            sheets = self._read_xls(path)
+        else:
+            sheets = self._read_xlsx(path)
+
+        blocks: List[str] = []
+        total_rows = 0
+        for name, rows in sheets:
+            rows = [
+                r for r in rows if any(c is not None and str(c) != "" for c in r)
+            ]
+            total_rows += len(rows)
+            header = f"## Sheet: {name} ({len(rows)} rows)"
+            if not rows:
+                blocks.append(f"{header}\n\n(empty)")
+                continue
+            width = max(len(r) for r in rows)
+            norm = [list(r) + [""] * (width - len(r)) for r in rows]
+            lines = [
+                "| " + " | ".join(_cell_str(c) for c in row) + " |"
+                for row in norm
+            ]
+            lines.insert(1, "| " + " | ".join(["---"] * width) + " |")
+            blocks.append(f"{header}\n\n" + "\n".join(lines))
+
+        content = "\n\n".join(blocks) if blocks else "(no sheets)"
+        date_iso, mtime = _file_mtime_iso(path)
+        return [
+            VerbatimSpec(
+                content=content,
+                source_file=path.name,
+                extract_mode=ExtractMode.UPLOAD,
+                content_date=date_iso,
+                source_mtime=mtime,
+                meta={"mime": mime, "sheets": len(sheets), "rows": total_rows},
+            )
+        ]
+
+    @staticmethod
+    def _read_xlsx(path: Path) -> List[Tuple[str, list]]:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError as e:
+            raise RuntimeError(
+                "XLSX extraction requires openpyxl. Install with: pip install openpyxl"
+            ) from e
+        wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+        try:
+            return [
+                (ws.title, [list(r) for r in ws.iter_rows(values_only=True)])
+                for ws in wb.worksheets
+            ]
+        finally:
+            wb.close()
+
+    @staticmethod
+    def _read_xls(path: Path) -> List[Tuple[str, list]]:
+        try:
+            import xlrd  # type: ignore
+        except ImportError as e:
+            raise RuntimeError(
+                "XLS extraction requires xlrd. Install with: pip install xlrd"
+            ) from e
+
+        wb = xlrd.open_workbook(str(path))
+
+        def cell_value(cell):
+            ctype, value = cell.ctype, cell.value
+            if ctype == xlrd.XL_CELL_DATE:
+                try:
+                    return xlrd.xldate.xldate_as_datetime(
+                        value, wb.datemode
+                    ).isoformat(sep=" ")
+                except Exception:  # noqa: BLE001
+                    return str(value)
+            if ctype == xlrd.XL_CELL_ERROR:
+                return ""
+            return value
+
+        out: List[Tuple[str, list]] = []
+        for ws in wb.sheets():
+            rows = [
+                [cell_value(ws.cell(r, c)) for c in range(ws.ncols)]
+                for r in range(ws.nrows)
+            ]
+            out.append((ws.name, rows))
+        return out
 
 
 # ---------------------------------------------------------------------------

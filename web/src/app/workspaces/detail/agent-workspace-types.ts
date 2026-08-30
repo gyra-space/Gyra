@@ -72,6 +72,13 @@ export interface LobbyExhibit {
   actions?: LobbyExhibitAction[];
 }
 
+/** 用户消息附件(乐观上屏与回显共用):url 为 gyra-fs:// 或可访问 URL */
+export interface WorkspaceUserAttachment {
+  name: string;
+  url: string;
+  mime_type?: string;
+}
+
 export interface WorkspaceExecutionStep {
   id: string;
   type: 'tool_call' | 'thinking' | 'artifact' | 'delivery' | 'user' | 'task_created' | 'skill_loaded' | 'answer';
@@ -96,6 +103,8 @@ export interface WorkspaceExecutionStep {
   task_status?: string;
   playbook_name?: string;
   triggered_by?: string;
+  /** user 步骤:随消息上传的文件附件 */
+  attachments?: WorkspaceUserAttachment[] | null;
 }
 
 export interface WorkspacePlanning {

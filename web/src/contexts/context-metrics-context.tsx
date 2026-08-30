@@ -13,12 +13,12 @@ const ContextMetricsContext = createContext<ContextMetricsContextValue | null>(n
 
 interface ContextMetricsProviderProps {
   children: React.ReactNode;
-  convId?: string;
+  conversationId?: string;
 }
 
 export const ContextMetricsProvider: React.FC<ContextMetricsProviderProps> = ({
   children,
-  convId,
+  conversationId,
 }) => {
   const [metrics, setMetrics] = useState<ContextMetrics | null>(null);
 

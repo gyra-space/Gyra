@@ -82,6 +82,44 @@ def _normalize_text_for_dedup(text: Optional[Any]) -> str:
     return normalized
 
 
+def _meta_ts(created_at: Optional[Any]) -> Optional[str]:
+    """消息时间(本地 naive)→ ISO 字符串;None 原样返回(不得变成 "None" 字符串)。
+
+    前端靠这个时间把交付/任务文件归属到对话轮次:非时间字符串会解析失败,
+    文件被判定为无法归属而沉底到 feed 底部。
+    """
+    if created_at is None:
+        return None
+    if hasattr(created_at, "isoformat"):
+        return created_at.isoformat()
+    return str(created_at)
+
+
+# 已带时区标记的字符串(末尾 Z 或 ±HH:MM),不应再被追加 +00:00
+_TZ_SUFFIX_RE = re.compile(r"(?:Z|[+-]\d{2}:?\d{2})$")
+
+
+def _file_meta_ts(created_at: Optional[Any]) -> Optional[str]:
+    """文件元数据时间(UTC naive)→ 显式带 +00:00 的 ISO 字符串。
+
+    ⚠️ 时区基准不一致(本函数的存在原因):
+      - gpts_file_metadata.gmt_create 由 `datetime.utcnow` 写入 → **UTC**
+      - gpts_messages.gmt_create     由 `datetime.now`    写入 → **本地时间**
+    两列都是不带时区的 DateTime,序列化后都是 naive ISO 字符串(如
+    "2026-08-30T21:00:00"),前端 `Date.parse` 对无时区标记的字符串一律按
+    **浏览器本地时区**解析。于是交付文件时间戳比真实时间早一个时区偏移
+    (UTC+8 即早 8 小时),早于所有轮次起始时间 → 前端判定"无法归属轮次"
+    → 渲染进 leftover,沉到 feed 最底部。表现为:第一轮交付看起来正常,
+    一发起第二轮提问,历史交付物就跟到了最新一轮后面。
+
+    这里给文件时间显式补 `+00:00`,前端即可按 UTC 正确解析,与消息时间对齐。
+    """
+    ts = _meta_ts(created_at)
+    if not ts or _TZ_SUFFIX_RE.search(ts):
+        return ts
+    return ts + "+00:00"
+
+
 # 阶段提取模式
 PHASE_PATTERNS = [
     (r"【阶段\s*[:：]\s*([^】]+)】", "zh"),
@@ -1952,6 +1990,18 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                     file_type = file_info.get("file_type", "")
                     mime_type = file_info.get("mime_type")
 
+                    # 任务文件的时间归属兜底:file_info 缺 created_at 时用产出该
+                    # 文件的消息 created_at(与下方交付文件兜底一致)。缺时间戳的
+                    # 任务文件前端无法归属轮次,只能沉底到 feed 底部全局折叠条,
+                    # 多轮会话看不出属于哪次提问。
+                    # 注意两个来源时区基准不同:文件元数据是 UTC(走 _file_meta_ts
+                    # 补 +00:00),消息 created_at 是本地时间(走 _meta_ts 原样输出)。
+                    _f_created = file_info.get("created_at")
+                    _task_ts = (
+                        _file_meta_ts(_f_created)
+                        if _f_created
+                        else _meta_ts(getattr(msg, "created_at", None))
+                    )
                     task_files.append(ManusTaskFileItem(
                         file_id=file_id,
                         file_name=file_name,
@@ -1962,7 +2012,7 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                         preview_url=file_info.get("preview_url"),
                         download_url=file_info.get("download_url"),
                         description=file_info.get("description"),
-                        created_at=file_info.get("created_at"),
+                        created_at=_task_ts,
                         object_path=file_info.get("object_path"),
                     ))
 
@@ -1975,8 +2025,12 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                             content_url = preview_url or oss_url
                         # 交付文件的时间归属:优先文件元数据 created_at,缺失时用
                         # 产出该文件的消息 created_at 兜底(多轮会话据此归属轮次)。
-                        _ts_raw = file_info.get("created_at") or getattr(msg, "created_at", None)
-                        _ts = _ts_raw.isoformat() if hasattr(_ts_raw, "isoformat") else (str(_ts_raw) if _ts_raw else None)
+                        # 时区基准:文件元数据 UTC / 消息本地,分别走 _file_meta_ts / _meta_ts。
+                        _ts = (
+                            _file_meta_ts(_f_created)
+                            if _f_created
+                            else _meta_ts(getattr(msg, "created_at", None))
+                        )
                         deliverable_files.append(ManusDeliverableFile(
                             file_id=file_id,
                             file_name=file_name,
@@ -2046,7 +2100,11 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                     preview_url=file_meta.preview_url,
                     download_url=file_meta.download_url,
                     description=file_meta.metadata.get("description") if file_meta.metadata else None,
-                    created_at=file_meta.created_at.isoformat() if hasattr(file_meta.created_at, 'isoformat') else str(file_meta.created_at),
+                    # None 不能 str() 成 "None":前端按字符串解析时间失败,
+                    # 且比 None 更难排查(伪装成有值)
+                    # file_meta.created_at 出自 gpts_file_metadata(DB 用 utcnow 写入),
+                    # 走 _file_meta_ts 补 +00:00,否则前端按本地时区解析会早一个时区偏移。
+                    created_at=_file_meta_ts(file_meta.created_at),
                     object_path=file_meta.metadata.get("object_path") if file_meta.metadata else None,
                 ))
 
@@ -2066,7 +2124,7 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                         download_url=file_meta.download_url or preview_url,
                         object_path=file_meta.metadata.get("object_path") if file_meta.metadata else None,
                         render_type=self._determine_render_type(file_name, mime_type),
-                        ts=file_meta.created_at.isoformat() if hasattr(file_meta.created_at, 'isoformat') else str(file_meta.created_at),
+                        ts=_file_meta_ts(file_meta.created_at),
                     ))
 
         except Exception as e:

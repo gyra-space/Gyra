@@ -1,5 +1,5 @@
 {
-  "current_version": "0.6.0_20260828",
+  "current_version": "0.6.0_20260830",
   "scripts": [
     {
       "name": "upgrade_0.3.0_20260730_to_0.3.0_20260823.sql",
@@ -20,6 +20,26 @@
       "seq": 0,
       "checksum": "5f4d89c22277ef66694ce22950a3c7b658de6cc29060c17384fd072eabad1e20",
       "version": 2
+    },
+    {
+      "name": "upgrade_0.6.0_20260828_to_0.6.0_20260829.sql",
+      "from_version": "0.6.0",
+      "from_timestamp": "20260828",
+      "to_version": "0.6.0",
+      "to_timestamp": "20260829",
+      "seq": 0,
+      "checksum": "a72f531a4ddf37ea532144f67fa0a66ad44e9aced3127dbeffc1704a63879055",
+      "version": 3
+    },
+    {
+      "name": "upgrade_0.6.0_20260829_to_0.6.0_20260829.sql",
+      "from_version": "0.6.0",
+      "from_timestamp": "20260830",
+      "to_version": "0.6.0",
+      "to_timestamp": "20260830",
+      "seq": 0,
+      "checksum": "571971716ce402d6ea7e48861ac0c3b6dbab2213f5b2d42356f4b8f90d42b773",
+      "version": 4
     }
   ]
 }

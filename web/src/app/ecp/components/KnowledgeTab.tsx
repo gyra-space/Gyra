@@ -4,14 +4,21 @@ import { apiInterceptors } from '@/client/api';
 import { getOrCreateEcpSpace } from '@/client/api/ecp';
 import {
   editDoc,
+  getLearningStatus,
   getRawTree,
   getWikiTree,
   listIngestJobs,
   readDoc,
   readRawFile,
+  rebuildRawFileLearning,
   uploadFile,
 } from '@/client/api/knowledge-vault';
-import type { IngestJob, TreeNode } from '@/types/knowledge-vault';
+import type {
+  FileLearningState,
+  FileLearningStatusMap,
+  IngestJob,
+  TreeNode,
+} from '@/types/knowledge-vault';
 import MarkdownEditor from '@/components/knowledge-vault/MarkdownEditor';
 import RawCreateModal from '@/components/knowledge-vault/RawCreateModal';
 import WikiCreateModal from '@/components/knowledge-vault/WikiCreateModal';
@@ -22,9 +29,10 @@ import {
   InboxOutlined,
   ReloadOutlined,
   SaveOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { App, Button, Segmented, Spin, Tree } from 'antd';
+import { App, Button, Popconfirm, Segmented, Spin, Tag, Tooltip, Tree } from 'antd';
 import {
   type DragEvent,
   type ReactNode,
@@ -47,28 +55,94 @@ const STATUS_LABEL: Record<string, string> = {
   extracting: '抽取中',
   embedding: '向量化',
   generating_wiki: '生成 wiki',
+  generating_graph: '图抽取',
   done: '完成',
   failed: '失败',
 };
 
+/** 粗粒度文件学习状态 → 标签文案 / 颜色 */
+const LEARN_STATUS_META: Record<FileLearningState, { label: string; color: string }> = {
+  pending: { label: '挂起', color: 'default' },
+  running: { label: '进行中', color: 'processing' },
+  done: { label: '完成', color: 'success' },
+  failed: { label: '失败', color: 'error' },
+};
+
 type SideView = 'wiki' | 'raw';
+
+const RAW_PREVIEW_TEXT_EXTS = new Set([
+  'txt',
+  'text',
+  'html',
+  'htm',
+  'xml',
+  'json',
+  'yaml',
+  'yml',
+  'toml',
+  'ini',
+  'cfg',
+  'conf',
+  'log',
+  'sql',
+  'sh',
+  'py',
+  'js',
+  'jsx',
+  'ts',
+  'tsx',
+  'css',
+  'scss',
+  'less',
+  'java',
+  'go',
+  'rs',
+  'rb',
+  'php',
+  'c',
+  'h',
+  'cpp',
+  'hpp',
+  'cs',
+  'swift',
+  'kt',
+  'properties',
+  'env',
+]);
 
 interface TreeChildNode {
   key: string;
-  title: string;
+  title: ReactNode;
   isLeaf: boolean;
   children?: TreeChildNode[];
   icon?: ReactNode;
 }
 
-function toTreeData(nodes: TreeNode[], isDirIcon?: (n: TreeNode) => boolean): TreeChildNode[] {
-  return (nodes ?? []).map(n => ({
-    key: n.path,
-    title: n.name,
-    isLeaf: !n.is_dir,
-    children: n.children ? toTreeData(n.children, isDirIcon) : undefined,
-    icon: n.is_dir ? undefined : (isDirIcon?.(n) ? <FileTextOutlined /> : <FileMarkdownOutlined />),
-  }));
+function toTreeData(
+  nodes: TreeNode[],
+  isDirIcon?: (n: TreeNode) => boolean,
+  statusOf?: (n: TreeNode) => FileLearningState | undefined,
+): TreeChildNode[] {
+  return (nodes ?? []).map(n => {
+    const learn = statusOf?.(n);
+    const meta = learn ? LEARN_STATUS_META[learn] : undefined;
+    return {
+      key: n.path,
+      title: meta ? (
+        <span className="ecp-kn__file-title">
+          {n.name}
+          <Tag color={meta.color} style={{ marginLeft: 8, marginRight: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>
+            {meta.label}
+          </Tag>
+        </span>
+      ) : (
+        n.name
+      ),
+      isLeaf: !n.is_dir,
+      children: n.children ? toTreeData(n.children, isDirIcon, statusOf) : undefined,
+      icon: n.is_dir ? undefined : (isDirIcon?.(n) ? <FileTextOutlined /> : <FileMarkdownOutlined />),
+    };
+  });
 }
 
 function countTree(nodes: TreeChildNode[] | undefined): number {
@@ -104,17 +178,28 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
   const slug = space?.slug;
 
   const [jobs, setJobs] = useState<IngestJob[]>([]);
+  const [learnStatus, setLearnStatus] = useState<FileLearningStatusMap>({});
+
+  const refreshLearning = useCallback(async (): Promise<FileLearningStatusMap> => {
+    if (!slug) return {};
+    const [err, res] = await apiInterceptors(getLearningStatus(slug));
+    const map = err ? {} : (res ?? {});
+    setLearnStatus(map);
+    return map;
+  }, [slug]);
+
   const pollJobs = useCallback(async () => {
     if (!slug) return;
     const [err, res] = await apiInterceptors(listIngestJobs(slug, 30));
     if (!err && res) setJobs(res?.items ?? []);
-    const hasPending = (res?.items ?? []).some(
-      j => j.status !== 'done' && j.status !== 'failed',
-    );
+    const learnMap = await refreshLearning();
+    const hasPending =
+      (res?.items ?? []).some(j => j.status !== 'done' && j.status !== 'failed') ||
+      Object.values(learnMap).some(s => s.status === 'running');
     if (hasPending) {
       setTimeout(pollJobs, 2500);
     }
-  }, [slug]);
+  }, [slug, refreshLearning]);
 
   useEffect(() => {
     if (slug) pollJobs();
@@ -182,6 +267,18 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
     { manual: true },
   );
 
+  const { runAsync: doRebuild, loading: rebuilding } = useRequest(
+    async (path: string) => {
+      if (!slug) return;
+      const [err] = await apiInterceptors(rebuildRawFileLearning(slug, path));
+      if (err) throw err;
+      message.success(`「${path.replace(/^(raw\/|)/, '').split('/').pop()}」已重新触发学习`);
+      refreshRaw();
+      pollJobs();
+    },
+    { manual: true },
+  );
+
   const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     if (Array.from(e.dataTransfer?.types ?? []).includes('Files')) {
@@ -204,7 +301,16 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
   };
 
   const treeData = useMemo(() => toTreeData(wikiTree ?? []), [wikiTree]);
-  const rawTreeData = useMemo(() => toTreeData(rawTree ?? [], () => true), [rawTree]);
+  const rawTreeData = useMemo(
+    () =>
+      toTreeData(rawTree ?? [], () => true, n =>
+        n.is_dir ? undefined : learnStatus[n.path]?.status,
+      ),
+    [rawTree, learnStatus],
+  );
+  const rawDisplayPath = (selectedRaw ?? '').replace(/^(raw|wiki)\//, '');
+  const rawExt = (rawDisplayPath.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
+  const rawPreviewAsText = RAW_PREVIEW_TEXT_EXTS.has(rawExt);
 
   // 文档加载后构建编辑草稿（frontmatter + 正文）
   useEffect(() => {
@@ -223,6 +329,38 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
   }, [doc]);
 
   const pendingJobs = jobs.filter(j => j.status !== 'done' && j.status !== 'failed');
+
+  const learnOf = selectedRaw ? learnStatus[selectedRaw] : undefined;
+  const rawHeaderActions = selectedRaw ? (
+    <div className="ecp-kn__doc-actions">
+      {learnOf && (
+        <Tooltip
+          title={
+            learnOf.job_status
+              ? `任务状态：${STATUS_LABEL[learnOf.job_status] ?? learnOf.job_status}`
+              : learnOf.status === 'pending'
+                ? '尚未学习过该文件'
+                : undefined
+          }
+        >
+          <Tag color={LEARN_STATUS_META[learnOf.status].color} style={{ marginRight: 0 }}>
+            {LEARN_STATUS_META[learnOf.status].label}
+          </Tag>
+        </Tooltip>
+      )}
+      <Popconfirm
+        title="重新学习该文件"
+        description="将重新生成 wiki 词条并抽取知识图谱。"
+        okText="重新学习"
+        cancelText="取消"
+        onConfirm={() => doRebuild(selectedRaw)}
+      >
+        <Button size="small" icon={<ThunderboltOutlined />} loading={rebuilding}>
+          重新学习
+        </Button>
+      </Popconfirm>
+    </div>
+  ) : null;
 
   if (spaceLoading) return <Spin style={{ display: 'block', margin: '64px auto' }} />;
   if (!slug) return <EcpEmpty title="知识空间未就绪" desc="创建 ECP 软知识空间失败，请刷新重试" />;
@@ -339,11 +477,7 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
                   onSelect={(keys, info) => {
                     if (info.node?.isLeaf === false) return;
                     const k = keys[0] as string | undefined;
-                    if (k && k.endsWith('.md')) {
-                      setSelectedRaw(k);
-                    } else if (k) {
-                      message.info('该文件暂不支持预览，仅支持 .md 原始文件');
-                    }
+                    if (k) setSelectedRaw(k);
                   }}
                 />
               ) : (
@@ -429,22 +563,51 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
               )
             ) : !selectedRaw ? (
               <EcpEmpty title="从左侧选择原始文件" desc="原始文件为只读，上传解析后生成 wiki 词条" />
-            ) : rawLoadingFile ? (
-              <Spin style={{ display: 'block', margin: '64px auto' }} />
-            ) : rawContent ? (
+            ) : (
               <>
                 <div className="ecp-kn__doc-top">
-                  <span className="ecp-kn__doc-path">{selectedRaw}</span>
+                  <span className="ecp-kn__doc-path">{rawDisplayPath}</span>
+                  {rawHeaderActions}
                 </div>
-                <h1 className="ecp-kn__doc-title">{selectedRaw.split('/').pop()}</h1>
-                <div className="ecp-kn__doc-body ecp-kn__raw">
-                  <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, fontFamily: 'inherit', margin: 0 }}>
-                    {rawContent.content}
-                  </pre>
-                </div>
+                <h1 className="ecp-kn__doc-title">{rawDisplayPath.split('/').pop()}</h1>
+                {rawLoadingFile ? (
+                  <Spin style={{ display: 'block', margin: '64px auto' }} />
+                ) : rawContent?.content ? (
+                  <div className="ecp-kn__doc-body">
+                    {rawPreviewAsText ? (
+                      <pre
+                        style={{
+                          margin: 0,
+                          padding: 16,
+                          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                          fontSize: 12,
+                          lineHeight: 1.7,
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                        }}
+                      >
+                        {rawContent.content}
+                      </pre>
+                    ) : (
+                      <div className="ecp-kn__md">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm, remarkBreaks]}
+                          rehypePlugins={[rehypeRaw, rehypeHighlight]}
+                        >
+                          {rawContent.content}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
+                ) : rawContent ? (
+                  <EcpEmpty
+                    title="该文件不支持内容预览"
+                    desc="二进制或空文件不渲染内容，学习状态与重新学习不受影响"
+                  />
+                ) : (
+                  <EcpEmpty title="读取失败" />
+                )}
               </>
-            ) : (
-              <EcpEmpty title="读取失败" />
             )}
           </section>
         </div>
@@ -477,6 +640,7 @@ export default function KnowledgeTab({ workspaceId }: { workspaceId: string }) {
         onClose={() => setRawOpen(false)}
         onCreated={() => {
           refreshRaw();
+          pollJobs();
         }}
       />
     </>

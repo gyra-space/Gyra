@@ -1,10 +1,11 @@
 'use client';
 
 import { apiInterceptors } from '@/client/api';
-import { addEcpObjectFromSql, EcpSemanticObject, proposeEcpObject } from '@/client/api/ecp';
+import { addEcpObjectFromSql, EcpSemanticObject, importEcpObjectFromFile, proposeEcpObject } from '@/client/api/ecp';
 import { getUserId } from '@/utils';
 import { useRequest } from 'ahooks';
-import { App, Alert, Input, InputNumber, Modal, Select, Tabs } from 'antd';
+import { App, Alert, Button, Input, InputNumber, Modal, Select, Tabs, Upload } from 'antd';
+import { UploadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 
 import PayloadEditor from './PayloadEditor';
@@ -56,6 +57,8 @@ export default function CreateProposalModal({
   const [tab, setTab] = useState('sql');
   const [sql, setSql] = useState('');
   const [desc, setDesc] = useState('');
+  // 报表文件导入:整份文件异步提炼,产出进待确认收件箱;选中文件时优先于手贴 SQL
+  const [file, setFile] = useState<File | null>(null);
 
   const [objType, setObjType] = useState('metric');
   const [objectId, setObjectId] = useState('');
@@ -69,7 +72,16 @@ export default function CreateProposalModal({
 
   const { run: submitSql, loading: sqlLoading } = useRequest(
     async () => {
-      if (!sql.trim()) throw new Error('请填写 SQL');
+      if (file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('workspace_id', workspaceId);
+        if (desc.trim()) formData.append('description', desc.trim());
+        const [err, res] = await apiInterceptors(importEcpObjectFromFile(formData));
+        if (err) throw err;
+        return { fileTask: true, taskId: res?.task_id };
+      }
+      if (!sql.trim()) throw new Error('请填写 SQL,或上传报表文件');
       const uid = getUserId() || 'user';
       const [err, res] = await apiInterceptors(
         addEcpObjectFromSql({
@@ -86,6 +98,15 @@ export default function CreateProposalModal({
     {
       manual: true,
       onSuccess: (res: any) => {
+        if (res?.fileTask) {
+          message.success('文件已提交,助手正在后台整份学习提炼,完成后请到「业务口径」收件箱确认提案');
+          setFile(null);
+          setSql('');
+          setDesc('');
+          onCreated?.();
+          onClose();
+          return;
+        }
         const confirmed = res?.confirmed_ids ?? [];
         const errors = res?.errors ?? [];
         if (confirmed.length > 0) {
@@ -141,7 +162,7 @@ export default function CreateProposalModal({
       onOk={() => (tab === 'sql' ? submitSql() : submit())}
       confirmLoading={tab === 'sql' ? sqlLoading : loading}
       onCancel={onClose}
-      okText={tab === 'sql' ? '添加并确认' : '提交提案'}
+      okText={tab === 'sql' ? (file ? '提交提炼' : '添加并确认') : '提交提案'}
       cancelText="取消"
       width={640}
     >
@@ -157,11 +178,11 @@ export default function CreateProposalModal({
                 <Alert
                   type="info"
                   showIcon
-                  message="填入一条 SQL，助手会自动提炼出指标/实体/维度等语义，并直接生效为已确认口径（添加即确认）。需已在「治理」配置提案 Agent。"
+                  message="填入一条 SQL,助手会自动提炼出指标/实体/维度等语义,并直接生效为已确认口径(添加即确认);或上传一份报表文件(SQL 脚本/代码),助手在后台整份学习提炼,提案进待确认收件箱。需已在「治理」配置提案 Agent。"
                 />
                 <div>
                   <div style={{ fontSize: 12, color: 'var(--ink-500)', marginBottom: 4 }}>
-                    SQL（必填）
+                    SQL（必填，上传文件时以文件为准）
                   </div>
                   <textarea
                     rows={5}
@@ -178,6 +199,29 @@ export default function CreateProposalModal({
                       resize: 'vertical',
                     }}
                   />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--ink-500)', marginBottom: 4 }}>
+                    报表文件（可选，.sql / .txt / 代码文件，≤50MB，助手分段通读全文）
+                  </div>
+                  <Upload
+                    maxCount={1}
+                    accept=".sql,.txt,.py,.java,.md"
+                    beforeUpload={f => {
+                      if (f.size > 50 * 1024 * 1024) {
+                        message.error('文件超过 50MB');
+                        return Upload.LIST_IGNORE;
+                      }
+                      setFile(f);
+                      return false;
+                    }}
+                    onRemove={() => setFile(null)}
+                    fileList={file ? [{ uid: '-1', name: file.name }] : []}
+                  >
+                    <Button size="small" icon={<UploadOutlined />}>
+                      选择文件
+                    </Button>
+                  </Upload>
                 </div>
                 <div>
                   <div style={{ fontSize: 12, color: 'var(--ink-500)', marginBottom: 4 }}>

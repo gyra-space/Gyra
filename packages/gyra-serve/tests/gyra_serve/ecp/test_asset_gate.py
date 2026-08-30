@@ -60,6 +60,7 @@ class TestEcpGateMessage:
         assert "execute_metric_query" in msg
         assert "execute_raw_sql" in msg
         assert "get_table_spec" in msg  # 只读 schema 不受限的说明
+        assert "search_tables" in msg  # 只读 schema 三件套文案保持一致
 
     def test_unmanaged_datasource_passes(self, monkeypatch):
         _patch_dao(monkeypatch, {"default": [_ref("1")]})
@@ -96,6 +97,7 @@ class TestBuildManagedAssetsText:
         assert "sqlite_test (id=1)" in text
         assert "execute_sql" in text  # 直连已禁用声明
         assert "get_table_spec" in text  # 只读 schema 开放声明
+        assert "search_tables" in text  # 只读 schema 三件套开放声明
         assert "execute_metric_query" in text
 
     def test_manifest_name_unresolvable(self, monkeypatch):

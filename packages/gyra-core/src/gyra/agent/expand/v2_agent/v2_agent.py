@@ -16,7 +16,7 @@ think/act 循环替换为 V2 run_loop（run_step 状态机 + V2AgentRuntime 门�
      ConversableAgent 子类），role="PIXIU" 即注册键；
   2. app.agent = "PIXIU" 时，_build_agent_by_gpts 的
      resolve_agent_name → get_by_name("PIXIU") → cls().bind(...).build() 命中本类；
-     历史 app.agent = "V2"/"V2Agent"/"v2"/"BIXIU" 经别名解析到 "PIXIU" 同样命中；
+     历史 app.agent = "V2"/"V2Agent"/"v2" 经别名解析到 "PIXIU" 同样命中；
   3. 渲染复用现有 BAIZE vis（listen_thinking_stream / gpts_memory.push_message），
      前端无需任何改动。
 """
@@ -31,34 +31,33 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from gyra._private.pydantic import Field, PrivateAttr
-from gyra.util.executor_utils import execute_no_wait
-
-from gyra.agent.core.agent import Agent
-from gyra.agent.core.types import AgentMessage
-from gyra.agent.core.role import ProfileConfig
-from gyra.agent.core.schema import Status
 from gyra.agent.core.action.base import ActionOutput, AskUserType
+from gyra.agent.core.agent import Agent
+from gyra.agent.core.file_system.file_tree import TreeNodeData
 from gyra.agent.core.memory.gpts.base import GptsMessage
 from gyra.agent.core.memory.gpts.file_base import WorkEntry, WorkLogStatus
 from gyra.agent.core.memory.gpts.gpts_memory import AgentTaskContent, AgentTaskType
-from gyra.agent.core.file_system.file_tree import TreeNodeData
-from gyra.agent.util.llm.llm_client import AgentLLMOut, AIWrapper
+from gyra.agent.core.role import ProfileConfig
+from gyra.agent.core.schema import Status
+from gyra.agent.core.types import AgentMessage
 from gyra.agent.core.v2 import (
-    V2AgentRuntime,
+    DoomLoopAdapter,
     PermissionGate,
     PermissionMode,
     SessionPermissionCache,
-    make_default_thinking_fn,
-    make_default_acting_fn,
-    ToolResolver,
-    ToolFailureTracker,
     ToolContextFactory,
-    DoomLoopAdapter,
+    ToolFailureTracker,
+    ToolResolver,
     TruncatorAdapter,
+    V2AgentRuntime,
+    make_default_acting_fn,
+    make_default_thinking_fn,
 )
-from gyra.agent.core.v2.step_event import StepEvent
 from gyra.agent.core.v2.event_stream import EventStream
+from gyra.agent.core.v2.step_event import StepEvent
 from gyra.agent.expand.react_master_agent import ReActMasterAgent
+from gyra.agent.util.llm.llm_client import AgentLLMOut, AIWrapper
+from gyra.util.executor_utils import execute_no_wait
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +99,16 @@ class V2Agent(ReActMasterAgent):
         default_factory=lambda: ProfileConfig(
             name="貔貅",
             role="PIXIU",
-            goal="我是貔貅（PIXIU），使用事件驱动运行时（run_loop 状态机）高效解决复杂任务。",
-            desc="貔貅（PIXIU）：标准主 Agent 模板（V2 引擎），复用现有资源/工具/渲染协议，内部由 V2 run_loop 驱动。",
-            # "V2"/"V2Agent"/"v2"/"BIXIU" 作为别名保留，兼容历史存量应用
-            aliases=["V2Agent", "V2", "v2", "BIXIU"],
+            goal=(
+                "我是貔貅（PIXIU），使用事件驱动运行时"
+                "（run_loop 状态机）高效解决复杂任务。"
+            ),
+            desc=(
+                "貔貅（PIXIU）：标准主 Agent 模板（V2 引擎），复用现有资源/工具/"
+                "渲染协议，内部由 V2 run_loop 驱动。"
+            ),
+            # "V2"/"V2Agent"/"v2" 作为别名保留（类名/引擎版本名的自然映射）
+            aliases=["V2Agent", "V2", "v2"],
             # 与 ReActMasterAgent 对齐：显式置 None，避免命中 ProfileConfig
             # DynConfig 默认值（ConfigInfo 对象），导致 prompt 组装时 .strip() 崩溃。
             system_prompt_template=None,
@@ -133,11 +138,12 @@ class V2Agent(ReActMasterAgent):
     _v2_pending_tool_calls: List[dict] = PrivateAttr(default_factory=list)
     # tool_call 事件清空最终答案累积前的旁白快照（供 WorkEntry.assistant_content）
     _v2_pending_narration: str = PrivateAttr(default="")
-    # 本轮是否因 ask_user 交互工具挂起（run_loop 收到 AWAITING_USER interaction_request
-    # 时置 True，act() 据此返回 ask_user=True 的 ActionOutput，让 V1 外层把会话置 WAITING）
+    # 本轮是否因 ask_user 交互工具挂起（run_loop 收到 AWAITING_USER
+    # interaction_request 时置 True，act() 据此返回 ask_user=True 的
+    # ActionOutput，让 V1 外层把会话置 WAITING）
     _v2_awaiting_user: bool = PrivateAttr(default=False)
 
-    # ---- 渲染桥接（harness 事件总线：VisBridge 订阅 llm_token/step_done → BAIZE vis）----
+    # ---- 渲染桥接（harness 事件总线：VisBridge 订阅 llm_token/step_done → BAIZE vis）
     _v2_reply_message_id: str = PrivateAttr(default="")
     _v2_start_time: Optional[datetime] = PrivateAttr(default=None)
     # vis 渲染桥（harness 事件流订阅者，引擎只产事件）
@@ -198,7 +204,7 @@ class V2Agent(ReActMasterAgent):
         """
         if self._v2_skill_registry is not None:
             return self._v2_skill_registry
-        from gyra.agent.core.v2.skills import SkillRegistry, LAYER_SCOPE
+        from gyra.agent.core.v2.skills import LAYER_SCOPE, SkillRegistry
 
         try:
             from gyra.agent.core.v2.skills import FilesystemSkillProvider
@@ -240,7 +246,7 @@ class V2Agent(ReActMasterAgent):
         """
         if self._v2_catalog_consumer is not None:
             return self._v2_catalog_consumer
-        from gyra.agent.core.v2.skills import SkillCatalogConsumer, LAYER_SCOPE
+        from gyra.agent.core.v2.skills import LAYER_SCOPE, SkillCatalogConsumer
         registry = self._ensure_v2_skill_registry()
         self._v2_catalog_consumer = SkillCatalogConsumer(
             registry=registry,
@@ -333,6 +339,17 @@ class V2Agent(ReActMasterAgent):
         return self._v2_harness.jobs
 
     @property
+    def v2_subagent_runtime(self) -> Any:
+        """V2 引擎的子 Agent 运行时（harness.subagents 对外视图）。
+
+        serve 层经 engine-ready hook 向其注入 ops_delegate（V2→V1 运维桥：
+        看板上板/台账镜像/终态回写）；未装配返回 None。
+        """
+        if self._v2_harness is None:
+            return None
+        return getattr(self._v2_harness, "subagents", None)
+
+    @property
     def _v2_conv_id(self) -> str:
         """V2 事件日志的会话级 conv_id（跨轮稳定）。
 
@@ -403,7 +420,9 @@ class V2Agent(ReActMasterAgent):
                 ):
                     context_engine.config.render_tool_calls = False
             except Exception:  # noqa: BLE001
-                logger.debug("[V2Agent] disable render_tool_calls failed", exc_info=True)
+                logger.debug(
+                    "[V2Agent] disable render_tool_calls failed", exc_info=True
+                )
 
             from gyra.agent.core.v2.llm_stream_adapter import make_gyra_llm_stream_fn
 
@@ -578,9 +597,9 @@ class V2Agent(ReActMasterAgent):
             # ``skill`` 入口，V1/V2 公用；V1 的无 registry 退化为磁盘/沙箱读取）
             try:
                 from gyra.agent.core.v2.skills import (
-                    SkillTool,
-                    SKILL_TOOL_NAME,
                     LAYER_SCOPE,
+                    SKILL_TOOL_NAME,
+                    SkillTool,
                 )
                 skill_registry = self._ensure_v2_skill_registry()
                 skill_tool = SkillTool(
@@ -598,7 +617,7 @@ class V2Agent(ReActMasterAgent):
             # ``db({action, ...})`` 取代 V1 get_table_spec/execute_sql/list_tables/
             # search_tables 四件套；V1 工具继续保留供 V1 链路使用）
             try:
-                from gyra.agent.core.v2 import DbTool, DB_TOOL_NAME
+                from gyra.agent.core.v2 import DB_TOOL_NAME, DbTool
                 tool_resolver.register_tool(DB_TOOL_NAME, DbTool())
             except Exception:  # noqa: BLE001
                 logger.debug(
@@ -609,7 +628,11 @@ class V2Agent(ReActMasterAgent):
             # （对齐 V1 tool_action 的 ``arguments["agent"] = agent``；否则 todowrite/
             # todoread 等统一框架工具拿不到 agent，报 "Todo 存储不可用"）。
             agent_ctx = self.not_null_agent_context
-            user_req = (agent_ctx.extra or {}).get("user_request") if agent_ctx.extra else None
+            user_req = (
+                (agent_ctx.extra or {}).get("user_request")
+                if agent_ctx.extra
+                else None
+            )
             self._v2_tool_context_factory = ToolContextFactory(
                 agent_id=agent_ctx.agent_app_code,
                 conv_id=self._v2_conv_id,
@@ -628,9 +651,10 @@ class V2Agent(ReActMasterAgent):
 
             # 2.5 SubAgent seam（对齐 DSH ctx.subagents）：子 agent 复用主
             #     thinking/acting fn（子 agent 由 input_ 字段驱动会话绑定），
-            #     装配 spawn_subagent 工具并注册进 tool_resolver + function_calling_context。
+            #     装配 spawn_subagent 工具并注册进 tool_resolver +
+            #     function_calling_context。
             try:
-                from gyra.agent.core.v2 import SubAgentRuntime, SpawnSubagentTool
+                from gyra.agent.core.v2 import SpawnSubagentTool, SubAgentRuntime
 
                 subagent_runtime = SubAgentRuntime(
                     state_store=self._ensure_v2_state_store(),
@@ -650,7 +674,8 @@ class V2Agent(ReActMasterAgent):
                 logger.warning(f"[V2Agent] subagent runtime not wired: {e}")
                 subagent_runtime = None
 
-            # 3. PermissionGate：复用现有规则集（fail-closed 单调守卫可经 register_guard 扩展）。
+            # 3. PermissionGate：复用现有规则集（fail-closed 单调守卫可经
+            #    register_guard 扩展）。
             #    interaction_adapter 从 ReActMaster interaction extension 获取
             #    （V1 ask_user/授权共用同一 adapter，ASK 路径才可真正询问用户）。
             _interaction_adapter = None
@@ -674,7 +699,8 @@ class V2Agent(ReActMasterAgent):
                 tool=None,
             )
 
-            # 3.5 HookManager + memory tier0-3（turn_complete / conversation_complete）：
+            # 3.5 HookManager + memory tier0-3（turn_complete /
+            #     conversation_complete）：
             #     memory_bundle 已由 ReActMasterAgent 装配时初始化。
             hook_manager = None
             try:
@@ -702,11 +728,11 @@ class V2Agent(ReActMasterAgent):
             #    storage=真实持久化 StateStore；events=共享事件流（插件订阅挂载点）；
             #    tools=统一工具入口；approval=审批门（含 serial 决策检查点）；
             #    subagents=子 Agent seam（SubAgentRuntime）；jobs=异步任务注册表；
-            #    hooks=HookManager（turn_complete/conversation_complete + memory tier0-3）；
+            #    hooks=HookManager（turn_complete/conversation_complete
+            #    + memory tier0-3）；
             #    skills=SkillSeam（对齐 DSH ctx.skills：catalog digest + 工具）。
             from gyra.agent.core.v2.harness import HarnessContext, VisBridge
             from gyra.agent.core.v2.skills import (
-                SkillRegistry,
                 LAYER_SCOPE,
             )
 
@@ -925,6 +951,8 @@ class V2Agent(ReActMasterAgent):
         vis 渲染（llm_token 增量 / step_done 终态重置）已迁移到 VisBridge——
         以 harness 事件流订阅者身份触发，V2Agent 不再手动调用渲染方法。
         """
+        from gyra.agent.core.v2.step_state import StepState
+
         if step_event.event_type == "llm_token":
             token = (step_event.output or {}).get("token", "")
             if token:
@@ -938,7 +966,8 @@ class V2Agent(ReActMasterAgent):
                 if len(self._v2_final_answer + self._v2_thinking_answer) < 200 or True:
                     logger.info(
                         f"[V2Agent][D][accumulate] llm_token channel={channel!r} "
-                        f"token_len={len(token)}, final_len={len(self._v2_final_answer)}, "
+                        f"token_len={len(token)}, "
+                        f"final_len={len(self._v2_final_answer)}, "
                         f"thinking_len={len(self._v2_thinking_answer)}, "
                         f"final_head={self._v2_final_answer[:40]!r}"
                     )
@@ -950,7 +979,8 @@ class V2Agent(ReActMasterAgent):
             # 旁白快照随 pending 工具调用保存，供 WorkEntry.assistant_content 记录。
             logger.info(
                 f"[V2Agent][D][accumulate] tool_call CLEARS final_answer: "
-                f"prev_final_len={len(self._v2_final_answer)}, tool={step_event.input.get('tool') if step_event.input else None}"
+                f"prev_final_len={len(self._v2_final_answer)}, "
+                f"tool={step_event.input.get('tool') if step_event.input else None}"
             )
             self._v2_pending_narration = self._v2_final_answer
             self._v2_final_answer = ""
@@ -1485,7 +1515,11 @@ class V2Agent(ReActMasterAgent):
             # V1 外层（UserProxyAgent.receive）据此把会话状态置 WAITING，
             # 前端提交回答时经 interaction_checkpoint 恢复原会话。
             ask_user=self._v2_awaiting_user,
-            ask_type=AskUserType.CONCLUSION_INCOMPLETE.value if self._v2_awaiting_user else None,
+            ask_type=(
+                AskUserType.CONCLUSION_INCOMPLETE.value
+                if self._v2_awaiting_user
+                else None
+            ),
             # 稳定 action_id + 显式终态 + 收尾时间戳：
             # 避免随机 uuid 被 vis 转换器当成新工具步骤重复渲染；
             # state/start_time 缺失时部分转换器会误判为 running 或参与时序排序。
@@ -1565,11 +1599,18 @@ class V2Agent(ReActMasterAgent):
             mtype = ctype
             if ctype == "file" and name:
                 low = name.lower()
-                if any(ext in low for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
+                if any(
+                    ext in low
+                    for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+                ):
                     mtype = "image"
-                elif any(ext in low for ext in (".mp3", ".wav", ".m4a", ".aac", ".flac")):
+                elif any(
+                    ext in low for ext in (".mp3", ".wav", ".m4a", ".aac", ".flac")
+                ):
                     mtype = "audio"
-                elif any(ext in low for ext in (".mp4", ".mov", ".webm", ".avi", ".mkv")):
+                elif any(
+                    ext in low for ext in (".mp4", ".mov", ".webm", ".avi", ".mkv")
+                ):
                     mtype = "video"
             payload_map = {
                 "image": ("image_url", {"image_url": {"url": data}}),

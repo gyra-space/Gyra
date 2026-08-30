@@ -30,6 +30,77 @@ def _is_uuid_like(filename: str) -> bool:
     return bool(uuid_pattern.match(name_without_ext))
 
 
+def extract_attachments_from_content(content: Any) -> List[Dict[str, Any]]:
+    """从消息 content 提取用户上传附件(历史回显用)。
+
+    支持三种形态:
+    - list[MediaContent] / list[dict]:多模态消息(file_url/image_url/...)
+    - str(JSON 数组):路径 B 入库的序列化形态
+    - str(纯文本):路径 A 的 📎 **User uploaded files** 清单
+
+    Returns:
+        List[{name, url, mime_type}],无附件返回空列表。
+    """
+    import json
+
+    attachments: List[Dict[str, Any]] = []
+    raw_items: List[Any] = []
+
+    # 还原为 list
+    if isinstance(content, list):
+        raw_items = content
+    elif isinstance(content, str):
+        stripped = content.strip()
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    raw_items = parsed
+            except Exception:  # noqa: BLE001
+                raw_items = []
+
+    _MODAL_KEY = {
+        "file_url": "file_url", "image_url": "image_url",
+        "audio_url": "audio_url", "video_url": "video_url",
+    }
+    _MODAL_TYPE = {"file": "file", "image": "image", "audio": "audio", "video": "video"}
+
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "")
+        payload = None
+        modal = None
+        if item_type in _MODAL_KEY and isinstance(item.get(_MODAL_KEY[item_type]), dict):
+            payload = item[_MODAL_KEY[item_type]]
+            modal = _MODAL_KEY[item_type].rsplit("_", 1)[0]
+        elif item_type in _MODAL_TYPE and isinstance(item.get("object"), dict):
+            obj = item["object"]
+            payload = {"url": obj.get("data"), "file_name": obj.get("file_name")}
+            modal = _MODAL_TYPE[item_type]
+        if not payload:
+            continue
+        url = payload.get("url") or payload.get("oss_url")
+        if not url:
+            continue
+        attachments.append({
+            "name": payload.get("file_name") or payload.get("name") or "附件",
+            "url": url,
+            "mime_type": modal or "file",
+        })
+
+    # 路径 A 兜底:纯文本 📎 **User uploaded files** 清单
+    if not attachments and isinstance(content, str) and "User uploaded files" in content:
+        for line in content.splitlines():
+            m = re.search(r"`(/[^`]+)`\s*\(URL:\s*([^)]+)\)", line)
+            if m:
+                sandbox_path, url = m.group(1), m.group(2).strip()
+                name = sandbox_path.rsplit("/", 1)[-1] if sandbox_path else "附件"
+                attachments.append({"name": name, "url": url or sandbox_path, "mime_type": "file"})
+
+    return attachments
+
+
 def _get_original_file_name(
     file_path: str, file_name: str, file_storage_client=None
 ) -> str:
@@ -212,6 +283,14 @@ async def dispatch_file_to_sandbox(
                             logger.info(
                                 f"Converted gyra-fs URI to public URL: {actual_file_path}"
                             )
+                            # 若返回相对路径（如 /api/v2/serve/file/...），补全为完整 URL
+                            if actual_file_path and actual_file_path.startswith("/"):
+                                from gyra_app.config import CFG
+                                web_url = getattr(CFG, "WEB_URL", None) or "http://127.0.0.1:8888"
+                                actual_file_path = web_url.rstrip("/") + actual_file_path
+                                logger.info(
+                                    f"Completed relative URL to absolute: {actual_file_path}"
+                                )
                         except Exception as e:
                             logger.warning(
                                 f"Failed to get public URL for gyra-fs URI: {e}"
@@ -392,7 +471,7 @@ async def process_uploaded_files(
     sandbox_files: List[DispatchedFileInfo] = []
 
     for file_res in file_resources:
-        # Handle both flat format and OpenAI file_url format
+        # Handle flat format and OpenAI file_url/image_url formats
         if file_res.get("type") == "file_url" and "file_url" in file_res:
             # OpenAI compatible format: {"type": "file_url", "file_url": {"url": "...", "file_name": "..."}}
             file_url_data = file_res["file_url"]
@@ -403,6 +482,19 @@ async def process_uploaded_files(
             file_id = file_url_data.get("file_id", "")
             logger.info(
                 f"[FileDispatch] Processing OpenAI file_url format: name={file_name}, path={file_path}"
+            )
+        elif file_res.get("type") == "image_url" and "image_url" in file_res:
+            # OpenAI compatible image format: {"type": "image_url", "image_url": {"url": "...", "file_name": "..."}}
+            # 场景空间上传的图片资源与 file_url 同数组混发;缺失本分支时图片项
+            # 会退化成 flat 格式的 unknown 文件名而被丢弃。
+            file_url_data = file_res["image_url"]
+            file_name = file_url_data.get("file_name", "unknown")
+            file_path = file_url_data.get("url", file_url_data.get("preview_url", ""))
+            file_size = file_url_data.get("file_size", 0)
+            bucket = file_url_data.get("bucket", "")
+            file_id = file_url_data.get("file_id", "")
+            logger.info(
+                f"[FileDispatch] Processing OpenAI image_url format: name={file_name}, path={file_path}"
             )
         else:
             # Flat format: {"file_path": "...", "file_name": "...", "file_size": ...}

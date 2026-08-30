@@ -161,11 +161,21 @@ class LocalShellClient(ShellClient):
             )
 
         try:
-            from gyra.sandbox.sandbox_utils import validate_shell_command
-
-            validate_shell_command(
-                command, cwd, allowed_roots=self._allowed_roots
+            from gyra.sandbox.sandbox_utils import (
+                validate_shell_command,
+                is_skill_script_command,
+                get_skill_command_extra_roots,
             )
+
+            # skill 目录内的脚本默认受信,路径栅栏额外放行临时目录:
+            # 脚本中间产物常写 /tmp,不放宽会被误判为越界。
+            allowed_roots = list(self._allowed_roots)
+            if self._skill_dir and is_skill_script_command(
+                command, self._skill_dir, cwd
+            ):
+                allowed_roots.extend(get_skill_command_extra_roots())
+
+            validate_shell_command(command, cwd, allowed_roots=allowed_roots)
         except (ValueError, PermissionError) as exc:
             logger.warning(f"LocalShellClient rejected command: {exc}")
             return ShellCommandResult(

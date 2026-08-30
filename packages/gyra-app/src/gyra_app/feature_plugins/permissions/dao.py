@@ -630,40 +630,64 @@ class PermissionDao:
 
             # Apply the requested permission
             if req.request_type == "role_assign" and req.role_id:
-                # Assign role to user
-                try:
-                    ur = UserRoleEntity(user_id=req.user_id, role_id=req.role_id)
-                    s.add(ur)
-                except Exception as e:
-                    logger.warning(f"Failed to assign role {req.role_id} to user {req.user_id}: {e}")
-                    # Check if already assigned
-                    existing = (
-                        s.query(UserRoleEntity)
-                        .filter(
-                            UserRoleEntity.user_id == req.user_id,
-                            UserRoleEntity.role_id == req.role_id,
-                        )
-                        .first()
+                # 幂等绑定:先查再插(s.add 不触发 SQL,try/except 包不住
+                # flush 时的唯一键错误——原实现的去重兜底是死代码)
+                existing = (
+                    s.query(UserRoleEntity)
+                    .filter(
+                        UserRoleEntity.user_id == req.user_id,
+                        UserRoleEntity.role_id == req.role_id,
+                        UserRoleEntity.scope_id.is_(None),
                     )
-                    if not existing:
-                        raise
+                    .first()
+                )
+                if existing is None:
+                    s.add(UserRoleEntity(user_id=req.user_id, role_id=req.role_id))
 
             elif req.request_type == "permission_grant":
-                # This would typically be handled by adding to a role
-                # For now, we just log it
-                logger.info(
-                    f"Permission grant approved: user={req.user_id}, "
-                    f"resource_type={req.resource_type}, resource_id={req.resource_id}, "
-                    f"action={req.action}"
+                # 落 resource_grant(实例级授权,协议判定链已认可)。
+                # permission_key 必须已注册且 grantable;必须指定具体
+                # resource_id(不接受 "*" 变相全量授权)。
+                from gyra_serve.permissions import PermissionRegistry
+
+                if not req.resource_id or req.resource_id == "*":
+                    raise ValueError(
+                        "permission_grant 审批要求具体 resource_id(不接受通配 *)"
+                    )
+                permission_key = f"{req.resource_type}.{req.action}"
+                perm = PermissionRegistry.get(permission_key)
+                if perm is None:
+                    raise ValueError(f"未知权限 key: {permission_key}")
+                if not perm.grantable:
+                    raise ValueError(f"权限 {permission_key} 不支持实例级授权")
+                existing_grant = (
+                    s.query(ResourceGrantEntity)
+                    .filter(
+                        ResourceGrantEntity.user_id == req.user_id,
+                        ResourceGrantEntity.permission_key == permission_key,
+                        ResourceGrantEntity.resource_type == req.resource_type,
+                        ResourceGrantEntity.resource_id == req.resource_id,
+                    )
+                    .first()
                 )
+                if existing_grant is None:
+                    s.add(
+                        ResourceGrantEntity(
+                            user_id=req.user_id,
+                            permission_key=permission_key,
+                            resource_type=req.resource_type,
+                            resource_id=req.resource_id,
+                            granted_by=reviewer_id,
+                        )
+                    )
 
             elif req.request_type == "account_activation":
                 # Activate user account
-                from gyra_app.auth.user_service import UserDao
-                user_dao = UserDao()
+                from gyra_app.auth.user_service import UserEntity
+
                 user = (
-                    s.query(UserDao._entity_class)
-                    .filter(UserDao._entity_class.id == req.user_id)
+                    s.query(UserEntity)
+                    .filter(UserEntity.id == req.user_id)
                     .first()
                 )
                 if user:

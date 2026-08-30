@@ -203,6 +203,13 @@ _MATERIALIZE_DISPATCH = {
     "ecp": "_materialize_ecp",
 }
 
+# 仅前端消费、不需要物化给 Agent 的资源类型。
+# `command` 是场景空间 `/` 菜单的会话命令(压缩上下文/清理会话/规划模式等),
+# 复用 workspace_resource 表存储以省掉一张表与配套 CRUD,但它是 UI 行为而非
+# Agent 资源。这里显式白名单化,避免落到下面的「unsupported type」warning 里
+# 污染日志(每轮对话都会物化一次)。
+_NON_AGENT_RESOURCE_TYPES = {"command"}
+
 
 def _declaration_item_to_ref_config(
     item: Any, item_type: Optional[str] = None
@@ -471,6 +478,8 @@ def materialize_resources(system_app, workspace_id: int) -> MaterializedResource
             llm_records.append(r)
             continue
         rtype = r.type
+        if rtype in _NON_AGENT_RESOURCE_TYPES:
+            continue
         handler_name = _MATERIALIZE_DISPATCH.get(rtype)
         if handler_name is None:
             logger.warning(

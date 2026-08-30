@@ -6,7 +6,7 @@ import os
 import posixpath
 import re
 import shlex
-from typing import Any, List, Optional, Tuple, TYPE_CHECKING, Set
+from typing import Any, List, Optional, Sequence, Tuple, TYPE_CHECKING, Set, Union
 
 
 def resolve_session_work_dir(client: Any, default: str = "/workspace") -> str:
@@ -32,8 +32,17 @@ def resolve_session_work_dir(client: Any, default: str = "/workspace") -> str:
 # ---------------------------------------------------------------------------
 
 # 高危命令模式：local 沙箱下需用户交互授权（见 is_high_risk_command）
-_HIGH_RISK_BINARY = {"dd", "shutdown", "reboot", "halt", "poweroff"}
-_BLOCK_DEVICE_WRITE_RE = re.compile(r"of=/dev/|>\s*/dev/")
+# 注意 dd 不在此列：dd 写普通文件合法，写块设备的场景由 _BLOCK_DEVICE_WRITE_RE 兜底。
+_HIGH_RISK_BINARY = {"shutdown", "reboot", "halt", "poweroff"}
+# 只拦截写入真实块设备（磁盘）的命令。伪设备重定向（2>/dev/null、>/dev/stdout、
+# >/dev/tty 等）无害且高频，绝不在此列——历史上宽泛的 r"of=/dev/|>\s*/dev/"
+# 曾把 "grep ... 2>/dev/null | sort | head" 误判为高危导致整条命令被拦。
+_BLOCK_DEVICE_PATH = (
+    r"/dev/(?:sd[a-z]+|hd[a-z]+|vd[a-z]+|xvd[a-z]+"
+    r"|nvme\d+(?:n\d+)?(?:p\d+)?|mmcblk\d+(?:p\d+)?"
+    r"|loop\d+|ram\d+|dm-\d+|fd\d+|mapper/\S+|disk/\S+)"
+)
+_BLOCK_DEVICE_WRITE_RE = re.compile(r"(?:\bof=|>\s*)" + _BLOCK_DEVICE_PATH)
 _FORK_BOMB_RE = re.compile(r":\s*\(\s*\)\s*\{.*:.*\|.*:.*\}")
 
 # Characters that essentially never appear in a clean file-path argument but do
@@ -219,8 +228,10 @@ def _parse_heredoc_op(line: str, pos: int) -> Optional[Tuple[str, bool, int]]:
 def is_high_risk_command(command: str) -> bool:
     """Return True if *command* is high-risk and needs user authorization (local sandbox).
 
-    Covers: recursive deletion (rm -r/-R/--recursive), disk/block-device ops
-    (dd, mkfs*, of=/dev/, > /dev/), system power commands, and fork bombs.
+    Covers: recursive deletion (rm -r/-R/--recursive), disk ops (mkfs*,
+    writes to real block devices such as dd of=/dev/sda or > /dev/nvme0n1 --
+    /dev/null、/dev/stdout 等伪设备重定向不算), system power commands, and
+    fork bombs.
     """
     try:
         tokens = _tokenize_command(command)
@@ -243,6 +254,120 @@ def is_high_risk_command(command: str) -> bool:
     if _BLOCK_DEVICE_WRITE_RE.search(command) or _FORK_BOMB_RE.search(command):
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Skill-script trust: skill 目录不在场景空间(work_dir)内,但其中的脚本默认
+# 受信——高危授权门对整条命令做正则,skill 脚本参数里出现 "dd"、"of=/dev/.."
+# 之类字样纯属误伤;同时脚本中间产物常写 /tmp,需要栅栏放行。
+# ---------------------------------------------------------------------------
+
+#: 常见脚本解释器:其后第一个含 "/" 的非 flag 参数视为被执行的脚本
+_INTERPRETER_BINARIES = frozenset(
+    {"bash", "sh", "zsh", "dash", "python", "python3", "node", "perl", "ruby"}
+)
+#: 一旦某个子命令以这些 binary 为入口,整条命令绝不按 skill 脚本放行——
+#: 防止 "rm -rf x && python3 /skills/run.py" 之类的组合命令借 skill 名义
+#: 绕过用户授权。dd 虽已移出无条件高危名单,仍要挡在这里。
+_GATED_BINARIES = frozenset({"rm", "dd", "shutdown", "reboot", "halt", "poweroff"})
+#: 执行 skill 脚本时路径栅栏额外放行的临时目录
+_SKILL_EXTRA_ROOTS = ("/tmp",)
+
+
+def get_skill_command_extra_roots() -> Tuple[str, ...]:
+    """skill 脚本命令在路径栅栏下额外放行的目录。"""
+    return _SKILL_EXTRA_ROOTS
+
+
+def is_skill_script_command(
+    command: str,
+    skill_dirs: Optional[Union[str, Sequence[str]]],
+    work_dir: Optional[str] = None,
+) -> bool:
+    """判断命令是否在执行 skill 目录内的脚本（受信入口，默认安全）。
+
+    对命令按 ``&& / || / | / ;`` 拆出全部子命令，逐一判定：
+
+    - 子命令入口是 skill 目录内**真实存在**的脚本（可执行文件本身，或
+      解释器后的首个路径参数），视为受信；realpath + isfile 双重确认，
+      参数字符串里的伪路径不会命中。
+    - 入口为解释器但带 ``-c`` / ``-m`` 时内联代码/模块不是脚本文件，
+      不提取（``python3 -c "..." /skills/x/a.py`` 里 a.py 只是 argv）。
+    - 任何子命令入口命中 :data:`_GATED_BINARIES`（或 ``mkfs*``）→ 直接
+      False，绝不放行。
+    - 至少存在一个 skill 脚本入口才返回 True；普通管道段（cat/grep 等
+      非高危入口）不影响判定。
+
+    Args:
+        command: 原始 shell 命令。
+        skill_dirs: 受信的 skill 目录（单个或多个）。
+        work_dir: 命令执行目录，用于解析相对路径脚本。
+    """
+    if not skill_dirs:
+        return False
+    if isinstance(skill_dirs, str):
+        skill_dirs = [skill_dirs]
+    skill_roots = [os.path.realpath(s) for s in skill_dirs if s]
+    if not skill_roots:
+        return False
+
+    try:
+        tokens = _tokenize_command(command)
+    except ValueError:
+        return False
+
+    subcommands: List[List[str]] = []
+    current: List[str] = []
+    for tok in tokens:
+        if tok in ("&&", "||", "|", ";"):
+            subcommands.append(current)
+            current = []
+        else:
+            current.append(tok)
+    subcommands.append(current)
+
+    base = work_dir or os.getcwd()
+
+    def _resolve_script(token: str) -> Optional[str]:
+        candidate = token if token.startswith("/") else posixpath.join(base, token)
+        real = os.path.realpath(candidate)
+        if not os.path.isfile(real):
+            return None
+        for root in skill_roots:
+            if real == root or real.startswith(os.path.join(root, "")):
+                return real
+        return None
+
+    has_skill_entry = False
+    for sub in subcommands:
+        if not sub:
+            continue
+        binary = sub[0]
+        script: Optional[str] = None
+        candidates: List[str] = []
+        if "/" in binary:
+            candidates.append(binary)
+        # 解释器(含绝对路径解释器)才从参数中提取脚本文件
+        if posixpath.basename(binary) in _INTERPRETER_BINARIES or "/" in binary:
+            if "-c" in sub or "-m" in sub:
+                candidates = []
+            else:
+                for tok in sub[1:]:
+                    if tok.startswith("-"):
+                        continue
+                    if "/" in tok:
+                        candidates.append(tok)
+                        break
+        for cand in candidates:
+            script = _resolve_script(cand)
+            if script:
+                break
+        if script:
+            has_skill_entry = True
+            continue
+        if binary in _GATED_BINARIES or binary.startswith("mkfs"):
+            return False
+    return has_skill_entry
 
 
 def validate_shell_command(

@@ -9,6 +9,7 @@ import { apiInterceptors } from '@/client/api';
 import {
   confirmEcpObject,
   getEcpObjectVersions,
+  getEcpProposalView,
   rejectEcpObject,
   type EcpSemanticObject,
 } from '@/client/api/ecp';
@@ -93,6 +94,18 @@ export default function MobileProposalDetail({
     ? (versions || []).find((v) => v.version === parsed.version) ?? null
     : null;
 
+  // 业务视图(一句话口径/来源/血缘/原始 SQL);失败降级无视图
+  const { data: view } = useRequest(
+    async () => {
+      if (!obj) return null;
+      const [err, res] = await apiInterceptors(
+        getEcpProposalView(obj.id, obj.version, obj.workspace_id),
+      );
+      return err ? null : (res ?? null);
+    },
+    { refreshDeps: [obj?.id, obj?.version], ready: !!obj },
+  );
+
   // 提案已离开 proposed(已确认/否决/废弃) -> 待办陈旧,让收件箱消除。
   useEffect(() => {
     if (obj && obj.status !== 'proposed') {
@@ -161,8 +174,42 @@ export default function MobileProposalDetail({
           <Kv k="状态" v={<span className="ms-prop__status">{STATUS_LABEL[obj.status] || obj.status}</span>} />
           <Kv k="名称" v={obj.name ?? '-'} />
           <Kv k="别名" v={(obj.payload?.aliases || []).join(' / ') || '-'} />
-          <Kv k="说明" v={obj.payload?.description || obj.payload?.summary || '-'} />
-          <Kv k="来源" v={obj.source ?? '-'} />
+          <Kv k="说明" v={view?.summary || obj.payload?.description || obj.payload?.summary || '-'} />
+          <Kv k="来源" v={view?.origin?.label ?? obj.source ?? '-'} />
+          {!!view?.lineage && (
+            <Kv
+              k="血缘"
+              v={
+                [
+                  view.lineage.datasource_name ??
+                    (view.lineage.datasource_id != null
+                      ? `数据源#${view.lineage.datasource_id}`
+                      : null),
+                  ...(view.lineage.tables || []),
+                ]
+                  .filter(Boolean)
+                  .join(' · ') || '-'
+              }
+            />
+          )}
+
+          {!!view?.origin?.origin_sql?.length && (
+            <div className="ms-prop__section">
+              <div className="ms-prop__section-title">原始 SQL（{view.origin.label}）</div>
+              {view.origin.origin_sql.map((sql, i) => (
+                <pre key={i} className="ms-prop__payload">
+                  {sql}
+                </pre>
+              ))}
+            </div>
+          )}
+
+          {!!view?.sql_preview?.sql && (
+            <div className="ms-prop__section">
+              <div className="ms-prop__section-title">SQL 生成效果（静态预览）</div>
+              <pre className="ms-prop__payload">{view.sql_preview.sql}</pre>
+            </div>
+          )}
 
           {!!obj.evidence?.length && (
             <div className="ms-prop__section">
@@ -174,11 +221,6 @@ export default function MobileProposalDetail({
               ))}
             </div>
           )}
-
-          <div className="ms-prop__section">
-            <div className="ms-prop__section-title">Payload</div>
-            <pre className="ms-prop__payload">{JSON.stringify(obj.payload, null, 2)}</pre>
-          </div>
 
           <div className="ms-prop__actions">
             <button

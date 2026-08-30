@@ -32,7 +32,9 @@ def _ensure_builtins_registered():
 def test_registry_has_builtins():
     reg = get_extractor_registry()
     names = {e.name for e in reg.list_all()}
-    assert {"text", "pdf", "docx", "pptx", "image", "audio", "video"}.issubset(names)
+    assert {
+        "text", "pdf", "docx", "pptx", "excel", "image", "audio", "video",
+    }.issubset(names)
 
 
 def test_registry_get_by_mime():
@@ -43,6 +45,11 @@ def test_registry_get_by_mime():
     assert reg.get("application/pdf").name == "pdf"
     assert reg.get("image/png").name == "image"
     assert reg.get("audio/mpeg").name == "audio"
+    assert reg.get("application/vnd.ms-excel").name == "excel"
+    xlsx_mime = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert reg.get(xlsx_mime).name == "excel"
     assert reg.get("application/octet-stream") is None
 
 
@@ -446,3 +453,111 @@ async def test_pptx_extractor_persists_and_captions_images(tmp_path: Path):
     assert "图片说明：产品架构图" in spec.content
     assert len(stored) == 1
     assert next(iter(stored.values())) == png
+
+
+# ---------------------------------------------------------------------------
+# ExcelExtractor: xlsx via openpyxl + legacy xls routing
+# ---------------------------------------------------------------------------
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@pytest.mark.asyncio
+async def test_excel_extractor_xlsx_renders_markdown(tmp_path: Path):
+    pytest.importorskip("openpyxl")
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "负面清单"
+    ws.append(["年份", "问题数|多", "来源"])
+    ws.append([2023, 12, "省级检查"])
+    ws.append([2024, 5, None])
+    ws.append([None, None, None])
+    f = tmp_path / "清单.xlsx"
+    wb.save(str(f))
+
+    ext = get_extractor_registry().get(XLSX_MIME)
+    assert ext is not None and ext.name == "excel"
+    specs = await ext.extract(f, XLSX_MIME, model=None, model_caller=None)
+
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec.extract_mode == ExtractMode.UPLOAD
+    assert spec.source_file == "清单.xlsx"
+    assert spec.meta["sheets"] == 1
+    assert spec.meta["rows"] == 3
+    content = spec.content
+    assert "## Sheet: 负面清单 (3 rows)" in content
+    assert "| 年份 | 问题数\\|多 | 来源 |" in content
+    assert "| 2023 | 12 | 省级检查 |" in content
+    assert "| 2024 | 5 |  |" in content
+
+
+@pytest.mark.asyncio
+async def test_excel_extractor_xls_routes_to_xlrd_reader(tmp_path: Path, monkeypatch):
+    """Legacy .xls must route to the xlrd reader (mocked — xlrd cannot write)."""
+    from gyra_ext.knowledge.extractors.builtin import ExcelExtractor
+
+    ext = get_extractor_registry().get("application/vnd.ms-excel")
+    assert ext is not None and ext.name == "excel"
+
+    f = tmp_path / "历年问题.xls"
+    f.write_bytes(b"\xd0\xcf\x11\xe0fake-ole-bytes")
+
+    def fake_read(self, path):
+        return [("Sheet1", [["年份", "金额"], [2023, 1.5], [2024, 2.0]])]
+
+    monkeypatch.setattr(ExcelExtractor, "_read_xls", fake_read)
+    specs = await ext.extract(
+        f, "application/vnd.ms-excel", model=None, model_caller=None
+    )
+
+    assert len(specs) == 1
+    content = specs[0].content
+    assert specs[0].meta["sheets"] == 1
+    assert specs[0].meta["rows"] == 3
+    assert "## Sheet: Sheet1 (3 rows)" in content
+    assert "| 2023 | 1.5 |" in content
+    assert "| 2024 | 2 |" in content
+
+
+FIXTURE_XLS = Path(__file__).parent / "fixtures" / "sample.xls"
+
+
+@pytest.mark.asyncio
+async def test_excel_extractor_xls_real_file():
+    """Regression: a real BIFF .xls must parse via xlrd's Cell attribute API."""
+    pytest.importorskip("xlrd")
+    assert FIXTURE_XLS.exists()
+    ext = get_extractor_registry().get("application/vnd.ms-excel")
+    specs = await ext.extract(
+        FIXTURE_XLS, "application/vnd.ms-excel", model=None, model_caller=None
+    )
+
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec.meta["sheets"] == 2
+    content = spec.content
+    assert "## Sheet: 清单 (3 rows)" in content
+    assert "| 2023 | 1.5 | 2023-06-15 00:00:00 |" in content
+    assert "| 2024 | 2 | 2024-03-08 00:00:00 |" in content
+    assert "## Sheet: 附表 (1 rows)" in content
+    assert "| 备注 | 1 |" in content
+
+
+@pytest.mark.asyncio
+async def test_excel_extractor_missing_dep_raises_clear_error(
+    tmp_path: Path, monkeypatch
+):
+    """If openpyxl isn't installed, xlsx extraction raises a clear message."""
+    ext = get_extractor_registry().get(XLSX_MIME)
+    f = tmp_path / "doc.xlsx"
+    f.write_bytes(b"PK fake zip")
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "openpyxl", None)
+
+    with pytest.raises(RuntimeError, match="openpyxl"):
+        await ext.extract(f, XLSX_MIME, model=None, model_caller=None)

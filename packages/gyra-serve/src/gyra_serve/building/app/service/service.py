@@ -1755,39 +1755,73 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
         return request
 
     def _sync_define_prompt(
-        self, app_code: str, app_name: str, prompt_template: Optional[str]
+        self,
+        app_code: str,
+        app_name: str,
+        prompt_template: Optional[str],
+        resource_tool: Optional[list] = None,
     ) -> None:
-        """内置应用已存在时,把 JSON 中的 system_prompt_template 同步进 DB。
+        """内置应用已存在时,把 JSON 中的 system_prompt_template / resource_tool 同步进 DB。
 
         历史行为是已存在即整体跳过,导致仓库里 prompt 模板的改进永远进不了 DB
-        (旧 prompt 一直生效)。这里只同步 prompt 模板一个字段,其余配置不动;
-        内置应用的 prompt 以代码仓库为准。
+        (旧 prompt 一直生效)。这里只同步 prompt 模板与工具绑定(resource_tool)两个字段,
+        其余配置不动;内置应用以代码仓库为准。
         """
-        if not prompt_template:
+        import json as _json
+
+        if not prompt_template and not resource_tool:
             return
         from gyra_serve.building.config.models.models import (
             ServeEntity as AppConfigEntity,
         )
 
         try:
+            serialized_tool = (
+                _json.dumps(resource_tool, ensure_ascii=False)
+                if resource_tool
+                else None
+            )
             with self.dao.session() as session:
                 entries = (
                     session.query(AppConfigEntity)
                     .filter(AppConfigEntity.app_code == app_code)
                     .all()
                 )
-                changed = 0
+                prompt_changed = 0
+                tool_changed = 0
                 for entry in entries:
-                    if entry.system_prompt_template != prompt_template:
+                    if (
+                        prompt_template
+                        and entry.system_prompt_template != prompt_template
+                    ):
                         entry.system_prompt_template = prompt_template
-                        changed += 1
-                if changed:
+                        prompt_changed += 1
+                    if (
+                        serialized_tool
+                        and entry.resource_tool != serialized_tool
+                    ):
+                        entry.resource_tool = serialized_tool
+                        tool_changed += 1
+                if prompt_changed or tool_changed:
                     logger.info(
-                        f"应用 [{app_name}:{app_code}] system_prompt_template "
-                        f"已同步({changed} 条配置更新)"
+                        f"应用 [{app_name}:{app_code}] 配置已同步"
+                        f"(system_prompt_template {prompt_changed} 条, "
+                        f"resource_tool {tool_changed} 条)"
                     )
+                # 工具绑定变更后清掉 tool_manager 缓存,否则运行时 get_runtime_tools
+                # 仍命中旧缓存,新绑定的 rbac_* 工具不会注入。
+                if tool_changed:
+                    try:
+                        from gyra.agent.tools.tool_manager import tool_manager
+
+                        tool_manager.clear_cache(app_code)
+                        logger.info(f"应用 [{app_code}] tool_manager 缓存已清除")
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            f"清除应用 [{app_code}] tool_manager 缓存失败: {e}"
+                        )
         except Exception as e:
-            logger.warning(f"同步应用 [{app_code}] prompt 模板失败: {e}")
+            logger.warning(f"同步应用 [{app_code}] 配置失败: {e}")
 
     async def load_define_app(self):
         """加载并初始化内置的默认应用
@@ -1797,6 +1831,19 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
         模型配置会动态从当前可用的 agent 模型配置中获取。
         """
         logger.info("开始加载内置默认应用数据")
+
+        # 0. 注册 RBAC 系统管理工具到全局 tool_registry。
+        #    agent_tools 里的 @tool 装饰器在模块导入时自动注册(auto_register=True);
+        #    system_admin_assistant 通过下方 resource_tool 绑定即可注入这些工具。
+        try:
+            from gyra_app.feature_plugins.permissions import agent_tools  # noqa: F401
+            logger.info(
+                "[define-app] RBAC admin tools registered via "
+                "gyra_app.feature_plugins.permissions.agent_tools"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[define-app] Failed to import RBAC agent_tools: {e}")
+
         # 1. 获取当前脚本所在目录
         import os
 
@@ -1844,6 +1891,7 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
                             self._sync_define_prompt(
                                 app_code, app_name,
                                 item.get("system_prompt_template"),
+                                item.get("resource_tool"),
                             )
                             skipped_count += 1
                             continue

@@ -115,6 +115,7 @@ async def list_users(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     keyword: str = Query(default=""),
+    _user: UserRequest = Depends(require_admin()),
 ):
     """List users with pagination and optional keyword filter."""
     svc = _get_user_service()
@@ -131,7 +132,10 @@ async def list_users(
 
 
 @router.get("/{user_id}")
-async def get_user(user_id: int):
+async def get_user(
+    user_id: int,
+    _user: UserRequest = Depends(require_admin()),
+):
     """Get user by id."""
     svc = _get_user_service()
     user = svc.get_user(user_id)
@@ -141,7 +145,11 @@ async def get_user(user_id: int):
 
 
 @router.patch("/{user_id}")
-async def update_user(user_id: int, body: UpdateUserRequest):
+async def update_user(
+    user_id: int,
+    body: UpdateUserRequest,
+    _user: UserRequest = Depends(require_admin()),
+):
     """Update user role, is_active status or password."""
     if body.role is None and body.is_active is None and body.password is None:
         raise HTTPException(status_code=400, detail="Nothing to update")

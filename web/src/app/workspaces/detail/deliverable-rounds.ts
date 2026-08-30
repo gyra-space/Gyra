@@ -89,12 +89,85 @@ function groupFilesByRound<T>(
   return { byRound, leftover };
 }
 
-/** 交付文件按轮次归属:一轮产出的交付文件跟在那一轮答复后面,而非全部堆在 feed 底部。 */
+/** 从步骤可文本化字段中抽取明确提及的文件名(引号/反引号包裹的常见扩展名)。
+ *  用于 answer/tool_call 等步骤已说出文件名但 deliverable_files 时间戳/下发时机
+ *  不准的场景,把文件绑定到真正提及它的轮次。 */
+function extractMentionedFileNames(output: string): string[] {
+  const names = new Set<string>();
+  const regex = /["'`]([^"'`]*\.(?:html|htm|md|markdown|pdf|png|jpg|jpeg|gif|svg|webp|csv|xlsx|xls|py|js|jsx|ts|tsx|java|go|rs|sql|json|yaml|yml|xml|txt))["'`]/gi;
+  let m: RegExpExecArray | null;
+  while ((m = regex.exec(output)) !== null) {
+    names.add(m[1]);
+  }
+  return Array.from(names);
+}
+
+function stepSearchableText(step: WorkspaceExecutionStep): string {
+  const parts: string[] = [
+    step.output || '',
+    step.title || '',
+    step.action || '',
+    step.narration || '',
+  ];
+  if (step.action_input && typeof step.action_input === 'object') {
+    parts.push(JSON.stringify(step.action_input));
+  }
+  if (step.artifact && typeof step.artifact === 'object') {
+    parts.push(JSON.stringify(step.artifact));
+  }
+  return parts.join(' ');
+}
+
+/** 交付文件按轮次归属:一轮产出的交付文件跟在那一轮答复后面,而非全部堆在 feed 底部。
+ *  归属优先级:
+ *  1. answer/tool_call 等步骤文本中明确提及的文件名 → 绑定到提及它的轮次;
+ *  2. 产出 ts 落在某轮时间区间 → 归属该轮;
+ *  3. ts 为空 / 早于所有轮次起始时间(时区格式差异、后端未下发)→ 归到最早一轮,
+ *     不再进 leftover。交付文件必然在会话开始之后产出,堆在 feed 最底部会让
+ *     多轮追问时历史交付物看起来"跟着最新一轮跑"。 */
 export function groupDeliverablesByRound(
   rounds: ConversationRound[],
   deliverables: WorkspaceDeliverableFile[],
 ): RoundFileGroups<WorkspaceDeliverableFile> {
-  return groupFilesByRound(rounds, deliverables, (f) => f.ts);
+  // 步骤文本中明确提及的文件名 → 最早提到它的轮次 key
+  const mentionedFileRound = new Map<string, string>();
+  for (const round of rounds) {
+    for (const step of round.steps) {
+      for (const name of extractMentionedFileNames(stepSearchableText(step))) {
+        if (!mentionedFileRound.has(name)) {
+          mentionedFileRound.set(name, round.key);
+        }
+      }
+    }
+  }
+
+  const byMention: WorkspaceDeliverableFile[] = [];
+  const byTime: WorkspaceDeliverableFile[] = [];
+  for (const f of deliverables) {
+    if (mentionedFileRound.has(f.file_name)) {
+      byMention.push(f);
+    } else {
+      byTime.push(f);
+    }
+  }
+
+  const groups = groupFilesByRound(rounds, byTime, (f) => f.ts);
+  const attach = (key: string, files: WorkspaceDeliverableFile[]) => {
+    if (!files.length) return;
+    const arr = groups.byRound.get(key) ?? [];
+    arr.push(...files);
+    groups.byRound.set(key, arr);
+  };
+  for (const f of byMention) {
+    attach(mentionedFileRound.get(f.file_name)!, [f]);
+  }
+
+  // 无归属(ts 为空或早于所有轮次)的交付文件挂到最早一轮,而不是留在 feed 底部
+  if (groups.leftover.length && rounds.length) {
+    attach(rounds[0].key, groups.leftover);
+    groups.leftover = [];
+  }
+  return groups;
 }
 
 /** 任务文件按轮次归属(时间戳字段为 created_at),与交付文件同一套归属逻辑。 */

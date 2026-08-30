@@ -882,12 +882,12 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
     // 不能只看 `outputs !== undefined`——空数组同样代表未加载,否则点击过去永远显示「暂无输出」。
     if (local && local.outputs && local.outputs.length) return;
 
-    const convId = typeof window !== 'undefined'
+    const conversationId = typeof window !== 'undefined'
       ? new URLSearchParams(window.location.search).get('conv_uid') || ''
       : '';
-    if (!convId) return;
+    if (!conversationId) return;
 
-    const cacheKey = `${convId}_${uid}`;
+    const cacheKey = `${conversationId}_${uid}`;
     const cached = stepDetailCache.get(cacheKey);
     if (cached) {
       if (latestUidRef.current === uid) {
@@ -899,7 +899,7 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
     setLoadingStepUid(uid);
     try {
       const resp = await fetch(
-        `${process.env.NEXT_PUBLIC_API_BASE_URL || ''}/api/unified/vis/step_detail?conv_id=${encodeURIComponent(convId)}&step_id=${encodeURIComponent(uid)}`,
+        `${process.env.NEXT_PUBLIC_API_BASE_URL || ''}/api/unified/vis/step_detail?conv_id=${encodeURIComponent(conversationId)}&step_id=${encodeURIComponent(uid)}`,
         {
           credentials: 'include',
           headers: { [HEADER_USER_ID_KEY]: getUserId() ?? '' },
@@ -973,11 +973,11 @@ const VisManusRightPanel: FC<IProps> = ({ data }) => {
     const base = currentStepIndex >= 0 ? currentStepIndex : stepKeys.length - 1;
     const next = base + dir;
     if (next < 0 || next >= stepKeys.length) return;
-    const convId =
+    const conversationId =
       typeof window !== 'undefined'
         ? new URLSearchParams(window.location.search).get('conv_uid') || ''
         : '';
-    ee.emit(EVENTS.CLICK_FOLDER, { uid: stepKeys[next], conv_id: convId });
+    ee.emit(EVENTS.CLICK_FOLDER, { uid: stepKeys[next], conv_id: conversationId });
   };
 
   // Auto-switch to deliverables or summary tab when task completes

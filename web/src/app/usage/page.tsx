@@ -16,6 +16,7 @@ import {
   TimeSeriesPoint,
   UsageCall,
 } from '@/client/api/usage';
+import { toConversationId } from '@/types/context-metrics';
 import { apiInterceptors } from '@/client/api';
 import {
   BarChartOutlined,
@@ -73,7 +74,11 @@ export default function UsagePage() {
   const searchParams = useSearchParams();
   const convIdParam = searchParams?.get('conv_id') || undefined;
 
-  const [convId, setConvId] = useState<string | undefined>(convIdParam);
+  // URL 上的 conv_id 可能是轮次 id(uuid_N)，归一化为会话 id 再入状态——
+  // 与后端 usage API 的归一化行为一致（to_conversation_id），变量名才名副其实。
+  const [conversationId, setConvId] = useState<string | undefined>(
+    toConversationId(convIdParam) || undefined,
+  );
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
   const [modelName, setModelName] = useState<string | undefined>(undefined);
   // When drilled in from a conversation, default to a wider window so older
@@ -85,7 +90,7 @@ export default function UsagePage() {
   const startMs = endMs - RANGE_MS[rangeKey];
 
   const filters = {
-    conv_id: convId,
+    conv_id: conversationId,
     agent_id: agentId,
     model_name: modelName,
     start_ms: startMs,
@@ -118,7 +123,7 @@ export default function UsagePage() {
       if (err) return null;
       return res;
     },
-    { refreshDeps: [convId, agentId, modelName, rangeKey] }
+    { refreshDeps: [conversationId, agentId, modelName, rangeKey] }
   );
 
   // by-agent
@@ -128,7 +133,7 @@ export default function UsagePage() {
       if (err) return [] as AgentUsage[];
       return res || [];
     },
-    { refreshDeps: [convId, agentId, modelName, rangeKey] }
+    { refreshDeps: [conversationId, agentId, modelName, rangeKey] }
   );
 
   // by-model
@@ -138,18 +143,18 @@ export default function UsagePage() {
       if (err) return [] as ModelUsage[];
       return res || [];
     },
-    { refreshDeps: [convId, agentId, modelName, rangeKey] }
+    { refreshDeps: [conversationId, agentId, modelName, rangeKey] }
   );
 
   // by-conversation (only meaningful in overview mode, not single-conv)
   const { data: byConv } = useRequest(
     async () => {
-      if (convId) return [] as ConversationUsage[];
+      if (conversationId) return [] as ConversationUsage[];
       const [err, res] = await apiInterceptors(getUsageByConversation(filters));
       if (err) return [] as ConversationUsage[];
       return res || [];
     },
-    { refreshDeps: [convId, agentId, modelName, rangeKey] }
+    { refreshDeps: [conversationId, agentId, modelName, rangeKey] }
   );
 
   // time series
@@ -160,7 +165,7 @@ export default function UsagePage() {
           start_ms: startMs,
           end_ms: endMs,
           bucket_sec: RANGE_BUCKET_SEC[rangeKey],
-          conv_id: convId,
+          conv_id: conversationId,
           agent_id: agentId,
           model_name: modelName,
         })
@@ -168,7 +173,7 @@ export default function UsagePage() {
       if (err) return [] as TimeSeriesPoint[];
       return res || [];
     },
-    { refreshDeps: [convId, agentId, modelName, rangeKey] }
+    { refreshDeps: [conversationId, agentId, modelName, rangeKey] }
   );
 
   // call details (filtered by the active conversation)
@@ -184,7 +189,7 @@ export default function UsagePage() {
       if (err) return { items: [] as UsageCall[], total_count: 0, page: 1, page_size: 10 };
       return res;
     },
-    { refreshDeps: [convId, agentId, modelName, rangeKey, callsPage] }
+    { refreshDeps: [conversationId, agentId, modelName, rangeKey, callsPage] }
   );
 
   const refreshAll = () => {
@@ -366,7 +371,7 @@ export default function UsagePage() {
   ];
 
   const hasData = ov.total_calls > 0;
-  const singleConv = !!convId;
+  const singleConv = !!conversationId;
 
   return (
     <div className="p-6 h-full overflow-auto">
@@ -391,7 +396,7 @@ export default function UsagePage() {
           <Space>
             <BarChartOutlined />
             <span className="text-sm">{t('usage_conversation')}:</span>
-            <Text code>{convId}</Text>
+            <Text code>{conversationId}</Text>
             <Tooltip title={t('usage_view_all', 'View all')}>
               <Button
                 size="small"

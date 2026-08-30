@@ -18,7 +18,9 @@ import {
   DeprecateFooter,
   Dot,
   EcpEmpty,
+  LineageChips,
   ObjectDetailDrawer,
+  OriginBadge,
   StatusTag,
   summarizePayload,
   TYPE_DOT,
@@ -75,7 +77,13 @@ function ProposalCard({
         <StatusTag status={obj.status} />
       </div>
 
-      <div className="ecp-proposal__summary">{summarizePayload(obj)}</div>
+      <div className="ecp-proposal__summary">{obj.view?.summary || summarizePayload(obj)}</div>
+
+      {!!obj.view?.lineage && (
+        <div style={{ margin: '4px 0 2px' }}>
+          <LineageChips lineage={obj.view.lineage} />
+        </div>
+      )}
 
       {!!obj.evidence?.length && (
         <div className="ecp-proposal__evidence">
@@ -90,7 +98,11 @@ function ProposalCard({
       <div className="ecp-proposal__foot">
         <div className="ecp-proposal__meta">
           <Confidence value={obj.confidence} />
-          <span>来源 {obj.source ?? '-'}</span>
+          {obj.view?.origin ? (
+            <OriginBadge origin={obj.view.origin} />
+          ) : (
+            <span>来源 {obj.source ?? '-'}</span>
+          )}
           <span>{obj.created_at?.slice(0, 16) ?? ''}</span>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -334,8 +346,9 @@ export default function SemanticsTab({ workspaceId }: { workspaceId: string }) {
                   whiteSpace: 'nowrap',
                 }}
               >
-                {summarizePayload(obj)}
+                {obj.view?.summary || summarizePayload(obj)}
               </div>
+              {obj.view?.origin && <OriginBadge origin={obj.view.origin} />}
               <StatusTag status={obj.status} />
             </div>
           ))}

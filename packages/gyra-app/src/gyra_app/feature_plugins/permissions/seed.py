@@ -171,6 +171,8 @@ SEED_ROLES = [
             ("cron", "manage"),
             ("channel", "read"),
             ("channel", "manage"),
+            ("system", "read"),
+            ("system", "write"),
             ("system", "admin"),
         ],
     },
@@ -557,10 +559,16 @@ def ensure_schema_upgrades() -> None:
     with db.session(commit=False) as s:
         _rebuild_user_role_with_scope(s)
 
+    # grantable 的默认值按方言出字面量:PG 的 BOOLEAN 列不能 DEFAULT 0(非法),
+    # SQLite/MySQL 接受 0
+    dialect = getattr(getattr(db, "engine", None), "dialect", None)
+    dialect_name = getattr(dialect, "name", "") or ""
+    grantable_default = "false" if "postgres" in dialect_name else "0"
+
     stmts = [
         "ALTER TABLE role ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
         "ALTER TABLE permission_definition ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
-        "ALTER TABLE permission_definition ADD COLUMN grantable BOOLEAN NOT NULL DEFAULT 0",
+        f"ALTER TABLE permission_definition ADD COLUMN grantable BOOLEAN NOT NULL DEFAULT {grantable_default}",
     ]
     with db.session(commit=False) as s:
         for stmt in stmts:
@@ -692,6 +700,27 @@ def sync_permission_definitions() -> None:
         "Permission registry synced: %d keys (%d created, %d updated)",
         len(PermissionRegistry.keys()), created, updated,
     )
+
+    # 失效定义清理:不在注册表、且无任何角色 permission-defs 引用的存量行
+    # (如旧版蛇形命名 agent_admin_all 的重复定义)置 is_active=0。
+    # 不物理删除,保留历史痕迹;有引用的行不动。
+    from gyra.storage.metadata.db_manager import db
+
+    from .models import RolePermissionDefEntity
+
+    registered_names = set(PermissionRegistry.keys())
+    referenced_def_ids = set()
+    with db.session(commit=False) as s:
+        for (def_id,) in s.query(RolePermissionDefEntity.permission_def_id).distinct():
+            referenced_def_ids.add(def_id)
+    deactivated = 0
+    for row in dao.list_permission_definitions(is_active=True):
+        if row["name"] in registered_names or row["id"] in referenced_def_ids:
+            continue
+        dao.update_permission_definition(definition_id=row["id"], is_active=False)
+        deactivated += 1
+    if deactivated:
+        logger.info("Deactivated %d stale permission definitions", deactivated)
 
 
 def migrate_ecp_confirmers() -> None:

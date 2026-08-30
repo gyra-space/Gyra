@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     and_,
     desc,
+    func,
     or_,
     select,
 )
@@ -464,6 +465,40 @@ class GptsMessagesDao(BaseDao):
         entities = gpts_messages.order_by(GptsMessagesEntity.created_at, GptsMessagesEntity.id).all()
         session.close()
         return [self._to_gpts_message(e) for e in entities]
+
+    async def get_by_conv_session_id_async(
+        self, conv_session_id: str
+    ) -> List[GptsMessage]:
+        """异步按会话 id 查全部轮次消息（async 上下文必须用本方法，同步版会阻塞事件循环）。"""
+        async with self.a_session(commit=False) as session:
+            result = await session.execute(
+                select(GptsMessagesEntity)
+                .where(GptsMessagesEntity.conv_session_id == conv_session_id)
+                .order_by(GptsMessagesEntity.created_at, GptsMessagesEntity.id)
+            )
+            entities = result.scalars().all()
+            return [self._to_gpts_message(e) for e in entities]
+
+    async def a_get_session_version(self, conv_session_id: str):
+        """轻量版本探测：返回该会话 (MAX(id), MAX(updated_at))。
+
+        供轮询视图缓存判断消息数据是否变化（insert 改 MAX(id)，
+        流式 update 改 MAX(updated_at)），避免每次轮询全量加载+重渲染。
+        """
+        async with self.a_session(commit=False) as session:
+            result = await session.execute(
+                select(
+                    func.max(GptsMessagesEntity.id),
+                    func.max(GptsMessagesEntity.updated_at),
+                ).where(GptsMessagesEntity.conv_session_id == conv_session_id)
+            )
+            row = result.one_or_none()
+            if row is None:
+                return (None, None)
+            updated_at = row[1]
+            if updated_at is not None and not isinstance(updated_at, str):
+                updated_at = updated_at.isoformat()
+            return (row[0], updated_at)
 
     def get_by_message_id(self, message_id: str) -> Optional[GptsMessage]:
         session = self.get_raw_session()

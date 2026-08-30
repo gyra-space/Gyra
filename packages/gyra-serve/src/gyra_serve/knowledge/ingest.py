@@ -31,6 +31,7 @@ import inspect
 import logging
 import mimetypes
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -100,7 +101,9 @@ class IngestJob:
     source_file: str
     verbat_ids: List[VerbatId] = field(default_factory=list)
     wiki_doc_ids: List[DocId] = field(default_factory=list)
-    status: str = "pending"  # pending | extracting | embedding | generating_wiki | done | failed
+    # pending | extracting | embedding | generating_wiki | generating_graph
+    # | done | failed
+    status: str = "pending"
     error: Optional[str] = None
     started_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     finished_at: Optional[str] = None
@@ -341,6 +344,7 @@ class IngestOrchestrator:
             id=f"ij_{uuid.uuid4().hex[:12]}",
             space_slug=space.slug,
             source_file=f"rebuild:{verbat_id}",
+            verbat_ids=[verbat_id],
         )
         self.jobs.add(job)
         await self._persist_job(vault, job.id)
@@ -350,6 +354,47 @@ class IngestOrchestrator:
                 space=space,
                 vault=vault,
                 verbat_id=verbat_id,
+                llm_model_override=llm_model_override,
+            )
+        )
+        return job
+
+    async def rebuild_wiki_for_file(
+        self,
+        space: Space,
+        vault: Any,
+        source_file: str,
+        llm_model_override: Optional[str] = None,
+    ) -> IngestJob:
+        """Regenerate L1 wiki + entity graph for all verbats of one raw file.
+
+        Matches verbats whose ``source_file`` equals the given raw path
+        (relative to ``raw/``) or its basename. The returned job is created
+        immediately (with ``verbat_ids`` pre-filled so the UI can associate
+        it with the file); the actual rebuild runs in the background.
+        """
+        verbats = await vault.verbat_list(limit=10000)
+        base = (source_file or "").strip().lstrip("/")
+        candidates = {base, base.rsplit("/", 1)[-1]}
+        verbat_ids = [
+            v.id for v in verbats if not v.deprecated and v.source_file in candidates
+        ]
+        if not verbat_ids:
+            raise ValueError(f"No active verbats found for raw file '{source_file}'")
+        job = IngestJob(
+            id=f"ij_{uuid.uuid4().hex[:12]}",
+            space_slug=space.slug,
+            source_file=base,
+            verbat_ids=list(verbat_ids),
+        )
+        self.jobs.add(job)
+        await self._persist_job(vault, job.id)
+        asyncio.create_task(
+            self._run_rebuild_file(
+                job=job,
+                space=space,
+                vault=vault,
+                verbat_ids=list(verbat_ids),
                 llm_model_override=llm_model_override,
             )
         )
@@ -465,6 +510,7 @@ class IngestOrchestrator:
 
             # 2. Generate L1 wiki per verbat (skips ones that already have one)
             wiki_doc_ids: List[DocId] = []
+            failed_verbat_ids: List[str] = []
             llm_model = llm_model_override or space.llm_model
             for vid in verbat_ids:
                 try:
@@ -478,11 +524,25 @@ class IngestOrchestrator:
                         await self._job_update(
                             vault, job.id, wiki_doc_ids=list(wiki_doc_ids)
                         )
-                except Exception:
+                except Exception as e:
                     logger.exception(
                         "Wiki generation failed for verbat %s (feishu sync %s)",
                         vid, wiki_space_id,
                     )
+                    # Don't fail the whole job — other verbats may succeed
+                    failed_verbat_ids.append(f"{vid}: {e}")
+
+            # All verbats failed to yield a wiki doc: fail the job so the UI
+            # surfaces it, instead of a silent "done" with an empty wiki.
+            if failed_verbat_ids:
+                summary = (
+                    f"Wiki generation failed for {len(failed_verbat_ids)}/"
+                    f"{len(verbat_ids)} verbat(s) of "
+                    f"'feishu-wiki:{wiki_space_id}': " + "; ".join(failed_verbat_ids)
+                )
+                if not wiki_doc_ids:
+                    raise RuntimeError(summary)
+                logger.warning("%s", summary)
 
             # 3. Entity curation over the fresh wiki docs
             await self._curate_entities_for_docs(
@@ -590,6 +650,7 @@ class IngestOrchestrator:
 
             # 7. Generate wiki for each verbat (sequential to avoid hammering the LLM)
             llm_model = llm_model_override or space.llm_model
+            failed_verbat_ids: List[str] = []
             for vid in verbat_ids:
                 try:
                     doc_id = await self._generate_wiki(
@@ -611,6 +672,19 @@ class IngestOrchestrator:
                         space.slug,
                     )
                     # Don't fail the whole job — other verbats may succeed
+                    failed_verbat_ids.append(f"{vid}: {e}")
+
+            # All verbats failed to yield a wiki doc: fail the job so the UI
+            # surfaces it, instead of a silent "done" with an empty wiki.
+            if failed_verbat_ids:
+                summary = (
+                    f"Wiki generation failed for {len(failed_verbat_ids)}/"
+                    f"{len(verbat_ids)} verbat(s) of '{original_filename}': "
+                    + "; ".join(failed_verbat_ids)
+                )
+                if not job.wiki_doc_ids:
+                    raise RuntimeError(summary)
+                logger.warning("%s", summary)
 
             # 7b. RFC-005 Phase 2: cross-document entity curation over the
             # freshly generated wiki docs (sequential, same LLM-hammering
@@ -740,6 +814,7 @@ class IngestOrchestrator:
 
         # 7. Generate wiki for each verbat (sequential to avoid LLM hammering)
         wiki_doc_ids: List[DocId] = []
+        failed_verbat_ids: List[str] = []
         llm_model = llm_model_override or space.llm_model
         for vid in verbat_ids:
             try:
@@ -750,12 +825,25 @@ class IngestOrchestrator:
                 if doc_id:
                     wiki_doc_ids.append(doc_id)
                     await _emit(on_wiki_doc_id, doc_id)
-            except Exception:
+            except Exception as e:
                 logger.exception(
                     "Wiki generation failed for verbat %s in space %s",
                     vid, space.slug,
                 )
                 # Don't fail the whole job — other verbats may succeed
+                failed_verbat_ids.append(f"{vid}: {e}")
+
+        # All verbats failed to yield a wiki doc: fail the job so the UI
+        # surfaces it, instead of a silent "done" with an empty wiki.
+        if failed_verbat_ids:
+            summary = (
+                f"Wiki generation failed for {len(failed_verbat_ids)}/"
+                f"{len(verbat_ids)} verbat(s) of '{original_filename}': "
+                + "; ".join(failed_verbat_ids)
+            )
+            if not wiki_doc_ids:
+                raise RuntimeError(summary)
+            logger.warning("%s", summary)
 
         # 7b. RFC-005 Phase 2: cross-document entity curation.
         await self._curate_entities_for_docs(
@@ -930,6 +1018,11 @@ class IngestOrchestrator:
             if doc_id:
                 job.wiki_doc_ids = [doc_id]
                 await self._job_update(vault, job.id, wiki_doc_ids=[doc_id])
+                await self._job_update(vault, job.id, status="generating_graph")
+                await self._curate_entities_for_docs(
+                    space, vault, [doc_id], llm_model_override or space.llm_model,
+                    job_id=job.id,
+                )
             await self._job_update(
                 vault, job.id, status="done", finished_at=datetime.utcnow().isoformat()
             )
@@ -943,9 +1036,64 @@ class IngestOrchestrator:
                 finished_at=datetime.utcnow().isoformat(),
             )
 
+    async def _run_rebuild_file(
+        self,
+        job: IngestJob,
+        space: Space,
+        vault: Any,
+        verbat_ids: List[VerbatId],
+        llm_model_override: Optional[str],
+    ) -> None:
+        try:
+            llm_model = llm_model_override or space.llm_model
+            await self._job_update(vault, job.id, status="generating_wiki")
+            wiki_doc_ids: List[DocId] = []
+            for vid in verbat_ids:
+                doc_id = await self._generate_wiki(
+                    space=space,
+                    vault=vault,
+                    verbat_id=vid,
+                    llm_model=llm_model,
+                    force_rebuild=True,
+                    job_id=job.id,
+                )
+                if doc_id:
+                    wiki_doc_ids.append(doc_id)
+            job.wiki_doc_ids = wiki_doc_ids
+            await self._job_update(vault, job.id, wiki_doc_ids=list(wiki_doc_ids))
+            await self._job_update(vault, job.id, status="generating_graph")
+            await self._curate_entities_for_docs(
+                space, vault, wiki_doc_ids, llm_model, job_id=job.id
+            )
+            await self._job_update(
+                vault, job.id, status="done", finished_at=datetime.utcnow().isoformat()
+            )
+        except Exception as e:
+            logger.exception("File rebuild failed for job %s", job.id)
+            await self._job_update(
+                vault,
+                job.id,
+                status="failed",
+                error=str(e),
+                finished_at=datetime.utcnow().isoformat(),
+            )
+
     # ------------------------------------------------------------------
     # Wiki generation (Option A: one-shot LLM call + doc_create + edge_add)
     # ------------------------------------------------------------------
+
+    # Excel/CSV verbatims put one `## Sheet: <name>` heading per sheet.
+    _SHEET_HEADING_RE = re.compile(r"^## Sheet: .*$", re.MULTILINE)
+
+    # Wiki generation input budget: content exceeding this ratio of the
+    # model's context window must be split into multiple LLM calls instead
+    # of being sent in one giant prompt (env-overridable).
+    WIKI_INPUT_TOKEN_RATIO = max(
+        0.1, min(0.9, float(os.getenv("GYRA_WIKI_INPUT_TOKEN_RATIO", "0.6")))
+    )
+    # Safety bound: a verbatim requiring more chunks than this fails the job
+    # instead of hammering the LLM with unbounded calls (env-overridable).
+    WIKI_MAX_CHUNKS = max(1, int(os.getenv("GYRA_WIKI_MAX_CHUNKS", "32")))
 
     WIKI_SYSTEM_PROMPT = (
         "你是一个知识库编辑助手。根据用户提供的 L0 原文 verbatim，生成一份 L1 wiki 文档。"
@@ -977,6 +1125,124 @@ class IngestOrchestrator:
         '"merged_body": "...", "summary": "...", "reason": "..."}]}\n'
         '4. 没有值得归并的实体时输出 {"entities": []}'
     )
+
+    @staticmethod
+    def _token_counter():
+        """Return a text -> token count function (tiktoken, or chars/4 fallback)."""
+        try:
+            from gyra.agent.core.usage_metric import count_tokens
+
+            return count_tokens
+        except ImportError:
+            return lambda text: max(1, len(text) // 4)
+
+    @staticmethod
+    def _context_window(model: Optional[str]) -> int:
+        """Resolve the model's context window (falls back to 128000)."""
+        try:
+            from gyra.agent.core.usage_metric import get_context_window
+
+            return get_context_window(model)
+        except ImportError:
+            return 128000
+
+    @classmethod
+    def _split_sheet_blocks(cls, content: str) -> List[str]:
+        """Split verbatim content at `## Sheet:` headings (spreadsheet layout).
+
+        Content without sheet headings comes back as a single block; any text
+        before the first heading becomes its own leading block.
+        """
+        matches = list(cls._SHEET_HEADING_RE.finditer(content))
+        if not matches:
+            return [content] if content.strip() else []
+        blocks: List[str] = []
+        pre = content[: matches[0].start()]
+        if pre.strip():
+            blocks.append(pre)
+        for i, m in enumerate(matches):
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+            block = content[m.start():end]
+            if block.strip():
+                blocks.append(block)
+        return blocks
+
+    @classmethod
+    def _hard_split_by_lines(
+        cls, text: str, budget_tokens: int, count_tokens
+    ) -> List[str]:
+        """Line-boundary split of one oversized block (char-slice fallback
+        for pathological single rows wider than the budget)."""
+        chunks: List[str] = []
+        cur: List[str] = []
+        cur_tokens = 0
+        for line in text.splitlines(keepends=True):
+            t = count_tokens(line)
+            if t > budget_tokens:
+                if cur:
+                    chunks.append("".join(cur))
+                    cur, cur_tokens = [], 0
+                step = max(1, budget_tokens * 3)
+                chunks.extend(line[i:i + step] for i in range(0, len(line), step))
+                continue
+            if cur and cur_tokens + t > budget_tokens:
+                chunks.append("".join(cur))
+                cur, cur_tokens = [], 0
+            cur.append(line)
+            cur_tokens += t
+        if cur:
+            chunks.append("".join(cur))
+        return [c for c in chunks if c.strip()]
+
+    @classmethod
+    def _pack_blocks(
+        cls, blocks: List[str], budget_tokens: int, count_tokens
+    ) -> List[str]:
+        """Greedy bin-pack blocks into chunks that each fit the token budget."""
+        chunks: List[str] = []
+        cur: List[str] = []
+        cur_tokens = 0
+        for block in blocks:
+            t = count_tokens(block)
+            if t > budget_tokens:
+                if cur:
+                    chunks.append("\n\n".join(cur))
+                    cur, cur_tokens = [], 0
+                chunks.extend(
+                    cls._hard_split_by_lines(block, budget_tokens, count_tokens)
+                )
+                continue
+            if cur and cur_tokens + t > budget_tokens:
+                chunks.append("\n\n".join(cur))
+                cur, cur_tokens = [], 0
+            cur.append(block)
+            cur_tokens += t
+        if cur:
+            chunks.append("\n\n".join(cur))
+        return [c for c in chunks if c.strip()]
+
+    @classmethod
+    def _chunk_verbat_content(cls, content: str, budget_tokens: int) -> List[str]:
+        """Split content into LLM-sized chunks for wiki generation.
+
+        Strategy: sheet boundaries first (each Excel sheet stays intact when
+        it fits), then token-budget packing across sheets, then line-level
+        hard splits for single oversized sheets.
+        """
+        if budget_tokens <= 0:
+            return [content]
+        count_tokens = cls._token_counter()
+        if count_tokens(content) <= budget_tokens:
+            return [content]
+        blocks = cls._split_sheet_blocks(content)
+        return cls._pack_blocks(blocks, budget_tokens, count_tokens)
+
+    @staticmethod
+    def _strip_frontmatter(text: str) -> str:
+        """Drop a leading YAML frontmatter block (continuation chunks must
+        not carry their own)."""
+        m = re.match(r"\A---\s*\n.*?\n---\s*\n?", text.strip(), re.DOTALL)
+        return text.strip()[m.end():].lstrip() if m else text.strip()
 
     async def _generate_wiki(
         self,
@@ -1011,28 +1277,75 @@ class IngestOrchestrator:
         schema = await vault._get_schema()
         page_types = ", ".join(schema.page_types.keys()) if schema.page_types else "concept"
 
-        user_prompt = (
+        meta_header = (
             f"verbatim id: {verbat_id}\n"
             f"source file: {verbat.source_file}\n"
             f"extract mode: {verbat.extract_mode.value}\n\n"
             f"可选 Page Types: {page_types}\n\n"
-            f"原文内容：\n\n{verbat.content[:12000]}"
         )
 
-        # Call the LLM
-        used_model: List[str] = []
-        markdown = await self._call_llm(
-            model=llm_model,
-            system_prompt=self.WIKI_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            vault=vault,
-            job_id=job_id,
-            task_name="wiki_generate",
-            model_out=used_model,
+        # Input budget = WIKI_INPUT_TOKEN_RATIO of the model's context window,
+        # minus fixed prompt overhead. Oversized verbatims are split at sheet
+        # boundaries and packed into multiple LLM calls instead of being sent
+        # (or silently truncated) in one giant prompt.
+        count_tokens = self._token_counter()
+        window_tokens = self._context_window(llm_model)
+        overhead = (
+            count_tokens(self.WIKI_SYSTEM_PROMPT)
+            + count_tokens(meta_header)
+            + 256  # chat template / stop-token safety margin
         )
-        if not markdown or not markdown.strip():
-            logger.warning("LLM returned empty markdown for verbat %s", verbat_id)
-            return None
+        budget = int(window_tokens * self.WIKI_INPUT_TOKEN_RATIO) - overhead
+        if budget < 256:
+            raise RuntimeError(
+                f"Model context window ({window_tokens}) too small for wiki "
+                f"generation: input budget {budget} tokens after {overhead} "
+                f"tokens of prompt overhead"
+            )
+        chunks = self._chunk_verbat_content(verbat.content or "", budget)
+        if len(chunks) > self.WIKI_MAX_CHUNKS:
+            raise RuntimeError(
+                f"Verbatim {verbat_id} needs {len(chunks)} wiki chunks "
+                f"(> WIKI_MAX_CHUNKS={self.WIKI_MAX_CHUNKS}); reduce the "
+                f"source file size or raise the limit"
+            )
+
+        # One LLM call per chunk; continuation chunks append sections to the
+        # document produced for the first chunk.
+        used_model: List[str] = []
+        total = len(chunks)
+        markdown_parts: List[str] = []
+        for idx, chunk in enumerate(chunks):
+            if idx == 0:
+                body = f"原文内容：\n\n{chunk}"
+            else:
+                body = (
+                    f"原文内容（第 {idx + 1}/{total} 段，与前几段同属一份源文件，"
+                    f"前几段对应的 wiki 章节已生成）：请只输出衔接前文的"
+                    f"markdown 章节（## 标题 + 内容），不要输出 YAML "
+                    f"frontmatter，不要重复前文的标题和内容。\n\n{chunk}"
+                )
+            part = await self._call_llm(
+                model=llm_model,
+                system_prompt=self.WIKI_SYSTEM_PROMPT,
+                user_prompt=meta_header + body,
+                vault=vault,
+                job_id=job_id,
+                task_name="wiki_generate",
+                model_out=used_model,
+            )
+            if not part or not part.strip():
+                raise RuntimeError(
+                    f"LLM returned empty markdown for verbat {verbat_id} "
+                    f"(chunk {idx + 1}/{total}; common cause: a reasoning "
+                    f"model spent its entire completion budget on thinking; "
+                    f"switch to a non-reasoning model or raise the max_tokens "
+                    f"budget for wiki generation)"
+                )
+            if idx > 0:
+                part = self._strip_frontmatter(part)
+            markdown_parts.append(part.strip())
+        markdown = "\n\n".join(markdown_parts)
 
         # Ensure frontmatter has source_verbat (LLM may forget).
         # provenance records WHO WROTE THIS PAGE, not what kind of space it
@@ -1047,7 +1360,8 @@ class IngestOrchestrator:
         )
 
         # Derive a path: wiki/sources/<slug>.md
-        slug = self._slugify(verbat.source_file or verbat_id)
+        # Keep CJK: Chinese source filenames must stay readable in the wiki.
+        slug = self._slugify_unicode(verbat.source_file or verbat_id)
         path = f"sources/{slug}.md"
 
         doc_id = await vault.doc_create(path=path, content=markdown)
@@ -1139,13 +1453,6 @@ class IngestOrchestrator:
                 fm_block = fm_block.rstrip() + f"\nauthor_model: {author_model}\n"
             return "---" + fm_block + "---" + parts[2]
         return markdown
-
-    @staticmethod
-    def _slugify(name: str) -> str:
-        import re
-
-        base = re.sub(r"[^a-zA-Z0-9_\-]", "-", name).strip("-").lower()
-        return base or "untitled"
 
     @staticmethod
     def _slugify_unicode(name: str) -> str:
@@ -1712,7 +2019,6 @@ class IngestOrchestrator:
         await self._append_log_md(
             vault, doc_meta, verbat_id=verbat_id, job_id=job_id
         )
-        await self._register_ecp_asset(space, vault, doc_id, doc_meta)
 
     async def _update_index_md(self, vault: Any) -> None:
         """Rebuild wiki/index.md from doc_list metadata (grouped by type)."""
@@ -1759,45 +2065,6 @@ class IngestOrchestrator:
             await vault.doc_append_log(entry)
         except Exception as e:
             logger.warning("log.md append failed (%s): %s", doc_meta.path, e)
-
-    async def _register_ecp_asset(
-        self,
-        space: Space,
-        vault: Any,
-        doc_id: DocId,
-        doc_meta: Any,
-    ) -> None:
-        """Register the new doc as an ECP ``document`` asset.
-
-        目标 ECP workspace 推导（与 Service._knowledge_subgraph 的聚合
-        逻辑互逆）:
-        - ``ecp-<ws>``   → ws          (ECP 软层空间)
-        - ``docs-<code>`` → ecp_<code> (场景空间上传入口)
-        其他 slug（普通知识空间）不登记——它没有对应的 ECP workspace。
-        登记是幂等的（AssetRefDao.register 按 (ws, kind, ref_id) upsert）。
-        """
-        slug = space.slug
-        if slug.startswith("ecp-"):
-            ecp_ws = slug[len("ecp-"):]
-        elif slug.startswith("docs-"):
-            ecp_ws = f"ecp_{slug[len('docs-'):]}"
-        else:
-            return
-        try:
-            from gyra_serve.ecp.models.models import AssetRefDao
-
-            AssetRefDao().register(
-                kind="document",
-                ref_id=f"{slug}:{doc_id}",
-                workspace_id=ecp_ws,
-                ref_meta={"name": doc_meta.title or doc_meta.path,
-                          "path": doc_meta.path},
-            )
-        except Exception:
-            logger.warning(
-                "ECP asset register failed for %s:%s (ws=%s)",
-                slug, doc_id, ecp_ws, exc_info=True,
-            )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1865,6 +2132,10 @@ class IngestOrchestrator:
             ".doc": "application/msword",
             ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             ".ppt": "application/vnd.ms-powerpoint",
+            ".xlsx": (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            ".xls": "application/vnd.ms-excel",
             ".png": "image/png",
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",

@@ -151,7 +151,7 @@ const CreateAppModal: React.FC<{
             if (data?.app_code) {
               message.success(t('Create_successfully'));
               if (!skipRedirect) {
-                router.replace(`/application/app`);
+                router.replace(`/application/app?app_code=${data.app_code}`);
               } else {
                 await refresh?.(data);
               }

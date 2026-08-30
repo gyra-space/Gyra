@@ -83,6 +83,7 @@ class EcpSemanticObjectEntity(Model):
     confirmed_by = Column(String(64), nullable=True)
     confirmed_at = Column(DateTime, nullable=True)
     source = Column(String(256), nullable=True)
+    provenance = Column(JSON, nullable=True)
     supersedes = Column(Integer, nullable=True)
     gmt_create = Column(DateTime, default=datetime.now, nullable=False)
     gmt_modify = Column(
@@ -307,6 +308,7 @@ def to_object_vo(e: EcpSemanticObjectEntity) -> SemanticObjectVO:
         confirmed_by=e.confirmed_by,
         confirmed_at=_iso(e.confirmed_at),
         source=e.source,
+        provenance=e.provenance,
         supersedes=e.supersedes,
     )
 
@@ -326,6 +328,7 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
         evidence: Optional[List[Dict[str, Any]]] = None,
         created_by: str = "llm",
         source: Optional[str] = None,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> SemanticObjectVO:
         """Create a new proposed version. LLM writes are always proposed.
 
@@ -371,6 +374,7 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
                 evidence=evidence,
                 created_by=created_by,
                 source=source,
+                provenance=provenance,
             )
             session.add(entity)
             session.flush()
@@ -387,6 +391,7 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
         supersedes: Optional[int] = None,
         evidence: Optional[List[Dict[str, Any]]] = None,
         source: Optional[str] = None,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> SemanticObjectVO:
         """Create an already-confirmed new version (edit-then-confirm path).
 
@@ -416,6 +421,7 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
                 confirmed_by=user_id,
                 confirmed_at=datetime.now(),
                 source=source,
+                provenance=provenance,
                 supersedes=supersedes,
             )
             session.add(entity)
@@ -690,6 +696,7 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
         confirmed_by: Optional[str] = None,
         confirmed_at: Optional[Any] = None,
         source: Optional[str] = None,
+        provenance: Optional[Dict[str, Any]] = None,
         supersedes: Optional[int] = None,
     ) -> Optional[SemanticObjectVO]:
         """Restore one semantic object row from an export (merge import).
@@ -731,6 +738,7 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
                 confirmed_by=confirmed_by,
                 confirmed_at=_parse_dt(confirmed_at),
                 source=source,
+                provenance=provenance,
                 supersedes=supersedes,
             )
             session.add(entity)

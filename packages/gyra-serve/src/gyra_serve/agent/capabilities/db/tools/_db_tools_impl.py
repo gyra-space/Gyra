@@ -464,6 +464,10 @@ async def get_table_spec(
         "**重要**: SQL 语法必须完全符合目标数据库类型（db_type/dialect）。"
         "例如：SQLite 使用 LIMIT，MySQL 可用 LIMIT，Oracle 使用 ROWNUM，SQL Server 使用 TOP。"
         "执行前请先通过 get_table_spec 了解表结构。"
+        "**SQL 编写规范**: 性能优先——禁止 SELECT *；单次查询返回不超过 2000 行"
+        "（系统会自动封顶 LIMIT 并截断超限结果，超过 30s 的查询会被终止）；"
+        "大表必须带时间过滤，单次查询时间跨度不超过 1 年，跨年分析分批查询再汇总；"
+        "WHERE 优先使用索引列，聚合在库内完成（GROUP BY + LIMIT）。"
         "**文件模式**: 设置 output_to_file=true 可将全量结果生成为文件并上传到沙箱，"
         "返回数据量（行数+文件大小）、样例数据、沙箱文件路径三段信息，"
         "完整数据可用 read_file 读取沙箱路径获取。适用于明细类大结果数据。"
@@ -645,8 +649,37 @@ async def execute_sql(
             except Exception as e:
                 logger.debug(f"Failed to get db version: {e}")
 
-        # Execute the query
-        result = connector.run(sql)
+        # Execute the query(读操作经安全层:LIMIT 注入/封顶 + 语句超时 + 流式
+        # 截断,防止烂 SQL 拖垮库;写操作保持原链路)
+        truncated = False
+        row_limit = 0
+        if not is_write:
+            from gyra_serve.sql_guard.safe_exec import (
+                apply_select_limit,
+                run_select_with_limits,
+                timeout_error_message,
+            )
+
+            row_limit = (
+                CFG.SQL_MAX_ROWS_FILE if output_to_file else CFG.SQL_MAX_ROWS
+            )
+            sql = apply_select_limit(sql, dialect, row_limit)
+            try:
+                result, truncated = run_select_with_limits(
+                    connector, sql, timeout=CFG.SQL_QUERY_TIMEOUT, max_rows=row_limit
+                )
+            except TimeoutError:
+                logger.warning(
+                    f"[execute_sql] query timeout ({CFG.SQL_QUERY_TIMEOUT}s) "
+                    f"on {db_name}"
+                )
+                return _format_error(
+                    timeout_error_message(CFG.SQL_QUERY_TIMEOUT, row_limit),
+                    db_type=db_type,
+                    sql_type=sql_type,
+                )
+        else:
+            result = connector.run(sql)
 
         if not result:
             return _format_sql_result(
@@ -667,22 +700,41 @@ async def execute_sql(
             all_rows = [list(row) for row in result[1:]] if len(result) > 1 else []
             total_rows = len(all_rows)
 
+            # 安全层截断标注:结果触及行数上限时,在结果中显式告知模型
+            truncation_note = None
+            if truncated:
+                if output_to_file:
+                    truncation_note = (
+                        f"结果超过文件模式安全上限 {row_limit} 行,已截断。"
+                        f"请缩小范围分批导出(如按时间分段,单次时间跨度不超过 1 年)。"
+                    )
+                else:
+                    truncation_note = (
+                        f"结果已按安全上限截断为 {row_limit} 行(实际还有更多数据)。"
+                        f"请加大过滤条件、用 LIMIT 分页,或设 output_to_file=true "
+                        f"导出完整明细。"
+                    )
+
             # 隐私脱敏：在分页/导出/展示之前对全量结果脱敏，
             # 确保返回给 LLM/用户以及导出的 CSV 都是脱敏后的数据。
             masked_columns: List[str] = []
             if all_rows:
                 try:
-                    from gyra_serve.sql_guard.masking import mask_run_result
+                    from gyra_serve.sql_guard.masking import (
+                        is_internal_catalog_sql,
+                        mask_run_result,
+                    )
 
                     session_id = kwargs.get("session_id") or getattr(
                         kwargs.get("agent", None), "conv_id", None
                     )
-                    columns, all_rows, masked_columns = mask_run_result(
-                        ds_id,
-                        columns,
-                        all_rows,
-                        session_id=session_id,
-                    )
+                    if not is_internal_catalog_sql(sql):
+                        columns, all_rows, masked_columns = mask_run_result(
+                            ds_id,
+                            columns,
+                            all_rows,
+                            session_id=session_id,
+                        )
                 except Exception as e:
                     logger.warning(f"[execute_sql] masking skipped: {e}")
 
@@ -740,6 +792,7 @@ async def execute_sql(
                         file_mode=True,
                         download_url=export_info.get("download_url"),
                         preview_url=export_info.get("preview_url"),
+                        result_truncation_note=truncation_note,
                     )
                 # 无沙箱：降级为下方正常分页展示，并标注错误
                 logger.warning(
@@ -852,6 +905,9 @@ async def execute_sql(
             if display_truncated:
                 result_data["display_truncated"] = True
                 result_data["display_row_count"] = len(vis_display_rows)
+
+            if truncation_note:
+                result_data["result_truncation_note"] = truncation_note
 
             if file_export_error:
                 result_data["file_export_error"] = file_export_error
@@ -1147,6 +1203,7 @@ def _format_sql_result(
     file_export_error: Optional[str] = None,
     download_url: Optional[str] = None,
     preview_url: Optional[str] = None,
+    result_truncation_note: Optional[str] = None,
 ) -> str:
     """格式化 SQL 查询结果，返回 SQL 查询组件格式"""
 
@@ -1199,6 +1256,9 @@ def _format_sql_result(
         result_data["display_truncated"] = True
         if display_row_count:
             result_data["display_row_count"] = display_row_count
+
+    if result_truncation_note:
+        result_data["result_truncation_note"] = result_truncation_note
 
     # 使用 d-sql-query 组件渲染
     try:
@@ -1574,7 +1634,7 @@ async def list_tables(
         if not connector:
             return f"Error: Database '{db_name}' not found. Please check the db_name."
 
-        table_names = connector.get_table_names()
+        table_names = sorted(set(connector.get_table_names() or []))
 
         if not table_names:
             return f"No tables found in database '{db_name}'."

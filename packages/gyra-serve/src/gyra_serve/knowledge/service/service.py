@@ -25,7 +25,7 @@ import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from gyra.component import BaseComponent, SystemApp
 from gyra.knowledge.types import Space, Visibility, new_space_id
@@ -64,6 +64,44 @@ def _translate_to_async_dsn(url: str) -> str:
         if url.startswith(sync_prefix):
             return async_prefix + url[len(sync_prefix):]
     return url
+
+
+def _resolve_default_space_models(
+    system_app: Optional[SystemApp],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve global default (text, multimodal) models for new spaces.
+
+    Text model: the system-wide default (``agent.default_llm``), falling
+    back to the first registered model (media-gen models already excluded).
+    Multimodal model: the first registered model with vision capability.
+    Any failure returns ``(None, None)`` — callers keep empty values and
+    fall back at runtime; space creation is never blocked.
+    """
+    llm_model: Optional[str] = None
+    multimodal_model: Optional[str] = None
+    try:
+        from gyra.agent.util.llm.model_config_cache import ModelConfigCache
+
+        models = ModelConfigCache.get_all_models()
+        if not models:
+            return None, None
+        default_llm = None
+        try:
+            default_llm = (
+                system_app.config.get("agent.default_llm") if system_app else None
+            )
+        except Exception:  # noqa: BLE001
+            default_llm = None
+        if default_llm and ModelConfigCache.has_model(default_llm):
+            llm_model = default_llm
+        else:
+            llm_model = models[0]
+        multimodal_model = next(
+            (m for m in models if ModelConfigCache.is_multimodal(m)), None
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("resolve default space models failed: %s", e)
+    return llm_model, multimodal_model
 
 
 class Service(BaseComponent):
@@ -773,6 +811,15 @@ class Service(BaseComponent):
             visibility = Visibility(visibility).value  # validates the value
         if space_type is not None and space_type not in ("personal", "agent_memory"):
             raise ValueError(f"invalid space_type: {space_type!r}")
+
+        # 初始化默认值:未显式配置的空间把全局默认模型落到空间(文本模型 +
+        # 多模态模型),使文档解析/生成开箱即用;仅在字段为空时填充。
+        if llm_model is None or multimodal_model is None:
+            default_llm, default_multimodal = _resolve_default_space_models(
+                self._system_app
+            )
+            llm_model = llm_model or default_llm
+            multimodal_model = multimodal_model or default_multimodal
 
         backend = backend or self._serve_config.default_backend or "local"
 

@@ -178,3 +178,36 @@ async def test_logical_workdir_allowed_when_basedir_behind_symlink(tmp_path):
     result = await client.exec_command(command="echo ok", work_dir="/data/workspace")
     assert result.status == "completed"
     assert "ok" in result.output
+
+
+@pytest.mark.asyncio
+async def test_skill_script_command_can_write_tmp(tmp_path):
+    """skill 目录脚本默认受信: 栅栏额外放行 /tmp(脚本中间产物常见落点)。"""
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    script = skill_dir / "run.py"
+    script.write_text(
+        "import pathlib\n"
+        "pathlib.Path('/tmp/gyra_skill_probe_out.json').write_text('ok')\n"
+    )
+    client = _make_client(tmp_path, work_dir="/data/workspace", skill_dir=str(skill_dir))
+
+    probe = "/tmp/gyra_skill_probe_out.json"
+    try:
+        result = await client.exec_command(command=f"python3 {script} --out {probe}")
+        assert result.status == "completed"
+        with open(probe) as f:
+            assert f.read() == "ok"
+    finally:
+        if os.path.exists(probe):
+            os.remove(probe)
+
+
+@pytest.mark.asyncio
+async def test_non_skill_command_cannot_write_tmp(tmp_path):
+    """非 skill 脚本命令写 /tmp 仍被路径栅栏拦截。"""
+    client = _make_client(
+        tmp_path, work_dir="/data/workspace", skill_dir=str(tmp_path / "skill")
+    )
+    result = await client.exec_command(command="touch /tmp/gyra_fence_probe_blocked")
+    assert result.status == "failed"

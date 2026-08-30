@@ -133,9 +133,9 @@ export const listUsageCalls = (
 export const getUsageByConversation = (params: UsageFilters = {}) =>
   GET<UsageFilters, ConversationUsage[]>(`${API_PREFIX}/by-conversation`, params);
 
-export const getUsageConversationSummary = (convIds: string[] = []) =>
+export const getUsageConversationSummary = (conversationIds: string[] = []) =>
   GET<null, ConversationUsageSummary[]>(
-    `${API_PREFIX}/conversation-summary?conv_ids=${encodeURIComponent(convIds.join(','))}`
+    `${API_PREFIX}/conversation-summary?conv_ids=${encodeURIComponent(conversationIds.join(','))}`
   );
 
 export const getUsageByAgent = (params: UsageFilters = {}) =>

@@ -114,6 +114,7 @@ function normalizeStep(raw: unknown): WorkspaceExecutionStep | null {
     task_status: typeof r.task_status === 'string' ? r.task_status : undefined,
     playbook_name: typeof r.playbook_name === 'string' ? r.playbook_name : undefined,
     triggered_by: typeof r.triggered_by === 'string' ? r.triggered_by : undefined,
+    attachments: Array.isArray(r.attachments) ? (r.attachments as WorkspaceExecutionStep['attachments']) : null,
   };
 }
 
@@ -199,13 +200,37 @@ function mergeFilesById<T extends { file_id: string }>(prev: T[], next: T[]): T[
   return merged;
 }
 
-/** 交付文件合并:按 file_id 去重,同一物理文件只保留 ts 最新(版本最新)的一份。
- *  不再按 file_id+ts —— 同一文件被多次修改/交付时,ts 会因来源不同而变
- *  (增量路径 start_time 兜底 vs 全量路径 created_at),按 ts 拆分会把同一次交付
- *  识别成多条,前端把同一个文件展示多次且无版本记录,毫无意义。 */
+/** 为缺失产出时间戳的新交付文件补上「首次进入视图」的当前时间。
+ *  已带 ts 的文件原样返回;同一批文件共用同一锚点(它们同属一个 chunk)。
+ *  补 ts 只发生在首次出现时 —— 后续 chunk 再带同一 file_id 时,mergeDeliverableFiles
+ *  在内容相同分支会保留最早那份 ts,锚点不会被新 chunk 顶掉。 */
+function stampMissingTs(files: WorkspaceDeliverableFile[]): WorkspaceDeliverableFile[] {
+  if (!files.some((f) => !f.ts)) return files;
+  const now = new Date().toISOString();
+  return files.map((f) => (f.ts ? f : { ...f, ts: now }));
+}
+
+/** 判断两份交付文件是否指向同一版本内容(文件名、URL、渲染类型均相同)。
+ *  用于区分"后端重复下发同一文件"与"同一 file_id 被修改/重新交付为新版本"。 */
+function isSameDeliverableContent(a: WorkspaceDeliverableFile, b: WorkspaceDeliverableFile): boolean {
+  return (
+    a.file_name === b.file_name &&
+    a.content_url === b.content_url &&
+    a.download_url === b.download_url &&
+    a.object_path === b.object_path &&
+    a.render_type === b.render_type &&
+    a.mime_type === b.mime_type &&
+    a.file_size === b.file_size
+  );
+}
+
+/** 交付文件合并:按 file_id 去重,同 file_id 只展示一份。
+ *  - 内容真正变化(file_name/URL 等变了)时按新版本处理,ts 随新版本走;
+ *  - 内容相同仅 ts 被后端刷新(每帧重复下发同一文件)时,保留最早 ts 作为产出时间锚点,
+ *    避免历史交付物被错误归属到最新轮次。 */
 function mergeDeliverableFiles(prev: WorkspaceDeliverableFile[], next: WorkspaceDeliverableFile[]): WorkspaceDeliverableFile[] {
-  // next 为本轮(较新)数据在前,prev 历史在后;同 file_id 取 ts 较新的一份
   const byId = new Map<string, WorkspaceDeliverableFile>();
+  // next 为本轮(较新)数据在前,prev 历史在后;先处理新 chunk 保持输出顺序
   for (const f of [...next, ...prev]) {
     const fid = f.file_id;
     const existing = byId.get(fid);
@@ -215,7 +240,18 @@ function mergeDeliverableFiles(prev: WorkspaceDeliverableFile[], next: Workspace
     }
     const curMs = tsToMs(existing.ts);
     const newMs = tsToMs(f.ts);
-    if (newMs !== null && (curMs === null || newMs > curMs)) byId.set(fid, f);
+    const contentChanged = !isSameDeliverableContent(existing, f);
+    if (contentChanged) {
+      // 真实版本更新:保留 ts 更新的一份;都无 ts 时保留 next(existing)
+      if (newMs !== null && (curMs === null || newMs > curMs)) {
+        byId.set(fid, f);
+      }
+    } else {
+      // 内容相同:保留 earliest ts 作为产出时间锚点,
+      // 避免后端每帧/新轮重复下发同一文件时把归属推到最新轮次
+      const earliestTs = curMs !== null && (newMs === null || curMs < newMs) ? existing.ts : f.ts;
+      byId.set(fid, { ...f, ts: earliestTs });
+    }
   }
   return Array.from(byId.values());
 }
@@ -262,8 +298,17 @@ export function parseWorkspaceView(chunk: unknown, prev: WorkspaceView | null): 
   // 交付文件 / 任务文件:后端按当前轮次(agent conv)全量推送,新轮追问(新建
   // agent conv)只会带本轮文件。交付文件按 file_id+ts 合并(跨轮各轮保留自己的文件);
   // 任务文件按 file_id 合并(单个物理文件,同 id 取新值)。
+  //
+  // 产出时间戳兜底:后端未下发 ts/created_at 时,以「首次进入视图」的时间作为
+  // 归属锚点。否则这些文件永远无法落到任何轮次区间,会被渲染到 feed 最底部,
+  // 多轮追问时表现为「历史交付物跟着最新一轮跑」。
   const deliverable_files = Array.isArray(c.deliverable_files)
-    ? mergeDeliverableFiles(prev?.deliverable_files ?? [], c.deliverable_files.map(normalizeDeliverableFile).filter((f): f is WorkspaceDeliverableFile => f !== null))
+    ? mergeDeliverableFiles(
+        prev?.deliverable_files ?? [],
+        stampMissingTs(
+          c.deliverable_files.map(normalizeDeliverableFile).filter((f): f is WorkspaceDeliverableFile => f !== null),
+        ),
+      )
     : (prev?.deliverable_files ?? []);
   const task_files = Array.isArray(c.task_files)
     ? mergeFilesById(prev?.task_files ?? [], c.task_files.map(normalizeTaskFile).filter((f): f is WorkspaceTaskFile => f !== null))

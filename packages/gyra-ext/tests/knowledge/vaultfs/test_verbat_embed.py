@@ -101,9 +101,14 @@ async def test_verbat_semantic_search(vault):
     hits = await vault.verbat_search("quantum physics", mode="semantic")
     assert hits
     assert hits[0].source_file == "note.md"
-    # keyword LIKE would NOT match ("quantum physics" not a substring)
+    # Multi-term coverage recall: "quantum physics" is not a substring, but
+    # per-term search matches "quantum" → partial coverage 0.3 + 0.7 * 1/2.
     kw = await vault.verbat_search("quantum physics", mode="keyword")
-    assert kw == []
+    assert kw
+    assert kw[0].source_file == "note.md"
+    assert kw[0].score == 0.65
+    # No term matches at all → still empty.
+    assert await vault.verbat_search("zebra unicorn", mode="keyword") == []
 
 
 @pytest.mark.asyncio

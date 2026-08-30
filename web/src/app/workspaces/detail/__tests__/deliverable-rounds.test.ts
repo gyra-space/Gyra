@@ -66,21 +66,14 @@ describe('groupDeliverablesByRound', () => {
     expect(byRound.get(rounds[1].key)?.map((f) => f.file_id)).toEqual(['f2']);
   });
 
-  test('缺时间戳的交付文件进 leftover(该轮无法归属时 feed 底部兜底)', () => {
+  test('无时间戳 / 时间戳早于所有轮次的交付文件归入最早一轮(不堆 feed 底部)', () => {
     const { byRound, leftover } = groupDeliverablesByRound(rounds, [
       delivery('f1', '2026-08-01T09:00:01.500'),
       delivery('f3', null),
-    ]);
-    expect(byRound.get(rounds[0].key)?.map((f) => f.file_id)).toEqual(['f1']);
-    expect(leftover.map((f) => f.file_id)).toEqual(['f3']);
-  });
-
-  test('在任意轮次发起前交付的文件(无归属轮次)进 leftover', () => {
-    const { byRound, leftover } = groupDeliverablesByRound(rounds, [
       delivery('f0', '2026-08-01T08:59:00'),
     ]);
-    expect(byRound.size).toBe(0);
-    expect(leftover.map((f) => f.file_id)).toEqual(['f0']);
+    expect(leftover).toHaveLength(0);
+    expect(byRound.get(rounds[0].key)?.map((f) => f.file_id)).toEqual(['f1', 'f3', 'f0']);
   });
 
   test('一轮内若没有 user 步骤(恢复场景),以轮内最早步骤 ts 作为归属基准', () => {
@@ -107,6 +100,29 @@ describe('groupDeliverablesByRound', () => {
     expect(leftover).toHaveLength(0);
     expect(byRound.get(rounds[0].key)?.map((f) => f.file_id)).toEqual(['f1a', 'f1b']);
     expect(byRound.get(rounds[1].key)?.map((f) => f.file_id)).toEqual(['f2a']);
+  });
+
+  test('ts 被后端刷新到第二轮,但第一轮步骤文本已提及文件名,仍归属第一轮', () => {
+    const roundsWithMention = splitRounds([
+      user('u1', '2026-08-01T09:00:00', '第一问'),
+      tool('t1', '2026-08-01T09:00:01'),
+      {
+        id: 'a1',
+        type: 'answer',
+        title: '回复',
+        status: 'done',
+        output: '已创建并交付 `test.html`。',
+        ts: '2026-08-01T09:00:02',
+      } as WorkspaceExecutionStep,
+      user('u2', '2026-08-01T09:10:00', '追问'),
+    ]);
+    // 后端延迟下发/刷新 ts 到第二轮时间(file_id='test',file_name='test.html')
+    const { byRound, leftover } = groupDeliverablesByRound(roundsWithMention, [
+      delivery('test', '2026-08-01T09:10:01.500'),
+    ]);
+    expect(leftover).toHaveLength(0);
+    expect(byRound.get(roundsWithMention[0].key)?.map((f) => f.file_id)).toEqual(['test']);
+    expect(byRound.get(roundsWithMention[1].key)).toBeUndefined();
   });
 });
 

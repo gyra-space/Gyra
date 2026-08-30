@@ -719,20 +719,25 @@ class Service(
                 pass
 
         # 隐私脱敏：管理预览也按隐私规则脱敏，避免明文敏感数据暴露给前端。
+        # 系统目录表(ALL_TABLES/PG_CATALOG 等)无业务数据，跳过脱敏避免列名兜底误伤。
         masked_columns: list = []
         try:
-            from gyra_serve.sql_guard.masking import mask_run_result
+            from gyra_serve.sql_guard.masking import (
+                is_internal_catalog_table,
+                mask_run_result,
+            )
 
             ds_id_int = int(datasource_id)
-            if first_rows:
-                _, first_rows, masked_columns = mask_run_result(
-                    ds_id_int, columns, first_rows, table_name=table_name
-                )
-            if last_rows:
-                _, last_rows, masked_last = mask_run_result(
-                    ds_id_int, columns, last_rows, table_name=table_name
-                )
-                masked_columns = masked_columns or masked_last
+            if not is_internal_catalog_table(table_name):
+                if first_rows:
+                    _, first_rows, masked_columns = mask_run_result(
+                        ds_id_int, columns, first_rows, table_name=table_name
+                    )
+                if last_rows:
+                    _, last_rows, masked_last = mask_run_result(
+                        ds_id_int, columns, last_rows, table_name=table_name
+                    )
+                    masked_columns = masked_columns or masked_last
         except Exception as e:
             logger.warning(f"preview_table_data masking skipped: {e}")
 

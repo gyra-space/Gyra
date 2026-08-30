@@ -14,6 +14,7 @@ VaultFS code.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -51,7 +52,7 @@ class LLMReranker:
     def __init__(self, model: str):
         self._model = model
 
-    async def rerank(self, query: str, hits: List[DocHit]) -> List[DocHit]:
+    async def rerank(self, query: str, hits: List[Any]) -> List[Any]:
         if len(hits) <= 1:
             return hits
         try:
@@ -67,27 +68,21 @@ class LLMReranker:
         indexed.sort(
             key=lambda kv: (-scores.get(kv[0], -1.0), kv[0])
         )
-        reranked: List[DocHit] = []
+        reranked: List[Any] = []
         for original_idx, hit in indexed:
             score = scores.get(original_idx)
             if score is not None:
-                hit = DocHit(
-                    document_id=hit.document_id,
-                    path=hit.path,
-                    title=hit.title,
-                    type=hit.type,
-                    score=float(score),
-                    snippet=hit.snippet,
-                    verbats=hit.verbats,
-                )
+                hit = dataclasses.replace(hit, score=float(score))
             reranked.append(hit)
         return reranked
 
-    async def _score(self, query: str, hits: List[DocHit]) -> Dict[int, float]:
+    async def _score(self, query: str, hits: List[Any]) -> Dict[int, float]:
         candidates = []
         for i, h in enumerate(hits, start=1):
             snippet = (h.snippet or "").replace("\n", " ")[:200]
-            candidates.append(f"[{i}] {h.title} ({h.path})\n{snippet}")
+            title = getattr(h, "title", None) or getattr(h, "source_file", "") or ""
+            path = getattr(h, "path", "") or getattr(h, "verbat_id", "") or ""
+            candidates.append(f"[{i}] {title} ({path})\n{snippet}")
         user_prompt = (
             f"查询: {query}\n\n候选文档:\n" + "\n\n".join(candidates)
         )

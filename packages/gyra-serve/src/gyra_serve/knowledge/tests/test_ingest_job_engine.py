@@ -141,6 +141,156 @@ async def test_ingest_restart_resume_idempotent(env, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ingest_fails_when_wiki_generation_empty(env, monkeypatch):
+    """LLM returning empty markdown must fail the job, not silently "done".
+
+    Regression: a reasoning model can spend its whole completion budget on
+    thinking and emit an empty body; the old code logged a warning and left
+    the job "done" with zero wiki docs, so the UI showed nothing.
+    """
+    _, ksvc, job_svc = env
+    _stub_llm(monkeypatch, "", '{"entities": []}')
+
+    await ksvc.create_space(slug="eng-5", backend="local")
+    vault = await ksvc.get_vault("eng-5")
+    space = await ksvc.get_space_config("eng-5")
+
+    raw_path = vault.root / "raw" / "blank.txt"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_text("blank wiki raw content", encoding="utf-8")
+    tmp = Path(str(raw_path) + ".tmp")
+    shutil.copy2(raw_path, tmp)
+
+    job = await ksvc.orchestrator.ingest_file(
+        space=space, vault=vault, file_path=tmp, original_filename="blank.txt",
+    )
+    row = await _wait_job_done(job_svc, job.id)
+    assert row.status == "failed", f"expected failed, got {row.status}"
+    assert "empty markdown" in (row.last_error or "")
+
+    # The space ledger (what the knowledge UI reads) mirrors the failure.
+    entry = await vault.ingest_job_get(job.id)
+    assert entry["status"] == "failed"
+    assert "empty markdown" in (entry["error"] or "")
+
+    # Extraction itself succeeded: the verbat is in, but no wiki doc exists.
+    verbats = await vault.verbat_list(limit=100)
+    assert len(verbats) == 1
+    docs = await vault.doc_list(limit=100)
+    assert not any(d.source_path and "sources/" in d.source_path for d in docs)
+
+
+def test_chunk_verbat_content_strategies(monkeypatch):
+    """Unit-test the wiki chunker: sheet boundaries, packing, hard splits."""
+    import gyra.agent.core.usage_metric as usage_metric
+
+    monkeypatch.setattr(usage_metric, "count_tokens", lambda t: max(1, len(t) // 4))
+    from gyra_serve.knowledge.ingest import IngestOrchestrator
+
+    # Small content always comes back untouched, as a single chunk.
+    assert IngestOrchestrator._chunk_verbat_content("tiny content", 1000) == [
+        "tiny content"
+    ]
+
+    # Several sheets, each under budget, total over budget: split at sheet
+    # boundaries, keep every sheet intact, lose nothing in reassembly.
+    sheets = "\n\n".join(
+        f"## Sheet: s{i} (1 rows)\n\n" + "x" * 400 for i in range(3)
+    )
+    chunks = IngestOrchestrator._chunk_verbat_content(sheets, 150)
+    assert len(chunks) == 3
+    assert all(c.startswith("## Sheet: s") for c in chunks)
+
+    def ws(text: str) -> str:
+        return "".join(text.split())
+
+    assert "".join(ws(c) for c in chunks) == ws(sheets)
+
+    # One sheet wider than the budget: line-level hard split inside it.
+    big_sheet = "## Sheet: huge (10 rows)\n\n" + "\n".join("y" * 300 for _ in range(10))
+    chunks = IngestOrchestrator._chunk_verbat_content(big_sheet, 100)
+    assert len(chunks) > 1
+    assert all(len(c) // 4 <= 100 for c in chunks)
+    assert "".join(chunks) == big_sheet
+
+    # Content without sheet headings: whole-content hard split.
+    plain = "\n".join("z" * 300 for _ in range(10))
+    chunks = IngestOrchestrator._chunk_verbat_content(plain, 100)
+    assert len(chunks) > 1
+    assert "".join(chunks) == plain
+
+    # Continuation chunks must not keep a model-emitted frontmatter.
+    assert (
+        IngestOrchestrator._strip_frontmatter(
+            "---\ntype: source\ntitle: t\n---\n\n## body"
+        )
+        == "## body"
+    )
+    assert IngestOrchestrator._strip_frontmatter("## plain body") == "## plain body"
+
+
+@pytest.mark.asyncio
+async def test_ingest_large_content_chunked_wiki(env, monkeypatch):
+    """Oversized verbatim must be split across several wiki LLM calls.
+
+    Regression: the old code silently truncated verbatim content to 12000
+    chars. Now anything above 60% of the model's context window is chunked
+    at `## Sheet:` boundaries and the per-chunk sections are merged back
+    into a single wiki doc.
+    """
+    _, ksvc, job_svc = env
+    calls: list[str] = []
+
+    async def _stub(
+        self, model, system_prompt, user_prompt, image_paths=None, **kwargs
+    ):
+        if system_prompt and "实体归并" in system_prompt:
+            return '{"entities": []}'
+        calls.append(user_prompt)
+        if len(calls) == 1:
+            return _wiki_md("ChunkedDoc", "part one marker")
+        return "## 附录\n\npart two marker"
+
+    from gyra_serve.knowledge.ingest import IngestOrchestrator
+    monkeypatch.setattr(IngestOrchestrator, "_call_llm", _stub)
+    monkeypatch.setattr(IngestOrchestrator, "WIKI_INPUT_TOKEN_RATIO", 0.6)
+    import gyra.agent.core.usage_metric as usage_metric
+    monkeypatch.setattr(usage_metric, "count_tokens", lambda t: max(1, len(t) // 4))
+    monkeypatch.setattr(usage_metric, "get_context_window", lambda name: 4000)
+
+    await ksvc.create_space(slug="eng-6", backend="local")
+    vault = await ksvc.get_vault("eng-6")
+    space = await ksvc.get_space_config("eng-6")
+
+    # Two sheets of ~1800 tokens each: each one fits the ~2000-token input
+    # budget (60% of the patched 4000-token window), together they don't —
+    # so the chunker must emit exactly 2 LLM calls along sheet boundaries.
+    sheet_a = "## Sheet: orders (1 rows)\n\n" + "订单数据记录" * 1200
+    sheet_b = "## Sheet: refunds (1 rows)\n\n" + "退款明细记录" * 1200
+    raw_path = vault.root / "raw" / "big.txt"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_text(sheet_a + "\n\n" + sheet_b, encoding="utf-8")
+    tmp = Path(str(raw_path) + ".tmp")
+    shutil.copy2(raw_path, tmp)
+
+    job = await ksvc.orchestrator.ingest_file(
+        space=space, vault=vault, file_path=tmp, original_filename="big.txt",
+    )
+    row = await _wait_job_done(job_svc, job.id)
+    assert row.status == "done", f"job failed: {row.last_error}"
+
+    assert len(calls) == 2, f"expected 2 chunked wiki calls, got {len(calls)}"
+    assert "第 2/2 段" in calls[1], "second call must carry continuation instruction"
+
+    docs = await vault.doc_list(limit=100)
+    target = next(d for d in docs if "ChunkedDoc" in (d.title or ""))
+    full = await vault.doc_read(target.path)
+    assert full.raw_content.startswith("---"), "merged wiki must keep frontmatter"
+    assert "part one marker" in full.raw_content
+    assert "part two marker" in full.raw_content
+
+
+@pytest.mark.asyncio
 async def test_ingest_jobs_survives_restart(env, monkeypatch):
     _, ksvc, job_svc = env
     _stub_llm(monkeypatch, _wiki_md("PersistDoc", "persist"), '{"entities": []}')

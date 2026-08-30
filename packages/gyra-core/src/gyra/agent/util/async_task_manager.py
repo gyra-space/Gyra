@@ -309,8 +309,9 @@ class AsyncTaskManager:
         ))
 
     持久化：默认不落盘；经 ``set_global_ledger`` 注入 LEDGER（如 serve 层的
-    AsyncTaskDao）后，所有实例（含单例）统一写 DB，支撑分布式查询与恢复。
-    ``ledger_path`` 显式传入时仍可用 JSONL 兜底（测试 / 无 DB 场景）。
+    AsyncTaskDao）后，所有实例（含已创建的单例）实时改写 DB，支撑分布式查询
+    与恢复——注入不再受实例创建时序影响。``ledger_path`` 显式传入时仍可用
+    JSONL 兜底（测试 / 无 DB 场景）。
 
     Args:
         subagent_manager: 子 Agent 委派器（media 模式可为 None）。
@@ -342,8 +343,11 @@ class AsyncTaskManager:
         self._futures: Dict[str, asyncio.Future] = {}
         self._bg_tasks: Dict[str, asyncio.Task] = {}
 
-        # 持久化台账：显式 path > 全局注入 ledger（DB）> 无
-        self._ledger = self._resolve_ledger(ledger_path)
+        # 持久化台账参数：每次访问 _ledger 时惰性解析（显式 path > 全局注入 DB >
+        # media 单例 JSONL 兜底 > 无），保证 set_global_ledger 对已创建实例即时生效
+        self._explicit_ledger_path = ledger_path
+        self._jsonl_ledger: Optional[TaskLedger] = None
+        self._jsonl_fallback = False
 
         # 通知机制
         self._completion_event = asyncio.Event()
@@ -361,19 +365,32 @@ class AsyncTaskManager:
     def set_global_ledger(cls, ledger: Any) -> None:
         """注入全局持久化 ledger（如 serve 层的 AsyncTaskDao）。
 
-        注入后，所有新创建的实例（含 media 单例）都默认使用该 ledger 做持久化，
-        实现跨实例 / 跨进程统一查询与恢复（分布式）。ledger 需暴露
+        注入后，所有实例（含已创建的 media 单例）都实时使用该 ledger 做持久化，
+        实现跨实例 / 跨进程统一查询与恢复（分布式），且不受注入时序影响。
+        ledger 需暴露
         ``upsert(record)`` 与 ``read_all()`` 接口（与 AsyncTaskDao 对齐）。
         """
         cls._global_ledger = ledger
 
-    @classmethod
-    def _resolve_ledger(cls, ledger_path: Optional[str]) -> Any:
-        """按优先级解析 ledger：显式 path > 全局注入（DB）> 无。"""
-        if ledger_path is not None:
-            return TaskLedger(_resolve_ledger_path(ledger_path))
-        if cls._global_ledger is not None:
-            return cls._global_ledger
+    @property
+    def _ledger(self) -> Optional[Any]:
+        """惰性解析持久化台账：显式 path > 全局注入（DB）> JSONL 兜底 > 无。
+
+        每次访问实时读取全局注入，因此 ``set_global_ledger`` 对已创建实例
+        （含 media 单例）即时生效，不会在单例创建时刻被冻结。
+        """
+        if self._explicit_ledger_path is not None:
+            if self._jsonl_ledger is None:
+                self._jsonl_ledger = TaskLedger(
+                    _resolve_ledger_path(self._explicit_ledger_path)
+                )
+            return self._jsonl_ledger
+        if type(self)._global_ledger is not None:
+            return type(self)._global_ledger
+        if self._jsonl_fallback:
+            if self._jsonl_ledger is None:
+                self._jsonl_ledger = TaskLedger(_resolve_ledger_path(None))
+            return self._jsonl_ledger
         return None
 
     @classmethod
@@ -385,16 +402,18 @@ class AsyncTaskManager:
         打包委派协程提交到同一实例。
 
         持久化：显式 ``ledger_path`` > 全局注入 ledger（serve 启动时注入
-        AsyncTaskDao，写 DB）> JSONL 兜底（无 DB 的纯 core / 测试场景）。
+        AsyncTaskDao，写 DB）> JSONL 兜底（无 DB 的纯 core / 测试场景，
+        路径在首次写入时惰性解析）。注入 ledger 后单例实时跟随，不再在
+        创建时刻冻结。
         """
-        if ledger_path is None and cls._global_ledger is None:
-            ledger_path = _resolve_ledger_path(None)
         if cls._media_instance is None:
             cls._media_instance = cls(
                 subagent_manager=None,
                 max_concurrent=5,
                 ledger_path=ledger_path,
             )
+            if ledger_path is None:
+                cls._media_instance._jsonl_fallback = True
         return cls._media_instance
 
     # ==================== 任务提交 ====================

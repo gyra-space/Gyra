@@ -275,7 +275,7 @@ const ChatSider: React.FC<{
   }, [dialogueList]);
 
   // 批量拉取会话级用量（模型 + token），供每条历史会话 chip 展示，避免 N+1
-  const convIds = useMemo(
+  const conversationIds = useMemo(
     () =>
       (dialogueList[1] || [])
         .map((i: IChatDialogueSchema) => i.conv_uid)
@@ -284,8 +284,8 @@ const ChatSider: React.FC<{
   );
   const { data: usageMap = {} } = useRequest(
     async () => {
-      if (!convIds.length) return {};
-      const [err, res] = await apiInterceptors(getUsageConversationSummary(convIds));
+      if (!conversationIds.length) return {};
+      const [err, res] = await apiInterceptors(getUsageConversationSummary(conversationIds));
       if (err) return {};
       const map: Record<string, ConversationUsageSummary> = {};
       (res || []).forEach(s => {
@@ -293,7 +293,7 @@ const ChatSider: React.FC<{
       });
       return map;
     },
-    { refreshDeps: [convIds.join(',')] },
+    { refreshDeps: [conversationIds.join(',')] },
   );
 
   return (

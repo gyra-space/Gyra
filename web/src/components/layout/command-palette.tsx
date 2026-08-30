@@ -3,7 +3,6 @@
 import { ChatContext } from '@/contexts';
 import {
   ClockCircleOutlined,
-  CompassOutlined,
   ConsoleSqlOutlined,
   DashboardOutlined,
   DatabaseOutlined,
@@ -43,7 +42,7 @@ export default function CommandPalette() {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { dialogueList } = useContext(ChatContext);
 
   // 全局快捷键:⌘K / Ctrl+K 切换,Esc 关闭;侧边栏搜索按钮通过事件唤起
@@ -84,19 +83,23 @@ export default function CommandPalette() {
   );
 
   const pages: CommandItem[] = useMemo(
-    () => [
-      { key: 'explore', group: 'page', label: t('agent_space'), icon: <CompassOutlined className={ICON_CLS} />, action: () => go('/application/explore') },
-      { key: 'agents', group: 'page', label: t('Agents'), icon: <RobotOutlined className={ICON_CLS} />, action: () => go('/application/app') },
-      { key: 'workspaces', group: 'page', label: t('workspaces') || 'Workspaces', icon: <TeamOutlined className={ICON_CLS} />, action: () => go('/workspaces') },
-      { key: 'knowledge', group: 'page', label: t('knowledge_base'), icon: <BookOutlined className={ICON_CLS} />, action: () => go('/knowledge-vault') },
-      { key: 'database', group: 'page', label: t('Database'), icon: <DatabaseOutlined className={ICON_CLS} />, action: () => go('/database') },
-      { key: 'skills', group: 'page', label: t('agent_skills'), icon: <ThunderboltOutlined className={ICON_CLS} />, action: () => go('/agent-skills') },
-      { key: 'mcp', group: 'page', label: 'MCP', icon: <ConsoleSqlOutlined className={ICON_CLS} />, action: () => go('/mcp') },
-      { key: 'models', group: 'page', label: t('model_manage'), icon: <DashboardOutlined className={ICON_CLS} />, action: () => go('/models') },
-      { key: 'cron', group: 'page', label: t('cron_page_title'), icon: <ClockCircleOutlined className={ICON_CLS} />, action: () => go('/cron') },
-      { key: 'settings', group: 'page', label: t('system_config'), icon: <SettingOutlined className={ICON_CLS} />, action: () => go('/settings/config') },
-    ],
-    [t, go],
+    () => {
+      const isZh = i18n.language === 'zh';
+      const menuName = (zhName: string, enName: string) =>
+        isZh ? `${zhName}(${enName})` : enName;
+      return [
+        { key: 'agents', group: 'page', label: menuName('专家', 'Agent'), icon: <RobotOutlined className={ICON_CLS} />, action: () => go('/application/explore') },
+        { key: 'workspaces', group: 'page', label: t('workspaces') || 'Workspaces', icon: <TeamOutlined className={ICON_CLS} />, action: () => go('/workspaces') },
+        { key: 'knowledge', group: 'page', label: t('knowledge_base'), icon: <BookOutlined className={ICON_CLS} />, action: () => go('/knowledge-vault') },
+        { key: 'database', group: 'page', label: t('Database'), icon: <DatabaseOutlined className={ICON_CLS} />, action: () => go('/database') },
+        { key: 'skills', group: 'page', label: menuName('技能', 'Skill'), icon: <ThunderboltOutlined className={ICON_CLS} />, action: () => go('/agent-skills') },
+        { key: 'mcp', group: 'page', label: menuName('链接', 'MCP'), icon: <ConsoleSqlOutlined className={ICON_CLS} />, action: () => go('/mcp') },
+        { key: 'models', group: 'page', label: t('model_manage'), icon: <DashboardOutlined className={ICON_CLS} />, action: () => go('/models') },
+        { key: 'cron', group: 'page', label: t('cron_page_title'), icon: <ClockCircleOutlined className={ICON_CLS} />, action: () => go('/cron') },
+        { key: 'settings', group: 'page', label: t('system_config'), icon: <SettingOutlined className={ICON_CLS} />, action: () => go('/settings/config') },
+      ];
+    },
+    [t, i18n.language, go],
   );
 
   const chats: CommandItem[] = useMemo(() => {

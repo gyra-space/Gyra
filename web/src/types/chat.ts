@@ -132,6 +132,8 @@ export type IChatDialogueMessageSchema = {
   thinking?: boolean;
   outing?: boolean;
   feedback?: Record<string, any>;
+  /** 用户上传附件(历史回显):后端从多模态消息 content 提取 */
+  attachments?: { name: string; url: string; mime_type?: string }[];
 };
 
 /** 上下文压缩段（GET /compression/segments 返回）*/

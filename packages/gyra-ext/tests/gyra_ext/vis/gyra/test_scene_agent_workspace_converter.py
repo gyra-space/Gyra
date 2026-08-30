@@ -541,7 +541,10 @@ async def test_deliverable_ts_prefers_file_created_at_over_action_start_time():
     msg = _make_gpt_msg(content="完成", action_report=[report], message_id="m9")
     payload = _extract_payload(await conv.visualization(messages=[msg], gpt_msg=msg))
 
-    assert payload["deliverable_files"][0]["ts"] == "2026-08-05T10:00:03"
+    # 文件元数据 created_at 出自 gpts_file_metadata(DB 用 datetime.utcnow 写入),
+    # 属 UTC naive;必须带 +00:00 下发,否则前端 Date.parse 按浏览器本地时区解析
+    # 会早一个时区偏移,导致交付文件落不进任何轮次而沉到 feed 底部。
+    assert payload["deliverable_files"][0]["ts"] == "2026-08-05T10:00:03+00:00"
 
 
 @pytest.mark.asyncio
@@ -667,3 +670,78 @@ async def test_subagents_collect_failure_returns_empty():
             await conv.visualization(messages=[_make_gpt_msg(content="hi", message_id="m0")], conv_id="conv_main_1")
         )
     assert payload["subagents"] == []
+
+
+# ═══════════════════════════════════════════════════════════════
+# 任务文件时间戳兜底:_collect_files_from_messages(messages 路径)
+# 前端按 created_at/ts 把文件归属到对话轮次;缺时间戳的文件只能
+# 沉底到 feed 底部全局组件,多轮会话看不出属于哪次提问。
+# ═══════════════════════════════════════════════════════════════
+
+from datetime import datetime
+
+from gyra_ext.vis.gyra.gyra_vis_manus_converter import _meta_ts
+
+
+def _make_file_msg(created_at, file_created_at=None, file_type="tool_output"):
+    """构造带 output_files 的消息;file_info 可缺 created_at。"""
+    file_info = {
+        "file_id": "f-tasks-1",
+        "file_name": "app_card_payload.json",
+        "file_type": file_type,
+        "file_size": 1024,
+    }
+    if file_created_at is not None:
+        file_info["created_at"] = file_created_at
+    report = _make_action_output(state="complete", content="done")
+    report.output_files = [file_info]
+    msg = _make_gpt_msg(message_id="m-file")
+    msg.action_report = [report]
+    msg.created_at = created_at
+    return msg
+
+
+class TestTaskFileCreatedAtFallback:
+    def test_file_info_created_at_preferred(self):
+        """file_info 自带 created_at 时优先使用。"""
+        conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+        msg = _make_file_msg(
+            created_at=datetime(2026, 8, 28, 10, 0, 0),
+            file_created_at="2026-08-28T09:59:59",
+        )
+        task_files, _ = conv._collect_files_from_messages([msg])
+        # 文件元数据 created_at 是 UTC(DB utcnow),需带 +00:00,
+        # 否则前端按本地时区解析会早一个时区偏移(详见 _file_meta_ts 说明)。
+        assert task_files[0].created_at == "2026-08-28T09:59:59+00:00"
+
+    def test_fallback_to_message_created_at(self):
+        """file_info 缺 created_at 时用产出消息的 created_at 兜底(与交付文件一致)。"""
+        conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+        msg = _make_file_msg(created_at=datetime(2026, 8, 28, 10, 0, 0))
+        task_files, _ = conv._collect_files_from_messages([msg])
+        assert task_files[0].created_at == "2026-08-28T10:00:00"
+
+    def test_no_created_at_anywhere_stays_none(self):
+        """两处都缺时保持 None,不得变成 "None" 字符串。"""
+        conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+        msg = _make_file_msg(created_at=None)
+        task_files, _ = conv._collect_files_from_messages([msg])
+        assert task_files[0].created_at is None
+
+    def test_deliverable_ts_fallback_unchanged(self):
+        """交付文件 ts 兜底行为不变(file_info 缺 created_at → msg.created_at)。"""
+        conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+        msg = _make_file_msg(created_at=datetime(2026, 8, 28, 10, 0, 0), file_type="deliverable")
+        _, deliverable_files = conv._collect_files_from_messages([msg])
+        assert deliverable_files[0].ts == "2026-08-28T10:00:00"
+
+
+class TestMetaTs:
+    def test_none_stays_none(self):
+        assert _meta_ts(None) is None
+
+    def test_datetime_to_isoformat(self):
+        assert _meta_ts(datetime(2026, 8, 28, 10, 0, 0)) == "2026-08-28T10:00:00"
+
+    def test_str_passthrough(self):
+        assert _meta_ts("2026-08-28T10:00:00") == "2026-08-28T10:00:00"

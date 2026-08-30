@@ -5,6 +5,7 @@ import { Table, Pagination, Tooltip, Button } from 'antd';
 import { CopyOutlined, CheckOutlined, DownloadOutlined, DatabaseOutlined, LockOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { ManusExecutionOutput } from '@/types/manus';
+import copy from 'copy-to-clipboard';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
@@ -113,13 +114,11 @@ const SqlQueryRenderer: FC<IProps> = ({ outputs }) => {
     raw_result,
   } = sqlData;
 
-  const handleCopySql = async () => {
-    try {
-      await navigator.clipboard.writeText(sql);
+  const handleCopySql = () => {
+    const success = copy(sql);
+    if (success) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy SQL:', err);
     }
   };
 

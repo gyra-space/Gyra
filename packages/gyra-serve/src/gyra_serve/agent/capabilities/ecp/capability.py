@@ -1,10 +1,10 @@
 """ECPCapability -- 企业语义层自管理资源能力(ECP P1「通电」)。
 
-ECP 执行链路(DbBindingExecutor 门禁 / resolver 缓存 / 6 工具)已就绪并 8/8 验证,
+ECP 执行链路(DbBindingExecutor 门禁 / resolver 缓存 / ECP 工具集)已就绪并 8/8 验证,
 本 capability 是把它「通电」到 Agent 的桥梁:
 
 - ``prepare``:预载已确认目录文本(``build_catalog_text``)到 ``self``(declare 必须纯)
-- ``declare``:目录摘要 + 行为约定 -> SYSTEM 槽;6 个 ECP 工具(workspace_id 闭包绑定)
+- ``declare``:目录摘要 + 行为约定 -> SYSTEM 槽;ECP 工具集(workspace_id 闭包绑定)
   -> TOOLS 槽
 - 工具走 Route A builtin(react_master 装配 TOOLS 槽),``execute`` 留 NotImplementedError,
   与 DBCapability/WorkspaceSceneCapability 一致
@@ -16,7 +16,7 @@ Agent 经 ``AgentResource(type="ecp", value={"workspace_id": ...})`` 绑定。
 from __future__ import annotations
 
 import logging
-from typing import Any, List
+from typing import Any, List, Optional
 
 from gyra.core.interface.resource.bundle import (
     CacheScope,
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 class ECPCapability(Capability):
-    """企业语义层能力:declare 注入已确认目录 + 行为约定 + 6 工具。
+    """企业语义层能力:declare 注入已确认目录 + 行为约定 + ECP 工具集。
 
     capability_id="ecp";executor_id 同。无 live state(目录文本 prepare 预载),
     prepare 载目录,release no-op。工具走 Route A builtin(react_master 装配)。
@@ -107,7 +107,9 @@ class ECPCapability(Capability):
         try:
             from gyra_serve.ecp.service.catalog import build_catalog_text
 
-            self._catalog_text = build_catalog_text(self._workspace_id)
+            self._catalog_text = build_catalog_text(
+                self._workspace_id, max_objects=self._resolve_catalog_threshold()
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 f"[ecp-capability] load catalog for {self._workspace_id} failed: {e}"
@@ -131,8 +133,38 @@ class ECPCapability(Capability):
             self._has_managed_db = False
         self._status = ExecutorStatus.READY
 
+    def _resolve_catalog_threshold(self) -> Optional[int]:
+        """解析目录全量注入阈值(ServeConfig.catalog_inject_threshold)。
+
+        兑现 ECP 5.2 分层披露:条目数超阈值时 build_catalog_text 降级为
+        L0 摘要。返回 None 表示不限制——无 system_app(单测直构)或配置
+        缺失/异常时均降级为全量注入,小目录场景零回归、不阻塞 prepare。
+        """
+        system_app = self._system_app
+        if system_app is None:
+            try:
+                from gyra._private.config import Config
+
+                system_app = Config().SYSTEM_APP
+            except Exception:  # noqa: BLE001
+                return None
+        if system_app is None:
+            return None
+        try:
+            from gyra_serve.ecp.config import SERVE_SERVICE_COMPONENT_NAME
+            from gyra_serve.ecp.service.service import Service
+
+            serve = system_app.get_component(SERVE_SERVICE_COMPONENT_NAME, Service)
+            threshold = int(serve.config.catalog_inject_threshold)
+            return threshold if threshold > 0 else None
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[ecp-capability] resolve catalog_inject_threshold failed: {e}"
+            )
+            return None
+
     def declare(self, config: Any = None) -> List[Contribution]:
-        """注入目录摘要 + 行为约定(SYSTEM)+ 6 工具(TOOLS)。
+        """注入目录摘要 + 行为约定(SYSTEM)+ ECP 工具集(TOOLS)。
 
         纯函数:目录文本已由 prepare 预载;工具对象构造无 I/O。
         """
@@ -159,7 +191,7 @@ class ECPCapability(Capability):
             )
         )
 
-        # TOOLS: 6 个 ECP 工具(workspace_id 闭包绑定,agent 无需传 workspace_id)
+        # TOOLS: ECP 工具集(workspace_id 闭包绑定,agent 无需传 workspace_id)
         for tool in build_ecp_agent_tools(self._workspace_id):
             contribs.append(
                 Contribution(
@@ -176,7 +208,7 @@ class ECPCapability(Capability):
         # workspace_scene+ecp、不绑定 datasource/DBResource,base_agent 的
         # _inject_database_tools 不会经 DBResource 注入它,导致 app-card-generator
         # skill 要求的「用 hook 工具逐条验证取数」在开发对话里找不到工具。此处
-        # 显式注入:闭包绑定本 ECP 的 workspace_id(与上面 6 个 ECP 工具同构,agent
+        # 显式注入:闭包绑定本 ECP 的 workspace_id(与上面 ECP 工具集同构,agent
         # 无需传 workspace_id),仅暴露 op/params/query_key/queries 四个入参。
         contribs.append(
             Contribution(
@@ -190,9 +222,10 @@ class ECPCapability(Capability):
         )
 
         # TOOLS: 托管 db 资产的降级连带注入——只读 schema 工具(get_table_spec/
-        # list_tables)。ECP 托管的资源以降级形态出现:结构可查(供 execute_raw_sql
-        # 兜底与提案理解物理表),数据查询只走 ECP 工具;execute_sql 不连带,
-        # 若经直接绑定注入则由 asset_gate 硬门禁拦截。只绑 ECP 也能读 schema。
+        # list_tables/search_tables)。ECP 托管的资源以降级形态出现:结构可查
+        # (供 execute_raw_sql 兜底与提案理解物理表),数据查询只走 ECP 工具;
+        # execute_sql 不连带,若经直接绑定注入则由 asset_gate 硬门禁拦截。
+        # 只绑 ECP 也能读 schema。
         if self._has_managed_db:
             for tool in _load_db_schema_tools():
                 contribs.append(
@@ -324,11 +357,13 @@ def _build_app_card_preview_tool(workspace_id: str) -> "FunctionTool":
 
 
 def _load_db_schema_tools() -> List[Any]:
-    """取只读 schema 工具(get_table_spec/list_tables)供托管资产降级连带注入。
+    """取只读 schema 工具(get_table_spec/list_tables/search_tables)供托管资产降级连带注入。
 
     复用 tool_registry 中已注册的 DB 工具(与 _inject_database_tools 同源),
     执行期经 ConnectConfigDao/local_db_manager 解析连接,不依赖 agent 侧绑定
-    DBCapability。注册表缺失/未导入时返回空(不阻塞 declare)。
+    DBCapability。与 asset_gate 的设计声明一致:只读 schema 工具不管控,
+    数据查询直连(execute_sql)不连带,由门禁/ECP 工具接管。
+    注册表缺失/未导入时返回空(不阻塞 declare)。
     """
     from gyra.agent.tools.registry import tool_registry
 
@@ -337,7 +372,7 @@ def _load_db_schema_tools() -> List[Any]:
     except ImportError:
         return []
     tools: List[Any] = []
-    for name in ("get_table_spec", "list_tables"):
+    for name in ("get_table_spec", "list_tables", "search_tables"):
         t = tool_registry.get(name)
         if t is not None:
             tools.append(t)

@@ -253,6 +253,26 @@ class MediaContent:
                             ),
                         )
                     )
+                elif type == "audio_url" and "audio_url" in item:
+                    result.append(
+                        cls(
+                            type="audio",
+                            object=MediaObject(
+                                data=item["audio_url"]["url"],
+                                format="url",
+                            ),
+                        )
+                    )
+                elif type == "video_url" and "video_url" in item:
+                    result.append(
+                        cls(
+                            type="video",
+                            object=MediaObject(
+                                data=item["video_url"]["url"],
+                                format="url",
+                            ),
+                        )
+                    )
                 # Serialized MediaContent format: {"type": "text", "object": {"data": "...", "format": "..."}}
                 elif "object" in item:
                     # Use parse_content to reconstruct MediaContent from dict

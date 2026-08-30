@@ -53,6 +53,16 @@ def has(
     if "superadmin" in (user.roles or []):
         return True
 
+    # deny 优先于 allow（scoped 与通配都查;admin 动作覆盖同样被否决）
+    deny_map = user.deny_permissions or {}
+    if resource_id and resource_id != "*":
+        scoped_deny = deny_map.get(f"{resource_type}:{resource_id}", [])
+        if action in scoped_deny or "admin" in scoped_deny:
+            return False
+    denied = deny_map.get(resource_type, []) + deny_map.get("*", [])
+    if action in denied or "admin" in denied:
+        return False
+
     # 角色权限
     if resource_id and resource_id != "*":
         scoped = user.permissions.get(f"{resource_type}:{resource_id}", [])
@@ -114,8 +124,8 @@ def _fallback_space_keys(role_str: Optional[str]) -> set:
     return set()
 
 
-def _load_scoped_keys(user_no: int, workspace_id: int) -> set:
-    """加载用户在该空间绑定的（含自定义）角色的全部权限 key。"""
+def _load_scoped_keys(user_no: int, workspace_id: int, effect: str = "allow") -> set:
+    """加载用户在该空间绑定的（含自定义）角色的全部权限 key（按 effect 过滤）。"""
     from gyra_app.feature_plugins.permissions.dao import PermissionDao
 
     dao = PermissionDao()
@@ -125,7 +135,7 @@ def _load_scoped_keys(user_no: int, workspace_id: int) -> set:
     except Exception:
         roles = []
     for perm in dao.get_permissions_for_roles([r["id"] for r in roles] or [0]):
-        if perm.get("effect") != "allow":
+        if perm.get("effect") != effect:
             continue
         keys.add(f"{perm['resource_type']}.{perm['action']}")
     return keys
@@ -141,9 +151,14 @@ def has_scope(
     优先级：
     1. 开发模式（permissions 插件关闭）：退回 workspace_member.role 内置矩阵
     2. 全局 admin/superadmin（或 legacy admin）：放行（全局管理员）
-    3. 该空间上绑定的角色权限（user_role.scope_id=workspace_id，支持自定义角色）
-    4. 兜底：workspace_member.role 映射内置空间角色（迁移未跑时的安全网）
+    3. deny：该空间任一绑定角色 deny 此 key 即否决
+    4. 该空间上绑定的角色权限（user_role.scope_id=workspace_id，支持自定义角色）
     5. 未命中 -> 拒绝（fail-closed；解析不出 workspace_id 也拒绝）
+
+    注意：插件开启时**不再**用 workspace_member.role 兜底放权——
+    否则在 RBAC 界面解绑空间角色后，成员表里的 owner 仍拥有全量权限
+    （撤销失效）。存量空间成员由启动时的 migrate_space_role_bindings
+    幂等双写兜底。
     """
     if PermissionRegistry.get(permission_key) is None:
         return False
@@ -183,18 +198,16 @@ def has_scope(
     if user_no is None:
         return False
 
+    # deny 优先:该空间任一绑定角色 deny 此 key 即否决
+    if permission_key in _load_scoped_keys(user_no, workspace_id, effect="deny"):
+        return False
+
     # 空间绑定的角色权限（含自定义角色）
     if permission_key in _load_scoped_keys(user_no, workspace_id):
         return True
 
-    # 兜底：成员表 role 字符串映射（迁移未跑时不至于全员锁死）
-    try:
-        from gyra_serve.workspace.models.models import WorkspaceMemberDao
-
-        role_str = WorkspaceMemberDao().get_role(workspace_id, user_no)
-    except Exception:
-        role_str = None
-    return permission_key in _fallback_space_keys(role_str)
+    # fail-closed:插件开启时不退到成员表 role 放权(见 docstring)
+    return False
 
 
 def require_space(permission_key: str):

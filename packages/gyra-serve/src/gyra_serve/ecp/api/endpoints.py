@@ -8,7 +8,7 @@ generation (DB asset path).
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from gyra.component import SystemApp
 from gyra_serve.core import Result
@@ -33,6 +33,7 @@ from ..api.schemas import (
     GraphVO,
     MissDetailVO,
     OpLogVO,
+    ProposalViewVO,
     ProposeRequest,
     ReadinessVO,
     RejectRequest,
@@ -77,6 +78,7 @@ async def propose_object(
             evidence=request.evidence,
             created_by=request.created_by,
             source=request.source,
+            provenance=request.provenance,
         )
         return Result.succ(vo)
     except ValueError as e:
@@ -104,6 +106,87 @@ async def add_from_sql(
         return Result.succ(SqlAddVO(**data))
     except ValueError as e:
         return Result.failed(msg=str(e))
+
+
+# 上传文件大小上限:文件落盘后由 Agent 用 read_report_file 分段读取,
+# 不受提示词长度约束;50MB 对 SQL/代码脚本已非常宽松
+_MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024
+
+
+@router.post("/objects/manual/file", response_model=Result[GenerateProposalsTaskVO])
+async def import_from_file(
+    file: UploadFile = File(...),
+    workspace_id: Optional[str] = Form(default=None),
+    description: Optional[str] = Form(default=None),
+    service: Service = Depends(get_service),
+) -> Result[GenerateProposalsTaskVO]:
+    """导入报表文件(SQL 脚本/代码),异步提炼语义提案(默认进待确认收件箱)。
+
+    文件落盘到 ECP 导入目录,Agent 用 read_report_file 工具分段通读全文,
+    整理学习出全部可识别的 metric/entity/dimension 提案。接口立即返回 task_id,
+    前端轮询 GET /proposals/tasks/{task_id} 获取进度与结果。
+    需工作空间已配置 proposal_agent_id。
+    """
+    import os
+    import uuid
+
+    from ..config import ecp_import_dir
+    from ..service.proposal_runner import enqueue_file_import
+
+    original = os.path.basename(file.filename or "report.sql")
+    name_part, ext = os.path.splitext(original)
+    saved_name = f"{name_part}_{uuid.uuid4().hex[:8]}{ext}"
+    file_path = os.path.join(ecp_import_dir(), saved_name)
+
+    size = 0
+    try:
+        with open(file_path, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_IMPORT_FILE_BYTES:
+                    break
+                f.write(chunk)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[ecp] save import file failed")
+        _silent_unlink(file_path)
+        return Result.failed(msg=f"保存上传文件失败: {e}")
+    if size > _MAX_IMPORT_FILE_BYTES:
+        _silent_unlink(file_path)
+        return Result.failed(
+            msg=f"文件过大(上限 {_MAX_IMPORT_FILE_BYTES // (1024 * 1024)}MB)"
+        )
+    if size == 0:
+        _silent_unlink(file_path)
+        return Result.failed(msg="文件内容为空")
+
+    try:
+        task_id = await enqueue_file_import(
+            service,
+            file_name=original,
+            file_path=file_path,
+            workspace_id=workspace_id,
+            description=description,
+        )
+    except ValueError as e:
+        _silent_unlink(file_path)
+        return Result.failed(msg=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[ecp] enqueue file import task failed")
+        _silent_unlink(file_path)
+        return Result.failed(msg=f"提交文件导入任务失败: {e}")
+    return Result.succ(GenerateProposalsTaskVO(task_id=task_id))
+
+
+def _silent_unlink(path: str) -> None:
+    import os
+
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 @router.post("/proposals/generate", response_model=Result[GenerateProposalsTaskVO])
@@ -150,13 +233,18 @@ async def inbox(
     obj_type: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
+    include_view: bool = Query(default=True),
     service: Service = Depends(get_service),
 ) -> Result[SemanticObjectListVO]:
-    """Confirmation inbox: latest proposed versions."""
+    """Confirmation inbox: latest proposed versions.
+
+    ``include_view``(默认开):每项挂业务视图(一句话口径/来源徽章/血缘
+    chips)——收件箱卡片直接消费,不再由前端拼 payload。
+    """
     return Result.succ(
         service.inbox(
             workspace_id=workspace_id, obj_type=obj_type,
-            page=page, page_size=page_size,
+            page=page, page_size=page_size, include_view=include_view,
         )
     )
 
@@ -237,6 +325,7 @@ async def list_objects(
     keyword: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
+    include_view: bool = Query(default=True),
     service: Service = Depends(get_service),
 ) -> Result[SemanticObjectListVO]:
     """Browse latest versions of semantic objects."""
@@ -248,6 +337,7 @@ async def list_objects(
             keyword=keyword,
             page=page,
             page_size=page_size,
+            include_view=include_view,
         )
     )
 
@@ -273,6 +363,37 @@ async def version_history(
     service: Service = Depends(get_service),
 ) -> Result[List[SemanticObjectVO]]:
     return Result.succ(service.version_history(object_id, workspace_id=workspace_id))
+
+
+@router.get(
+    "/objects/{object_id}/versions/{version}/view",
+    response_model=Result[ProposalViewVO],
+)
+async def proposal_view(
+    object_id: str,
+    version: int,
+    workspace_id: Optional[str] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[ProposalViewVO]:
+    """单个版本的完整业务视图(详情页数据源)。
+
+    读时派生:一句话口径 / 来源(MISS 学习带原始 SQL 快照) / 库表字段
+    血缘 / 静态 SQL 组装效果 / 契约化证据引文。
+    """
+    try:
+        return Result.succ(
+            service.get_proposal_view(object_id, version, workspace_id)
+        )
+    except ValueError as e:
+        return Result.failed(msg=str(e))
+
+
+@router.get("/contracts", response_model=Result[dict])
+async def payload_contracts() -> Result[dict]:
+    """各对象类型的 payload 契约清单(前端编辑表单的单一事实来源)。"""
+    from ..service.contracts import contract_spec
+
+    return Result.succ(contract_spec())
 
 
 @router.post(

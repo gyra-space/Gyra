@@ -47,6 +47,14 @@ class UserGroupsService {
     return res.data.data as UserGroupRow;
   }
 
+  async updateGroup(
+    groupId: number,
+    body: { name?: string; description?: string },
+  ): Promise<UserGroupRow> {
+    const res = await axios.put(`${API_BASE}/user-groups/groups/${groupId}`, body);
+    return res.data.data as UserGroupRow;
+  }
+
   async deleteGroup(groupId: number): Promise<void> {
     await axios.delete(`${API_BASE}/user-groups/groups/${groupId}`);
   }

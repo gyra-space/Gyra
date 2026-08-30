@@ -20,7 +20,7 @@ const { Text, Paragraph } = Typography;
 
 interface ConversationCallDetailDrawerProps {
   /** 会话 ID（conv_id 或 conv_session_id） */
-  convId?: string;
+  conversationId?: string;
   open: boolean;
   onClose: () => void;
   /** 打开时定位到某条消息（message_id，对应某次模型调用），为空则默认第一条 */
@@ -80,7 +80,7 @@ function mergedToolNames(inputTools: unknown, toolCalls: unknown): string[] {
 }
 
 export const ConversationCallDetailDrawer: React.FC<ConversationCallDetailDrawerProps> = ({
-  convId,
+  conversationId,
   open,
   onClose,
   activeMessageId,
@@ -97,11 +97,11 @@ export const ConversationCallDetailDrawer: React.FC<ConversationCallDetailDrawer
   }, [open, activeMessageId]);
 
   useEffect(() => {
-    if (!open || !convId) return;
+    if (!open || !conversationId) return;
     let cancelled = false;
     setLoading(true);
     setCalls([]);
-    apiInterceptors(getChatCallDetails(convId))
+    apiInterceptors(getChatCallDetails(conversationId))
       .then(([err, res]) => {
         if (cancelled) return;
         setCalls(err ? [] : res || []);
@@ -112,7 +112,7 @@ export const ConversationCallDetailDrawer: React.FC<ConversationCallDetailDrawer
     return () => {
       cancelled = true;
     };
-  }, [open, convId]);
+  }, [open, conversationId]);
 
   const targetId = selectedId ?? activeMessageId;
   const activeCall = useMemo(() => {

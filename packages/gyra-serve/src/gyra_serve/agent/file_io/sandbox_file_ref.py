@@ -191,6 +191,20 @@ def looks_like_image(file_name: str, mime_type: Optional[str]) -> bool:
     return bool(mime_type and mime_type.startswith("image/"))
 
 
+def looks_like_audio(file_name: str, mime_type: Optional[str]) -> bool:
+    """Confirm a file is an audio by extension OR mime type (guards audio MODEL_DIRECT)."""
+    from .file_type_config import detect_file_modality
+
+    return detect_file_modality(file_name or "", mime_type) == "audio"
+
+
+def looks_like_video(file_name: str, mime_type: Optional[str]) -> bool:
+    """Confirm a file is a video by extension OR mime type (guards video MODEL_DIRECT)."""
+    from .file_type_config import detect_file_modality
+
+    return detect_file_modality(file_name or "", mime_type) == "video"
+
+
 @dataclass
 class FileProcessResult:
     """Result of file processing"""
@@ -290,6 +304,16 @@ async def process_user_input_file(
         object_path = file_url_data.get("object_path")
         file_size = file_url_data.get("file_size")
         mime_type = file_url_data.get("mime_type") or detect_mime_type(file_name)
+    elif input_type in ("audio_url", "video_url"):
+        media_url_data = user_input.get(input_type, {})
+        file_name = media_url_data.get("file_name", "")
+        file_url = media_url_data.get("url", "")
+        full_url = media_url_data.get("full_url")
+        file_id = media_url_data.get("file_id")
+        bucket = media_url_data.get("bucket")
+        object_path = media_url_data.get("object_path")
+        file_size = media_url_data.get("file_size")
+        mime_type = media_url_data.get("mime_type") or detect_mime_type(file_name)
     else:
         logger.warning(f"[FileIO] Unknown user input type: {input_type}")
         return None, None, f"Unknown input type: {input_type}"
@@ -325,8 +349,8 @@ async def process_user_input_file(
 
     if process_mode == FileProcessMode.MODEL_DIRECT:
         # Model direct consumption: as multimodal message
-        # 只有图片才能直接给模型消费;image_url 但无法确认为图片 → 降级沙箱,
-        # 由 Agent 工具消费,避免把非图硬塞模型导致 400 / 乱码。
+        # 只有确认模态匹配的文件才能直接给模型消费;无法确认 → 降级沙箱,
+        # 由 Agent 工具消费,避免把不符文件硬塞模型导致 400 / 乱码。
         if input_type == "image_url" and looks_like_image(file_name, mime_type):
             image_url_data = user_input.get("image_url", {})
             content = {
@@ -349,10 +373,48 @@ async def process_user_input_file(
                 file_id=image_url_data.get("file_id"),
             )
             return content, direct_ref, None
+        elif input_type == "audio_url" and looks_like_audio(file_name, mime_type):
+            media_url_data = user_input.get("audio_url", {})
+            content = {
+                "type": "audio_url",
+                "audio_url": media_url_data,
+            }
+            upload_dir = get_default_upload_dir(sandbox)
+            direct_ref = SandboxFileRef(
+                file_name=file_name,
+                url=media_url_data.get("url", ""),
+                full_url=media_url_data.get("full_url"),
+                file_type=file_ext,
+                process_mode="model_direct",
+                sandbox_path=f"{upload_dir}/{file_name}",
+                mime_type=mime_type,
+                file_size=file_size,
+                file_id=media_url_data.get("file_id"),
+            )
+            return content, direct_ref, None
+        elif input_type == "video_url" and looks_like_video(file_name, mime_type):
+            media_url_data = user_input.get("video_url", {})
+            content = {
+                "type": "video_url",
+                "video_url": media_url_data,
+            }
+            upload_dir = get_default_upload_dir(sandbox)
+            direct_ref = SandboxFileRef(
+                file_name=file_name,
+                url=media_url_data.get("url", ""),
+                full_url=media_url_data.get("full_url"),
+                file_type=file_ext,
+                process_mode="model_direct",
+                sandbox_path=f"{upload_dir}/{file_name}",
+                mime_type=mime_type,
+                file_size=file_size,
+                file_id=media_url_data.get("file_id"),
+            )
+            return content, direct_ref, None
         else:
             logger.warning(
                 f"[FileIO] File {file_name} (mime={mime_type}) not confirmed as "
-                f"image, forcing SANDBOX_TOOL mode"
+                f"multimedia, forcing SANDBOX_TOOL mode"
             )
             process_mode = FileProcessMode.SANDBOX_TOOL
 

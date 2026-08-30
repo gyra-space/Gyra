@@ -176,7 +176,7 @@ class AsyncTaskCoordinator:
         if not self._agent_chat:
             return False
         try:
-            conv = self._agent_chat.gpts_conversations.get_by_conv_id(conv_id)
+            conv = await self._agent_chat.gpts_conversations.a_get_by_conv_id(conv_id)
             if not conv:
                 return False
             from gyra.agent.core.schema import Status
@@ -190,7 +190,7 @@ class AsyncTaskCoordinator:
     async def _read_pending(self, conv_id: str) -> List[Dict[str, Any]]:
         if not self._agent_chat:
             return []
-        conv = self._agent_chat.gpts_conversations.get_by_conv_id(conv_id)
+        conv = await self._agent_chat.gpts_conversations.a_get_by_conv_id(conv_id)
         if not conv or not getattr(conv, "extra", None):
             return []
         try:
@@ -204,7 +204,7 @@ class AsyncTaskCoordinator:
         if not self._agent_chat:
             return
         try:
-            conv = self._agent_chat.gpts_conversations.get_by_conv_id(conv_id)
+            conv = await self._agent_chat.gpts_conversations.a_get_by_conv_id(conv_id)
             if not conv:
                 return
             extra = json.loads(conv.extra) if isinstance(conv.extra, str) else (conv.extra or {})
@@ -212,16 +212,13 @@ class AsyncTaskCoordinator:
                 extra = {}
             # 保留其他 extra 字段（如 pending_subagents）
             extra["pending_async_tasks"] = items
-            session = self._agent_chat.gpts_conversations.get_raw_session()
-            from gyra_serve.agent.db.gpts_conversations_db import GptsConversationsEntity
-            session.query(GptsConversationsEntity).filter(
-                GptsConversationsEntity.conv_id == conv_id
-            ).update(
-                {GptsConversationsEntity.extra: json.dumps(extra, ensure_ascii=False)},
-                synchronize_session="fetch",
+            await self._agent_chat.gpts_conversations.a_update_extra(conv_id, extra)
+            # 看板台账变更，立即失效主会话 dock 帧缓存（getattr 防御旧实例无此方法）
+            invalidate = getattr(
+                self._agent_chat, "invalidate_dock_frame_cache", None
             )
-            session.commit()
-            session.close()
+            if invalidate:
+                invalidate(conv_id)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[async-task-coordinator] write_pending failed for {conv_id}: {e}")
 
@@ -408,7 +405,7 @@ class AsyncTaskCoordinator:
             logger.info(f"[async-task-coordinator] dry-run resume for {conv_id}")
             return
         try:
-            conv = self._agent_chat.gpts_conversations.get_by_conv_id(conv_id)
+            conv = await self._agent_chat.gpts_conversations.a_get_by_conv_id(conv_id)
             if not conv:
                 logger.warning(
                     f"[async-task-coordinator] conv {conv_id} not found; skip resume"
@@ -469,7 +466,9 @@ class AsyncTaskCoordinator:
         """把会话置 WAITING（幂等，忽略状态机守卫告警）并持久化等待原因。"""
         try:
             from gyra.agent.core.schema import Status
-            self._agent_chat.gpts_conversations.update(conv_id, Status.WAITING.value)
+            await self._agent_chat.gpts_conversations.a_update_state(
+                conv_id, Status.WAITING.value
+            )
             # 异步任务等待：resume 由 AsyncTaskCoordinator 注入完成通知驱动，
             # 明确记为 await_async_tasks，供 base_agent._update_recovering 决策
             # （非工具授权 → 不重放，走 LLM 处理完成通知）。
@@ -487,25 +486,16 @@ class AsyncTaskCoordinator:
         进而引发 LLM 反复轮询同一任务（消息循环）。
         """
         try:
-            session = self._agent_chat.gpts_conversations.get_raw_session()
-            from gyra_serve.agent.db.gpts_conversations_db import GptsConversationsEntity
-            row = session.query(GptsConversationsEntity).filter(
-                GptsConversationsEntity.conv_id == conv_id
-            ).first()
+            # 异步读最新行：a_get_by_conv_id 返回 Entity，extra 为 Text 字符串，
+            # 保留"从 DB 读最新 extra 再合并写入"的防覆盖语义
+            row = await self._agent_chat.gpts_conversations.a_get_by_conv_id(conv_id)
             if row is None:
                 return
             extra = json.loads(row.extra) if isinstance(row.extra, str) else (row.extra or {})
             if not isinstance(extra, dict):
                 extra = {}
             extra["waiting_reason"] = waiting_reason
-            session.query(GptsConversationsEntity).filter(
-                GptsConversationsEntity.conv_id == conv_id
-            ).update(
-                {GptsConversationsEntity.extra: json.dumps(extra, ensure_ascii=False)},
-                synchronize_session="fetch",
-            )
-            session.commit()
-            session.close()
+            await self._agent_chat.gpts_conversations.a_update_extra(conv_id, extra)
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[async-task-coordinator] set waiting_reason skip: {e}")
 

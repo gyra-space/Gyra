@@ -58,6 +58,7 @@ from gyra.knowledge.types import (
 )
 from gyra.knowledge.vaultfs import Subscription, Watcher
 
+from ..cjk import segment_query
 from ._util import (
     INLINE_THRESHOLD,
     PROTECTED_FILES,
@@ -447,16 +448,36 @@ class BaseVaultFS(ABC):
     async def _verbat_search_keyword(
         self, query: str, limit: int, extract_mode: Optional[str]
     ) -> list[VerbatHit]:
-        verbats = await self._verbat_search_rows(query, limit, extract_mode)
+        # CJK-aware segmentation: multi-term queries are searched term by
+        # term and ranked by term coverage (0.3 base + 0.7 * matched/total).
+        terms = segment_query(query)
+        if len(terms) <= 1:
+            verbats = await self._verbat_search_rows(query, limit, extract_mode)
+            return [
+                VerbatHit(
+                    verbat_id=v.id,
+                    score=1.0,
+                    snippet=make_snippet(v.content, query),
+                    source_file=v.source_file,
+                    extract_mode=v.extract_mode,
+                )
+                for v in verbats
+            ]
+        merged: dict[str, tuple[int, Verbat]] = {}
+        for term in terms:
+            for v in await self._verbat_search_rows(term, limit, extract_mode):
+                cnt, _ = merged.get(v.id, (0, v))
+                merged[v.id] = (cnt + 1, v)
+        ordered = sorted(merged.items(), key=lambda kv: (-kv[1][0], kv[0]))
         return [
             VerbatHit(
                 verbat_id=v.id,
-                score=1.0,
+                score=round(0.3 + 0.7 * cnt / len(terms), 4),
                 snippet=make_snippet(v.content, query),
                 source_file=v.source_file,
                 extract_mode=v.extract_mode,
             )
-            for v in verbats
+            for _, (cnt, v) in ordered[:limit]
         ]
 
     async def _verbat_search_semantic(
@@ -1555,6 +1576,32 @@ class BaseVaultFS(ABC):
         hop: int = 1,
         include_invalid: bool = False,
     ) -> Subgraph:
+        hop = max(1, min(hop, 8))
+        if entity and hop > 1:
+            # Multi-hop BFS from the entity. _edges_for_node only returns
+            # valid edges (valid_to IS NULL) on both backends, so
+            # include_invalid applies to the hop-1 direct query below only.
+            visited: set[str] = {entity}
+            collected: list[Edge] = []
+            frontier: list[str] = [entity]
+            for _ in range(hop):
+                next_frontier: list[str] = []
+                for node in frontier:
+                    for e in await self._edges_for_node(node):
+                        if e in collected or len(collected) >= 1000:
+                            continue
+                        collected.append(e)
+                        neighbor = e.object if e.subject == node else e.subject
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            next_frontier.append(neighbor)
+                frontier = next_frontier
+            if predicate:
+                collected = [e for e in collected if e.predicate == predicate]
+            nodes = sorted(
+                {e.subject for e in collected} | {e.object for e in collected}
+            )
+            return Subgraph(nodes=nodes, edges=collected, root=entity)
         edges = await self._edges_query(entity, predicate, include_invalid)
         nodes: set[str] = set()
         for e in edges:

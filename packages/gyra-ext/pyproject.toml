@@ -55,6 +55,8 @@ rag = [
     "pypdf",
     "pdfplumber",
     "sentence-transformers",
+    "openpyxl",
+    "xlrd>=2.0.1",
 ]
 graph_rag = [
     # For visualization in code

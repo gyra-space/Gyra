@@ -29,13 +29,13 @@ jest.mock('@/hooks/use-chat', () => ({
 // 模拟 useChatPolling:捕获每次渲染传入的 onPoll,由测试主动推送 vis_final,
 // 模拟「拉取历史 → 合并视图」的轮询链路
 let pollingOptions: {
-  convId: string | null;
+  conversationId: string | null;
   enabled: boolean;
   onPoll?: (res: ChatQueryResponse) => void;
 } | null = null;
 jest.mock('@/hooks/use-chat-polling', () => ({
   useChatPolling: (opts: {
-    convId: string | null;
+    conversationId: string | null;
     enabled: boolean;
     onPoll?: (res: ChatQueryResponse) => void;
   }) => {
@@ -51,9 +51,9 @@ jest.mock('@/hooks/use-chat-polling', () => ({
   },
 }));
 
-function makeRes(convId: string, stepId: string, stepTitle: string): ChatQueryResponse {
+function makeRes(conversationId: string, stepId: string, stepTitle: string): ChatQueryResponse {
   return {
-    conv_id: convId,
+    conv_id: conversationId,
     state: 'COMPLETE',
     is_final: true,
     vis_final: JSON.stringify({

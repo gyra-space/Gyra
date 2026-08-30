@@ -173,9 +173,15 @@ class DBCapability(Capability):
         return contribs
 
     def _build_basic_info(self) -> str:
-        """库基本信息:db_name/db_type/dialect + datasource_id(供工具参数)。"""
+        """库基本信息:db_name/db_type/dialect + datasource_id(供工具参数)。
+
+        附带 <usage_rules> SQL 编写规范(性能/行数/时间范围软约束,与
+        sql_guard.safe_exec 的工具层硬约束互补;文案统一出自 SQL_USAGE_RULES)。
+        """
         if not self._db_name:
             return ""
+        from gyra_serve.sql_guard.safe_exec import SQL_USAGE_RULES
+
         lines = [f"<database>", f"  <name>{self._db_name}</name>"]
         if self._db_type:
             lines.append(f"  <db_type>{self._db_type}</db_type>")
@@ -184,6 +190,9 @@ class DBCapability(Capability):
         # Inject datasource_id so Agent knows which parameter to pass to tools
         if self._datasource_id is not None:
             lines.append(f"  <datasource_id>{self._datasource_id}</datasource_id>")
+        lines.append("  <usage_rules>")
+        lines.extend(f"  {line}" for line in SQL_USAGE_RULES.splitlines())
+        lines.append("  </usage_rules>")
         lines.append("</database>")
         return "\n".join(lines)
 

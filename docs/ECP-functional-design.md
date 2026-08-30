@@ -163,3 +163,77 @@ Lint 发现 tb_so_01 加了列/改了类型 → 收件箱出现"绑定漂移"更
 
 **当前迭代（本次落地）= 资产层 + 软知识 space + 血缘图基础 + 设置 UI +
 工具面（任务 8/9 继续）**，让 /ecp 从"一个表格"变成"分层业务语义工作台"。
+
+---
+
+## 5. 提案内容升级（v1.1，2026-08-29 已落地）
+
+**问题**：提案确认人（业务人）看不懂提案——库只有数字 ID、字段血缘是裸字符串、
+来源是自由文本（`discovery:ds1`/`gate:rule5`）、MISS 学习来的提案看不到原始 SQL、
+详情页是 payload JSON dump。
+
+**目标（验收口径）**：打开任意提案，业务人能回答三个问题——
+① 这数字从哪来（库/表/字段+口径）；② 用起来生成什么 SQL（不点试跑也能看到组装效果）；
+③ 它是怎么被提出来的（来源徽章；MISS 学习来的直接展示原始 SQL）。
+
+**三层结构**：
+
+```
+L0 存储层   payload(不动,契约照旧) + provenance 列(来源快照,写入时落库)
+L1 派生层   service/proposal_view.py(读时计算,不落库——血缘与 SQL 是
+            payload 的函数,落库必腐化)
+L2 展示层   前端结构化区块(干掉 JSON dump)
+```
+
+**provenance（写入时快照）**：`ecp_semantic_object.provenance` JSON 列
+（迁移照 usage serve try/except ALTER 先例；MySQL/PG gyra.sql 同步）。
+`{origin, actor, origin_sql[], miss_ref, note, derived_from}`；
+origin 枚举在 `config.py`（discovery/miss_learn/manual_sql/rule5_gate/edit/
+agent/import/legacy，含中文标签与历史 source 前缀映射 `origin_from_source`）。
+老数据 provenance 为空 → 视图降级显示 source 原文。
+确认/编辑派生新版本经 `carry_provenance` 携带原来源（origin 不被编辑覆盖，
+derived_from 记录派生链）。
+
+**ProposalViewVO（读时派生）**：`build_proposal_view(vo, objects, ds_name_resolver, level)`
+- `summary`：一句话业务口径（后端按类型契约生成，取代前端 summarizePayload 散逻辑）
+- `origin`：kind + 中文 label + origin_sql 快照 + miss_ref 活链
+- `lineage`：datasource_id→数据源中文名、表、**字段级血缘**
+  （expression/extra_filters 经 sqlglot 解析出列，对照 entity.fields 标注
+  meaning/role/usage；`declared=false` = 引用了未声明列 = 口径疑点，前端红色高亮）+
+  引用对象链（带 ✅/🟡 状态）
+- `sql_preview`：**静态 SQL 组装效果**（与 executor 同一 `_assemble_sql`
+  确定性组装，不执行；近 7 天示例时间窗；参与组装对象清单；不完整提案降级
+  warnings 不报错）。试跑真数据仍走 `/debug` 端点
+
+**写入统一（3 合 1）**：`Service.propose()` 是唯一提案写入口
+（API/Agent 工具×2/批量管线/执行门禁全部汇聚）；`gate_level="executable"`
+时过可执行级契约门禁（`ContractViolation` 携带问题列表，工具回传
+contract_gaps）；entity 兜底（Oracle owner 补全 + 时间列 role=time）
+从 ecp_tools 并入 Service，三条路径质量拉齐。
+原三份 propose_semantic 实现收敛为薄壳；Agent 工具路径新增
+`miss_ref`/`origin_sql` 参数——MISS 学习提案必须回传聚类键与原始 SQL
+（auto_learn cron 指令与提案 Agent prompt 已同步），miss→提案断链修复
+（反向 `miss_learn.proposal_ids` 已有，正向 provenance.miss_ref 补齐）。
+
+**Service 拆分**：1947 行上帝类 → 门面（提案生命周期/契约 admin/读模型/确认人）
++ 无状态协作者（miss.py 飞轮 / graph.py 全景图 / alignment_ops.py 对齐运营 /
+assets.py 资产 / workspace.py 空间配置 / transfer.py 导入导出 /
+knowledge_bridge.py 软层只读桥梁——顺带消除 slug 聚合×3、knowledge
+Service 获取样板×5 两处重复）。
+
+**API 增量**：
+- `GET /objects/{id}/versions/{v}/view` → ProposalViewVO（详情页数据源）
+- `GET /inbox`、`GET /objects` 加 `include_view`（默认开，brief 级视图）
+- `GET /contracts` → 各类型 payload 契约（前端表单单一事实来源，
+  消除 prompt/contracts.py/前端表单/前端模板四处重复中的前端两份；
+  PayloadEditor 接入为后续项）
+- `SemanticObjectVO` 加 `provenance` + `view` 字段；导出/导入透传 provenance
+
+**前端三展示面**：
+- 收件箱卡片：一句话口径 + 来源徽章（中文+着色）+ 血缘 chips（库名·表）
+- 详情 Drawer 五区块：基本信息（来源徽章）/ 业务定义（分类型结构化：
+  metric 口径卡、dimension 值映射表、relation 路径卡、文档类定义卡）/
+  数据血缘（库·表·字段表，未声明列红色标注）/ SQL 生成效果（静态预览+
+  参与对象+scenario 说明；场景确认页另有试跑面板）/ 来源与证据
+  （MISS 学习：原始 SQL 代码块 + miss 轨迹指引）/ 版本历史。**JSON dump 已删除**
+- 场景空间确认页复用同一 ObjectDetailContent（自动继承）；移动端同步升级

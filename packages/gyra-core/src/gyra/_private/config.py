@@ -97,6 +97,15 @@ class Config(metaclass=Singleton):
                 os.getenv("NATIVE_SQL_CAN_RUN_WRITE", "False").lower() == "true"
         )
 
+        # SQL 执行安全层(防止烂 SQL 拖垮库):
+        # - SQL_QUERY_TIMEOUT: 单条查询超时秒数,按方言注入(MAX_EXECUTION_TIME/
+        #   statement_timeout 等),超时即终止
+        # - SQL_MAX_ROWS: 交互查询单次最大行数(LIMIT 注入/封顶 + 流式截断双保险)
+        # - SQL_MAX_ROWS_FILE: output_to_file 文件模式单次最大行数
+        self.SQL_QUERY_TIMEOUT = float(os.getenv("SQL_QUERY_TIMEOUT", "30"))
+        self.SQL_MAX_ROWS = int(os.getenv("SQL_MAX_ROWS", "2000"))
+        self.SQL_MAX_ROWS_FILE = int(os.getenv("SQL_MAX_ROWS_FILE", "50000"))
+
         # gyra meta info database connection configuration
         self.LOCAL_DB_HOST = os.getenv("LOCAL_DB_HOST")
         self.LOCAL_DB_PATH = os.getenv("LOCAL_DB_PATH", "data/default_sqlite.db")

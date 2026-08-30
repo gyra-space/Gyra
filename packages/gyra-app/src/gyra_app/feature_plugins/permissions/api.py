@@ -1,5 +1,6 @@
 """HTTP API for RBAC permission management."""
 
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +14,8 @@ from gyra_serve.utils.auth import UserRequest, get_user_from_headers
 from .checker import require_permission
 from .dao import PermissionDao
 from .service import PermissionDefinitionService, PermissionService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/permissions", tags=["Permissions"])
 
@@ -164,6 +167,7 @@ async def remove_role_permission(
     role = _get_role_or_404(role_id)
     _ensure_role_mutable(role)
 
+    # 单会话完成校验+删除(原先校验一个会话、删除另一个会话,存在 TOCTOU)
     with db.session() as s:
         p = (
             s.query(RolePermissionEntity)
@@ -175,10 +179,8 @@ async def remove_role_permission(
         )
         if not p:
             raise HTTPException(status_code=404, detail="Permission not found")
+        s.delete(p)
 
-    ok = _dao.remove_role_permission(permission_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Permission not found")
     _svc.invalidate_cache()
     return {"success": True, "data": None}
 
@@ -951,6 +953,16 @@ async def list_my_permission_requests(
     }
 
 
+@router.get("/requests/pending-count")
+async def get_pending_requests_count(
+    _user: UserRequest = Depends(require_permission("system", "admin")),
+):
+    """管理员获取待审批申请数量。注意:必须声明在 /requests/{request_id} 之前,
+    否则 "pending-count" 会被 {request_id} 的 int 校验拦截(恒 422)。"""
+    requests, total = _dao.list_permission_requests(status="pending", page_size=1000)
+    return {"success": True, "data": {"count": total}}
+
+
 @router.get("/requests/{request_id}")
 async def get_permission_request(
     request_id: int,
@@ -1027,6 +1039,9 @@ async def approve_permission_request(
         return {"success": True, "data": result}
     except IntegrityError:
         raise HTTPException(status_code=409, detail="Role already assigned")
+    except ValueError as e:
+        # 审批语义不合法(如不可 grant 的权限 key、缺 resource_id)→ 400 带原因
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to approve request {request_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to approve request")
@@ -1098,15 +1113,6 @@ async def cancel_permission_request(
         )
 
     return {"success": True, "data": result}
-
-
-@router.get("/requests/pending-count")
-async def get_pending_requests_count(
-    _user: UserRequest = Depends(require_permission("system", "admin")),
-):
-    """管理员获取待审批申请数量"""
-    requests, total = _dao.list_permission_requests(status="pending", page_size=1000)
-    return {"success": True, "data": {"count": total}}
 
 
 # ========== Resource Grants（资源实例级授权） ==========
@@ -1205,7 +1211,7 @@ async def delete_grant(
 # ========== Resource Catalog（可选资源列表） ==========
 @router.get("/resources/types")
 async def list_resource_catalog_types(
-    _user: UserRequest = Depends(get_user_from_headers),
+    _user: UserRequest = Depends(require_permission("system", "read")),
 ):
     """返回支持资源目录选择的资源类型列表。"""
     from gyra_serve.permissions.catalog_registry import ResourceCatalogRegistry
@@ -1224,7 +1230,7 @@ async def list_resource_catalog(
     parent_id: Optional[str] = Query(None, description="父级资源 ID（级联选择用）"),
     keyword: Optional[str] = Query(None, description="搜索关键词"),
     limit: int = Query(100, ge=1, le=500, description="返回数量上限"),
-    _user: UserRequest = Depends(get_user_from_headers),
+    _user: UserRequest = Depends(require_permission("system", "read")),
 ):
     """统一资源目录查询：按资源类型返回可选资源列表。
 

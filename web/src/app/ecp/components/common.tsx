@@ -1,10 +1,19 @@
 'use client';
 
 import { apiInterceptors } from '@/client/api';
-import { deprecateEcpObject, EcpSemanticObject, getEcpObjectVersions } from '@/client/api/ecp';
+import {
+  deprecateEcpObject,
+  EcpLineage,
+  EcpOrigin,
+  EcpProposalView,
+  EcpSemanticObject,
+  EcpSqlPreview,
+  getEcpObjectVersions,
+  getEcpProposalView,
+} from '@/client/api/ecp';
 import { getUserId } from '@/utils';
 import { useRequest } from 'ahooks';
-import { App, Button, Drawer, Input, Popconfirm, Table } from 'antd';
+import { App, Button, Drawer, Input, Popconfirm, Table, Tag, Tooltip } from 'antd';
 import { DeleteOutlined } from '@ant-design/icons';
 import React, { useState } from 'react';
 
@@ -47,6 +56,70 @@ export function TypeChip({ type }: { type: string }) {
     <span className="ecp-type-chip">
       <Dot kind={TYPE_DOT[type] ?? 'ecp-dot--neutral'} />
       {type}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------- 来源徽章
+const ORIGIN_COLOR: Record<string, string> = {
+  discovery: 'blue',
+  miss_learn: 'purple',
+  manual_sql: 'cyan',
+  rule5_gate: 'orange',
+  edit: 'gold',
+  agent: 'geekblue',
+  import: 'green',
+  legacy: 'default',
+};
+
+/** 提案来源徽章(MISS 学习/初始扫描/手工 SQL 等,中文标签由后端给)。 */
+export function OriginBadge({ origin }: { origin?: EcpOrigin | null }) {
+  if (!origin) return null;
+  const tips = [
+    origin.actor ? `发起: ${origin.actor}` : '',
+    origin.note ?? '',
+    origin.derived_from ? `派生: ${origin.derived_from}` : '',
+    origin.legacy_source ? `原始 source: ${origin.legacy_source}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  const badge = (
+    <Tag color={ORIGIN_COLOR[origin.kind] ?? 'default'} style={{ marginInlineEnd: 0 }}>
+      {origin.label}
+    </Tag>
+  );
+  return tips ? (
+    <Tooltip title={<span style={{ whiteSpace: 'pre-line' }}>{tips}</span>}>{badge}</Tooltip>
+  ) : (
+    badge
+  );
+}
+
+// ---------------------------------------------------------------- 血缘 chips
+/** 列表/卡片用的一行血缘:库名 · 表 + 引用对象(带状态点)。 */
+export function LineageChips({ lineage }: { lineage?: EcpLineage | null }) {
+  if (!lineage) return null;
+  const ds =
+    lineage.datasource_name ??
+    (lineage.datasource_id != null ? `数据源#${lineage.datasource_id}` : null);
+  return (
+    <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+      {ds && <Tag color="blue">{ds}</Tag>}
+      {lineage.tables.map(t => (
+        <Tag key={t}>{t}</Tag>
+      ))}
+      {lineage.document?.doc_id && (
+        <Tag color="green">
+          文档 {lineage.document.doc_id}
+          {lineage.document.anchor ? `@${lineage.document.anchor}` : ''}
+        </Tag>
+      )}
+      {lineage.objects.map(o => (
+        <Tag key={o.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <Dot kind={o.status === 'confirmed' ? 'ecp-dot--success' : 'ecp-dot--warning'} />
+          {o.id}
+        </Tag>
+      ))}
     </span>
   );
 }
@@ -108,6 +181,202 @@ function KV({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
+const codeStyle: React.CSSProperties = {
+  fontSize: 11,
+  background: 'var(--bg-subtle)',
+  padding: 8,
+  borderRadius: 6,
+  overflow: 'auto',
+  maxHeight: 180,
+  margin: '6px 0',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+};
+
+// ------------------------------------------------------------ 业务定义(分类型)
+function BusinessDefinition({ obj }: { obj: EcpSemanticObject }) {
+  const p = obj.payload || {};
+  if (obj.obj_type === 'metric') {
+    return (
+      <>
+        <KV k="口径表达式" v={<code>{p.expression ?? '-'}</code>} />
+        <KV k="附加过滤" v={(p.extra_filters || []).join('; ') || '无'} />
+        <KV k="粒度" v={(p.grain || []).join(' / ') || '未定义'} />
+        <KV k="单位" v={p.unit ?? '-'} />
+      </>
+    );
+  }
+  if (obj.obj_type === 'dimension') {
+    const values = (p.values || []) as Array<{ label: string; aliases?: string[]; codes?: string[] }>;
+    return (
+      <>
+        <KV k="维度列" v={<code>{p.column ?? '-'}</code>} />
+        <div style={{ marginTop: 8 }}>
+          <Table
+            size="small"
+            rowKey={r => r.label}
+            pagination={false}
+            dataSource={values}
+            columns={[
+              { title: '显示名 label', dataIndex: 'label', width: 140 },
+              {
+                title: '别名',
+                dataIndex: 'aliases',
+                width: 140,
+                render: (a: string[]) => (a || []).join(' / ') || '-',
+              },
+              {
+                title: '原始值 codes',
+                dataIndex: 'codes',
+                render: (c: string[]) => (c || []).join(', ') || '-',
+              },
+            ]}
+          />
+        </div>
+      </>
+    );
+  }
+  if (obj.obj_type === 'relation') {
+    return (
+      <>
+        <KV k="连接" v={`${p.from ?? '?'} → ${p.to ?? '?'}`} />
+        <KV k="join 路径" v={<code>{p.path ?? '（待确认人补全）'}</code>} />
+        <KV k="基数" v={p.cardinality ?? '-'} />
+      </>
+    );
+  }
+  if (obj.obj_type === 'claim' || obj.obj_type === 'terminology' || obj.obj_type === 'policy') {
+    return (
+      <>
+        <KV
+          k={obj.obj_type === 'claim' ? '陈述' : obj.obj_type === 'terminology' ? '定义' : '规则'}
+          v={p.text ?? p.definition ?? p.rule ?? '-'}
+        />
+        {p.condition && <KV k="适用条件" v={p.condition} />}
+        {p.source_quote && <KV k="原文摘录" v={`「${p.source_quote}」`} />}
+      </>
+    );
+  }
+  // entity: 字段表由「数据血缘」区块承担,此处不再重复
+  return null;
+}
+
+// ---------------------------------------------------------------- SQL 预览
+function SqlPreviewSection({ preview }: { preview?: EcpSqlPreview | null }) {
+  if (!preview) return null;
+  return (
+    <div className="ecp-drawer__section">
+      <div className="ecp-drawer__section-title">SQL 生成效果（静态预览）</div>
+      {preview.sql ? (
+        <>
+          <div style={{ fontSize: 12, color: 'var(--ink-400)', marginBottom: 4 }}>
+            {preview.scenario}
+          </div>
+          <pre style={codeStyle}>{preview.sql}</pre>
+          {!!preview.participants.length && (
+            <div style={{ fontSize: 12, color: 'var(--ink-500)' }}>
+              参与组装：
+              {preview.participants.map(pt => (
+                <Tag key={pt.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <Dot kind={pt.status === 'confirmed' ? 'ecp-dot--success' : 'ecp-dot--warning'} />
+                  {pt.id}
+                  {pt.version != null ? `@v${pt.version}` : ''}
+                </Tag>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <div style={{ fontSize: 12, color: 'var(--ink-400)' }}>暂无法组装 SQL 预览</div>
+      )}
+      {!!preview.warnings.length && (
+        <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: 'var(--ink-600)' }}>
+          {preview.warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ 数据血缘(字段级)
+function LineageSection({ lineage }: { lineage?: EcpLineage | null }) {
+  if (!lineage) return null;
+  return (
+    <div className="ecp-drawer__section">
+      <div className="ecp-drawer__section-title">数据血缘（库 / 表 / 字段）</div>
+      <div style={{ marginBottom: 8 }}>
+        <LineageChips lineage={lineage} />
+      </div>
+      {!!lineage.columns.length && (
+        <Table
+          size="small"
+          rowKey="column"
+          pagination={false}
+          dataSource={lineage.columns}
+          columns={[
+            { title: '字段', dataIndex: 'column', width: 140 },
+            {
+              title: '用途',
+              dataIndex: 'usage',
+              width: 150,
+              render: (u: string) => u || '-',
+            },
+            {
+              title: '业务含义',
+              dataIndex: 'meaning',
+              render: (m: string | null, row) =>
+                row.declared ? (
+                  m ?? <span style={{ color: 'var(--ink-400)' }}>未标注</span>
+                ) : (
+                  <Tag color="red">未在 entity.fields 声明（口径疑点）</Tag>
+                ),
+            },
+            { title: 'role', dataIndex: 'role', width: 90, render: (r: string) => r ?? '-' },
+          ]}
+        />
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ 来源与证据
+function OriginSection({ view }: { view: EcpProposalView }) {
+  const { origin, evidence } = view;
+  const hasOriginSql = !!origin.origin_sql?.length;
+  if (!hasOriginSql && !origin.miss_ref && !evidence.length) return null;
+  return (
+    <div className="ecp-drawer__section">
+      <div className="ecp-drawer__section-title">来源与证据</div>
+      {hasOriginSql && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: 'var(--ink-500)', marginBottom: 4 }}>
+            原始 SQL（{origin.label}快照，确认人可核对提炼是否忠实）：
+          </div>
+          {origin.origin_sql.map((sql, i) => (
+            <pre key={i} style={codeStyle}>
+              {sql}
+            </pre>
+          ))}
+        </div>
+      )}
+      {origin.miss_ref && (
+        <div style={{ fontSize: 12, color: 'var(--ink-500)', marginBottom: 8 }}>
+          MISS 聚类回链：kind={origin.miss_ref.kind ?? '?'} · pattern=
+          {origin.miss_ref.pattern ?? '?'} · 数据源#
+          {origin.miss_ref.datasource_id ?? '?'}（可在「巡检 / MISS」中查完整学习轨迹）
+        </div>
+      )}
+      {evidence.map((ev, i) => (
+        <div key={i} className="ecp-proposal__evidence" style={{ marginTop: i ? 8 : 0 }}>
+          {ev.source ?? '来源未知'}：{ev.quote ?? ''}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ObjectDetailContent({ obj }: { obj: EcpSemanticObject | null }) {
   const { data: versions } = useRequest(
     async () => {
@@ -120,47 +389,51 @@ export function ObjectDetailContent({ obj }: { obj: EcpSemanticObject | null }) 
     { refreshDeps: [obj?.id], ready: !!obj },
   );
 
+  // 业务视图(读时派生:summary/origin/lineage/sql_preview);失败降级 obj.view/无视图
+  const { data: view } = useRequest(
+    async () => {
+      if (!obj) return null;
+      const [err, res] = await apiInterceptors(
+        getEcpProposalView(obj.id, obj.version, obj.workspace_id),
+      );
+      return err ? (obj.view ?? null) : (res ?? obj.view ?? null);
+    },
+    { refreshDeps: [obj?.id, obj?.version], ready: !!obj },
+  );
+
   if (!obj) return null;
+  const p = obj.payload || {};
   return (
     <>
       <div className="ecp-drawer__section">
         <div className="ecp-drawer__section-title">基本信息</div>
         <KV k="状态" v={<StatusTag status={obj.status} />} />
         <KV k="名称" v={obj.name ?? '-'} />
-        <KV k="别名" v={(obj.payload?.aliases || []).join(' / ') || '-'} />
-        <KV k="说明" v={summarizePayload(obj)} />
-        <KV k="来源" v={obj.source ?? '-'} />
+        <KV k="别名" v={(p.aliases || []).join(' / ') || '-'} />
+        <KV k="说明" v={view?.summary || summarizePayload(obj)} />
+        <KV
+          k="来源"
+          v={view?.origin ? <OriginBadge origin={view.origin} /> : (obj.source ?? '-')}
+        />
         <KV
           k="确认"
           v={obj.confirmed_by ? `${obj.confirmed_by} @ ${obj.confirmed_at ?? ''}` : '未确认'}
         />
       </div>
 
-      {!!obj.evidence?.length && (
-        <div className="ecp-drawer__section">
-          <div className="ecp-drawer__section-title">证据引文</div>
-          {obj.evidence.map((ev, i) => (
-            <div key={i} className="ecp-proposal__evidence" style={{ marginTop: i ? 8 : 0 }}>
-              {ev.source ?? '来源未知'}：{ev.quote ?? ''}
-            </div>
-          ))}
-        </div>
-      )}
-
       <div className="ecp-drawer__section">
-        <div className="ecp-drawer__section-title">Payload</div>
-        <pre
-          style={{
-            maxHeight: 300,
-            overflow: 'auto',
-            fontSize: 12,
-            margin: 0,
-            color: 'var(--ink-700)',
-          }}
-        >
-          {JSON.stringify(obj.payload, null, 2)}
-        </pre>
+        <div className="ecp-drawer__section-title">业务定义</div>
+        <BusinessDefinition obj={obj} />
+        {obj.obj_type === 'entity' && !view?.lineage && (
+          <div style={{ fontSize: 12, color: 'var(--ink-400)' }}>字段表见数据血缘区块</div>
+        )}
       </div>
+
+      <LineageSection lineage={view?.lineage} />
+
+      <SqlPreviewSection preview={view?.sql_preview} />
+
+      {view && <OriginSection view={view} />}
 
       <div className="ecp-drawer__section">
         <div className="ecp-drawer__section-title">版本历史</div>

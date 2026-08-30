@@ -14,9 +14,14 @@ import { parseWorkspaceView } from './parse-workspace-view';
 import { dedupOptimisticUser } from './dedup-optimistic-user';
 import {
   buildSceneAgentSendData,
+  resourcesToAttachments,
   type SceneAgentSendPayload,
 } from './scene-agent-send-data';
-import type { WorkspaceExecutionStep, WorkspaceView } from './agent-workspace-types';
+import type {
+  WorkspaceExecutionStep,
+  WorkspaceUserAttachment,
+  WorkspaceView,
+} from './agent-workspace-types';
 import { parseSceneAgentWorkspaceString } from './parse-scene-agent-workspace-string';
 
 /**
@@ -88,8 +93,8 @@ interface UseSceneAgentChatResult {
   usageMetrics: UsageMetrics | null;
   /** Composer Dock 协议:输入框上方固定区域 widget map(by id),由 SSE onDock/轮询 dock 帧合并而来 */
   dockWidgets: Record<string, DockWidget>;
-  /** 乐观上屏用户消息(发送/追问即插入视图,不等后端回显) */
-  appendOptimisticUser: (text: string) => void;
+  /** 乐观上屏用户消息(发送/追问即插入视图,不等后端回显);纯文件消息可无文本仅有附件 */
+  appendOptimisticUser: (text: string, attachments?: WorkspaceUserAttachment[]) => void;
   send: (payload: SceneAgentSendPayload) => void;
   abort: () => void;
   clearSteps: () => void;
@@ -348,38 +353,42 @@ export function useSceneAgentChat({
 
   // 乐观上屏:发送/追问即把用户消息插入视图,不等后端首帧。服务端回显同文本
   // user 步骤时由 dedupOptimisticUser 移除乐观步骤,避免重复。
-  const appendOptimisticUser = useCallback((text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    const optimisticId = `user-optimistic-${Date.now()}`;
-    setWorkspaceView((prev) =>
-      parseWorkspaceView(
-        {
-          render_name: 'scene_agent_workspace',
-          planning: null,
-          execution: [
-            {
-              id: optimisticId,
-              type: 'user',
-              title: '我',
-              status: 'done',
-              output: trimmed,
-              ts: new Date().toISOString(),
-            },
-          ],
-          summary: null,
-        },
-        prev,
-      ),
-    );
-  }, []);
+  const appendOptimisticUser = useCallback(
+    (text: string, attachments?: WorkspaceUserAttachment[]) => {
+      const trimmed = text.trim();
+      if (!trimmed && !(attachments && attachments.length)) return;
+      const optimisticId = `user-optimistic-${Date.now()}`;
+      setWorkspaceView((prev) =>
+        parseWorkspaceView(
+          {
+            render_name: 'scene_agent_workspace',
+            planning: null,
+            execution: [
+              {
+                id: optimisticId,
+                type: 'user',
+                title: '我',
+                status: 'done',
+                output: trimmed,
+                ...(attachments && attachments.length ? { attachments } : {}),
+                ts: new Date().toISOString(),
+              },
+            ],
+            summary: null,
+          },
+          prev,
+        ),
+      );
+    },
+    [],
+  );
 
   // 历史恢复 + 运行中续传(关闭页面后重开可继续接收产出):
   // 由 useChatPolling 统一驱动,先拉 vis_final 全量渲染历史,再按 state 决定是否增量轮询。
   // - 首次 checkStatus 拉取 vis_final → onPoll 合并历史(先渲染历史所有)
   // - state===RUNNING → 自动 2.5s 轮询 → onPoll 持续增量合并新产出
   // - send 发起新对话 loading=true → enabled=false 停轮询,SSE 接管
-  // - SSE 结束 loading=false → enabled true,convId effect 自动 checkStatus 恢复
+  // - SSE 结束 loading=false → enabled true,conversationId effect 自动 checkStatus 恢复
   const handlePoll = useCallback(
     (res: ChatQueryResponse) => {
       // 过滤 conversationId 快速切换时滞后的旧会话响应,避免脏合并
@@ -401,7 +410,7 @@ export function useSceneAgentChat({
   );
 
   const { state: convState, checkStatus, initialLoading: convLoading } = useChatPolling({
-    convId: effectiveConvUid ?? null,
+    conversationId: effectiveConvUid ?? null,
     enabled: enabled && !loading && !!effectiveConvUid,
     visRender: 'scene_agent_workspace',
     interval: 2500,
@@ -464,8 +473,9 @@ export function useSceneAgentChat({
 
   const send = useCallback(
     async (payload: SceneAgentSendPayload) => {
-      const { text } = payload;
-      if (!text.trim()) return;
+      const { text, resources } = payload;
+      const hasResources = Array.isArray(resources) && resources.length > 0;
+      if (!text.trim() && !hasResources) return;
       // 简洁模式:无 conversationId 时先创建会话再发送
       const uid = await ensureConvUid();
       if (!uid) return;
@@ -485,8 +495,9 @@ export function useSceneAgentChat({
       onConversationStart?.();
 
       // 乐观上屏:不等 SSE 首帧,先把用户消息插入视图;服务端回显同文本 user 步骤
-      // 时在 routeObject 里去重(服务端 output 会截断,用前缀匹配)
-      appendOptimisticUser(text);
+      // 时在 routeObject 里去重(服务端 output 会截断,用前缀匹配)。
+      // 纯文件消息(无文本)也上屏,附件随气泡展示。
+      appendOptimisticUser(text, hasResources ? resourcesToAttachments(resources!) : undefined);
 
       const data = buildSceneAgentSendData(payload, { workspaceId, taskId, focusArtifactId }, uid);
 

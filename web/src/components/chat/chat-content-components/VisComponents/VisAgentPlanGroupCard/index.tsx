@@ -72,11 +72,11 @@ const VisAgentPlanGroupCard: React.FC<{ data: GroupData }> = ({ data }) => {
 
   const handleItemClick = (uid: string) => {
     if (!uid) return;
-    const convId =
+    const conversationId =
       typeof window !== 'undefined'
         ? new URLSearchParams(window.location.search).get('conv_uid') || ''
         : '';
-    ee.emit(EVENTS.CLICK_FOLDER, { uid, conv_id: convId });
+    ee.emit(EVENTS.CLICK_FOLDER, { uid, conv_id: conversationId });
     ee.emit(EVENTS.OPEN_PANEL);
   };
 

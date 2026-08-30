@@ -23,6 +23,14 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+
+class ContractViolation(ValueError):
+    """payload 不满足契约(携带问题列表,供工具层回传 contract_gaps)。"""
+
+    def __init__(self, problems: List[str]):
+        self.problems = list(problems)
+        super().__init__("payload 不满足可执行契约: " + "; ".join(problems))
+
 # ------------------------------------------------------------------ 契约定义
 # level="executable" 时各类型的必填约束。message 与 GateError 文案对齐(中文)。
 _REQUIRED_EXECUTABLE: Dict[str, List[tuple]] = {
@@ -114,6 +122,32 @@ def validate_payload(
                         f"维度值 {v.get('label') or '?'} 缺少 codes 列表"
                     )
     return problems
+
+
+# ------------------------------------------------------------------ 契约导出
+def contract_spec() -> Dict[str, Any]:
+    """各对象类型的 payload 契约清单(前端表单/编辑器的单一事实来源)。
+
+    前端据此渲染编辑表单与校验提示,不再在前端硬编码第四份契约知识。
+    ``notes`` 补充 validate_payload 中无法表达为 dotted-path 的规则。
+    """
+    obj_types = list(dict.fromkeys([*_REQUIRED_PROPOSAL, *_REQUIRED_EXECUTABLE]))
+    notes = {
+        "entity": ["executable 级另需 binding.datasource_id 或 connector"],
+        "dimension": ["executable 级 values 每项需 codes 列表"],
+    }
+    return {
+        t: {
+            "proposal": [
+                {"path": p, "message": m} for p, m in _REQUIRED_PROPOSAL.get(t, [])
+            ],
+            "executable": [
+                {"path": p, "message": m} for p, m in _REQUIRED_EXECUTABLE.get(t, [])
+            ],
+            "notes": notes.get(t, []),
+        }
+        for t in obj_types
+    }
 
 
 # ------------------------------------------------------------------ 归一化

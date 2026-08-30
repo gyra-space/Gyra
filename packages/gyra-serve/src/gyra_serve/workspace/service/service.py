@@ -42,6 +42,15 @@ SYSTEM_OWNER_USER_ID = 0
 logger = logging.getLogger(__name__)
 
 
+def _collapse_text(text: str, cap: int = 500) -> str:
+    """把一段用户文本折叠成单行扁平串,去掉多余空白/换行,并加安全上限。
+
+    用于会话标题与首问兜底:UI 会做两行省略 + 悬停 tooltip 显示全文,
+    所以这里尽量保留完整内容,只做键合,不做粗暴截断。
+    """
+    return " ".join((text or "").split())[:cap]
+
+
 class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceResponse]):
     """Workspace CRUD + member/resource orchestration"""
 
@@ -668,7 +677,8 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
             else:
                 text = ""
             if text:
-                return text[:60]
+                # 不截断,保留完整首问供前端悬停提示全文;列表里由 UI 做两行省略。
+                return _collapse_text(text)
         return None
 
     def get_conversation_workspace(self, conv_uid: str) -> Optional[Dict[str, Any]]:
@@ -740,6 +750,31 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
         self._conv_link_dao.delete_by_conv(conv_uid)
         return True
 
+    def set_conversation_favorite(
+        self, workspace_id: int, conv_uid: str, favorited: bool,
+        user_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """收藏/取消收藏会话,归属校验与 delete_conversation 一致。"""
+        link = self._conv_link_dao.get_by_conv(conv_uid)
+        if link is None or link.workspace_id != workspace_id:
+            raise ValueError(
+                f"Conversation {conv_uid} not linked to workspace {workspace_id}"
+            )
+        if (
+            user_id is not None
+            and link.user_id is not None
+            and link.user_id != user_id
+        ):
+            raise ValueError(
+                f"Conversation {conv_uid} not owned by user {user_id}"
+            )
+        entity = self._conv_link_dao.set_favorite(conv_uid, favorited)
+        if entity is None:
+            raise ValueError(
+                f"Conversation {conv_uid} not linked to workspace {workspace_id}"
+            )
+        return self._conv_link_dao.to_response(entity)
+
     # ---------------- Conversation title (A: first input / B: LLM summary) ----
     def get_conversation_title(self, conv_uid: str) -> Optional[str]:
         """Return current conv_link title (None if not linked / no title)."""
@@ -749,15 +784,15 @@ class WorkspaceService(BaseService[WorkspaceEntity, WorkspaceRequest, WorkspaceR
     def set_initial_title_if_empty(
         self, conv_uid: str, user_input: str,
     ) -> Optional[str]:
-        """A: 用用户首条输入截断作为初始标题(仅在 title 为空时设置)。
+        """A: 用用户首条输入键合成初始标题(仅在 title 为空时设置)。
 
         - 已有标题(用户手动重命名 / B 已生成)则保留,不覆盖。
-        - 截断到 60 字符避免超长;首尾空白裁剪;空输入不写。
+        - 键合首问为单行文本(折叠换行/空白),UI 负责省略与悬停全文。
         """
         text = (user_input or "").strip()
         if not text:
             return None
-        title = text[:60]
+        title = _collapse_text(text)
         existing = self._conv_link_dao.get_by_conv(conv_uid)
         if existing and (existing.title or "").strip():
             return existing.title

@@ -76,12 +76,13 @@ def _make_aggregation_chat_mock():
 
 
 def _make_agent_chat(conv=None):
-    """Mock AgentChat with gpts_conversations DAO."""
+    """Mock AgentChat with gpts_conversations DAO（async DAO 迁移后全部 AsyncMock）。"""
     agent_chat = MagicMock()
     agent_chat.gpts_conversations = MagicMock()
-    agent_chat.gpts_conversations.get_by_conv_id = MagicMock(return_value=conv)
-    session = MagicMock()
-    agent_chat.gpts_conversations.get_raw_session = MagicMock(return_value=session)
+    agent_chat.gpts_conversations.a_get_by_conv_id = AsyncMock(return_value=conv)
+    agent_chat.gpts_conversations.a_update_extra = AsyncMock()
+    agent_chat.gpts_conversations.a_update_state = AsyncMock()
+    agent_chat.memory.push_dock_widget = AsyncMock()
     agent_chat.aggregation_chat = _make_aggregation_chat_mock()
     return agent_chat
 
@@ -92,16 +93,13 @@ async def _let_background_run():
     await asyncio.sleep(0)
 
 
-def _extract_extra_from_update_call(session):
-    """从 mocked session.update 调用里取出 extra JSON 字符串。
+def _last_written_extra(agent_chat):
+    """取 a_update_extra 最近一次写入的 extra 字典（async DAO 迁移后的断言入口）。
 
-    update 调用形如: session.query(...).filter(...).update({Column.extra: <json>}, ...)
-    MagicMock 下 key 是 GptsConversationsEntity.extra column 对象，所以取第一个 value。
+    写回调用形如: a_update_extra(conv_id, extra_dict)——位置参数，args[1] 即 extra。
     """
-    update_call = session.query.return_value.filter.return_value.update.call_args
-    extra_dict = update_call.args[0]
-    # 取 dict 的唯一 value（Column.extra → json 字符串）
-    return next(iter(extra_dict.values()))
+    assert agent_chat.gpts_conversations.a_update_extra.await_count >= 1
+    return agent_chat.gpts_conversations.a_update_extra.await_args.args[1]
 
 
 # ---------------- register_subagent ----------------
@@ -119,12 +117,8 @@ class TestRegisterSubagent:
             mode=SubAgentMode.ASYNC,
         )
 
-        # 验证 session.update 被调用，extra 里写入了 pending_subagents
-        session = agent_chat.gpts_conversations.get_raw_session.return_value
-        assert session.query.called
-        assert session.commit.called
-        extra_json = _extract_extra_from_update_call(session)
-        extra = json.loads(extra_json)
+        # 验证 extra 异步写回，里面写入了 pending_subagents
+        extra = _last_written_extra(agent_chat)
         assert len(extra["pending_subagents"]) == 1
         assert extra["pending_subagents"][0]["sub_conv_id"] == "sub_1"
         assert extra["pending_subagents"][0]["mode"] == "async"
@@ -153,9 +147,7 @@ class TestRegisterSubagent:
             mode=SubAgentMode.ASYNC,
         )
 
-        session = agent_chat.gpts_conversations.get_raw_session.return_value
-        extra_json = _extract_extra_from_update_call(session)
-        extra = json.loads(extra_json)
+        extra = _last_written_extra(agent_chat)
         assert len(extra["pending_subagents"]) == 2
         assert extra["pending_subagents"][0]["sub_conv_id"] == "sub_0"
         assert extra["pending_subagents"][1]["sub_conv_id"] == "sub_1"
@@ -164,7 +156,9 @@ class TestRegisterSubagent:
     async def test_register_no_conv_logs_warning(self):
         """main conv 不存在时只 log warning，不抛异常。"""
         agent_chat = MagicMock()
-        agent_chat.gpts_conversations.get_by_conv_id = MagicMock(return_value=None)
+        agent_chat.gpts_conversations.a_get_by_conv_id = AsyncMock(return_value=None)
+        agent_chat.gpts_conversations.a_update_extra = AsyncMock()
+        agent_chat.memory.push_dock_widget = AsyncMock()
         coord = SubagentCoordinator(agent_chat=agent_chat)
 
         # 不抛
@@ -512,7 +506,11 @@ class TestRebuildTranscript:
         msg.content = ""
         msg.action_report = json.dumps([
             {"name": "execute_sql", "is_exe_success": True, "content": "rows=42"},
-            {"name": "write_file", "is_exe_success": False, "content": "permission denied"},
+            {
+                "name": "write_file",
+                "is_exe_success": False,
+                "content": "permission denied",
+            },
         ])
 
         agent_chat = _make_agent_chat(_make_conv(extra={}))
@@ -576,7 +574,9 @@ class TestRebuildTranscript:
 
         # mock transcript 重建返回非空
         with patch.object(
-            coord, "_rebuild_subagent_transcript", new=AsyncMock(return_value="[sub think] partial work")
+            coord,
+            "_rebuild_subagent_transcript",
+            new=AsyncMock(return_value="[sub think] partial work"),
         ):
             await coord._trigger_main_resume("conv_main_1", [
                 SubAgentHandle.from_dict(h) for h in handles

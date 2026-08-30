@@ -4,7 +4,12 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from gyra.agent.tools.builtin.sandbox.shell_exec import ShellExecTool
-from gyra.sandbox.sandbox_utils import validate_shell_command, is_high_risk_command
+from gyra.sandbox.sandbox_utils import (
+    get_skill_command_extra_roots,
+    is_high_risk_command,
+    is_skill_script_command,
+    validate_shell_command,
+)
 
 
 def _make_mock_sandbox_client(
@@ -208,6 +213,26 @@ def test_high_risk_disk_and_block_device():
     assert is_high_risk_command("dd if=/dev/zero of=/dev/sda")
     assert is_high_risk_command("mkfs.ext4 /dev/sda1")
     assert is_high_risk_command("cat img.iso > /dev/sda")
+    assert is_high_risk_command("cat img.iso >/dev/nvme0n1")
+    assert is_high_risk_command("dd if=iso of=/dev/mapper/vg-root")
+
+
+def test_dev_null_redirection_not_high_risk():
+    """Regression: ``2>/dev/null`` was matched by the old block-device regex
+    (r\"of=/dev/|>\\s*/dev/\"), so a plain ``grep ... 2>/dev/null | sort -u |
+    head -60`` was flagged high-risk and blocked behind user authorization.
+    Pseudo-device redirections are harmless and must never be flagged."""
+    command = (
+        'grep -oE "XTHIM\\.[A-Z_]+|XTHIS\\.[A-Z_]+|CDXTHIP\\.[A-Z_]+'
+        '|CDXT[A-Z_]*\\.[A-Z_]+" data/tool_output_execute_raw_sql.txt '
+        "2>/dev/null | sort -u | head -60"
+    )
+    assert not is_high_risk_command(command)
+    assert not is_high_risk_command("ls -la > /dev/null")
+    assert not is_high_risk_command("make 2>/dev/null 1>&2")
+    assert not is_high_risk_command("echo hi >/dev/stdout")
+    assert not is_high_risk_command("cmd > /dev/tty")
+    assert not is_high_risk_command("dd if=/dev/zero of=/dev/null count=1")
 
 
 def test_high_risk_normal_commands_false():
@@ -385,3 +410,143 @@ def test_glob_token_skipped_but_specific_path_blocked():
         validate_shell_command("cat /etc/passwd", "/home/ubuntu")
     with pytest.raises(PermissionError):
         validate_shell_command("cat file; rm -rf /", "/home/ubuntu")
+
+
+# --- skill-script trust: skill 目录脚本默认受信，不拦不授权 ---
+
+
+def _make_skill_tree(tmp_path):
+    """在 tmp_path 下造一个最小 skill 目录: run.sh + scripts/run.py。"""
+    skill_dir = tmp_path / "skill"
+    (skill_dir / "scripts").mkdir(parents=True)
+    run_py = skill_dir / "scripts" / "run.py"
+    run_py.write_text("print('ok')\n")
+    run_sh = skill_dir / "run.sh"
+    run_sh.write_text("echo ok\n")
+    return str(skill_dir), str(run_py), str(run_sh)
+
+
+class TestIsSkillScriptCommand:
+    def test_interpreter_with_skill_script_true(self, tmp_path):
+        skill_dir, run_py, _ = _make_skill_tree(tmp_path)
+        assert is_skill_script_command(f"python3 {run_py} --flag x", skill_dir)
+
+    def test_arg_containing_high_risk_words_true(self, tmp_path):
+        """参数字符串里出现 dd of=/dev/sda 之类字样纯属误伤场景, 必须放行。"""
+        skill_dir, run_py, _ = _make_skill_tree(tmp_path)
+        command = f'python3 {run_py} --note "dd of=/dev/sda"'
+        assert is_high_risk_command(command)
+        assert is_skill_script_command(command, skill_dir)
+
+    def test_direct_execution_of_skill_binary_true(self, tmp_path):
+        skill_dir, _, run_sh = _make_skill_tree(tmp_path)
+        assert is_skill_script_command(f"{run_sh} --help", skill_dir)
+
+    def test_pipeline_entries_true(self, tmp_path):
+        skill_dir, run_py, run_sh = _make_skill_tree(tmp_path)
+        assert is_skill_script_command(f"cat data.txt | python3 {run_py}", skill_dir)
+        assert is_skill_script_command(f"bash {run_sh} | head -5", skill_dir)
+
+    def test_relative_script_with_work_dir_true(self, tmp_path):
+        skill_dir, _, _ = _make_skill_tree(tmp_path)
+        assert is_skill_script_command(
+            "python3 scripts/run.py", skill_dir, work_dir=skill_dir
+        )
+
+    def test_gated_binary_in_chain_false(self, tmp_path):
+        """组合命令里出现 rm/dd 等入口, 绝不借 skill 脚本名义放行。"""
+        skill_dir, run_py, _ = _make_skill_tree(tmp_path)
+        assert not is_skill_script_command(
+            f"rm -rf /tmp/x && python3 {run_py}", skill_dir
+        )
+        assert not is_skill_script_command(
+            f"dd of=/dev/sda && python3 {run_py}", skill_dir
+        )
+
+    def test_inline_code_not_trusted(self, tmp_path):
+        """-c/-m 的内联代码/模块不是脚本文件, 即便引用 skill 路径也不受信。"""
+        skill_dir, run_py, _ = _make_skill_tree(tmp_path)
+        assert not is_skill_script_command(f'python3 -c "open({run_py!r})"', skill_dir)
+        assert not is_skill_script_command("python3 -m http.server", skill_dir)
+
+    def test_missing_or_outside_script_false(self, tmp_path):
+        skill_dir, _, _ = _make_skill_tree(tmp_path)
+        outside = tmp_path / "outside.py"
+        outside.write_text("x = 1\n")
+        assert not is_skill_script_command(
+            f"python3 {skill_dir}/missing.py", skill_dir
+        )
+        assert not is_skill_script_command(f"python3 {outside}", skill_dir)
+
+    def test_no_skill_dirs_false(self, tmp_path):
+        skill_dir, run_py, _ = _make_skill_tree(tmp_path)
+        assert not is_skill_script_command(f"python3 {run_py}", None)
+        assert not is_skill_script_command(f"python3 {run_py}", "")
+
+    def test_unparseable_command_false(self):
+        assert not is_skill_script_command("python3 'unclosed", "/data/skill")
+
+    def test_extra_roots_constant(self):
+        assert get_skill_command_extra_roots() == ("/tmp",)
+
+
+def test_skill_command_tmp_output_needs_extra_roots(tmp_path):
+    """/tmp 不在默认白名单; skill 脚本命令需追加 extra roots 后栅栏才放行。"""
+    skill_dir, run_py, _ = _make_skill_tree(tmp_path)
+    command = f"python3 {run_py} --out /tmp/gyra_probe.json"
+    with pytest.raises(PermissionError):
+        validate_shell_command(command, str(tmp_path / "ws"), allowed_roots=[skill_dir])
+    validate_shell_command(
+        command,
+        str(tmp_path / "ws"),
+        allowed_roots=[skill_dir, *get_skill_command_extra_roots()],
+    )
+
+
+@pytest.mark.asyncio
+async def test_skill_script_command_skips_authorization(monkeypatch, tmp_path):
+    """skill 脚本命令: 参数中的高危字样不再触发用户授权, 直接执行。"""
+    monkeypatch.setattr(
+        "gyra.agent.tools.builtin.sandbox.shell_exec._resolve_sandbox_type",
+        lambda: "local",
+    )
+    called = {"approval": False}
+
+    async def _should_not_call(gateway, command, reason, **kwargs):
+        called["approval"] = True
+        return True
+
+    monkeypatch.setattr(
+        "gyra.agent.tools.authorization_middleware.request_command_approval",
+        _should_not_call,
+    )
+    skill_dir, run_py, _ = _make_skill_tree(tmp_path)
+    client = _make_mock_sandbox_client(str(tmp_path / "ws"), skill_dir=skill_dir)
+    tool = ShellExecTool()
+    ctx = {"sandbox_client": client}
+
+    command = f'python3 {run_py} --note "dd of=/dev/sda"'
+    assert is_high_risk_command(command)  # 前提: 旧判定会把这条命令当高危
+    result = await tool.execute({"command": command}, context=ctx)
+    assert result.success
+    client.shell.exec_command.assert_awaited_once()
+    assert called["approval"] is False
+
+
+@pytest.mark.asyncio
+async def test_skill_script_tmp_output_allowed(monkeypatch, tmp_path):
+    """skill 脚本命令写 /tmp: 栅栏放行, 不再误报越界。"""
+    monkeypatch.setattr(
+        "gyra.agent.tools.builtin.sandbox.shell_exec._resolve_sandbox_type",
+        lambda: "local",
+    )
+    skill_dir, run_py, _ = _make_skill_tree(tmp_path)
+    client = _make_mock_sandbox_client(str(tmp_path / "ws"), skill_dir=skill_dir)
+    tool = ShellExecTool()
+    ctx = {"sandbox_client": client}
+
+    result = await tool.execute(
+        {"command": f"python3 {run_py} --out /tmp/gyra_probe.json"}, context=ctx
+    )
+    assert result.success
+    client.shell.exec_command.assert_awaited_once()

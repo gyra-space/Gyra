@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 import logging
 
@@ -9,7 +10,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    desc, select,
+    desc, select, update,
 )
 from sqlalchemy.orm import Query
 
@@ -181,6 +182,24 @@ class GptsConversationsDao(BaseDao):
         )
         session.commit()
         session.close()
+
+    async def a_update_state(self, conv_id: str, state: str):
+        """异步更新会话状态（async 上下文必须用本方法，同步 update 会阻塞事件循环）。"""
+        async with self.a_session(commit=True) as session:
+            await session.execute(
+                update(GptsConversationsEntity)
+                .where(GptsConversationsEntity.conv_id == conv_id)
+                .values(state=state)
+            )
+
+    async def a_update_extra(self, conv_id: str, extra: dict):
+        """异步整体写回 extra JSON（调用方先 a_get_by_conv_id 读最新值做合并）。"""
+        async with self.a_session(commit=True) as session:
+            await session.execute(
+                update(GptsConversationsEntity)
+                .where(GptsConversationsEntity.conv_id == conv_id)
+                .values(extra=json.dumps(extra, ensure_ascii=False))
+            )
 
     def update_heartbeat(self, conv_id: str) -> None:
         """PR 4: 轻量心跳更新（只改 last_heartbeat 列）。

@@ -174,6 +174,23 @@ class IngestJobListResponse(BaseModel):
     items: List[IngestJobResponse]
 
 
+class FileLearningStatus(BaseModel):
+    """Wiki-learning status of one raw file, derived from ingest jobs.
+
+    ``status`` is the coarse state shown in the ECP file tree:
+    pending(挂起/未学习) | running(进行中) | done(完成) | failed(失败).
+    """
+
+    path: str  # raw tree path, e.g. "raw/sources/foo.md"
+    status: str
+    job_id: Optional[str] = None
+    job_status: Optional[str] = None  # fine-grained IngestJob.status
+    error: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    verbat_count: int = 0
+
+
 # ---------------------------------------------------------------------------
 # External wiki sync (Feishu)
 # ---------------------------------------------------------------------------

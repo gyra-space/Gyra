@@ -41,10 +41,14 @@ def test_owner_has_all_permissions():
 
 
 # 三角色 x 关键权限 的判定矩阵(期望值)
+# 注意:与协议空间角色矩阵对齐(permissions/modules/space.py)——
+# space.member 对资产/剧本是只读(无 space.asset.manage / space.playbook.manage),
+# 与 workspace/rbac.py 旧版 ROLE_PERMISSIONS 的"contributor 可发布/建剧本"不同;
+# 生产判定(协议 seed)以 space.py 为准,本矩阵随之对齐。
 MATRIX = {
     Permission.START_TASK: {Role.OWNER: True, Role.CONTRIBUTOR: True, Role.VIEWER: False},
-    Permission.PUBLISH_ASSET: {Role.OWNER: True, Role.CONTRIBUTOR: True, Role.VIEWER: False},
-    Permission.CREATE_PLAYBOOK: {Role.OWNER: True, Role.CONTRIBUTOR: True, Role.VIEWER: False},
+    Permission.PUBLISH_ASSET: {Role.OWNER: True, Role.CONTRIBUTOR: False, Role.VIEWER: False},
+    Permission.CREATE_PLAYBOOK: {Role.OWNER: True, Role.CONTRIBUTOR: False, Role.VIEWER: False},
     Permission.DELETE_TASK: {Role.OWNER: True, Role.CONTRIBUTOR: False, Role.VIEWER: False},
     Permission.UPDATE_WORKSPACE: {Role.OWNER: True, Role.CONTRIBUTOR: False, Role.VIEWER: False},
     Permission.MANAGE_RESOURCE: {Role.OWNER: True, Role.CONTRIBUTOR: False, Role.VIEWER: False},
@@ -54,9 +58,18 @@ MATRIX = {
 
 @pytest.mark.parametrize("permission", list(MATRIX))
 def test_check_permission_matrix(permission):
-    """check_permission 按三角色矩阵判定关键权限。"""
+    """check_permission 按三角色矩阵判定关键权限。
+
+    开发模式(权限插件关闭)下走 workspace_member.role 兜底矩阵;
+    注意必须 mock models 模块里的 WorkspaceMemberDao(has_scope 从那里
+    局部导入),mock workspace.rbac 里的同名引用是无效的。
+    """
     for role, expected in MATRIX[permission].items():
-        with patch("gyra_serve.workspace.rbac.WorkspaceMemberDao") as MockMemberDao:
+        with patch(
+            "gyra_serve.workspace.models.models.WorkspaceMemberDao"
+        ) as MockMemberDao, patch(
+            "gyra_serve.utils.auth._is_permissions_enabled", return_value=False
+        ):
             MockMemberDao.return_value.get_role.return_value = role.value
             assert (
                 check_permission(workspace_id=1, user_id=2, permission=permission)
@@ -66,7 +79,11 @@ def test_check_permission_matrix(permission):
 
 def test_unknown_role_falls_back_to_viewer():
     """未知角色字符串降级为查看(viewer),无写权限。"""
-    with patch("gyra_serve.workspace.rbac.WorkspaceMemberDao") as MockMemberDao:
+    with patch(
+        "gyra_serve.workspace.models.models.WorkspaceMemberDao"
+    ) as MockMemberDao, patch(
+        "gyra_serve.utils.auth._is_permissions_enabled", return_value=False
+    ):
         MockMemberDao.return_value.get_role.return_value = "approver"  # 已废弃值
         assert check_permission(
             workspace_id=1, user_id=2, permission=Permission.START_TASK

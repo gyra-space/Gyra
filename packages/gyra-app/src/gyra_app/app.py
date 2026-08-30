@@ -789,6 +789,17 @@ def initialize_app(param: ApplicationConfig, app: FastAPI, system_app: SystemApp
         param.service.web.database, web_config.disable_alembic_upgrade
     )
 
+    # 任务台账启动注入：让所有 AsyncTaskManager 实例（含 media 单例）从进程
+    # 启动起就统一写 DB（gpts_async_tasks），避免晚于任务提交的注入被错过。
+    try:
+        from gyra.agent.util.async_task_manager import AsyncTaskManager
+        from gyra_serve.agent.db.async_task_db import AsyncTaskDao
+
+        AsyncTaskManager.set_global_ledger(AsyncTaskDao())
+        logger.info("[Startup] global async task ledger (AsyncTaskDao) injected")
+    except Exception as e:
+        logger.warning(f"[Startup] failed to inject async task DB ledger: {e}")
+
     _sync_oauth2_config_from_db()
     _sync_feature_plugins_from_db()
     _sync_agent_llm_from_db()

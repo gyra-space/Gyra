@@ -858,15 +858,6 @@
   margin-top: 20px;
 }
 
-.ecp-kn__raw pre {
-  background: var(--bg-page) !important;
-  border: 1px solid var(--line-soft) !important;
-  border-radius: var(--r-md) !important;
-  padding: 16px 18px !important;
-  line-height: 1.7 !important;
-  color: var(--ink-700) !important;
-}
-
 /* markdown document */
 .ecp-kn__md {
   font-size: 14px;

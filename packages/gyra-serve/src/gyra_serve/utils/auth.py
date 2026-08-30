@@ -21,7 +21,8 @@ class UserRequest(BaseModel):
     avatar_url: Optional[str] = None
     nick_name_like: Optional[str] = None
     # 新增字段（插件关闭时为 None，表示不做权限检查）
-    permissions: Optional[Dict[str, List[str]]] = None  # resource_type -> [actions]
+    permissions: Optional[Dict[str, List[str]]] = None  # resource_type(或 rt:rid) -> [actions]
+    deny_permissions: Optional[Dict[str, List[str]]] = None  # deny 分桶,同上分键格式
     roles: Optional[List[str]] = None  # 用户拥有的角色名列表
     grants: Optional[List[Dict]] = None  # 资源实例级授权 [{permission_key, resource_type, resource_id, ...}]
 
@@ -130,7 +131,9 @@ def get_user_from_headers(
         user_id = user_data.get("id", 0)
         perms = PermissionService().get_user_permissions(user_id)
 
-        # 获取用户的 role 字段（从数据库）
+        # 获取用户的 role 字段与启用状态（从数据库）
+        # is_active != 1(被禁用/软删)直接 401——无状态 HMAC token 本身
+        # 不携带启用状态,必须每请求核对,否则禁用用户的旧 token 仍可用。
         user_role = "normal"
         try:
             from gyra_app.auth.user_service import UserEntity
@@ -138,10 +141,12 @@ def get_user_from_headers(
 
             with db.session(commit=False) as s:
                 user_obj = s.query(UserEntity).filter(UserEntity.id == user_id).first()
-                if user_obj and user_obj.role:
-                    user_role = user_obj.role
         except Exception:
-            pass
+            user_obj = None
+        if user_obj is None or getattr(user_obj, "is_active", 1) != 1:
+            raise HTTPException(status_code=401, detail="Account disabled or deleted")
+        if user_obj.role:
+            user_role = user_obj.role
 
         return UserRequest(
             user_id=str(user_data.get("name", "")),
@@ -152,6 +157,7 @@ def get_user_from_headers(
             avatar_url=user_data.get("avatar", ""),
             role=user_role,
             permissions=perms.permissions_map,
+            deny_permissions=perms.deny_map,
             roles=perms.role_names,
             grants=perms.grants,
         )

@@ -6,6 +6,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   transpilePackages: ['@antv/gpt-vis'],
+  experimental: {
+    webpackBuildWorker: false,
+  },
   images: {
     unoptimized: true,
     dangerouslyAllowSVG: true,

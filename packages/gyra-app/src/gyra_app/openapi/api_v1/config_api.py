@@ -477,7 +477,11 @@ async def update_model_config(
     request: Dict[str, Any],
     user: UserRequest = Depends(require_permission("model", "manage")),
 ):
-    """更新模型配置（需要 model:manage 权限）"""
+    """更新模型配置（需要 model:manage 权限）
+
+    保存后同步到运行时配置（agent.default_model / agent.default_llm），
+    使知识库空间创建等处的全局默认模型兜底立即生效，无需重启。
+    """
     try:
         manager = get_config_manager()
         config = manager.get()
@@ -488,12 +492,24 @@ async def update_model_config(
 
         saved = save_config_with_error_handling(manager, "模型配置")
 
+        # 同步到 system_app.config（agent.llm / agent.default_model / agent.default_llm）
+        sync_status = _sync_config_to_system_app(config)
+
+        # default_model.model_id 可能为空（用户清除默认模型），
+        # 此时显式清空 agent.default_llm，避免残留旧值
+        from gyra.component import SystemApp
+
+        system_app = SystemApp.get_instance()
+        if system_app and not config.default_model.model_id:
+            system_app.config.set("agent.default_llm", "", overwrite=True)
+
         return JSONResponse(
             content={
                 "success": True,
                 "message": "模型配置已更新" + ("并保存" if saved else "（保存失败）"),
                 "data": config.default_model.model_dump(),
                 "saved_to_file": saved,
+                "sync_status": sync_status,
             }
         )
     except Exception as e:

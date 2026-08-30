@@ -75,6 +75,7 @@ from gyra.knowledge.types import (
 )
 from gyra.knowledge.vaultfs import Subscription, Watcher
 
+from ..cjk import segment_query
 from ._util import (
     INLINE_THRESHOLD,
     PROTECTED_FILES,
@@ -567,31 +568,81 @@ class LocalVaultFS(BaseVaultFS):
         return [r[0] for r in rows]
 
     async def _fts_search_chunks(self, query: str, limit: int) -> list[FtsHit]:
+        try:
+            cursor = await self._db.execute(
+                """
+                SELECT c.id as chunk_id, c.document_id, d.path, d.title,
+                       bm25(chunks_fts) as score,
+                       snippet(chunks_fts, 0, '<<', '>>', '...', 20) as snippet
+                FROM chunks_fts
+                JOIN document_chunks c ON c.rowid = chunks_fts.rowid
+                JOIN documents d ON d.id = c.document_id
+                WHERE chunks_fts MATCH ? AND d.space_id=?
+                ORDER BY score LIMIT ?
+                """,
+                (query, self._space_id, limit),
+            )
+            rows = await cursor.fetchall()
+        except Exception as e:
+            # FTS5 MATCH is strict about query syntax (quotes, operators…);
+            # malformed queries must not kill the whole search.
+            logger.debug(
+                "FTS MATCH failed for query %r, falling back to LIKE: %s", query, e
+            )
+            rows = []
+        if rows:
+            return [
+                FtsHit(
+                    chunk_id=r["chunk_id"],
+                    document_id=r["document_id"],
+                    path=r["path"],
+                    title=r["title"],
+                    score=-r["score"],
+                    snippet=r["snippet"] or "",
+                )
+                for r in rows
+            ]
+        # FTS5 token matching can't substring-match CJK (unicode61 folds
+        # consecutive CJK chars into one token) — SQL LIKE fallback with
+        # per-term coverage scoring.
+        return await self._like_search_chunks(query, limit)
+
+    async def _like_search_chunks(self, query: str, limit: int) -> list[FtsHit]:
+        terms = segment_query(query)
+        if not terms:
+            return []
+        clauses = " OR ".join(["c.content LIKE ?"] * len(terms))
         cursor = await self._db.execute(
-            """
-            SELECT c.id as chunk_id, c.document_id, d.path, d.title,
-                   bm25(chunks_fts) as score,
-                   snippet(chunks_fts, 0, '<<', '>>', '...', 20) as snippet
-            FROM chunks_fts
-            JOIN document_chunks c ON c.rowid = chunks_fts.rowid
+            f"""
+            SELECT c.id as chunk_id, c.document_id, d.path, d.title, c.content
+            FROM document_chunks c
             JOIN documents d ON d.id = c.document_id
-            WHERE chunks_fts MATCH ? AND d.space_id=?
-            ORDER BY score LIMIT ?
+            WHERE d.space_id=? AND ({clauses})
+            LIMIT 500
             """,
-            (query, self._space_id, limit),
+            (self._space_id, *[f"%{t}%" for t in terms]),
         )
         rows = await cursor.fetchall()
-        return [
-            FtsHit(
-                chunk_id=r["chunk_id"],
-                document_id=r["document_id"],
-                path=r["path"],
-                title=r["title"],
-                score=-r["score"],
-                snippet=r["snippet"] or "",
+        lowered = [t.casefold() for t in terms]
+        scored: list[FtsHit] = []
+        for r in rows:
+            content = r["content"] or ""
+            text = content.casefold()
+            matched = [t for t in lowered if t in text]
+            if not matched:
+                continue
+            scored.append(
+                FtsHit(
+                    chunk_id=r["chunk_id"],
+                    document_id=r["document_id"],
+                    path=r["path"],
+                    title=r["title"],
+                    score=round(len(matched) / len(lowered), 4),
+                    snippet=make_snippet(content, matched[0]),
+                )
             )
-            for r in rows
-        ]
+        scored.sort(key=lambda h: h.score, reverse=True)
+        return scored[:limit]
 
     async def _lookup_doc_verbats(self, doc_id: DocId) -> list[VerbatId]:
         cursor = await self._db.execute(

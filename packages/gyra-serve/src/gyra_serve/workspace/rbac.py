@@ -132,12 +132,32 @@ def check_permission(
 ) -> bool:
     """检查 user 是否在 workspace 中拥有指定权限（统一协议判定）。"""
     from gyra_serve.permissions import has_scope
-    from gyra_serve.utils.auth import UserRequest
+    from gyra_serve.utils.auth import UserRequest, _is_permissions_enabled
 
     key = PERMISSION_TO_KEY[permission]
-    return has_scope(
-        UserRequest(user_id=str(user_id), user_no=str(user_id)), key, workspace_id
-    )
+
+    user = UserRequest(user_id=str(user_id), user_no=str(user_id))
+    if _is_permissions_enabled():
+        # 插件开启:填充真实权限快照——否则 permissions=None 会被 has_scope
+        # 当作开发模式,永远走成员表兜底、跳过 user_role 空间绑定与 deny
+        try:
+            from gyra_app.feature_plugins.permissions.service import (
+                PermissionService,
+            )
+
+            perms = PermissionService().get_user_permissions(user_id)
+            user = UserRequest(
+                user_id=str(user_id),
+                user_no=str(user_id),
+                permissions=perms.permissions_map,
+                deny_permissions=perms.deny_map,
+                roles=perms.role_names,
+                grants=perms.grants,
+            )
+        except Exception as e:
+            logger.warning(f"load user permissions failed, fail-closed: {e}")
+            return False
+    return has_scope(user, key, workspace_id)
 
 
 # --------------------------------------------------------------------------- #

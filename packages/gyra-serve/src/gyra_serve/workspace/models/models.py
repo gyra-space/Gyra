@@ -141,6 +141,8 @@ class WorkspaceConversationLinkEntity(Model):
     user_id = Column(Integer, nullable=True, index=True)
     is_current = Column(Boolean, nullable=False, default=False, index=True)
     title = Column(String(255), nullable=True)
+    is_favorited = Column(Boolean, nullable=False, default=False, index=True)
+    favorited_at = Column(DateTime, nullable=True)
 
     gmt_created = Column(DateTime, name="gmt_create", default=datetime.now)
     gmt_modified = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -170,6 +172,8 @@ class WorkspaceConversationLinkDao(
             "user_id": entity.user_id,
             "title": entity.title,
             "is_current": entity.is_current,
+            "is_favorited": _as_bool(entity.is_favorited),
+            "favorited_at": entity.favorited_at.isoformat() if entity.favorited_at else "",
             "gmt_created": entity.gmt_created.isoformat() if entity.gmt_created else "",
             "gmt_modified": entity.gmt_modified.isoformat() if entity.gmt_modified else "",
         }
@@ -322,6 +326,30 @@ class WorkspaceConversationLinkDao(
         finally:
             session.close()
 
+    def set_favorite(
+        self, conv_uid: str, favorited: bool
+    ) -> Optional[WorkspaceConversationLinkEntity]:
+        session = self.get_raw_session()
+        try:
+            entity = (
+                session.query(WorkspaceConversationLinkEntity)
+                .filter(WorkspaceConversationLinkEntity.conv_uid == conv_uid)
+                .first()
+            )
+            if entity is None:
+                return None
+            entity.is_favorited = bool(favorited)
+            entity.favorited_at = datetime.now() if favorited else None
+            session.commit()
+            # commit 后属性过期,关闭前 refresh 防 DetachedInstanceError
+            session.refresh(entity)
+            return entity
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def get_by_conv(self, conv_uid: str) -> Optional[WorkspaceConversationLinkEntity]:
         session = self.get_raw_session()
         try:
@@ -381,6 +409,17 @@ class WorkspaceConversationLinkDao(
 
 
 # ----------------------------- DAOs -----------------------------
+def _as_bool(value: Any) -> bool:
+    """归一化布尔读取:兼容历史 text('False'/'True') 与 integer(0/1) 两种存储。
+
+    历史迁移曾把 SQLite 布尔列默认值写成字符串 'False',直接 ``bool(value)``
+    会因非空字符串恒为 True 而把未收藏行误判为已收藏。
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true")
+    return bool(value)
+
+
 def _is_false(column) -> Any:
     """归一化布尔列比较:兼容历史 text('False') 与 integer(0) 两种存储。
 

@@ -4,13 +4,15 @@ import { apiInterceptors } from '@/client/api';
 import {
   deleteRawFile,
   editRawFile,
+  getLearningStatus,
   getVerbat,
   readRawFile,
+  rebuildRawFileLearning,
   rebuildVerbatWiki,
 } from '@/client/api/knowledge-vault';
-import type { VerbatFull } from '@/types/knowledge-vault';
+import type { FileLearningStatusMap, VerbatFull } from '@/types/knowledge-vault';
 import { DeleteOutlined, EditOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { Button, Empty, Spin, Tag, App } from 'antd';
+import { Button, Empty, Popconfirm, Spin, Tag, Tooltip, App } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import MarkdownEditor from './MarkdownEditor';
 import { useSpace } from './SpaceContext';
@@ -20,6 +22,20 @@ import { useSpace } from './SpaceContext';
  *  旧的 .txt 也允许编辑，方便历史文件回填。二进制（图片/PDF/zip 等）
  *  仍走 Empty 占位。 */
 const TEXT_EDITABLE_EXTS = new Set(['.md', '.txt', '.markdown', '.text']);
+
+const LEARN_STATUS_META: Record<string, { label: string; color: string }> = {
+  pending: { label: '挂起', color: 'default' },
+  running: { label: '进行中', color: 'processing' },
+  done: { label: '完成', color: 'success' },
+  failed: { label: '失败', color: 'error' },
+};
+
+const LEARN_TIP: Record<string, string> = {
+  pending: '尚未学习过该文件',
+  running: 'wiki / 图谱学习进行中',
+  done: '学习完成',
+  failed: '上次学习失败，可重新触发',
+};
 
 function isTextEditable(path: string | undefined | null): boolean {
   if (!path) return false;
@@ -37,6 +53,11 @@ export default function RawEditor() {
   const [dirty, setDirty] = useState(false);
   const [verbat, setVerbat] = useState<VerbatFull | null>(selectedVerbat);
   const [rebuilding, setRebuilding] = useState(false);
+  const [learnStatus, setLearnStatus] = useState<FileLearningStatusMap>({});
+  const [rebuildingLearn, setRebuildingLearn] = useState(false);
+  const [learnTick, setLearnTick] = useState(0);
+
+  const learnOf = selectedRaw ? learnStatus[selectedRaw] : undefined;
 
   const displayPath = useMemo(() => {
     if (!selectedRaw) return '';
@@ -64,7 +85,7 @@ export default function RawEditor() {
       setContent('');
       return;
     }
-    if (selectedRaw.endsWith('.md')) {
+    if (isTextEditable(selectedRaw)) {
       setLoading(true);
       apiInterceptors(readRawFile(slug, apiPath))
         .then(([, data]) => {
@@ -76,6 +97,23 @@ export default function RawEditor() {
       setContent('');
     }
   }, [slug, selectedRaw, apiPath]);
+
+  useEffect(() => {
+    if (!selectedRaw) return;
+    let cancelled = false;
+    const tick = async () => {
+      const [err, res] = await apiInterceptors(getLearningStatus(slug));
+      if (err || cancelled || !res) return;
+      setLearnStatus(res);
+      if (res[selectedRaw]?.status === 'running') {
+        setTimeout(tick, 2500);
+      }
+    };
+    tick();
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, selectedRaw, learnTick]);
 
   useEffect(() => {
     if (selectedVerbat?.id) {
@@ -113,6 +151,22 @@ export default function RawEditor() {
       }
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function rebuildLearning() {
+    if (!selectedRaw) return;
+    setRebuildingLearn(true);
+    try {
+      const [, , raw] = await apiInterceptors(
+        rebuildRawFileLearning(slug, apiPath),
+      );
+      if (raw) {
+        message.success('已重新触发学习');
+        setLearnTick((t) => t + 1);
+      }
+    } finally {
+      setRebuildingLearn(false);
     }
   }
 
@@ -171,7 +225,25 @@ export default function RawEditor() {
             {displayPath}
           </span>
           {dirty && <Tag color="orange">未保存</Tag>}
+          {learnOf && (
+            <Tooltip title={LEARN_TIP[learnOf.status]}>
+              <Tag color={LEARN_STATUS_META[learnOf.status].color} className="!m-0">
+                {LEARN_STATUS_META[learnOf.status].label}
+              </Tag>
+            </Tooltip>
+          )}
           <div className="flex-1" />
+          <Popconfirm
+            title="重新学习该文件"
+            description="将重新生成 wiki 词条并抽取知识图谱。"
+            okText="重新学习"
+            cancelText="取消"
+            onConfirm={rebuildLearning}
+          >
+            <Button size="small" icon={<ThunderboltOutlined />} loading={rebuildingLearn}>
+              重新学习
+            </Button>
+          </Popconfirm>
           <Button danger size="small" icon={<DeleteOutlined />} onClick={remove} loading={deleting}>
             删除
           </Button>

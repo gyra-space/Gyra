@@ -54,7 +54,7 @@ describe('useChatPolling 轮询防泄露', () => {
     queryChatStatusMock.mockResolvedValue(makeQueryRes('running'));
 
     const { result, unmount } = renderHook(() =>
-      useChatPolling({ convId: 'c1', enabled: true, interval: 1000 }),
+      useChatPolling({ conversationId: 'c1', enabled: true, interval: 1000 }),
     );
 
     // 初始 checkStatus → RUNNING → 启动轮询
@@ -97,7 +97,7 @@ describe('useChatPolling 轮询防泄露', () => {
     queryChatStatusMock.mockResolvedValue(makeQueryRes('running'));
 
     const { result, unmount } = renderHook(() =>
-      useChatPolling({ convId: 'c1', enabled: true, interval: 1000 }),
+      useChatPolling({ conversationId: 'c1', enabled: true, interval: 1000 }),
     );
     await act(async () => {
       await Promise.resolve();
@@ -124,7 +124,7 @@ describe('useChatPolling 轮询防泄露', () => {
     queryChatStatusMock.mockResolvedValue(makeQueryRes('running'));
 
     const { result, unmount } = renderHook(() =>
-      useChatPolling({ convId: 'c1', enabled: true, interval: 1000 }),
+      useChatPolling({ conversationId: 'c1', enabled: true, interval: 1000 }),
     );
     await act(async () => {
       await Promise.resolve();
@@ -148,23 +148,23 @@ describe('useChatPolling 轮询防泄露', () => {
     unmount();
   });
 
-  test('回到无会话态(convId=null / 欢迎态)时复位残留 RUNNING 状态', async () => {
+  test('回到无会话态(conversationId=null / 欢迎态)时复位残留 RUNNING 状态', async () => {
     jest.useFakeTimers();
     queryChatStatusMock.mockResolvedValue(makeQueryRes('running'));
 
     const { result, rerender, unmount } = renderHook(
-      ({ convId, enabled }: { convId: string | null; enabled: boolean }) =>
-        useChatPolling({ convId, enabled, interval: 1000 }),
-      { initialProps: { convId: 'c1', enabled: true } },
+      ({ conversationId, enabled }: { conversationId: string | null; enabled: boolean }) =>
+        useChatPolling({ conversationId, enabled, interval: 1000 }),
+      { initialProps: { conversationId: 'c1', enabled: true } },
     );
     await act(async () => {
       await Promise.resolve();
     });
     expect(result.current.state).toBe('RUNNING');
 
-    // 点击「新任务」回到欢迎态:convId/enabled 归零,残留 RUNNING 必须被复位为 UNKNOWN,
+    // 点击「新任务」回到欢迎态:conversationId/enabled 归零,残留 RUNNING 必须被复位为 UNKNOWN,
     // 否则外层会把它误判为活跃执行,新任务发送被当作上一会话的补充输入投递到旧队列。
-    rerender({ convId: null, enabled: false });
+    rerender({ conversationId: null, enabled: false });
     await act(async () => {
       await Promise.resolve();
     });
@@ -180,7 +180,7 @@ describe('useChatPolling 轮询防泄露', () => {
     queryChatStatusMock.mockResolvedValue(makeQueryRes('running'));
 
     const { result, unmount } = renderHook(() =>
-      useChatPolling({ convId: 'c1', enabled: true, interval: 1000 }),
+      useChatPolling({ conversationId: 'c1', enabled: true, interval: 1000 }),
     );
     await act(async () => {
       await Promise.resolve();

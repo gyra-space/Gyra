@@ -154,6 +154,11 @@ class RenameConversationRequest(BaseModel):
     title: str
 
 
+class FavoriteConversationRequest(BaseModel):
+    workspace_id: int
+    favorited: bool
+
+
 # ------------------------ Scene Mode (场景空间模式) ------------------------
 class SceneModeSetRequest(BaseModel):
     """设置 workspace 场景空间模式请求"""
