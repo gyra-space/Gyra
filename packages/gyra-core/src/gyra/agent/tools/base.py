@@ -226,6 +226,13 @@ class ToolBase(ABC):
         这是执行工具的推荐方法，内部会调用 execute 方法。
         提供此方法是为了保持与旧版 FunctionTool 接口的兼容性。
 
+        架构约定（重要）：实现 async execute 的工具，其内部**禁止直接做同步阻塞
+        调用**（同步 SQLAlchemy session.execute、requests.get/post、time.sleep、
+        同步文件 IO 等）。此类阻塞操作必须自行用 ``asyncio.to_thread``（或专用
+        线程池）卸载——执行框架（ToolAction._execute_tool）对 async 工具是直接
+        ``await``、不做线程卸载的，任何内部同步阻塞都会冻结整个 event loop，
+        导致 SSE 流、心跳、并发会话、健康检查全部停摆。
+
         Args:
             *args: 位置参数
             **kwargs: 关键字参数，可包含 'context' 用于传递执行上下文

@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import logging
 from typing import Any, List, Optional, Tuple, Type, Union, cast
@@ -248,7 +249,7 @@ class DatasourceResource(RDBMSConnectorResource):
                 logger.warning(f"Error loading table specs: {e}")
 
         # Fallback to live introspection
-        return self.connector.get_table_info(table_names)
+        return await asyncio.to_thread(self.connector.get_table_info, table_names)
 
     @property
     def schema_link_service(self):

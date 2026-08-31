@@ -10,6 +10,7 @@ The DB executor assembles SQL deterministically with sqlglot from the frozen
 metric expression — the LLM picks catalog IDs, code assembles the SQL.
 """
 
+import asyncio
 import logging
 import re
 import unicodedata
@@ -611,7 +612,9 @@ class DocBindingExecutor(BindingExecutor):
         answers: List[Dict[str, Any]] = []
         warnings: List[str] = []
         for oid in object_ids:
-            obj = daos.objects.get_confirmed(oid, workspace_id)
+            obj = await asyncio.to_thread(
+                daos.objects.get_confirmed, oid, workspace_id
+            )
             if not obj or obj.obj_type not in self._DOC_TYPES:
                 raise GateError(f"条目 {oid} 不存在或未确认", code="NOT_CONFIRMED")
             p = obj.payload or {}

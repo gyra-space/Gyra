@@ -18,6 +18,7 @@ from gyra.agent.agents_md_context import (
     parse_agents_md_config,
     read_agents_md_file,
     render_agents_md_block,
+    render_user_md_block,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,4 +135,44 @@ async def build_agents_md_block(
         return render_agents_md_block(sections)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[agents-md] build injection block failed: {e}")
+        return None
+
+
+async def _load_user_md(system_app: Any, user_id: str) -> Optional[str]:
+    """读用户记忆空间根级 user.md（tier3 管线维护 / get_or_create_user_space 播种）。"""
+    if not user_id:
+        return None
+    try:
+        from gyra_serve.knowledge.service.service import (
+            Service as KnowledgeService,
+        )
+
+        ks = KnowledgeService.get_instance(system_app)
+        if ks is None:
+            return None
+        vault = await ks.get_or_create_user_space(user_id)
+        if vault is None or not hasattr(vault, "read_user_md"):
+            return None
+        return await vault.read_user_md()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[user-md] load user.md (user_id={user_id}) failed: {e}")
+        return None
+
+
+async def build_user_md_block(
+    system_app: Any, user_id: str
+) -> Optional[str]:
+    """构建当前用户的 user.md 注入块；无有效内容返回 None。
+
+    用户私有记忆跨所有 workspace 共享（经 KnowledgeService.get_or_create_user_space
+    解析同一 slug），会话启动时与 AGENTS.md 一起注入 system prompt。
+    失败降级不阻断对话。
+    """
+    try:
+        content = await _load_user_md(system_app, user_id)
+        if not content or is_agents_md_placeholder(content):
+            return None
+        return render_user_md_block([("user-space", content)])
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[user-md] build injection block failed: {e}")
         return None

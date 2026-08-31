@@ -465,11 +465,13 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
 
   const renderConfirmedRecord = () => {
     const rec = confirmRecord;
+    const currentUser = getCurrentUser();
     const answer = rec?.result?.is_custom_input
       ? rec?.result?.input_content
       : rec?.result?.choice || selectedOptionData?.label || selectedOption || '';
-    const who = rec?.actor?.nick_name || '';
-    const avatar = rec?.actor?.avatar_url;
+    // 优先用服务端记录的操作人信息；若缺失则回退到当前登录用户，保证头像/昵称能正确展示
+    const who = rec?.actor?.nick_name || (rec ? currentUser?.nick_name || '' : '');
+    const avatar = rec?.actor?.avatar_url || (rec ? currentUser?.avatar_url : undefined);
     const initial = (who.trim().charAt(0) || 'U').toUpperCase();
 
     return (
@@ -694,14 +696,18 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
         )}
         {confirmType === 'confirm' && isConfirmedState && renderConfirmedRecord()}
 
-        <Divider
-          style={{
-            margin: '12px 0',
-            borderWidth: '1px',
-            borderColor: 'var(--line-soft)',
-          }}
-        />
-        <div className="confirm-footer">{renderConfirmButton()}</div>
+        {!isConfirmedState && (
+          <>
+            <Divider
+              style={{
+                margin: '12px 0',
+                borderWidth: '1px',
+                borderColor: 'var(--line-soft)',
+              }}
+            />
+            <div className="confirm-footer">{renderConfirmButton()}</div>
+          </>
+        )}
       </div>
     </VisConfirmCardWrap>
   );

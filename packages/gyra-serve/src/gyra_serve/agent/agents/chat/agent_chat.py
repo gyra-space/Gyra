@@ -1699,6 +1699,25 @@ class AgentChat(BaseComponent, ABC):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[AgentChat] agents_md injection failed: {e}")
 
+        # user.md 注入（当前用户私有长期记忆，跨空间共享）：与 AGENTS.md 对称，
+        # 从用户记忆空间（user-{user_id}）读取。失败仅降级，不阻断对话。
+        try:
+            from gyra_serve.agent.agents.chat.agents_md_injection import (
+                build_user_md_block,
+            )
+
+            _user_md_block = await build_user_md_block(
+                self.system_app, user_code
+            )
+            if _user_md_block:
+                system_prompt_parts.append(_user_md_block)
+                logger.info(
+                    f"[AgentChat] user.md injected for user={user_code} "
+                    f"({len(_user_md_block)} chars)"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AgentChat] user_md injection failed: {e}")
+
         if system_prompt_parts:
             ext_info["system_prompt"] = "\n\n".join(system_prompt_parts).strip()
 
@@ -2349,6 +2368,29 @@ class AgentChat(BaseComponent, ABC):
             logger.warning(f"[AgentChat] build CapabilityPack failed: {e}")
         return cap_pack
 
+    async def _inject_user_md_into_pipeline(
+        self, pipeline: Any, user_id: Optional[str]
+    ) -> None:
+        """Build and set the current user's user.md block onto a V2 pipeline.
+
+        user.md is the user private long-term memory, shared across all
+        workspaces (resolved via ``KnowledgeService.get_or_create_user_space``).
+        Failure is degraded (logged, never raised) so the frozen static memory
+        block still loads its AGENTS.md / profile sections.
+        """
+        if not user_id:
+            return
+        try:
+            from gyra_serve.agent.agents.chat.agents_md_injection import (
+                build_user_md_block,
+            )
+
+            block = await build_user_md_block(self.system_app, user_id)
+            if block:
+                pipeline.set_user_md_block(block)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AgentChat] V2 user.md block failed: {e}")
+
     @trace("agent.build_agent_by_gpts")
     async def _build_agent_by_gpts(
         self,
@@ -2894,6 +2936,11 @@ class AgentChat(BaseComponent, ABC):
                                     if _pipeline is None:
                                         _pipeline = MemoryReadPipeline()
                                         _register_session_pipeline(_sess_id, _pipeline)
+                                    # 注入当前用户 user.md 私有记忆块（跨空间共享），
+                                    # 与 AGENTS.md 一起进入冻结的静态记忆块（失败仅降级）。
+                                    await self._inject_user_md_into_pipeline(
+                                        _pipeline, user_code
+                                    )
                                     memory_bundle.pipeline = _pipeline
                                 except Exception as pipe_e:  # noqa: BLE001
                                     logger.warning(

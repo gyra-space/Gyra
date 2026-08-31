@@ -339,6 +339,50 @@ def default_agents_md(app_name: str) -> str:
 """
 
 
+def default_user_md(user_name: str) -> str:
+    """Generate the seed user.md for a user-memory space.
+
+    user.md is the user's private long-term memory document (the analogue of
+    Hermes' USER.md / Claude Code's ``~/.claude/CLAUDE.md``, but stored in a
+    dedicated per-user knowledge space so it is OSS-backed and shared across
+    all workspaces). It is:
+    - auto-maintained by the memory pipeline (tier2/tier3 screen the user's
+      own conversation history for stable preferences and repeated
+      corrections)
+    - injected into the system prompt at session start alongside the space
+      AGENTS.md (public memory) — see gyra-core ``agents_md_context`` and
+      ``read_pipeline.load_static_block``.
+
+    The seed provides the structure; the pipeline fills the sections over
+    time. Users may hand-edit it via the memory space UI — the pipeline never
+    clobbers content, only merges.
+    """
+    return f"""# {user_name} 用户私有记忆（user.md）
+
+本文件是用户私有的长期记忆文档，类似 Hermes 的 USER.md / Claude Code 的
+~/.claude/CLAUDE.md。只记录与该用户本人相关的稳定信息：身份画像（Identity）、
+偏好与习惯（Preferences）、沟通风格（Communication）、反复纠正过的事（Feedback）。
+由记忆管线在会话策展时用 LLM 筛选写入，会话启动时与空间公共记忆（AGENTS.md）
+一注入 system prompt。也可以手动编辑或对 Agent 说"记住我的 XXX"显式写入——
+管线不会覆盖人工内容。
+
+## Identity
+<用户身份：姓名、角色、职责、所在团队>
+
+## Preferences
+<稳定偏好：代码风格、语言、工具、工作习惯>
+
+## Communication
+<沟通风格：语气、详略、是否要分步骤、用什么语言回复>
+
+## Feedback
+<被纠正过的事：用户反复纠正才达成的偏好/习惯，避免下次再犯>
+
+## Recent Updates
+<最近一次更新记录：时间 + 变更摘要>
+"""
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------

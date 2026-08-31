@@ -107,9 +107,11 @@ class Space:
     description: str = ""
     backend: str = "local"           # "local" | "distributed"
     # RFC-005 Phase 1: dual-form space. "personal" = human knowledge
-    # curation, "agent_memory" = per-agent memory sink (hermes 4-tier).
-    # String (not enum) to keep coupling low; drives schema.md selection.
-    space_type: str = "personal"     # "personal" | "agent_memory"
+    # curation, "agent_memory" = per-agent memory sink (hermes 4-tier),
+    # "user_memory" = per-user preference memory sink (cross-space shared,
+    # oss-backed, holds the user-level user.md portrait). String (not enum)
+    # to keep coupling low; drives schema.md selection.
+    space_type: str = "personal"     # "personal" | "agent_memory" | "user_memory"
     schema_hash: Optional[str] = None
     embedder_model: Optional[str] = None
     embedder_dimension: Optional[int] = None

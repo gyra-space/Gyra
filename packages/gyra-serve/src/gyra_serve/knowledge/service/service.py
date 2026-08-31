@@ -779,6 +779,60 @@ class Service(BaseComponent):
 
         return out
 
+    def _user_space_slug(self, user_id: str) -> str:
+        """Derive the deterministic user-memory space slug from a user id.
+
+        User memory is cross-space shared: any workspace/agent resolving the
+        same ``user_id`` yields the same slug, so ``get_vault`` (cached by
+        slug) returns the same OSS-backed VaultFS instance. The slug must be
+        filesystem/S3-key safe: strip slashes, leading dots, and any char the
+        slug validator rejects.
+        """
+        import re as _re
+
+        safe = _re.sub(r"[^a-zA-Z0-9_-]", "_", str(user_id or "").strip()).strip("_")
+        if not safe:
+            safe = "unknown"
+        return f"user-{safe}"
+
+    async def get_or_create_user_space(
+        self,
+        user_id: str,
+        *,
+        name: Optional[str] = None,
+        visibility: Optional[str] = None,
+    ) -> Any:
+        """Resolve (creating if needed) the per-user memory space vault.
+
+        Lazily creates a ``user_memory`` space so the user's ``user.md``
+        portrait is OSS-backed and shared across all workspaces that resolve
+        the same ``user_id``. Idempotent: if the space already exists, returns
+        the cached vault (and seeds ``user.md`` if it is still a placeholder).
+        """
+        slug = self._user_space_slug(user_id)
+        if slug in self._vaults:
+            # Refresh the user.md seed in case the space predates this feature.
+            vault = self._vaults[slug]
+            space = self._spaces.get(slug) or Space(
+                id=new_space_id(),
+                slug=slug,
+                name=name or slug,
+                space_type="user_memory",
+            )
+            if space.space_type != "user_memory":
+                space.space_type = "user_memory"
+            await self._ensure_memory_schema(vault, space)
+            return vault
+
+        await self.create_space(
+            slug,
+            default_agent_id=None,
+            owner_id=str(user_id),
+            visibility=visibility or "private",
+            space_type="user_memory",
+        )
+        return self._vaults[slug]
+
     async def create_space(
         self,
         slug: str,
@@ -809,7 +863,9 @@ class Service(BaseComponent):
             raise ValueError(f"invalid slug: {slug!r}")
         if visibility is not None:
             visibility = Visibility(visibility).value  # validates the value
-        if space_type is not None and space_type not in ("personal", "agent_memory"):
+        if space_type is not None and space_type not in (
+            "personal", "agent_memory", "user_memory"
+        ):
             raise ValueError(f"invalid space_type: {space_type!r}")
 
         # 初始化默认值:未显式配置的空间把全局默认模型落到空间(文本模型 +
@@ -859,7 +915,7 @@ class Service(BaseComponent):
                 self._registry_upsert(slug, entry)
             else:
                 await self._persist_space_config(slug, vault, space, is_new=False)
-        if space.space_type == "agent_memory":
+        if space.space_type in ("agent_memory", "user_memory"):
             await self._ensure_memory_schema(vault, space)
 
         # Apply any initial config (local spaces persist to SQLite)
@@ -927,17 +983,33 @@ class Service(BaseComponent):
             logger.warning("ensure memory schema failed for %s: %s", space.slug, e)
 
         # Seed AGENTS.md（Agent 整体记忆文档）模板——仅当文件仍是占位/空内容
-        # 时写入，绝不覆盖用户已手写的内容。
-        try:
-            from gyra.knowledge.schema import default_agents_md
+        # 时写入，绝不覆盖用户已手写的内容。user_memory 空间不播种 AGENTS.md
+        # （那是空间公共记忆，用户画像应写入 user.md）。
+        if space.space_type != "user_memory":
+            try:
+                from gyra.knowledge.schema import default_agents_md
 
-            existing = (await vault.read_agents_md() or "").strip()
-            if not existing or self._is_agents_md_placeholder(existing):
-                await vault.write_agents_md(
-                    default_agents_md(space.name or space.slug)
-                )
-        except Exception as e:
-            logger.warning("ensure agents_md failed for %s: %s", space.slug, e)
+                existing = (await vault.read_agents_md() or "").strip()
+                if not existing or self._is_agents_md_placeholder(existing):
+                    await vault.write_agents_md(
+                        default_agents_md(space.name or space.slug)
+                    )
+            except Exception as e:
+                logger.warning("ensure agents_md failed for %s: %s", space.slug, e)
+
+        # Seed user.md（用户私有记忆文档）模板——仅 user_memory 空间需要，
+        # 且仅当文件仍是占位/空内容时写入，绝不覆盖用户已手写的内容。
+        if space.space_type == "user_memory":
+            try:
+                from gyra.knowledge.schema import default_user_md
+
+                existing = (await vault.read_user_md() or "").strip()
+                if not existing or self._is_agents_md_placeholder(existing):
+                    await vault.write_user_md(
+                        default_user_md(space.name or space.slug)
+                    )
+            except Exception as e:
+                logger.warning("ensure user_md failed for %s: %s", space.slug, e)
 
     @staticmethod
     def _is_agents_md_placeholder(content: str) -> bool:

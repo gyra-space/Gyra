@@ -38,6 +38,8 @@ from gyra_serve.app_card.sql_runtime import AppCardBusyError, run_bounded
 _SQL_OPS = {"query.sql", "sql.preview"}
 _METRIC_OPS = {"query.metric", "metric.preview"}
 _EXPLAIN_OPS = {"sql.explain"}
+_STORE_PREVIEW_OPS = {"store.preview"}
+_KV_PREVIEW_OPS = {"kv.preview"}
 
 
 def _finish(result: Dict[str, Any], started: float) -> Dict[str, Any]:
@@ -101,6 +103,48 @@ def _run_sql_explain(
                 "columns": [], "rows": [], "row_count": 0, "sql": sql}
 
 
+def _store_dry_run(params: Dict[str, Any]) -> Dict[str, Any]:
+    """写模式 store.insert 的 dry-run 校验(不落库)。
+
+    复用 AppCardStoreService 的 data_space 字段校验 + record 大小上限,
+    让 agent 在开发期确认「这份 record 提交到运行期能不能通过校验」。
+    ``params.data_space`` 可传编辑器里的契约(config.data_space),与运行期一致。
+    """
+    from gyra_serve.app_card.store.store_service import AppCardStoreService
+
+    record = params.get("record")
+    if not isinstance(record, dict):
+        return {"trust": "none", "error": "record 需为对象", "valid": False}
+    data_space = params.get("data_space") or {}
+    svc = AppCardStoreService(None)
+    err = svc._validate_record(data_space, record)
+    if err:
+        return {"trust": "none", "error": err, "valid": False}
+    size_err = AppCardStoreService._ensure_record_size(params)
+    if size_err:
+        return {"trust": "none", "error": size_err, "valid": False}
+    return {
+        "trust": "preview",
+        "valid": True,
+        "collection": params.get("collection") or "records",
+        "fields": sorted(record.keys()),
+        "note": "dry-run 校验通过,未落库;运行期 store.insert 将按此载荷写入",
+    }
+
+
+def _kv_dry_run(params: Dict[str, Any]) -> Dict[str, Any]:
+    """kv.put 的 dry-run 校验(不落库):校验 key 存在且 value 可序列化。"""
+    key = params.get("key")
+    if key is None or str(key) == "":
+        return {"trust": "none", "error": "缺少 key", "valid": False}
+    try:
+        json.dumps(params.get("value"), ensure_ascii=False, default=str)
+    except Exception as e:  # noqa: BLE001
+        return {"trust": "none", "error": f"value 序列化失败: {e}", "valid": False}
+    return {"trust": "preview", "valid": True, "key": str(key),
+            "note": "dry-run 校验通过,未落库;运行期 kv.put 将按此写入"}
+
+
 @tool(
     "app_card_preview",
     description=(
@@ -108,17 +152,24 @@ def _run_sql_explain(
         "query.metric，返回对象数组 rows + trust + row_count + elapsed_ms(性能基线)。"
         "开发应用卡片时用它验证 SQL/指标列名与取数、并评估/调优查询性能，"
         "避免用 execute_sql(二维数组 rows)写代码导致运行期渲染错乱。"
+        "另支持 store.preview / kv.preview 对写模式(问卷/报名等)的写入载荷做 dry-run "
+        "校验(按 config.data_space 契约 + 大小上限),不真正落库。"
     ),
     args={
         "op": {
             "type": "string",
-            "description": "取值：query.sql / sql.preview / query.metric / metric.preview / sql.explain",
+            "description": (
+                "取值：query.sql / sql.preview / query.metric / metric.preview / sql.explain "
+                "/ store.preview / kv.preview"
+            ),
         },
         "params": {
             "type": "object",
             "description": (
                 "query.sql 传 {sql, datasource_id, bind_params?, limit?}；"
-                "query.metric 传 {metric_id, group_by?, filters?, time_range?}。"
+                "query.metric 传 {metric_id, group_by?, filters?, time_range?}；"
+                "store.preview 传 {collection?, record, data_space?}(校验写载荷,不落库)；"
+                "kv.preview 传 {key, value}。"
             ),
             "required": False,
         },
@@ -187,6 +238,14 @@ async def app_card_preview(
             )
         except AppCardBusyError as e:
             result = _busy_result(e)
+        return json.dumps(_finish(result, started), ensure_ascii=False, default=str)
+
+    if op in _STORE_PREVIEW_OPS:
+        result = _store_dry_run(params)
+        return json.dumps(_finish(result, started), ensure_ascii=False, default=str)
+
+    if op in _KV_PREVIEW_OPS:
+        result = _kv_dry_run(params)
         return json.dumps(_finish(result, started), ensure_ascii=False, default=str)
 
     if op in _METRIC_OPS:

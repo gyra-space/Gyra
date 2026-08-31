@@ -22,6 +22,8 @@ from .models import (
     AppCardKvEntity,
     AppCardRecordDao,
     AppCardRecordEntity,
+    _dump_json,
+    _load_json,
 )
 
 # 默认分页/上限

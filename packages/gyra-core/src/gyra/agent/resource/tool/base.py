@@ -253,7 +253,18 @@ class FunctionTool(BaseTool):
         return self._func(*args, **kwargs)
 
     async def async_execute(self, *args, **kwargs) -> Any:
-        """Execute the tool asynchronously."""
+        """Execute the tool asynchronously.
+
+        架构约定（重要）：async 版本（底层 func 是协程函数）的内部**禁止直接做
+        同步阻塞调用**（同步 SQLAlchemy session.execute、requests.get/post、
+        time.sleep、同步文件 IO 等），必须自行用 ``asyncio.to_thread``（或专用
+        线程池）卸载——执行框架（ToolAction._execute_tool）对 async 工具是直接
+        ``await``、不做线程卸载的，任何内部同步阻塞都会冻结整个 event loop，
+        导致 SSE 流、心跳、并发会话、健康检查全部停摆。
+
+        （同步版本则无需处理：执行框架会在架构层自动用 ``asyncio.to_thread`` 把
+        同步工具卸载到线程池。）
+        """
         if not self._is_async:
             raise ValueError("The function is synchronous, use execute instead")
         return await self._func(*args, **kwargs)

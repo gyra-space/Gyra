@@ -1471,9 +1471,18 @@ class ToolAction(Action[ToolInput]):
 
                 if not route_b_used:
                     if tool_info.is_async:
+                        # 架构约定:async 工具内部不得做同步阻塞调用(同步 SQLAlchemy/
+                        # requests/time.sleep 等),阻塞操作必须自行用 asyncio.to_thread
+                        # 卸载——此层直接 await,任何内部阻塞都会冻结整个 event loop
+                        # (SSE 流/心跳/其他会话全部停摆)。
                         raw_content = await tool_info.async_execute(**arguments)
                     else:
-                        raw_content = tool_info.execute(**arguments)
+                        # 架构层统一治理:同步工具(is_async=False,旧框架 FunctionTool
+                        # 包同步函数)经 to_thread 卸载到默认线程池,避免同步阻塞
+                        # 在 event loop 线程上直接执行而冻结全局。
+                        raw_content = await asyncio.to_thread(
+                            tool_info.execute, **arguments
+                        )
 
                 normalized_content, is_success, error_msg = self._normalize_content(
                     raw_content

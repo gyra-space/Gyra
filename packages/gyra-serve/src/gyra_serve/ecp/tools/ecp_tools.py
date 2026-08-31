@@ -11,6 +11,7 @@ The protocol is enforced by the TOOL SURFACE, not by prompts:
 Tools are stateless: workspace_id is an argument (default 'default').
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -123,7 +124,7 @@ def _cap_sql_display_rows(
 )
 async def search_semantics(query: str, workspace_id: Optional[str] = None, **kwargs) -> str:
     ws = _ws(workspace_id)
-    entries = SemanticObjectDao().list_catalog(ws)
+    entries = await asyncio.to_thread(SemanticObjectDao().list_catalog, ws)
     # 查询理解:本地分词 + LLM 语义扩展(同义词/别名/中英对照),失败降级本地分词
     terms = await expand_query_terms(query)
     term_set = [t.casefold() for t in terms if t and t.strip()]
@@ -131,7 +132,9 @@ async def search_semantics(query: str, workspace_id: Optional[str] = None, **kwa
     # 已确认语义对齐:object_id → [实体名],LLM 推理产物(人工确认)补齐跨命名映射
     aligned_map: Dict[str, List[str]] = {}
     try:
-        for avo in SemanticAlignmentDao().list(ws, status=STATUS_CONFIRMED):
+        for avo in await asyncio.to_thread(
+            SemanticAlignmentDao().list, ws, status=STATUS_CONFIRMED
+        ):
             aligned_map.setdefault(avo.object_id, []).append(avo.entity_name.casefold())
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[ecp] search_semantics alignment load failed: {e}")
@@ -213,7 +216,9 @@ async def search_semantics(query: str, workspace_id: Optional[str] = None, **kwa
     risk_level=ToolRiskLevel.SAFE,
 )
 async def get_semantic_object(object_id: str, workspace_id: Optional[str] = None, **kwargs) -> str:
-    vo = SemanticObjectDao().get_confirmed(object_id, _ws(workspace_id))
+    vo = await asyncio.to_thread(
+        SemanticObjectDao().get_confirmed, object_id, _ws(workspace_id)
+    )
     if not vo:
         return json.dumps(
             {"error": f"对象 {object_id} 不存在或未确认"}, ensure_ascii=False
@@ -310,7 +315,7 @@ async def execute_metric_query_tool(
             and (cached.get("params") or {}).get("metric_id") == metric_id
         ):
             try:
-                result = replay(cached)
+                result = await asyncio.to_thread(replay, cached)
                 try:
                     vis = Vis.of("d-ecp-metric")
                     if vis:
@@ -334,7 +339,8 @@ async def execute_metric_query_tool(
                 )
 
     try:
-        result = execute_metric_query(
+        result = await asyncio.to_thread(
+            execute_metric_query,
             metric_id=metric_id,
             workspace_id=ws,
             group_by=group_by,
@@ -356,7 +362,8 @@ async def execute_metric_query_tool(
         )
     # Recall flywheel: successful, uncorrected calls backfill the cache.
     if question:
-        backfill(
+        await asyncio.to_thread(
+            backfill,
             question,
             ws,
             {
@@ -444,7 +451,8 @@ async def execute_raw_sql(
         )
     # The miss is op-logged — lint clustering turns high-frequency misses
     # into new object/alias/dimension proposals (recall flywheel).
-    OpLogDao().append(
+    await asyncio.to_thread(
+        OpLogDao().append,
         "fallback", ws,
         {"datasource_id": datasource_id, "sql": sql[:2000], "reasoning": reasoning},
     )
@@ -463,7 +471,7 @@ async def execute_raw_sql(
         )
         from gyra._private.config import Config
 
-        config = ConnectConfigDao().get_one({"id": datasource_id})
+        config = await asyncio.to_thread(ConnectConfigDao().get_one, {"id": datasource_id})
         db_name = getattr(config, "db_name", None)
         if not db_name:
             return json.dumps(
@@ -483,8 +491,10 @@ async def execute_raw_sql(
         dialect = getattr(connector, "dialect", getattr(connector, "db_type", ""))
         sql = apply_select_limit(sql, dialect, row_limit)
         try:
-            raw, truncated = run_select_with_limits(
-                connector, sql, timeout=cfg.SQL_QUERY_TIMEOUT, max_rows=row_limit
+            raw, truncated = await asyncio.to_thread(
+                run_select_with_limits,
+                connector, sql,
+                timeout=cfg.SQL_QUERY_TIMEOUT, max_rows=row_limit,
             )
         except TimeoutError:
             return json.dumps(
@@ -518,7 +528,9 @@ async def execute_raw_sql(
             )
 
             if not is_internal_catalog_sql(sql):
-                columns, rows, _masked = mask_run_result(datasource_id, columns, rows)
+                columns, rows, _masked = await asyncio.to_thread(
+                    mask_run_result, datasource_id, columns, rows
+                )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[execute_raw_sql] masking skipped: {e}")
 
@@ -604,8 +616,10 @@ async def get_miss_report(
     from ..service.service import cluster_fallbacks
 
     ws = _ws(workspace_id)
-    entries = OpLogDao().list(ws, op="fallback", page=1, page_size=500)
-    learned = MissLearnDao().learned_keys(ws)
+    entries = await asyncio.to_thread(
+        OpLogDao().list, ws, op="fallback", page=1, page_size=500
+    )
+    learned = await asyncio.to_thread(MissLearnDao().learned_keys, ws)
     clusters = [
         c
         for c in cluster_fallbacks(entries)
@@ -673,7 +687,8 @@ async def mark_miss_learned(
         if not kind or not pattern:
             skipped.append(c)
             continue
-        vo = dao.mark_learned(
+        vo = await asyncio.to_thread(
+            dao.mark_learned,
             ws,
             kind,
             pattern,
@@ -791,9 +806,10 @@ async def explore_docs(
         spaces = [space]
     else:
         try:
+            space_assets = await asyncio.to_thread(AssetRefDao().list, ws, kind="space")
             spaces = [
                 a.ref_id
-                for a in AssetRefDao().list(ws, kind="space") or []
+                for a in space_assets or []
                 if getattr(a, "status", "active") == "active"
             ]
         except Exception:  # noqa: BLE001
@@ -805,7 +821,8 @@ async def explore_docs(
         )
 
     # op_log 记 miss(doc 形态,飞轮原料) + 确保自动学习任务存在
-    OpLogDao().append(
+    await asyncio.to_thread(
+        OpLogDao().append,
         "fallback",
         ws,
         {
@@ -980,9 +997,10 @@ async def get_verbat(
         spaces = [space]
     else:
         try:
+            space_assets = await asyncio.to_thread(AssetRefDao().list, ws, kind="space")
             spaces = [
                 a.ref_id
-                for a in AssetRefDao().list(ws, kind="space") or []
+                for a in space_assets or []
                 if getattr(a, "status", "active") == "active"
             ]
         except Exception:  # noqa: BLE001

@@ -15,6 +15,7 @@ Key layout (deterministic file_id, namespaced by space_id):
 - schema.md:  `ksschema-{space_id}`
 - purpose.md: `kspurpose-{space_id}`
 - AGENTS.md:  `ksagents-{space_id}`
+- user.md:    `ksuser-{space_id}`
 """
 
 from __future__ import annotations
@@ -116,6 +117,9 @@ class S3FileStore:
 
     def _file_id_for_agents(self) -> str:
         return f"ksagents-{_slugify(self._space_id)}"
+
+    def _file_id_for_user(self) -> str:
+        return f"ksuser-{_slugify(self._space_id)}"
 
     def _file_id_for_root(self, name: str) -> str:
         return f"ksroot-{_slugify(self._space_id)}-{_slugify(name)}"
@@ -222,6 +226,17 @@ class S3FileStore:
 
     async def read_agents(self) -> str:
         file_id = self._file_id_for_agents()
+        return await asyncio.to_thread(self._read_text_sync, file_id) or ""
+
+    # 用户私有记忆文档（user.md）—— space 根级，与 AGENTS.md 同级
+    async def write_user(self, content: str) -> None:
+        file_id = self._file_id_for_user()
+        await asyncio.to_thread(
+            self._save_text_sync, file_id, content, "user.md"
+        )
+
+    async def read_user(self) -> str:
+        file_id = self._file_id_for_user()
         return await asyncio.to_thread(self._read_text_sync, file_id) or ""
 
     async def exists_wiki(self, norm_path: str) -> bool:

@@ -168,11 +168,14 @@ class LocalVaultFS(BaseVaultFS):
             schema_path.write_text(
                 default_schema_md(self._root.name), encoding="utf-8"
             )
-        for name in ("index.md", "log.md", "overview.md", "purpose.md", "AGENTS.md"):
+        for name in (
+            "index.md", "log.md", "overview.md", "purpose.md", "AGENTS.md", "user.md"
+        ):
             if name == "purpose.md":
                 p = self._root / name
-            elif name == "AGENTS.md":
-                # Agent 整体记忆文档放 space 根（与 purpose.md 同级保护文件）。
+            elif name in ("AGENTS.md", "user.md"):
+                # Agent 整体记忆 / 用户私有记忆文档放 space 根（与 purpose.md
+                # 同级保护文件）。
                 p = self._root / name
             else:
                 p = self._root / "wiki" / name
@@ -229,6 +232,15 @@ class LocalVaultFS(BaseVaultFS):
 
     async def _write_agents_md(self, content: str) -> None:
         (self._root / "AGENTS.md").write_text(content, encoding="utf-8")
+
+    async def read_user_md(self) -> str:
+        path = self._root / "user.md"
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
+
+    async def _write_user_md(self, content: str) -> None:
+        (self._root / "user.md").write_text(content, encoding="utf-8")
 
     # ===================================================================
     # L0 Verbatim — SQLite storage

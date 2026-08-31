@@ -7,13 +7,17 @@
 `code` 是一段 **JS 片段**，会在沙箱 iframe 的 `<body>` 里被包成 `(function(){ ... })()` 执行。
 它自己往 `document.getElementById('root')` 里渲染界面。取数只能通过全局 `window.GyraAppCard`：
 
-| 方法                                     | 用途                                                                                                                            |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `GyraAppCard.op(op, params, queryKey)` | 通用能力调用。`op ∈ query.metric / query.sql / assets.get / preview.*`；`params` 传入参数、`queryKey` 引用 `queries` 里已声明的命名查询。返回 `Promise`。 |
-| `GyraAppCard.assets(params)`           | 等同 `op('assets.get', params)`，读空间资产                                                                                           |
-| `GyraAppCard.params()`                 | 宿主注入的初始参数（即 `config.default_params`，只读快照）                                                                                     |
-| `GyraAppCard.getParam(k)`              | 读某个初始参数                                                                                                                       |
-| `GyraAppCard.onParamChange(fn)`        | 宿主切换参数（切 tab/选时间范围）时回调 `fn(newParams)`                                                                                        |
+| 方法                                                     | 用途                                                                                                                                             |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GyraAppCard.op(op, params, queryKey)`                 | 通用能力调用。`op ∈ query.metric / query.sql / assets.get / store.* / kv.* / preview.*`；`params` 传入参数、`queryKey` 引用 `queries` 里已声明的命名查询。返回 `Promise`。 |
+| `GyraAppCard.assets(params)`                           | 等同 `op('assets.get', params)`，读空间资产                                                                                                            |
+| `GyraAppCard.store.insert/query/update/remove(params)` | 子应用**自身数据空间**（写模式）：`insert` 新增记录、`query` 分页查、`update` 按 `record_id` 打补丁、`remove` 删除（删走高危人工审批）。等同 `op('store.*', params)`                       |
+| `GyraAppCard.kv.get/put/del(params)`                   | 卡片级 **KV 点数据**（草稿/进度/配置）：`put` 写、`get` 读、`del` 删。等同 `op('kv.*', params)`                                                                       |
+| `GyraAppCard.params()`                                 | 宿主注入的初始参数（即 `config.default_params`，只读快照）                                                                                                      |
+| `GyraAppCard.getParam(k)`                              | 读某个初始参数                                                                                                                                        |
+| `GyraAppCard.onParamChange(fn)`                        | 宿主切换参数（切 tab/选时间范围）时回调 `fn(newParams)`                                                                                                         |
+
+> **两类数据要分清**：`query.sql / query.metric` 读的是**外部数据源**（用户配置的 datasource，只读）；`store.* / kv.*` 读写的是**子应用自己的数据空间**（存问卷答卷、工单、投票等应用自产数据，按 `(workspace_id, app_card_id)` 隔离，字段自定义）。问卷调查、报名、工单、打卡、投票这类**需要用户提交数据**的卡片，用 `store.*` 写、`store.query` 读回展示，**不要**试图往外部 datasource 写。
 
 ## 2. op 返回结构（务必判断 `trust`）
 
@@ -166,4 +170,70 @@ function load(){
 * 唯一的例外：`code` 字段值本身两端的定界引号。
 
 > **怎么产出最稳**：不要手拼 JSON 字符串。先用代码构造对象（Python 里 `dict` / JS 里 `object`），然后统一序列化——Python 用 `json.dumps(payload, ensure_ascii=False, indent=2)`，JS 用 `JSON.stringify(payload, null, 2)`。序列化器会自动把 `code` 里所有双引号、反斜杠、换行转义到位，从根上避免裸引号。
+
+## 7. 写模式：store.\* / kv.\*（问卷、报名、工单、投票）
+
+当卡片需要**收集用户提交的数据**（而非只读展示外部数据）时，用子应用自身数据空间。它和外部 datasource 完全解耦，无需配 `queries`、`datasource_id`，字段由应用自定义。
+
+### 7.1 store.\* 记录集合（答卷/工单等多行数据）
+
+| op / SDK                           | params                                                                 | 返回                                                          | 说明                                                                                       |
+| ---------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `store.insert` / `store.insert(p)` | `{collection?, record, record_id?, dedupe_key?, created_by?}`          | `{trust, record_id, data, ...}`                             | 新增一条记录。`collection` 默认 `"records"`；`record` 为自定义字段对象；传 `dedupe_key` 可幂等去重（同人重复提交只留一条）    |
+| `store.query` / `store.query(p)`   | `{collection?, filters?, page?, page_size?, order_field?, order_dir?}` | `{trust, columns, rows, row_count, total, page, page_size}` | 分页查。`filters` 按字段等值/数组匹配；`rows` 是扁平对象（`record_id` + 自定义字段），可直接 `rows.map(r => r.xxx)` 渲染 |
+| `store.update` / `store.update(p)` | `{collection?, record_id, patch}`                                      | `{trust, record_id, data, ...}`                             | 按 `record_id` 打补丁（部分字段更新）                                                                |
+| `store.delete` / `store.remove(p)` | `{collection?, record_id}`                                             | `{trust, awaiting_human, risk, ...}`                        | **高危**：不直接删，转人工介入审批后执行                                                                   |
+
+写入门控：`store.insert / update`、`kv.put / del` 为低风险直接写；`store.delete` 为高危，返回 `awaiting_human: true`，需审批通过才生效。
+
+### 7.2 kv.\* 点数据（草稿/进度/配置）
+
+| op / SDK               | params                      | 返回                                                |
+| ---------------------- | --------------------------- | ------------------------------------------------- |
+| `kv.put` / `kv.put(p)` | `{key, value, created_by?}` | `{trust, key, value, ...}`                        |
+| `kv.get` / `kv.get(p)` | `{key}`                     | `{trust, key, value, ...}`（不存在时 `trust==="none"`） |
+| `kv.del` / `kv.del(p)` | `{key}`                     | `{trust, key, deleted}`                           |
+
+### 7.3 data\_space 字段契约（可选，轻量校验）
+
+在卡片 `config.data_space.fields` 里声明字段类型/必填，写入时后端校验，不通过返回 `trust==="none"` + `error`：
+
+```jsonc
+{ "config": { "data_space": { "fields": {
+    "name":  { "type": "string", "required": true },
+    "score": { "type": "number" },
+    "agree": { "type": "boolean" }
+} } } }
+```
+
+> `type ∈ string / number / boolean / array / object / any`；`required: true` 时缺失或空串报错。**建议问卷卡片一定声明**，把脏数据挡在写入前。
+
+### 7.4 问卷调查卡片范例（store.insert 写 + store.query 读回）
+
+```js
+// 提交答卷: 用 dedupe_key 防同人重复提交(按宿主注入的用户标识)
+function submit(){
+  var answers = collect();   // 收集表单 {q1:.., q2:.., name:..}
+  GyraAppCard.store.insert({
+    collection: 'responses',
+    record: answers,
+    dedupe_key: GyraAppCard.getParam('user_key') || undefined
+  }).then(function(res){
+    if (res && res.trust === 'none') { showError(res.error); return; }
+    showOk('提交成功'); loadList();   // 成功后刷新统计
+  }).catch(function(e){ showError(e.message); });
+}
+// 读回统计/列表: 扁平 rows 直接渲染
+function loadList(){
+  GyraAppCard.store.query({ collection:'responses', page:1, page_size:50,
+                            order_field:'gmt_created', order_dir:'desc' })
+    .then(function(res){
+      var rows = (res && res.rows) || [];
+      setH('cnt', '共 ' + (res.total||0) + ' 份');
+      setH('list', rows.map(function(r){ return '<li>'+esc(r.name||'匿名')+'</li>'; }).join(''));
+    }).catch(function(){ /* 只降级本区 */ });
+}
+```
+
+> 开发期验证写载荷：`app_card_preview` 已支持 `op="store.preview" / "kv.preview"`（dry-run 校验，不真写）。提交前用它确认 `record` 能通过 `data_space` 校验、字段类型正确，再交付。运行期真实写入发生在用户操作卡片时。
 

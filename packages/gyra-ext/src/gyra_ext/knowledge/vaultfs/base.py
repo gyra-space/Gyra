@@ -280,6 +280,30 @@ class BaseVaultFS(ABC):
     @abstractmethod
     async def _write_agents_md(self, content: str) -> None: ...
 
+    # ----- 用户私有记忆文档（user.md）-----
+    # 与 AGENTS.md 对称，但归属为单个用户（space 类型为 user_memory）。
+    # user.md 承载用户画像（身份/偏好/沟通习惯/反复纠正过的事），由记忆管线
+    # 维护，会话启动时与 AGENTS.md 一起注入 system prompt。跨所有 workspace
+    # 共享（经 KnowledgeService.get_or_create_user_space 解析同一 slug）。
+    @abstractmethod
+    async def read_user_md(self) -> str: ...
+
+    async def write_user_md(self, content: str) -> None:
+        """Write user.md (space root). Publishes a change event."""
+        await self._write_user_md(content)
+        await self.publish_event(
+            ChangeEvent(
+                space_id=self._space_id,
+                layer="L1",
+                op="update",
+                id="user.md",
+                path="user.md",
+            )
+        )
+
+    @abstractmethod
+    async def _write_user_md(self, content: str) -> None: ...
+
     async def _get_schema(self):
         """Read and parse schema.md. Cached by raw content hash."""
         raw = await self.read_schema_md()

@@ -327,18 +327,23 @@ def _build_app_card_preview_tool(workspace_id: str) -> "FunctionTool":
             "query.metric，返回对象数组 rows + trust + row_count + elapsed_ms(性能基线)。"
             "开发应用卡片时用它验证 SQL/指标列名与取数、并评估/调优查询性能，"
             "避免用 execute_sql(二维数组 rows)写代码导致运行期渲染错乱。"
+            "另支持 store.preview / kv.preview 对写模式(问卷/报名等)的写入载荷做 dry-run 校验。"
             "datasource_id 通过 params 传入(如 params={'sql': '...', 'datasource_id': 1})。"
         ),
         args={
             "op": {
                 "type": "string",
-                "description": "取值：query.sql / sql.preview / query.metric / metric.preview / sql.explain",
+                "description": (
+                    "取值：query.sql / sql.preview / query.metric / metric.preview / sql.explain "
+                    "/ store.preview / kv.preview"
+                ),
             },
             "params": {
                 "type": "object",
                 "description": (
                     "query.sql 传 {sql, datasource_id, bind_params?, limit?}；"
-                    "query.metric 传 {metric_id, group_by?, filters?, time_range?}。"
+                    "query.metric 传 {metric_id, group_by?, filters?, time_range?}；"
+                    "store.preview 传 {collection?, record, data_space?}；kv.preview 传 {key, value}。"
                 ),
                 "required": False,
             },

@@ -171,6 +171,12 @@ class DistributedVaultFS(BaseVaultFS):
     async def _write_agents_md(self, content: str) -> None:
         await self._files.write_agents(content)
 
+    async def read_user_md(self) -> str:
+        return await self._files.read_user()
+
+    async def _write_user_md(self, content: str) -> None:
+        await self._files.write_user(content)
+
     # ===================================================================
     # L0 Verbatim — delegate to relational + files
     # ===================================================================

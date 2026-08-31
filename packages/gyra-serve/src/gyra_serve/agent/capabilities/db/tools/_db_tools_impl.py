@@ -6,6 +6,7 @@ Supports both exact mode (specify table names) and recommend mode
 (pass a question to get table suggestions via Schema Linking).
 """
 
+import asyncio
 import csv
 import io
 import json
@@ -315,7 +316,9 @@ async def get_table_spec(
                     ConnectConfigDao,
                 )
 
-                entity = ConnectConfigDao().get_one({"id": int(ds_id)})
+                entity = await asyncio.to_thread(
+                    ConnectConfigDao().get_one, {"id": int(ds_id)}
+                )
                 if entity:
                     resolved_db_name = getattr(entity, "db_name", None)
             except Exception as e:  # noqa: BLE001
@@ -375,7 +378,9 @@ async def get_table_spec(
                             return rec_header + specs
                     # Fallback
                     connector = _get_connector()
-                    return rec_header + connector.get_table_info(rec_names)
+                    return rec_header + await asyncio.to_thread(
+                        connector.get_table_info, rec_names
+                    )
             except ImportError:
                 pass
             except Exception as e:
@@ -411,7 +416,7 @@ async def get_table_spec(
                     f"datasource_id={datasource_id}, db_name={db_name}. "
                     "请确认数据源连接配置可用后重试,或直接指定 table_names 参数。"
                 )
-            all_tables = list(connector.get_table_names() or [])
+            all_tables = list(await asyncio.to_thread(connector.get_table_names) or [])
             if not all_tables:
                 return (
                     f"Error: No tables found in database '{db_name}'. "
@@ -450,7 +455,7 @@ async def get_table_spec(
         connector = _get_connector()
         if connector is None:
             return f"Error: Cannot get database connector for datasource_id={ds_id}, db_name={resolved_db_name}"
-        return connector.get_table_info(names)
+        return await asyncio.to_thread(connector.get_table_info, names)
 
     except Exception as e:
         logger.error(f"Error getting table spec: {e}")
@@ -579,7 +584,7 @@ async def execute_sql(
                     ConnectConfigDao,
                 )
 
-                entity = ConnectConfigDao().get_by_names(db_name)
+                entity = await asyncio.to_thread(ConnectConfigDao().get_by_names, db_name)
                 if entity:
                     ds_id = entity.id
             except Exception as e:
@@ -666,8 +671,10 @@ async def execute_sql(
             )
             sql = apply_select_limit(sql, dialect, row_limit)
             try:
-                result, truncated = run_select_with_limits(
-                    connector, sql, timeout=CFG.SQL_QUERY_TIMEOUT, max_rows=row_limit
+                result, truncated = await asyncio.to_thread(
+                    run_select_with_limits,
+                    connector, sql,
+                    timeout=CFG.SQL_QUERY_TIMEOUT, max_rows=row_limit,
                 )
             except TimeoutError:
                 logger.warning(
@@ -680,7 +687,7 @@ async def execute_sql(
                     sql_type=sql_type,
                 )
         else:
-            result = connector.run(sql)
+            result = await asyncio.to_thread(connector.run, sql)
 
         if not result:
             return _format_sql_result(
@@ -730,7 +737,8 @@ async def execute_sql(
                         kwargs.get("agent", None), "conv_id", None
                     )
                     if not is_internal_catalog_sql(sql):
-                        columns, all_rows, masked_columns = mask_run_result(
+                        columns, all_rows, masked_columns = await asyncio.to_thread(
+                            mask_run_result,
                             ds_id,
                             columns,
                             all_rows,
@@ -1538,7 +1546,7 @@ async def list_tables(
                     ConnectConfigDao,
                 )
                 dao = ConnectConfigDao()
-                entity = dao.get_by_names(db_name)
+                entity = await asyncio.to_thread(dao.get_by_names, db_name)
                 if entity:
                     ds_id = entity.id
             except ImportError:
@@ -1635,7 +1643,7 @@ async def list_tables(
         if not connector:
             return f"Error: Database '{db_name}' not found. Please check the db_name."
 
-        table_names = sorted(set(connector.get_table_names() or []))
+        table_names = sorted(set(await asyncio.to_thread(connector.get_table_names) or []))
 
         if not table_names:
             return f"No tables found in database '{db_name}'."
@@ -1777,7 +1785,7 @@ async def search_tables(
                     ConnectConfigDao,
                 )
                 dao = ConnectConfigDao()
-                entity = dao.get_by_names(db_name)
+                entity = await asyncio.to_thread(dao.get_by_names, db_name)
                 if entity:
                     ds_id = entity.id
             except ImportError:
