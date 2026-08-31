@@ -246,6 +246,10 @@ class JobDao(BaseDao[JobEntity, ServeRequest, ServeResponse]):
             row.attempts = (row.attempts or 0) + 1
             self._append_attempt(session, row, "running", None, started_at=now)
             session.commit()
+            # commit() (expire_on_commit=True) expires the row's attributes;
+            # refresh re-loads them so the detached entity stays usable for the
+            # worker (avoids DetachedInstanceError on later attribute access).
+            session.refresh(row)
             session.expunge(row)
             return row
 
