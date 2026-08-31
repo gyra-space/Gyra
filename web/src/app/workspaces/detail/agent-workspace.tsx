@@ -92,8 +92,22 @@ export function AgentWorkspace({
 
   // loading(SSE 进行中) 或后端会话仍 RUNNING(关闭页面后重开,轮询恢复中)均视为运行中
   const running = loading || convState === 'RUNNING';
-  // 运行中提交作为"补充输入"投递到后端队列(不开新 SSE 流,不中止当前生成)
-  const { submitUserInput } = useUserInput(conversationId);
+  // 运行中提交作为"补充输入"投递到后端队列(不开新 SSE 流,不中止当前生成)。
+  // 「先入队,agent 消费后才展示」:提交时不上屏,队列轮询检测到被消费时
+  // (onConsumed)才上屏为独立用户气泡;运行结束兜底把滞留项上屏。
+  const { submitUserInput, consumePendingInputs, startPolling: startQueuePolling, stopPolling: stopQueuePolling } = useUserInput(conversationId, {
+    onConsumed: (items) => {
+      items.forEach((i) => appendOptimisticUser(i.content));
+    },
+  });
+  useEffect(() => {
+    if (running) {
+      startQueuePolling(2000);
+    } else {
+      stopQueuePolling();
+      consumePendingInputs().forEach((i) => appendOptimisticUser(i.content));
+    }
+  }, [running, startQueuePolling, stopQueuePolling, consumePendingInputs, appendOptimisticUser]);
   // Agent 头像数据:appCode 对应 app 的 icon/name(与通用聊天页同源)
   const { data: appInfoTuple } = useRequest(
     async () => (appCode ? apiInterceptors(getAppInfo({ app_code: appCode })) : ([null, null] as any)),
@@ -240,10 +254,9 @@ export function AgentWorkspace({
                 // 运行中追问:投递补充输入队列(后端校验确有活跃执行才入队)。
                 // 若提交失败(会话无活跃执行/僵尸状态),回退为正常发起对话,
                 // 避免追问被投入无消费者队列而静默吞掉(无报错、无回复)。
+                // 入队成功不在此上屏:由队列轮询检测到被 agent 消费后(onConsumed)上屏。
                 const ok = await submitUserInput(p.text);
-                if (ok) {
-                  appendOptimisticUser(p.text);
-                } else {
+                if (!ok) {
                   send(p);
                 }
               } else {

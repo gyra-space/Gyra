@@ -284,8 +284,20 @@ class DbBindingExecutor(BindingExecutor):
                 )
                 raw = [list(fields), *(data_rows or [])]
             except TypeError:
-                # 旧连接器 query_ex 签名不含 fetch/max_rows, 回退原执行路径
-                raw = connector.run(sql)
+                # 旧连接器 query_ex 签名不含 fetch/max_rows, 回退原执行路径。
+                # 回退路径同样要做行数熔断:流式 fetchmany(cap+1), 不 fetchall 全量拉内存。
+                from sqlalchemy import text as _sql_text
+
+                with connector.session_scope(commit=False) as _session:
+                    _result = _session.execute(_sql_text(sql))
+                    _columns_fb = list(_result.keys())
+                    _rows_fb: list = []
+                    while len(_rows_fb) <= cap:
+                        _chunk = _result.fetchmany(min(1024, cap + 1 - len(_rows_fb)))
+                        if not _chunk:
+                            break
+                        _rows_fb.extend(_chunk)
+                raw = [_columns_fb, *_rows_fb]
         except Exception as e:  # noqa: BLE001
             if is_timeout_error(e):
                 shown = f"{exec_timeout:g}" if exec_timeout is not None else "默认"

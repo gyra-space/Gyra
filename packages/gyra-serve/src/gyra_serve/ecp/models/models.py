@@ -329,6 +329,7 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
         created_by: str = "llm",
         source: Optional[str] = None,
         provenance: Optional[Dict[str, Any]] = None,
+        supersedes: Optional[int] = None,
     ) -> SemanticObjectVO:
         """Create a new proposed version. LLM writes are always proposed.
 
@@ -375,6 +376,7 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
                 created_by=created_by,
                 source=source,
                 provenance=provenance,
+                supersedes=supersedes,
             )
             session.add(entity)
             session.flush()
@@ -678,6 +680,27 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
                 .order_by(EcpSemanticObjectEntity.id, EcpSemanticObjectEntity.version)
                 .all()
             )
+        return [to_object_vo(r) for r in rows]
+
+    def list_confirmed(
+        self, workspace_id: str = DEFAULT_WORKSPACE_ID, obj_type: Optional[str] = None
+    ) -> List[SemanticObjectVO]:
+        """Return the latest confirmed version of each object（含完整 payload）。
+
+        与 ``list_catalog``（id/name 摘要，供提示词注入）不同：本方法返回全量
+        VO（含 payload），供语义指纹去重（协议层②）逐条比对已确认目录——去重
+        需要完整 payload 才能计算指纹，catalog 摘要不够。
+        """
+        with self.session(commit=False) as session:
+            sub = self._latest_confirmed_version_subquery(session, workspace_id)
+            query = session.query(EcpSemanticObjectEntity).join(
+                sub,
+                (EcpSemanticObjectEntity.id == sub.c.id)
+                & (EcpSemanticObjectEntity.version == sub.c.max_version),
+            )
+            if obj_type:
+                query = query.filter(EcpSemanticObjectEntity.obj_type == obj_type)
+            rows = query.order_by(EcpSemanticObjectEntity.id).all()
         return [to_object_vo(r) for r in rows]
 
     def import_object(

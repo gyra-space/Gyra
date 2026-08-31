@@ -234,17 +234,22 @@ async def inbox(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
     include_view: bool = Query(default=True),
+    only: Optional[str] = Query(
+        default=None,
+        description="按分桶筛选:new=全新候选 / revision=已确认概念的待确认修订",
+    ),
     service: Service = Depends(get_service),
 ) -> Result[SemanticObjectListVO]:
     """Confirmation inbox: latest proposed versions.
 
     ``include_view``(默认开):每项挂业务视图(一句话口径/来源徽章/血缘
-    chips)——收件箱卡片直接消费,不再由前端拼 payload。
+    chips)——收件箱卡片直接消费,不再由前端拼 payload。每项带 ``bucket``
+    标记(new/revision)，前端据此把"待确认新对象"与"待确认修订"分离。
     """
     return Result.succ(
         service.inbox(
             workspace_id=workspace_id, obj_type=obj_type,
-            page=page, page_size=page_size, include_view=include_view,
+            page=page, page_size=page_size, include_view=include_view, only=only,
         )
     )
 
@@ -478,6 +483,52 @@ async def normalize_confirmed(
     return Result.succ(
         service.normalize_confirmed(workspace_id=workspace_id, user_id=user_id)
     )
+
+
+@router.get("/admin/duplicate_concepts", response_model=Result[dict])
+async def list_duplicate_concepts(
+    workspace_id: Optional[str] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[dict]:
+    """检测已确认目录中"同概念不同 id"的重复对象(只读,存量 id 迁移工具)。
+
+    语义同源(同指纹)但 id 不同的 confirmed 对象即为重复概念——通常由旧的
+    LLM 自由命名 id 造成。前端据此核对后调用 merge 端点合并。
+    """
+    return Result.succ(service.list_duplicate_concepts(workspace_id=workspace_id))
+
+
+@router.post("/admin/merge_concepts", response_model=Result[dict])
+async def merge_duplicate_concepts(
+    workspace_id: Optional[str] = Query(default=None),
+    target_id: str = Query(..., description="保留的规范 id"),
+    duplicate_ids: str = Query(
+        default="", description="要下线的重复 id 列表,逗号分隔"
+    ),
+    user_id: str = Query(default="system"),
+    reason: Optional[str] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[dict]:
+    """合并重复概念(存量 id 迁移工具,需确认人权限)。
+
+    保留 ``target_id`` 为唯一规范，其余 ``duplicate_ids`` 版本标记为
+    deprecated(版本不可变协议的正确下线姿势)，并失效其解析缓存。
+    """
+    dup_ids = [x.strip() for x in (duplicate_ids or "").split(",") if x.strip()]
+    try:
+        return Result.succ(
+            service.merge_duplicate_concepts(
+                workspace_id=workspace_id,
+                target_id=target_id,
+                duplicate_ids=dup_ids,
+                user_id=user_id,
+                reason=reason,
+            )
+        )
+    except PermissionError as e:
+        return Result.failed(msg=str(e))
+    except ValueError as e:
+        return Result.failed(msg=str(e))
 
 
 @router.get("/admin/miss_report", response_model=Result[dict])

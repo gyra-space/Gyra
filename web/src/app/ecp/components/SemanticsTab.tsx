@@ -11,7 +11,7 @@ import {
 import { getUserId } from '@/utils';
 import { CheckOutlined, CloseOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { App, Button, Input, Modal, Popconfirm, Segmented, Select, Spin } from 'antd';
+import { App, Button, Input, Modal, Popconfirm, Segmented, Select, Spin, Tag } from 'antd';
 import { useState } from 'react';
 
 import {
@@ -74,6 +74,11 @@ function ProposalCard({
           {obj.payload?.aliases?.length ? `（${obj.payload.aliases.join('/')}）` : ''}
         </span>
         <span style={{ flex: 1 }} />
+        {obj.bucket === 'revision' && (
+          <Tag color="gold" style={{ marginInlineEnd: 4 }}>
+            修订
+          </Tag>
+        )}
         <StatusTag status={obj.status} />
       </div>
 
@@ -237,6 +242,24 @@ export default function SemanticsTab({ workspaceId }: { workspaceId: string }) {
   const inboxItems = inbox?.items ?? [];
   const catalogItems = catalog?.items ?? [];
   const inboxCount = inbox?.total_count ?? 0;
+  // 分桶：已确认对象 id 对应的新提案视为"待确认修订"，其余为"全新候选"。
+  // 后端已从构造上阻止"已确认概念被重复提为新候选"(纯去重不落库)，此处仅按
+  // 业务口径分组展示，让确认人一眼区分"这个口径已确认过、正在被改"。
+  const newItems = inboxItems.filter(o => o.bucket !== 'revision');
+  const revisionItems = inboxItems.filter(o => o.bucket === 'revision');
+
+  const sectionTitle = (text: string) => (
+    <div
+      style={{
+        margin: '4px 0 10px',
+        fontSize: 13,
+        color: 'var(--ink-400)',
+        letterSpacing: 1,
+      }}
+    >
+      {text}
+    </div>
+  );
 
   return (
     <>
@@ -289,19 +312,44 @@ export default function SemanticsTab({ workspaceId }: { workspaceId: string }) {
             desc="到「数据资产」对数据源执行「生成提案」，AI 提炼的业务口径会在这里等待你确认。"
           />
         ) : (
-          inboxItems.map((obj, i) => (
-            <div key={`${obj.id}@${obj.version}`} style={{ marginBottom: 12 }}>
-              <ProposalCard
-                obj={obj}
-                onConfirm={o => confirm(o)}
-                onReject={o => reject(o)}
-                onDetail={setDetail}
-                onEdit={openEdit}
-                confirming={confirming}
-                reject={rejecting}
-              />
-            </div>
-          ))
+          <>
+            {newItems.length > 0 && (
+              <div style={{ marginBottom: 18 }}>
+                {revisionItems.length > 0 && sectionTitle(`全新候选 (${newItems.length})`)}
+                {newItems.map(obj => (
+                  <div key={`${obj.id}@${obj.version}@new`} style={{ marginBottom: 12 }}>
+                    <ProposalCard
+                      obj={obj}
+                      onConfirm={o => confirm(o)}
+                      onReject={o => reject(o)}
+                      onDetail={setDetail}
+                      onEdit={openEdit}
+                      confirming={confirming}
+                      reject={rejecting}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+            {revisionItems.length > 0 && (
+              <div>
+                {newItems.length > 0 && sectionTitle(`已确认概念的修订 (${revisionItems.length})`)}
+                {revisionItems.map(obj => (
+                  <div key={`${obj.id}@${obj.version}@rev`} style={{ marginBottom: 12 }}>
+                    <ProposalCard
+                      obj={obj}
+                      onConfirm={o => confirm(o)}
+                      onReject={o => reject(o)}
+                      onDetail={setDetail}
+                      onEdit={openEdit}
+                      confirming={confirming}
+                      reject={rejecting}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )
       ) : catalogLoading ? (
         <Spin style={{ display: 'block', margin: '64px auto' }} />

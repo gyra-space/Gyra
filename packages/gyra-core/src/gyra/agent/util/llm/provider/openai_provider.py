@@ -141,6 +141,7 @@ class OpenAIProvider(LLMProvider):
         self, request: ModelRequest
     ) -> AsyncIterator[ModelOutput]:
         """Generate a streaming response from the model."""
+        stream = None
         try:
             openai_messages = request.to_common_messages(
                 support_system_role=True,
@@ -352,6 +353,14 @@ class OpenAIProvider(LLMProvider):
         except Exception as e:
             logger.exception(f"OpenAI stream error: {e}")
             yield ModelOutput(error_code=1, text=str(e))
+        finally:
+            # 显式关闭底层 HTTP 流:停滞/异常/客户端取消退出时,不依赖 SDK 析构与 GC
+            # 时序回收连接,避免连接悬挂占用连接池。
+            if stream is not None:
+                try:
+                    await stream.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     async def models(self) -> List[ModelMetadata]:
         """List available models."""

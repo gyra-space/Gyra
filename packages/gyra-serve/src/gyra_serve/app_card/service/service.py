@@ -11,6 +11,7 @@ semantic layer (metric) and the workspace data sources (sql), keeping the same
 import json
 import logging
 import secrets
+import time
 from typing import Any, Dict, List, Optional
 
 from gyra.component import SystemApp
@@ -157,11 +158,23 @@ def run_readonly_sql(
             columns = list(fields)
             rows = [dict(zip(columns, r)) for r in (raw_rows or [])]
         except TypeError:
-            # 旧连接器 query_ex 签名不含 fetch/params/max_rows, 回退原执行路径
+            # 旧连接器 query_ex 签名不含 fetch/params/max_rows, 回退原执行路径。
+            # 回退路径同样要做防护:流式 fetchmany(cap+1) 行数熔断(不 fetchall 全量拉内存),
+            # 墙钟超时检查(数据库级语句超时不可用时兜底),防止慢 SQL/大表把线程池拖死。
             with connector.session_scope(commit=False) as session:
                 result = session.execute(text(sql), bind_params)
                 columns = list(result.keys())
-                rows = [dict(zip(columns, r)) for r in result.fetchall()]
+                rows = []
+                deadline = (time.monotonic() + timeout) if timeout else None
+                while len(rows) <= cap:
+                    chunk = result.fetchmany(min(1024, cap + 1 - len(rows)))
+                    if not chunk:
+                        break
+                    rows.extend(dict(zip(columns, r)) for r in chunk)
+                    if deadline is not None and time.monotonic() > deadline:
+                        raise TimeoutError(
+                            f"query exceeded wall-clock timeout {timeout:g}s"
+                        )
     except Exception as e:  # noqa: BLE001
         logger.exception("app_card sql execute failed")
         if timeout is not None and is_timeout_error(e):

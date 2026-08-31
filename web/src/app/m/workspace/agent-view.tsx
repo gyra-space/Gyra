@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { Drawer, Tag } from 'antd';
 import { GPTVis } from '@antv/gpt-vis';
 import { AgentWorkspaceRenderer } from '@/app/workspaces/detail/agent-workspace-renderer';
@@ -50,7 +50,6 @@ export interface MobileAgentViewProps {
  * 输入条使用移动端专属轻量输入条(避免桌面 AgentWorkspaceInput 的固定宽度布局破坏窄屏)。
  */
 export function MobileAgentView({ conversationId, workspaceId, appCode, taskId, onNewSession }: MobileAgentViewProps) {
-  const { submitUserInput } = useUserInput(conversationId);
   const [text, setText] = useState('');
   const [selectedStep, setSelectedStep] = useState<WorkspaceExecutionStep | null>(null);
 
@@ -59,6 +58,23 @@ export function MobileAgentView({ conversationId, workspaceId, appCode, taskId, 
 
   const running = loading || convState === 'RUNNING';
   const canSend = !!conversationId && text.trim().length > 0;
+
+  // 「先入队,agent 消费后才展示」:提交时不上屏,队列轮询检测到被消费时
+  // (onConsumed)才上屏为独立用户气泡;运行结束兜底把滞留项上屏。
+  const { submitUserInput, consumePendingInputs, startPolling: startQueuePolling, stopPolling: stopQueuePolling } =
+    useUserInput(conversationId, {
+      onConsumed: (items) => {
+        items.forEach((i) => appendOptimisticUser(i.content));
+      },
+    });
+  useEffect(() => {
+    if (running) {
+      startQueuePolling(2000);
+    } else {
+      stopQueuePolling();
+      consumePendingInputs().forEach((i) => appendOptimisticUser(i.content));
+    }
+  }, [running, startQueuePolling, stopQueuePolling, consumePendingInputs, appendOptimisticUser]);
 
   const handleOpenFile = useMemo(
     () => (file: WorkspaceDeliverableFile) => {
@@ -73,9 +89,8 @@ export function MobileAgentView({ conversationId, workspaceId, appCode, taskId, 
     if (!canSend) return;
     // 运行中发送 → 走用户输入(介入/补充);空闲发送 → 发起新任务
     if (running) {
-      // 乐观上屏:不等后端回显,先把用户消息插入视图(与桌面空间一致),
-      // 否则要等后端把该补充输入回显到 vis_final 才显示,用户会感觉消息没发出去
-      appendOptimisticUser(t);
+      // 「先入队,agent 消费后才展示」:提交时不上屏,由队列轮询检测到
+      // 被 agent 消费后(onConsumed)上屏为独立用户气泡。
       submitUserInput(t);
     } else {
       send({ text: t });

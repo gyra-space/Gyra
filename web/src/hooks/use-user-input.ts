@@ -21,7 +21,10 @@ export interface ExecutionNodeInfo {
   current_node: string;
 }
 
-export function useUserInput(sessionId: string | undefined) {
+export function useUserInput(
+  sessionId: string | undefined,
+  options?: { onConsumed?: (items: UserInputItem[]) => void },
+) {
   const { message } = App.useApp();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [queueState, setQueueState] = useState<UserInputQueueState>({
@@ -29,6 +32,12 @@ export function useUserInput(sessionId: string | undefined) {
     queueLength: 0,
   });
   const pendingInputsRef = useRef<UserInputItem[]>([]);
+  // 队列长度镜像:setQueueState 异步,getQueueStatus 需要同步对比上一次长度来检测消费
+  const queueLengthRef = useRef(0);
+  // 消费回调:队列轮询发现长度下降(后端 FIFO 消费)时,把被消费项交给调用方
+  // 上屏为独立用户气泡 —— 运行中补充输入「先入队,agent 消费后才展示」。
+  const onConsumedRef = useRef(options?.onConsumed);
+  onConsumedRef.current = options?.onConsumed;
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   // 是否处于「外部要求轮询中」:与 interval 的实际存在解耦,供页面隐藏/恢复判断是否续跑。
   const pollActiveRef = useRef(false);
@@ -76,15 +85,16 @@ export function useUserInput(sessionId: string | undefined) {
       const result = await response.json();
 
       if (result.success) {
+        queueLengthRef.current = result.queue_length;
         setQueueState(prev => ({
           ...prev,
           hasPendingInput: true,
           queueLength: result.queue_length,
           executionNode: result.execution_node,
         }));
-        
+
         pendingInputsRef.current.push({ content, input_type: inputType, metadata });
-        
+
         return true;
       } else {
         message.warning(result.message || 'No active execution');
@@ -109,12 +119,29 @@ export function useUserInput(sessionId: string | undefined) {
 
       if (response.ok) {
         const result = await response.json();
+        const nextLength: number = result.pending_count || (result.has_pending_input ? 1 : 0);
+        // 消费检测:后端按 FIFO 清空式消费,队列长度下降的部分即被 agent 取走的消息。
+        // 本地 pendingInputsRef 与后端入队顺序一致,取头部 prevLength - nextLength 条
+        // 视为已消费,交给 onConsumed 上屏(「先入队,消费后才展示到消息列表」)。
+        const prevLength = queueLengthRef.current;
+        const consumedCount = prevLength - nextLength;
+        let consumed: UserInputItem[] = [];
+        if (consumedCount > 0 && pendingInputsRef.current.length > 0) {
+          consumed = pendingInputsRef.current.splice(0, consumedCount);
+        } else if (nextLength === 0 && pendingInputsRef.current.length > 0) {
+          // 长度未变但队列已空(如并发清空/消费瞬时竞态):本地待展示项全部视为已消费
+          consumed = pendingInputsRef.current.splice(0);
+        }
+        queueLengthRef.current = nextLength;
         setQueueState({
           hasPendingInput: result.has_pending_input,
-          queueLength: result.pending_count || (result.has_pending_input ? 1 : 0),
+          // 「排队 N 条」仅统计仍在排队的消息:本地提交列表末尾 queueLength 条,
+          // 前面的已被消费(经 onConsumed 上屏),不再计入排队数。
+          queueLength: Math.min(nextLength, pendingInputsRef.current.length),
           executionNode: result.execution_node,
           isLocal: result.is_local,
         });
+        if (consumed.length > 0) onConsumedRef.current?.(consumed);
       }
     } catch (error) {
       console.error('Failed to get queue status:', error);
@@ -151,7 +178,7 @@ export function useUserInput(sessionId: string | undefined) {
         hasPendingInput: false,
         queueLength: 0,
       });
-      
+      queueLengthRef.current = 0;
       pendingInputsRef.current = [];
     } catch (error) {
       console.error('Failed to clear queue:', error);
@@ -165,6 +192,7 @@ export function useUserInput(sessionId: string | undefined) {
   const consumePendingInputs = useCallback(() => {
     const inputs = [...pendingInputsRef.current];
     pendingInputsRef.current = [];
+    queueLengthRef.current = 0;
     setQueueState(prev => ({
       ...prev,
       hasPendingInput: false,

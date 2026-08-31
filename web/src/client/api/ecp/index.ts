@@ -27,6 +27,11 @@ export interface EcpSemanticObject {
   /** 结构化溯源(origin/actor/origin_sql/miss_ref/derived_from) */
   provenance?: Record<string, any> | null;
   supersedes?: number | null;
+  /**
+   * 确认收件箱业务分桶(后端读时派生):new=全新候选 / revision=已确认概念的
+   * 待确认修订 / confirmed=已确认对象本身。
+   */
+  bucket?: 'new' | 'revision' | 'confirmed' | null;
   /** 业务视图(include_view 时由后端读时派生) */
   view?: EcpProposalView | null;
 }
@@ -135,6 +140,8 @@ export interface EcpObjectFilters {
   keyword?: string;
   page?: number;
   page_size?: number;
+  /** 收件箱分桶筛选(仅 /inbox 生效):new=全新候选 / revision=已确认概念的待确认修订 */
+  only?: 'new' | 'revision';
 }
 
 // =============================================================================

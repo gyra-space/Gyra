@@ -16,11 +16,18 @@ export const APP_CARD_SDK_SOURCE = `
   var CFG = window.__GYRA_APP_CARD__ || {};
   var seq = 0;
   var pending = {};
+  var REQ_TIMEOUT_MS = 65000;
+  function settle(reqId) {
+    var p = pending[reqId];
+    if (!p) return null;
+    delete pending[reqId];
+    if (p.timer) clearTimeout(p.timer);
+    return p;
+  }
   function resolve(data, payload) {
     if (!data) return;
-    var p = pending[data.reqId];
+    var p = settle(data.reqId);
     if (!p) return;
-    pending[data.reqId] = null;
     if (data.error) { p.reject(new Error(data.error)); }
     else { p.resolve(data.data || payload || null); }
   }
@@ -34,7 +41,13 @@ export const APP_CARD_SDK_SOURCE = `
   function call(op, params, queryKey) {
     return new Promise(function (resolveP, rejectP) {
       var reqId = 'req_' + (++seq) + '_' + Date.now();
-      pending[reqId] = { resolve: resolveP, reject: rejectP };
+      var entry = { resolve: resolveP, reject: rejectP, timer: null };
+      // 请求超时兜底:父页崩溃/不回包时避免 Promise 永不 settle、pending 条目永久悬挂。
+      entry.timer = setTimeout(function () {
+        var p = settle(reqId);
+        if (p) { p.reject(new Error('app-card request timeout')); }
+      }, REQ_TIMEOUT_MS);
+      pending[reqId] = entry;
       window.parent.postMessage({
         type: 'gyra-app-card', reqId: reqId, op: op,
         params: params || {}, query_key: queryKey || null

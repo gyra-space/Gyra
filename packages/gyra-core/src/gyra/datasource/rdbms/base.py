@@ -48,6 +48,41 @@ def _format_index(index: sqlalchemy.engine.interfaces.ReflectedIndex) -> str:
     )
 
 
+def _oracle_supports_call_timeout(connector) -> bool:
+    """判断当前 Oracle 连接能否安全使用 ``call_timeout``。
+
+    ``call_timeout`` 由 ODPI-C 按 **客户端库** 版本门控(18.1+),旧客户端
+    (如 11.2)上设置会直接抛 DPI-1050。判定顺序:
+    1. Thick 模式下优先用 ``oracledb.clientversion()``(进程级真实客户端版本,
+       也是 DPI-1050 的真正判据,不受多数据源共享类属性影响);
+    2. 拿不到时回退到连接器已检测的版本(实例属性优先,兼容类属性);
+    3. 版本未知(None)按不支持处理(安全方向:宁可不带超时,也不报错);
+    4. Thin 模式无客户端库限制,始终支持。
+    """
+    try:
+        from gyra_ext.datasource.rdbms.conn_oracle import OracleConnector
+
+        thick = getattr(connector, "_using_thick_mode", None)
+        if thick is None:
+            thick = getattr(OracleConnector, "_using_thick_mode", False)
+        if not thick:
+            return True
+        try:
+            import oracledb
+
+            return oracledb.clientversion() >= (18, 1)
+        except Exception:  # noqa: BLE001
+            pass
+        ver = getattr(connector, "_oracle_version", None)
+        if ver is None:
+            ver = getattr(OracleConnector, "_oracle_version", None)
+        if ver is None:
+            return False
+        return ver >= (18, 1)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @dataclass
 class RDBMSDatasourceParameters(BaseDatasourceParameters):
     """RDBMS datasource parameters."""
@@ -660,11 +695,21 @@ class RDBMSConnector(BaseConnector):
                 # Handle timeout based on database dialect
                 if timeout is not None:
                     if self.dialect == "mysql":
-                        # MySQL: Set MAX_EXECUTION_TIME in milliseconds
-                        mysql_timeout = int(timeout * 1000)
-                        session.execute(
-                            text(f"SET SESSION MAX_EXECUTION_TIME = {mysql_timeout}")
-                        )
+                        # MySQL: Set MAX_EXECUTION_TIME in milliseconds.
+                        # Requires MySQL 5.7.8+; older MySQL / MariaDB (which uses
+                        # max_statement_time instead) raise a syntax error — degrade
+                        # to running without timeout instead of failing the query.
+                        try:
+                            session.execute(
+                                text(
+                                    f"SET SESSION MAX_EXECUTION_TIME = {int(timeout * 1000)}"
+                                )
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "MAX_EXECUTION_TIME not supported, "
+                                f"running without timeout: {e}"
+                            )
                         return _execute_query(session, sql)
 
                     elif self.dialect == "postgresql":
@@ -688,19 +733,30 @@ class RDBMSConnector(BaseConnector):
                         return _execute_query(session, sql_with_timeout)
 
                     elif self.dialect == "oracle":
-                        # Oracle: Use call_timeout on raw oracledb connection
-                        # Note: call_timeout requires Oracle Client 18.1+, skip on 11g
+                        # Oracle: Use call_timeout on raw oracledb connection.
+                        # call_timeout requires Oracle Client 18.1+ (DPI-1050 on
+                        # older clients like 11.2). Skip when unsupported/unknown,
+                        # and treat the setting itself as best-effort: any failure
+                        # degrades to running without timeout instead of failing
+                        # the query.
+                        if not _oracle_supports_call_timeout(self):
+                            logger.info(
+                                "Oracle client <18.1 or version unknown, "
+                                "skipping call_timeout"
+                            )
+                            return _execute_query(session, sql)
                         try:
-                            # Check if we're on Oracle 11g (client 11.2) which doesn't support call_timeout
-                            from gyra_ext.datasource.rdbms.conn_oracle import OracleConnector
-                            if OracleConnector._using_thick_mode and OracleConnector._oracle_version and OracleConnector._oracle_version < (12, 1):
-                                logger.info("Oracle 11g detected, skipping call_timeout (requires Client 18.1+)")
-                                return _execute_query(session, sql)
-                            
                             raw_conn = (
                                 session.connection().connection.dbapi_connection
                             )
                             raw_conn.call_timeout = int(timeout * 1000)
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to set call_timeout, "
+                                f"running without timeout: {e}"
+                            )
+                            return _execute_query(session, sql)
+                        try:
                             result = _execute_query(session, sql)
                             raw_conn.call_timeout = 0
                             return result
@@ -751,9 +807,8 @@ class RDBMSConnector(BaseConnector):
                                 text("SET SESSION ob_query_timeout = 10000000")
                             )  # Reset to default 10s
                         elif self.dialect == "oracle":
-                            # Oracle 11g (Client 11.2) doesn't support call_timeout
-                            from gyra_ext.datasource.rdbms.conn_oracle import OracleConnector
-                            if not (OracleConnector._using_thick_mode and OracleConnector._oracle_version and OracleConnector._oracle_version < (12, 1)):
+                            # call_timeout 在旧客户端(11.2)上不可用,统一走同一判定
+                            if _oracle_supports_call_timeout(self):
                                 raw_conn = (
                                     session.connection().connection.dbapi_connection
                                 )

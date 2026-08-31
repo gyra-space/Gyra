@@ -196,3 +196,43 @@ async def run_bounded(fn: Callable, /, *args: Any, **kwargs: Any) -> Any:
         )
     finally:
         slots.release()
+
+
+async def run_bounded_disconnect_aware(
+    http_request: Any, fn: Callable, /, *args: Any, **kwargs: Any
+) -> Any:
+    """run_bounded 的客户端断连感知版本.
+
+    轮询 http_request.is_disconnected(): 客户端关闭页面/断网后, 协程侧
+    立即释放信号量槽位并返回, 不再干等池内同步 SQL 跑完才把槽位让出来,
+    避免狂刷页面时槽位被"孤儿请求"长期占用(池内 SQL 本身仍在跑,
+    由语句级超时/行数熔断兜底, 无法从外部强杀线程)。
+    """
+    query_task = asyncio.ensure_future(run_bounded(fn, *args, **kwargs))
+
+    async def _watch_disconnect() -> None:
+        while not query_task.done():
+            try:
+                if await http_request.is_disconnected():
+                    return
+            except Exception:  # noqa: BLE001
+                return
+            await asyncio.sleep(0.5)
+
+    watcher = asyncio.ensure_future(_watch_disconnect())
+    try:
+        done, _ = await asyncio.wait(
+            {query_task, watcher}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if query_task in done:
+            return query_task.result()
+        # 客户端已断开:取消等待(槽位随 run_bounded 的 finally 释放),
+        # 池内 SQL 由超时/熔断兜底终止。
+        query_task.cancel()
+        raise AppCardBusyError("客户端已断开连接, 查询已放弃")
+    finally:
+        watcher.cancel()
+        try:
+            await watcher
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass

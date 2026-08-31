@@ -230,6 +230,11 @@ class DbSemanticsProposer(SemanticsProposer):
         if not text:
             raise RuntimeError(self._llm_last_error or "LLM unavailable or returned empty")
         proposals = self._parse_proposals(text)
+        if not proposals and not _has_proposals_container(text):
+            # LLM 返回了文本但解析不出任何合法提案(非 JSON / 无 proposals 键)→
+            # 显式抛错,不静默当作"该批无提案"完成(上游 generate 按批捕获并记 error,
+            # 不中断整趟)。“{"proposals": []}”属于合法空结果,不在此抛。
+            raise RuntimeError("未解析出任何合法提案")
         known_tables = {_spec_attr(s, "table_name") for s in batch}
         return self._validate(
             proposals, known_tables, datasource_id=datasource_id, specs=batch
@@ -443,6 +448,25 @@ def _loads(raw: Any) -> Any:
         except (json.JSONDecodeError, TypeError):
             return None
     return raw
+
+
+def _has_proposals_container(text: str) -> bool:
+    """判断 LLM 文本中是否存在一个合法的提案容器(含 proposals 键的对象)。
+
+    与 ``_parse_proposals`` 的区别:这里只区分"合法 JSON 但无提案"和"垃圾文本"。
+    - ``{"proposals": []}`` → True(合法空结果,不视为解析失败)
+    - 非 JSON / 无 proposals 键 → False(垃圾输出,提案侧应显式抛错)
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return False
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return False
+    return isinstance(data, dict) and "proposals" in data
 
 
 def _spec_get(spec: Any, parsed_key: str, json_key: str) -> Any:

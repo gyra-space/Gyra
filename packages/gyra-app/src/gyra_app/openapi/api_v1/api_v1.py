@@ -529,7 +529,8 @@ async def _delayed_generate_llm_title(
     for _ in range(max_attempts):
         await asyncio.sleep(interval)
         try:
-            items = dao.get_messages_by_conv_uid(conv_uid)
+            # 同步 DB 调用挪到线程池,避免阻塞事件循环(该方法每 3s 轮询最多 10 次)。
+            items = await asyncio.to_thread(dao.get_messages_by_conv_uid, conv_uid)
         except Exception:  # noqa: BLE001
             items = None
         if items:
@@ -981,7 +982,9 @@ async def chat_completions(
         )
     finally:
         if dialogue.user_name is not None and dialogue.app_code is not None:
-            user_recent_app_dao.upsert(
+            # 同步 DB 写挪到线程池,避免在请求协程 finally 中阻塞事件循环。
+            await asyncio.to_thread(
+                user_recent_app_dao.upsert,
                 user_code=dialogue.user_name,
                 sys_code=dialogue.sys_code,
                 app_code=dialogue.app_code,

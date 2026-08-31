@@ -33,6 +33,16 @@ class SemanticObjectVO(BaseModel):
         ),
     )
     supersedes: Optional[int] = None
+    bucket: Optional[str] = Field(
+        default=None,
+        description=(
+            "确认收件箱业务分桶(读时派生,不落库):"
+            "new=全新候选(该 id 尚无 confirmed 版本) / "
+            "revision=已确认概念的待确认修订(supersedes 指向已确认版本) / "
+            "confirmed=已确认对象本身。前端据此分离『待确认新对象』与"
+            "『待确认修订』，不再把已确认概念当未确认展示"
+        ),
+    )
     view: Optional["ProposalViewVO"] = Field(
         default=None,
         description=(

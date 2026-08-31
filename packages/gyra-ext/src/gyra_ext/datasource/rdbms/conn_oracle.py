@@ -366,7 +366,10 @@ class OracleConnector(RDBMSConnector):
                 cls._oracle_version = _parse_version(ver)
                 logger.info(f"Force thick mode OK, Oracle version: {ver}")
             else:
-                logger.warning(f"Force thick mode connection test failed: {err}, version detection skipped")
+                # 版本未知时置 (0,0)(=按最旧版本处理),所有版本门控走安全路径,
+                # 避免 None 导致 call_timeout 等 18.1+ 特性被误用(DPI-1050)
+                cls._oracle_version = (0, 0)
+                logger.warning(f"Force thick mode connection test failed: {err}, treating version as unknown")
         elif force_thick_mode is None and auto_detect:
             # Auto detect version and switch to thick mode if needed
             # IMPORTANT: Try thick mode FIRST for older Oracle versions
@@ -387,10 +390,8 @@ class OracleConnector(RDBMSConnector):
                     cls._oracle_version = _parse_version(ver)
                     cls._using_thick_mode = True
                     logger.info(f"Thick mode OK, Oracle version: {ver}")
-                    # Build connection URL - all subsequent connections will use thick mode
-                    dsn = f"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={host})(PORT={port}))(CONNECT_DATA=(SERVICE_NAME={svc})))" if service_name else f"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={host})(PORT={port}))(CONNECT_DATA=(SID={sid})))"
-                    url = f"{cls.driver}://{quote(user)}:{quote_plus(pwd)}@{dsn}"
-                    return cls.from_uri(url, engine_args=engine_args, **kwargs)
+                    # Fall through to the shared URL build below so the
+                    # arraysize/旧版本兜底逻辑对该分支同样生效
                 else:
                     # Thick mode initialized but connection failed
                     # This could be due to wrong credentials or other issues
@@ -425,8 +426,13 @@ class OracleConnector(RDBMSConnector):
         if cls._using_thick_mode and cls._oracle_version and cls._oracle_version < (12, 1):
             engine_args['arraysize'] = 1
             logger.info(f"Oracle 11g detected, setting arraysize=1 to avoid DPI-1050")
-        
-        return cls.from_uri(url, engine_args=engine_args, **kwargs)
+
+        connector = cls.from_uri(url, engine_args=engine_args, **kwargs)
+        # 固化到实例属性:版本/模式判定按数据源隔离,避免同进程多个 Oracle
+        # 数据源经类属性(_oracle_version/_using_thick_mode)互相串扰
+        connector._oracle_version = cls._oracle_version
+        connector._using_thick_mode = cls._using_thick_mode
+        return connector
 
     @classmethod
     def from_parameters_auto(cls, params: OracleParameters) -> "OracleConnector":

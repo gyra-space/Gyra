@@ -780,16 +780,29 @@ export function SceneWorkspaceShell({
     hasPendingInput,
     queueLength,
     getPendingInputs,
+    consumePendingInputs,
     clearQueue,
     startPolling: startQueuePolling,
     stopPolling: stopQueuePolling,
-  } = useUserInput(rightConvUid);
+  } = useUserInput(rightConvUid, {
+    // 补充输入「先入队,agent 消费后才展示」:队列轮询检测到被消费时,
+    // 才把该消息上屏为独立用户气泡(不再提交即上屏)。
+    onConsumed: (items) => {
+      items.forEach((i) => simpleChat.appendOptimisticUser(i.content));
+    },
+  });
   // 对话运行中开启队列轮询(每 2s 拉取 queueState 刷新计数),停运即停,
   // 让「排队 N 条」随后端消费进度实时变化。
   useEffect(() => {
-    if (isRunning) startQueuePolling(2000);
-    else stopQueuePolling();
-  }, [isRunning, startQueuePolling, stopQueuePolling]);
+    if (isRunning) {
+      startQueuePolling(2000);
+    } else {
+      stopQueuePolling();
+      // 兜底:运行结束(轮询停)时,本地仍滞留未确认消费的消息直接上屏,
+      // 避免追问永久不可见(例如消费发生在最后一次轮询之后)。
+      consumePendingInputs().forEach((i) => simpleChat.appendOptimisticUser(i.content));
+    }
+  }, [isRunning, startQueuePolling, stopQueuePolling, consumePendingInputs, simpleChat.appendOptimisticUser]);
   // 「取消排队」真实动作注入到 widget 注册表(input_queue 的「取消排队」按钮经它调用),
   // 避免把 hook 依赖带进组件注册表;clearQueue 清空后端队列并复位本地计数。
   useEffect(() => {
@@ -827,10 +840,10 @@ export function SceneWorkspaceShell({
       setSimpleShowWelcome(false);
       // 投递补充输入队列;后端校验确有活跃执行才入队。若提交失败(会话无活跃
       // 执行/僵尸状态),回退为正常发起对话,避免追问被投入无消费者队列而静默吞掉。
+      // 入队成功不在此上屏:消息展示由队列轮询检测到被 agent 消费后(onConsumed)
+      // 才上屏,与「先入队、消费后展示」语义一致。
       const ok = await submitUserInput(payload.text);
-      if (ok) {
-        simpleChat.appendOptimisticUser(payload.text);
-      } else {
+      if (!ok) {
         await simpleChat.send(payload);
       }
     } else {

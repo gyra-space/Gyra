@@ -301,7 +301,8 @@ class TestAddFromSql:
     """add_from_sql requires proposal agent configured; after proposal generated,
     validate contract then confirm directly (manual -> confirmed in one step).
     """
-    def test_no_agent_config_raises(self):
+    @pytest.mark.asyncio
+    async def test_no_agent_config_raises(self):
         from types import SimpleNamespace
         svc = Service.__new__(Service)
         svc._object_dao = MagicMock()
@@ -312,4 +313,4 @@ class TestAddFromSql:
         cfg = SimpleNamespace(proposal_agent_id=None)
         svc.get_workspace_config = MagicMock(return_value=cfg)
         with pytest.raises(ValueError, match="未配置提案 Agent"):
-            svc.add_from_sql(sql="SELECT * FROM t", user_id="user0")
+            await svc.add_from_sql(sql="SELECT * FROM t", user_id="user0")

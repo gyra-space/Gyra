@@ -1182,7 +1182,17 @@ class GptsMemory(LifeCycle, FileMetadataStorage, WorkLogStorage, KanbanStorage, 
             # 先冲刷攒批中(stream_pending)的流式增量,避免最后一批 content
             # 被 [DONE] 抢先进队列而丢失(80ms 攒批窗口内未 flush 的内容)。
             await self._flush_stream_pending(cache)
-            await cache.channel.put("[DONE]")
+            # 用 put_nowait 而非 await put:SSE 消费端断开后队列可能已满且无人消费,
+            # await put 会把 _inner_chat 的 finally 挂住直到 TTL 过期(持有 LLM 连接与沙箱)。
+            # [DONE] 是终止信号,与数据帧同优先级,队满时挤掉最旧帧保证终止信号可达。
+            try:
+                cache.channel.put_nowait("[DONE]")
+            except asyncio.QueueFull:
+                try:
+                    cache.channel.get_nowait()
+                    cache.channel.put_nowait("[DONE]")
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
 
     async def have_memory_cache(self, conv_id: str) -> bool:
         return (await self._get_cache(conv_id)) is not None

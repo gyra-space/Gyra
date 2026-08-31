@@ -183,6 +183,7 @@ class ThetaProvider(LLMProvider):
     async def generate_stream(
         self, request: ModelRequest
     ) -> AsyncIterator[ModelOutput]:
+        stream = None
         try:
             model_name = self._get_model_name(request.model)
             api_key = await self._resolve_api_key(model_name)
@@ -342,6 +343,13 @@ class ThetaProvider(LLMProvider):
             logger.error(f"[ThetaProvider] ========== 流式调用失败 ==========")
             logger.exception(f"[ThetaProvider] 错误: {e}")
             yield ModelOutput(error_code=1, text=str(e))
+        finally:
+            # 显式关闭底层 HTTP 流,避免异常/取消退出时连接悬挂占用连接池。
+            if stream is not None:
+                try:
+                    await stream.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     async def models(self) -> List[ModelMetadata]:
         result = []

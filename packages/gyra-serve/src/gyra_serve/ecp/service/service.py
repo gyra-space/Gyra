@@ -187,20 +187,35 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
                 f"Invalid obj_type '{obj_type}', must be one of {OBJECT_TYPES}"
             )
         ws = self._ws(workspace_id)
-        if gate_level == "executable":
-            from .contracts import (
-                ContractViolation,
-                normalize_payload,
-                validate_payload,
-            )
 
-            payload = normalize_payload(obj_type, payload)
+        from .contracts import (
+            ContractViolation,
+            normalize_payload,
+            validate_payload,
+        )
+
+        # 统一先机械归一(幂等)：所有写入路径在此拉齐到契约形态，后续
+        # 语义指纹与"payload 是否相等"才有可比基础。
+        payload = normalize_payload(obj_type, payload)
+        if gate_level == "executable":
             self._normalize_entity_binding_fallback(payload, obj_type)
             problems = validate_payload(obj_type, payload, level="executable")
             if problems:
                 raise ContractViolation(problems)
+
+        # 协议②+③：语义指纹门禁(不依赖 id/字面相等) + 意图分流。
+        # - 纯去重(同概念且 payload 相等) → 直接返回已确认 VO，不产生待办新候选。
+        # - 修订(同概念但 payload 有更新) → 沿用已确认对象 id、新 proposed 版本、
+        #   supersedes 指向已确认版本，成为"待确认修订"而非"未确认新对象"。
+        # - 新候选 → 保留调用方命名(Agent 需在提案内跨引用)，缺省用派生 id。
+        resolved_id, supersedes, dedup_vo = self._resolve_proposal_intent(
+            object_id, obj_type, payload, ws
+        )
+        if dedup_vo is not None:
+            return dedup_vo  # 纯去重命中：已存在相同的已确认版本，未产生新提案
+
         vo = self._object_dao.create_proposal(
-            object_id=object_id,
+            object_id=resolved_id,
             obj_type=obj_type,
             payload=payload,
             workspace_id=ws,
@@ -209,6 +224,7 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             created_by=created_by,
             source=source,
             provenance=provenance,
+            supersedes=supersedes,
         )
         # 去重命中时 create_proposal 返回已有 confirmed VO(status=confirmed),
         # 不记 propose oplog(实际未产生新提案)。
@@ -216,11 +232,49 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             self._oplog_dao.append(
                 "propose",
                 ws,
-                {"id": object_id, "version": vo.version, "type": obj_type,
-                 "created_by": created_by, "source": source},
+                {"id": resolved_id, "version": vo.version, "type": obj_type,
+                 "created_by": created_by, "source": source,
+                 "revision": supersedes is not None},
             )
         self._refresh_edges(vo, ws)
         return vo
+
+    def _match_confirmed(
+        self, obj_type: str, payload: dict, workspace_id: str
+    ) -> Optional[SemanticObjectVO]:
+        """按语义指纹在已确认目录中找同概念对象(协议层② 硬门禁)。
+
+        指纹与 id 无关(见 identity.semantic_fingerprint)，所以即使 LLM 重新
+        造了一个不同的 object_id、或 payload 有细微措辞差异，只要绑定结构/
+        聚合口径一致就能命中——这才是"同一概念"的确定性判据。
+        """
+        from .identity import semantic_fingerprint
+
+        fp = semantic_fingerprint(obj_type, payload)
+        if not fp:
+            return None
+        for vo in self._object_dao.list_confirmed(workspace_id, obj_type=obj_type):
+            if semantic_fingerprint(vo.obj_type, vo.payload or {}) == fp:
+                return vo
+        return None
+
+    def _resolve_proposal_intent(
+        self, object_id: str, obj_type: str, payload: dict, ws: str
+    ) -> tuple:
+        """决定提案意图：返回 (resolved_id, supersedes, dedup_vo)。
+
+        dedup_vo 非空 = 纯去重(与已确认对象逐字节相等)，调用方应直接返回它；
+        否则 resolved_id/supersedes 供 create_proposal 使用(修订或新候选)。
+        """
+        from .identity import derive_object_id
+
+        existing = self._match_confirmed(obj_type, payload, ws)
+        if existing is not None:
+            if (existing.payload or {}) == payload:
+                return existing.id, None, existing  # 纯去重
+            return existing.id, existing.version, None  # 修订
+        resolved = object_id or derive_object_id(obj_type, payload) or object_id
+        return resolved, None, None
 
     @staticmethod
     def _normalize_entity_binding_fallback(payload: dict, obj_type: str) -> None:
@@ -578,6 +632,108 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
             "skipped": skipped,
         }
 
+    # ------------------------------------- 存量 id 迁移(语义指纹去重,非破坏性)
+    def list_duplicate_concepts(
+        self, workspace_id: Optional[str] = None
+    ) -> dict:
+        """检测已确认目录中"同概念不同 id"的重复对象(存量迁移工具,只读)。
+
+        按语义指纹(identity.semantic_fingerprint)分组：同一指纹下若存在 >1 个
+        不同 id 的已确认对象，即为重复概念——这是"已确认提案被反复提出"在存量
+        数据上的痕迹，通常源于 LLM 每次重新命名 id。返回分组供确认人核对后合并。
+        """
+        from .identity import semantic_fingerprint
+
+        ws = self._ws(workspace_id)
+        groups: Dict[str, list] = {}
+        for vo in self._object_dao.list_confirmed(ws):
+            fp = semantic_fingerprint(vo.obj_type, vo.payload or {})
+            if not fp:
+                continue
+            groups.setdefault(fp, []).append(vo)
+        dup = []
+        for fp, items in groups.items():
+            ids = {it.id for it in items}
+            if len(ids) > 1:
+                dup.append(
+                    {
+                        "fingerprint": fp,
+                        "obj_type": items[0].obj_type,
+                        "objects": [
+                            {
+                                "id": it.id,
+                                "version": it.version,
+                                "name": it.name,
+                                "confirmed_by": it.confirmed_by,
+                                "confirmed_at": it.confirmed_at,
+                            }
+                            for it in items
+                        ],
+                    }
+                )
+        return {
+            "workspace_id": ws,
+            "duplicate_groups": dup,
+            "duplicate_count": len(dup),
+        }
+
+    def merge_duplicate_concepts(
+        self,
+        workspace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+        duplicate_ids: Optional[List[str]] = None,
+        user_id: str = "system",
+        reason: Optional[str] = None,
+    ) -> dict:
+        """合并已确认目录中的重复概念(存量迁移工具,admin 驱动)。
+
+        语义同源但 id 不同(留痕自 LLM 反复命名)的已确认对象，保留 ``target_id``
+        为唯一规范，其余 ``duplicate_ids`` 对应版本标记为 ``deprecated``(版本
+        不可变协议的正确下线姿势，不物理删行)，并失效其解析缓存。依赖该重复
+        对象的下游边回收交给 ``rebuild_edges``；不会出现"待办里冒出一个未确认
+        新对象"。
+        """
+        ws = self._ws(workspace_id)
+        if not self._confirmer_dao.is_confirmer(ws, user_id):
+            raise PermissionError(
+                f"User '{user_id}' is not a confirmer of workspace '{ws}'"
+            )
+        if not target_id:
+            raise ValueError("需要指定保留的 target_id(规范 id)")
+        target = self._object_dao.get_confirmed(target_id, ws)
+        if not target:
+            raise ValueError(f"target 对象 {target_id} 无已确认版本")
+        deprecated: List[dict] = []
+        for dup_id in duplicate_ids or []:
+            if dup_id == target_id:
+                continue
+            confirmed = self._object_dao.get_confirmed(dup_id, ws)
+            if not confirmed:
+                continue
+            self._object_dao.update_status(
+                dup_id, confirmed.version, ws, STATUS_DEPRECATED
+            )
+            invalidated = self._cache_dao.invalidate_referencing(dup_id, ws)
+            deprecated.append(
+                {"id": dup_id, "version": confirmed.version, "cache_invalidated": invalidated}
+            )
+        self._oplog_dao.append(
+            "merge_concepts",
+            ws,
+            {
+                "target": target_id,
+                "deprecated": deprecated,
+                "by": user_id,
+                "reason": reason,
+            },
+        )
+        return {
+            "workspace_id": ws,
+            "target": target_id,
+            "deprecated": deprecated,
+            "deprecated_count": len(deprecated),
+        }
+
     # -------------------------------------------------------------------- reads
     def inbox(
         self,
@@ -586,15 +742,26 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         page: int = 1,
         page_size: int = 20,
         include_view: bool = False,
+        only: Optional[str] = None,
     ) -> SemanticObjectListVO:
-        """Confirmation inbox: latest proposed versions."""
+        """Confirmation inbox: latest proposed versions.
+
+        ``only`` 可筛选分桶："new" 只看全新候选、"revision" 只看已确认概念的
+        待确认修订；缺省返回全部(每项带 ``bucket`` 标记，前端据此分离，不再把
+        已确认概念当未确认展示)。
+        """
+        ws = self._ws(workspace_id)
         result = self._object_dao.list_latest(
-            workspace_id=self._ws(workspace_id),
+            workspace_id=ws,
             obj_type=obj_type,
             status=STATUS_PROPOSED,
             page=page,
             page_size=page_size,
         )
+        self._tag_buckets(result, ws)
+        if only:
+            result.items = [it for it in (result.items or []) if it.bucket == only]
+            result.total_count = len(result.items)
         return self._attach_views(result, "brief") if include_view else result
 
     def list_objects(
@@ -607,15 +774,38 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         page_size: int = 20,
         include_view: bool = False,
     ) -> SemanticObjectListVO:
+        ws = self._ws(workspace_id)
         result = self._object_dao.list_latest(
-            workspace_id=self._ws(workspace_id),
+            workspace_id=ws,
             obj_type=obj_type,
             status=status,
             keyword=keyword,
             page=page,
             page_size=page_size,
         )
+        self._tag_buckets(result, ws)
         return self._attach_views(result, "brief") if include_view else result
+
+    def _tag_buckets(self, list_vo: SemanticObjectListVO, ws: str) -> None:
+        """为列表各项打业务分桶 bucket（new/revision/confirmed，读时派生）。
+
+        revision 判定：该对象的 id 在已确认目录存在，则它是一条"已确认概念的
+        待确认修订"（supersedes 通常指向已确认版本），而不是"未确认新对象"。
+        """
+        confirmed_ids: set = set()
+        try:
+            for vo in self._object_dao.list_confirmed(ws):
+                confirmed_ids.add(vo.id)
+        except Exception:  # noqa: BLE001
+            pass
+        for item in list_vo.items or []:
+            if item.status == STATUS_CONFIRMED:
+                item.bucket = "confirmed"
+            elif item.id in confirmed_ids:
+                item.bucket = "revision"
+            else:
+                item.bucket = "new"
+        return list_vo
 
     def get_object(
         self, object_id: str, workspace_id: Optional[str] = None

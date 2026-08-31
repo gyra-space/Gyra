@@ -4439,6 +4439,9 @@ class AgentChat(BaseComponent, ABC):
             task: asyncio.Task 实例
         """
         self._running_tasks[session_id] = task
+        # 兜底注销:agent 后台 task 跑完(正常/异常/被取消)时自动从注册表移除,
+        # 避免 SSE 断流后注册项永久残留导致内存泄漏(此前依赖 stop_chat 手动清理)。
+        task.add_done_callback(lambda _t: self._running_tasks.pop(session_id, None))
         logger.info(f"Registered running task for session {session_id}")
 
     def unregister_running_task(self, session_id: str):

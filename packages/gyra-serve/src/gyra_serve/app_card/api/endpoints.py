@@ -3,7 +3,7 @@ import asyncio
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security.http import HTTPAuthorizationCredentials, HTTPBearer
 
 from gyra.component import SystemApp
@@ -17,7 +17,7 @@ from .schemas import (
 )
 from ..config import ServeConfig
 from ..service.service import APP_CARD_SERVICE_COMPONENT_NAME, AppCardService
-from ..sql_runtime import AppCardBusyError, run_bounded
+from ..sql_runtime import AppCardBusyError, run_bounded, run_bounded_disconnect_aware
 
 router = APIRouter()
 global_system_app: Optional[SystemApp] = None
@@ -113,15 +113,19 @@ async def update_app_card(
 @router.post("/app_cards/preview/invoke", response_model=Result,
              dependencies=[Depends(check_api_key), Depends(require_space("space.task.view"))])
 async def preview_invoke_app_card(
-    request: AppCardPreviewInvokeRequest, service: AppCardService = Depends(get_service),
+    request: AppCardPreviewInvokeRequest,
+    http_request: Request,
+    service: AppCardService = Depends(get_service),
 ) -> Result:
     """开发期预览取数: 用编辑器里(未落库)的查询契约走运行期 dispatch,
     便于「JSON 写完后先看真实取数效果, 再导入落库」。"""
     try:
         req = AppCardInvokeRequest(op=request.op, params=request.params, query_key=request.query_key)
-        # 取数走专用有界线程池: 并发+排队满时快速失败, 不挤占全局线程池
+        # 取数走专用有界线程池: 并发+排队满时快速失败, 不挤占全局线程池;
+        # 断连感知: 客户端关页后立即释放槽位, 不再干等池内 SQL 跑完。
         return Result.succ(
-            await run_bounded(
+            await run_bounded_disconnect_aware(
+                http_request,
                 service.preview_invoke, request.workspace_id, request.queries or [], req
             )
         )
@@ -191,12 +195,15 @@ async def get_app_card_share_render(
 async def invoke_app_card_share(
     card_id: int,
     request: AppCardInvokeRequest,
+    http_request: Request,
     token: str = Query(...),
     service: AppCardService = Depends(get_service),
 ) -> Result:
     """匿名分享: 凭分享令牌走统一 invoke 协议取数(无需登录)。"""
     try:
-        result = await run_bounded(service.invoke_anonymous, card_id, token, request)
+        result = await run_bounded_disconnect_aware(
+            http_request, service.invoke_anonymous, card_id, token, request
+        )
         return Result.succ(result)
     except AppCardBusyError as e:
         logger.warning("app_card share invoke busy: %s", e)
@@ -229,13 +236,16 @@ async def get_app_card_login_render(
 async def invoke_app_card_login_share(
     card_id: int,
     request: AppCardInvokeRequest,
+    http_request: Request,
     service: AppCardService = Depends(get_service),
     user: UserRequest = Depends(get_user_from_headers),
 ) -> Result:
     """登录分享: 已登录用户凭卡片 id 走统一 invoke 协议取数(受卡片查看权限约束)。"""
     try:
         return Result.succ(
-            await run_bounded(service.invoke_login, card_id, request, user)
+            await run_bounded_disconnect_aware(
+                http_request, service.invoke_login, card_id, request, user
+            )
         )
     except AppCardBusyError as e:
         logger.warning("app_card login share invoke busy: %s", e)
@@ -253,15 +263,17 @@ async def invoke_app_card_login_share(
 async def invoke_app_card(
     card_id: int,
     request: AppCardInvokeRequest,
+    http_request: Request,
     workspace_id: int = Query(...),
     service: AppCardService = Depends(get_service),
     user: UserRequest = Depends(get_user_from_headers),
 ) -> Result:
     try:
         # 取数是同步阻塞代码(SQLAlchemy), 放专用有界线程池执行: 既不阻塞事件循环,
-        # 又用并发+排队上限防慢 SQL 把服务拖死(超限快速失败)
-        result = await run_bounded(
-            service.invoke, card_id, workspace_id, request, user
+        # 又用并发+排队上限防慢 SQL 把服务拖死(超限快速失败);
+        # 断连感知: 客户端关页后立即释放槽位, 不再干等池内 SQL 跑完。
+        result = await run_bounded_disconnect_aware(
+            http_request, service.invoke, card_id, workspace_id, request, user
         )
         return Result.succ(result)
     except AppCardBusyError as e:
