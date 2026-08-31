@@ -689,7 +689,14 @@ class RDBMSConnector(BaseConnector):
 
                     elif self.dialect == "oracle":
                         # Oracle: Use call_timeout on raw oracledb connection
+                        # Note: call_timeout requires Oracle Client 18.1+, skip on 11g
                         try:
+                            # Check if we're on Oracle 11g (client 11.2) which doesn't support call_timeout
+                            from gyra_ext.datasource.rdbms.conn_oracle import OracleConnector
+                            if OracleConnector._using_thick_mode and OracleConnector._oracle_version and OracleConnector._oracle_version < (12, 1):
+                                logger.info("Oracle 11g detected, skipping call_timeout (requires Client 18.1+)")
+                                return _execute_query(session, sql)
+                            
                             raw_conn = (
                                 session.connection().connection.dbapi_connection
                             )
