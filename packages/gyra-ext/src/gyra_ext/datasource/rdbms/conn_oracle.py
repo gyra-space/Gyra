@@ -360,6 +360,13 @@ class OracleConnector(RDBMSConnector):
             if not _init_thick_mode(oracle_client_lib):
                 raise ValueError("Thick mode init failed. Install Instant Client.")
             cls._using_thick_mode = True
+            # Also detect Oracle version for arraysize workaround
+            ok, ver, err = _test_connection(host, port, user, pwd, svc, use_thick=True, lib_dir=oracle_client_lib, is_sid=is_sid_param)
+            if ok:
+                cls._oracle_version = _parse_version(ver)
+                logger.info(f"Force thick mode OK, Oracle version: {ver}")
+            else:
+                logger.warning(f"Force thick mode connection test failed: {err}, version detection skipped")
         elif force_thick_mode is None and auto_detect:
             # Auto detect version and switch to thick mode if needed
             # IMPORTANT: Try thick mode FIRST for older Oracle versions

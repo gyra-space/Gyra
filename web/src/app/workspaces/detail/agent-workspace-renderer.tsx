@@ -50,7 +50,6 @@ function UserBubble({
   attachments,
   avatarUrl,
   name,
-  onAttachmentsClick,
 }: {
   text: string;
   attachments?: WorkspaceUserAttachment[] | null;
@@ -92,17 +91,6 @@ function UserBubble({
                 <span className="ws-step-user__attachment-name">{a.name}</span>
               </a>
             ))}
-            {onAttachmentsClick && (
-              <button
-                type="button"
-                className="ws-step-user__attachment-jump"
-                onClick={onAttachmentsClick}
-                title="跳转到右侧任务文件"
-              >
-                <FolderOpenOutlined />
-                <span>查看任务文件</span>
-              </button>
-            )}
           </div>
         )}
       </div>

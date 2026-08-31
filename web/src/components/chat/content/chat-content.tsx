@@ -14,7 +14,6 @@ import {
   CloseOutlined,
   CopyOutlined,
   FileOutlined,
-  FolderOpenOutlined,
   LoadingOutlined,
 } from "@ant-design/icons";
 import { GPTVis } from "@antv/gpt-vis";
@@ -210,7 +209,7 @@ const ChatContent: React.FC<{
   onAttachmentsClick?: () => void;
   messages: any[];
   compact?: boolean;
-}> = ({ content, onLinkClick, onAttachmentsClick, messages, compact }) => {
+}> = ({ content, onLinkClick, messages, compact }) => {
   const { t } = useTranslation();
   const { context, role, thinking } = content;
   const isRobot = useMemo(() => role === "view", [role]);
@@ -421,7 +420,7 @@ const ChatContent: React.FC<{
                     {preprocessLaTeX(formatMarkdownVal(value))}
                   </GPTVis>
                 </CollapsibleUserMessage>
-                {/* 用户上传附件(历史回显):文件链接 + 查看任务文件入口 */}
+                {/* 用户上传附件(历史回显):文件链接 */}
                 {Array.isArray(content?.attachments) && content.attachments.length > 0 && (
                   <div className="mt-2 space-y-1">
                     {content.attachments.map((a, i) => (
@@ -437,17 +436,6 @@ const ChatContent: React.FC<{
                         <span className="truncate">{a.name}</span>
                       </a>
                     ))}
-                    {onAttachmentsClick && (
-                      <button
-                        type="button"
-                        className="flex items-center gap-1 text-[11px] text-[#8a92a6] hover:text-[#4f46e5] transition-colors mt-1"
-                        onClick={onAttachmentsClick}
-                        title="跳转到右侧任务文件"
-                      >
-                        <FolderOpenOutlined className="text-[10px]" />
-                        <span>查看任务文件</span>
-                      </button>
-                    )}
                   </div>
                 )}
               </div>
