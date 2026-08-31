@@ -751,10 +751,13 @@ class RDBMSConnector(BaseConnector):
                                 text("SET SESSION ob_query_timeout = 10000000")
                             )  # Reset to default 10s
                         elif self.dialect == "oracle":
-                            raw_conn = (
-                                session.connection().connection.dbapi_connection
-                            )
-                            raw_conn.call_timeout = 0
+                            # Oracle 11g (Client 11.2) doesn't support call_timeout
+                            from gyra_ext.datasource.rdbms.conn_oracle import OracleConnector
+                            if not (OracleConnector._using_thick_mode and OracleConnector._oracle_version and OracleConnector._oracle_version < (12, 1)):
+                                raw_conn = (
+                                    session.connection().connection.dbapi_connection
+                                )
+                                raw_conn.call_timeout = 0
                         # MSSQL and DuckDB don't need reset as timeout is handled at
                         # execution level
                     except Exception as reset_error:
