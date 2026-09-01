@@ -15,6 +15,7 @@ Agent 经 ``AgentResource(type="ecp", value={"workspace_id": ...})`` 绑定。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, List, Optional
 
@@ -107,8 +108,10 @@ class ECPCapability(Capability):
         try:
             from gyra_serve.ecp.service.catalog import build_catalog_text
 
-            self._catalog_text = build_catalog_text(
-                self._workspace_id, max_objects=self._resolve_catalog_threshold()
+            self._catalog_text = await asyncio.to_thread(
+                build_catalog_text,
+                self._workspace_id,
+                max_objects=self._resolve_catalog_threshold(),
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -121,9 +124,13 @@ class ECPCapability(Capability):
                 managed_db_datasource_ids,
             )
 
-            self._managed_assets_text = build_managed_assets_text(self._workspace_id)
+            self._managed_assets_text = await asyncio.to_thread(
+                build_managed_assets_text, self._workspace_id
+            )
             self._has_managed_db = bool(
-                managed_db_datasource_ids({self._workspace_id})
+                await asyncio.to_thread(
+                    managed_db_datasource_ids, {self._workspace_id}
+                )
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(

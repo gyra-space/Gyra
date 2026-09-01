@@ -5,6 +5,7 @@ catalog browsing, version history, confirmer management and proposal
 generation (DB asset path).
 """
 
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -420,7 +421,9 @@ async def debug_preview(
     """
     from ..service.executor import DocBindingExecutor
 
-    obj = service.get_version(object_id, version, request.workspace_id)
+    obj = await asyncio.to_thread(
+        service.get_version, object_id, version, request.workspace_id
+    )
     if not obj:
         return Result.failed(msg=f"对象 {object_id}@v{version} 不存在")
     try:
@@ -429,7 +432,8 @@ async def debug_preview(
                 object_id, version, workspace_id=request.workspace_id
             )
         else:
-            vo = service.preview_query(
+            vo = await asyncio.to_thread(
+                service.preview_query,
                 object_id=object_id,
                 version=version,
                 workspace_id=request.workspace_id,

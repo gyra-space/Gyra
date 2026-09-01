@@ -1124,7 +1124,7 @@ async def get_verbat(
 async def get_ecp_catalog(workspace_id: Optional[str] = None, **kwargs) -> str:
     from ..service.catalog import BEHAVIOR_GUIDE, build_catalog_text
 
-    catalog = build_catalog_text(_ws(workspace_id))
+    catalog = await asyncio.to_thread(build_catalog_text, _ws(workspace_id))
     if not catalog:
         return "（语义目录为空，暂无已确认对象）\n\n" + BEHAVIOR_GUIDE
     return catalog + "\n\n" + BEHAVIOR_GUIDE
@@ -1200,7 +1200,8 @@ async def propose_semantic(
     ws = _ws(workspace_id)
     origin = ORIGIN_MISS_LEARN if miss_ref else ORIGIN_AGENT
     try:
-        vo = _service().propose(
+        vo = await asyncio.to_thread(
+            _service().propose,
             object_id=object_id,
             obj_type=obj_type,
             payload=payload,

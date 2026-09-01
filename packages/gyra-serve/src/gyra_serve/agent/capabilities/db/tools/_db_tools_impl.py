@@ -350,7 +350,9 @@ async def get_table_spec(
                 )
 
                 link_service = SchemaLinkService()
-                recommendations = link_service.suggest_tables(ds_id, question)
+                recommendations = await asyncio.to_thread(
+                    link_service.suggest_tables, ds_id, question
+                )
                 if recommendations:
                     # Format recommendations header
                     rec_lines = ["Recommended tables based on your question:"]
@@ -370,9 +372,12 @@ async def get_table_spec(
 
                     # Get specs for recommended tables
                     rec_names = [r.table_name for r in recommendations]
-                    if spec_service and spec_service.has_spec(ds_id):
-                        specs = spec_service.format_table_specs_for_prompt(
-                            ds_id, rec_names
+                    if spec_service and await asyncio.to_thread(
+                        spec_service.has_spec, ds_id
+                    ):
+                        specs = await asyncio.to_thread(
+                            spec_service.format_table_specs_for_prompt,
+                            ds_id, rec_names,
                         )
                         if specs:
                             return rec_header + specs
@@ -446,8 +451,12 @@ async def get_table_spec(
             return "Error: No table names provided."
 
         # Try spec-based retrieval
-        if ds_id and spec_service and spec_service.has_spec(ds_id):
-            result = spec_service.format_table_specs_for_prompt(ds_id, names)
+        if ds_id and spec_service and await asyncio.to_thread(
+            spec_service.has_spec, ds_id
+        ):
+            result = await asyncio.to_thread(
+                spec_service.format_table_specs_for_prompt, ds_id, names
+            )
             if result:
                 return result
 
@@ -603,7 +612,8 @@ async def execute_sql(
 
                 provider = RbacPermissionProvider(user=user_request)
                 guard = get_sql_guard()
-                check_result = guard.check(
+                check_result = await asyncio.to_thread(
+                    guard.check,
                     sql,
                     user_id=user_request.user_id,
                     datasource_id=ds_id,
@@ -651,7 +661,7 @@ async def execute_sql(
         db_version = None
         if hasattr(connector, 'get_db_version'):
             try:
-                db_version = connector.get_db_version()
+                db_version = await asyncio.to_thread(connector.get_db_version)
             except Exception as e:
                 logger.debug(f"Failed to get db version: {e}")
 
@@ -1559,12 +1569,14 @@ async def list_tables(
 
                 spec_service = DbSpecService()
 
-                if spec_service.has_spec(ds_id):
-                    stats = spec_service.get_db_stats(ds_id)
+                if await asyncio.to_thread(spec_service.has_spec, ds_id):
+                    stats = await asyncio.to_thread(spec_service.get_db_stats, ds_id)
 
                     # Build group_name mapping from db_spec.spec_content
                     # because table_spec.group_name may not be updated after grouping
-                    db_spec = spec_service.get_db_spec(ds_id)
+                    db_spec = await asyncio.to_thread(
+                        spec_service.get_db_spec, ds_id
+                    )
                     group_mapping = {}  # table_name -> group_name
                     if db_spec and db_spec.get("spec_content"):
                         try:
@@ -1576,7 +1588,9 @@ async def list_tables(
                         except (json.JSONDecodeError, TypeError):
                             pass
 
-                    all_specs = spec_service.get_all_table_specs(ds_id)
+                    all_specs = await asyncio.to_thread(
+                        spec_service.get_all_table_specs, ds_id
+                    )
 
                     # Filter by group if specified
                     if group:
@@ -1835,7 +1849,9 @@ async def search_tables(
             all_recommendations = {}
 
             for query in search_queries:
-                recs = link_service.suggest_tables(ds_id, query, max_results=max_results)
+                recs = await asyncio.to_thread(
+                    link_service.suggest_tables, ds_id, query, max_results=max_results
+                )
                 for rec in recs:
                     if rec.table_name in all_recommendations:
                         # Merge: add score and reason
@@ -1937,7 +1953,7 @@ async def _search_tables_with_llm(
 
         spec_service = DbSpecService()
 
-        if not spec_service.has_spec(ds_id):
+        if not await asyncio.to_thread(spec_service.has_spec, ds_id):
             return (
                 "**LLM搜索模式**\n\n"
                 f"Error: Database spec not available for '{db_name}'.\n"
@@ -1946,7 +1962,9 @@ async def _search_tables_with_llm(
             )
 
         # Get all table info
-        all_specs = spec_service.get_all_table_specs(ds_id)
+        all_specs = await asyncio.to_thread(
+            spec_service.get_all_table_specs, ds_id
+        )
 
         if not all_specs:
             return f"No tables found in database '{db_name}'."
