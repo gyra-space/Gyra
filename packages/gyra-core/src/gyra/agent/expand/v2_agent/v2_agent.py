@@ -665,6 +665,9 @@ class V2Agent(ReActMasterAgent):
                     ),
                     # 子 agent 终态同步进 harness.jobs（seam 统一查询）
                     job_registry=job_registry,
+                    # 透传主引擎工具上下文工厂：子 agent 工具执行的 ToolContext
+                    # 同样注入 user_request 等资源（RBAC 等 fail-closed 工具依赖）。
+                    tool_context_factory=self._v2_tool_context_factory,
                 )
                 spawn_subagent_tool = SpawnSubagentTool(subagent_runtime)
                 tool_resolver.register_tool(

@@ -8,7 +8,7 @@ corresponding specialized provider.
 """
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Set
 
 from gyra.agent.util.media_gen.base import (
     MediaGenProvider,
@@ -51,6 +51,12 @@ class DashScopeMultimediaProvider(MediaGenProvider):
 
     def supported_video_models(self) -> List[str]:
         return self._video.supported_video_models()
+
+    def supported_inputs(self, model: str, kind: str = "") -> Set[str]:
+        """百炼合并协议：按能力(kind)路由到对应内层 provider 的能力声明。"""
+        if kind == "image":
+            return self._image.supported_inputs(model, kind)
+        return self._video.supported_inputs(model, kind)
 
     async def generate_image(
         self, prompt: str, model: str, **kwargs: Any

@@ -1,4 +1,4 @@
-import { buildSceneAgentSendData, type SceneAgentSendPayload } from '../scene-agent-send-data';
+import { buildSceneAgentSendData, buildMediaImageInputs, type SceneAgentSendPayload } from '../scene-agent-send-data';
 import { dedupOptimisticUser } from '../dedup-optimistic-user';
 import type { WorkspaceExecutionStep } from '../agent-workspace-types';
 import { parseSceneAgentWorkspaceString } from '../parse-scene-agent-workspace-string';
@@ -102,6 +102,82 @@ describe('buildSceneAgentSendData', () => {
     const payload: SceneAgentSendPayload = { text: '你好' };
     const data = buildSceneAgentSendData(payload, { workspaceId: 9 }, 'c1');
     expect(data.ext_info).not.toHaveProperty('focus_artifact_id');
+  });
+});
+
+describe('buildMediaImageInputs', () => {
+  test('按角色映射为首帧/尾帧/参考图,并返回标注明细', () => {
+    const resources = [
+      { type: 'image_url', image_url: { url: 'https://a/first.png', file_name: 'f.png' }, image_role: 'first_frame' as const },
+      { type: 'image_url', image_url: { url: 'https://a/last.png', file_name: 'l.png' }, image_role: 'last_frame' as const },
+      { type: 'image_url', image_url: { url: 'https://a/ref1.png', file_name: 'r1.png' }, image_role: 'reference' as const },
+      { type: 'image_url', image_url: { url: 'https://a/ref2.png', file_name: 'r2.png' }, image_role: 'reference' as const },
+      { type: 'image_url', image_url: { url: 'https://a/auto.png', file_name: 'a.png' } },
+    ];
+    const out = buildMediaImageInputs(resources as any);
+    expect(out.image_url).toBe('https://a/first.png');
+    expect(out.image_url_last).toBe('https://a/last.png');
+    expect(out.reference_images).toEqual(['https://a/ref1.png', 'https://a/ref2.png']);
+    // auto(未标注)不参与;明细含全部已标注图片
+    expect(out.image_refs).toHaveLength(4);
+    expect(out.image_refs?.map((r) => r.role)).toEqual(['first_frame', 'last_frame', 'reference', 'reference']);
+  });
+
+  test('无图片或全为未标注(auto) → 空对象', () => {
+    expect(buildMediaImageInputs([])).toEqual({});
+    expect(buildMediaImageInputs([{ type: 'file_url', file_url: { url: 'u', file_name: 'f.txt' } }] as any)).toEqual({});
+    expect(buildMediaImageInputs([{ type: 'image_url', image_url: { url: 'u', file_name: 'f.png' } }] as any)).toEqual({});
+  });
+
+  test('本地服务相对路径预览地址解析为绝对 URL', () => {
+    const out = buildMediaImageInputs([
+      { type: 'image_url', image_url: { url: '/api/v2/serve/file/files/x', file_name: 'x.png' }, image_role: 'first_frame' as const },
+    ] as any);
+    // 无 NEXT_PUBLIC_API_BASE_URL 时,保持相对路径;有环境变量时补全为绝对
+    expect(out.image_url).toBe(`${process.env.NEXT_PUBLIC_API_BASE_URL || ''}/api/v2/serve/file/files/x`);
+  });
+});
+
+describe('buildSceneAgentSendData 图片角色标注', () => {
+  test('标注角色合并进单条 media chat_in_param,覆盖用户面板同类字段', () => {
+    const resources = [
+      { type: 'image_url', image_url: { url: 'https://a/day.png', file_name: 'day.png' }, image_role: 'first_frame' as const },
+      { type: 'image_url', image_url: { url: 'https://a/night.png', file_name: 'night.png' }, image_role: 'last_frame' as const },
+    ];
+    const payload: SceneAgentSendPayload = { text: '从白天到夜晚', resources, media: { kind: 'video', duration: 5 } };
+    const data = buildSceneAgentSendData(payload, { workspaceId: 9 }, 'c1');
+
+    const mediaParam = (data.chat_in_params || []).find((p) => p.param_type === 'media');
+    expect(mediaParam).toBeDefined();
+    // 只输出一条 media,且合并后含确定性透传字段
+    expect((data.chat_in_params || []).filter((p) => p.param_type === 'media')).toHaveLength(1);
+    const val = JSON.parse(mediaParam!.param_value);
+    expect(val.kind).toBe('video');
+    expect(val.duration).toBe(5);
+    expect(val.image_url).toBe('https://a/day.png');
+    expect(val.image_url_last).toBe('https://a/night.png');
+    expect(val.image_refs).toHaveLength(2);
+  });
+
+  test('仅标注角色、无面板设置时,默认 kind=video 并透传', () => {
+    const resources = [
+      { type: 'image_url', image_url: { url: 'https://a/ref.png', file_name: 'ref.png' }, image_role: 'reference' as const },
+    ];
+    const payload: SceneAgentSendPayload = { text: '参考这个图生成视频', resources };
+    const data = buildSceneAgentSendData(payload, { workspaceId: 9 }, 'c1');
+
+    const mediaParam = (data.chat_in_params || []).find((p) => p.param_type === 'media');
+    expect(mediaParam).toBeDefined();
+    const val = JSON.parse(mediaParam!.param_value);
+    expect(val.kind).toBe('video');
+    expect(val.reference_images).toEqual(['https://a/ref.png']);
+  });
+
+  test('无图片角色标注时不产生额外的 media 参数', () => {
+    const resources = [{ type: 'file_url', file_url: { url: 'u', file_name: 'f.txt' } }];
+    const payload: SceneAgentSendPayload = { text: '你好', resources, model: 'gpt-4' };
+    const data = buildSceneAgentSendData(payload, { workspaceId: 9 }, 'c1');
+    expect((data.chat_in_params || []).filter((p) => p.param_type === 'media')).toHaveLength(0);
   });
 });
 

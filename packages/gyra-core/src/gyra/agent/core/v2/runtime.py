@@ -22,6 +22,7 @@ from gyra.agent.tools.context import ToolContext
 if TYPE_CHECKING:
     from gyra.agent.core.v2.subagent_runtime import SubAgentRuntime
     from gyra.agent.core.v2.harness.context import HarnessContext
+    from gyra.agent.core.v2.tool_context_factory import ToolContextFactory
 
 
 ThinkingFn = Callable[[dict], AsyncGenerator[ThinkingChunk, None]]
@@ -485,6 +486,7 @@ async def run_step(
     subagent_runtime: Optional["SubAgentRuntime"] = None,
     request_meta: Optional[dict] = None,
     event_stream: Optional[EventStream] = None,
+    tool_context_factory: Optional["ToolContextFactory"] = None,
     harness: Optional["HarnessContext"] = None,
 ) -> AsyncGenerator[StepEvent, None]:
     """跑一个 step，yield 所有 StepEvent。每个事件持久化后再 yield。
@@ -492,9 +494,14 @@ async def run_step(
     event_stream：外部注入的共享 EventStream（P0 插件订阅挂载点）；
     缺省时按 state_store 新建（无订阅者，行为与旧版一致）。
 
+    tool_context_factory：V2 工具上下文工厂，构造每个工具执行的 ToolContext
+    （注入 user_request / agent / sandbox_client / agent_file_system 等资源，
+    RBAC 等 fail-closed 工具依赖其中的 user_request 做身份校验）。
+    缺省时回退到 harness.tool_context_factory；两者都空则工具拿到裸 ToolContext。
+
     harness：统一服务总线。提供时从 harness 解包未显式传入的依赖
-    （storage / events / approval / subagents / thinking / acting），
-    显式参数优先——向后兼容旧调用方式。
+    （storage / events / approval / subagents / thinking / acting /
+    tool_context_factory），显式参数优先——向后兼容旧调用方式。
     """
     # HarnessContext 解包：显式参数优先于 harness（事件流绑定一致性见 helper）
     deps = _resolve_harness_deps(
@@ -505,6 +512,7 @@ async def run_step(
         subagent_runtime=subagent_runtime,
         thinking_fn=thinking_fn,
         acting_fn=acting_fn,
+        tool_context_factory=tool_context_factory,
     )
     state_store = deps["state_store"]
     event_stream = deps["event_stream"]

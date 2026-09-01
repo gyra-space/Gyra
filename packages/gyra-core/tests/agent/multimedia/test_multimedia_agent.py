@@ -226,11 +226,24 @@ async def test_async_video_submission_returns_pending(
 
 
 @pytest.mark.asyncio
-async def test_model_resolution_priority(config):
-    """模型选择优先级：显式 › config 默认 › 系统默认 › 首个可用。"""
+async def test_model_resolution_priority(config, monkeypatch):
+    """模型选择优先级：可用显式 › 屏蔽非法显式(文本模型)回退默认 › config 默认。"""
+    from gyra.agent.util.media_gen.provider_registry import MediaGenProviderRegistry
+
+    monkeypatch.setattr(
+        MediaGenProviderRegistry,
+        "get_usable_model_names",
+        lambda cap: {
+            "image": ["img-model", "img-explicit"],
+            "video": ["vid-model"],
+        }[cap],
+    )
+
     executor = MultimediaExecutor(config)
-    # 显式最高
-    assert executor._resolve_model(KIND_IMAGE, "explicit") == "explicit"
+    # 可用显式模型最高
+    assert executor._resolve_model(KIND_IMAGE, "img-explicit") == "img-explicit"
+    # 非法显式（文本模型）被屏蔽，回退 config 默认模型
+    assert executor._resolve_model(KIND_IMAGE, "qwen3.6-plus") == "img-model"
     # config 默认
     assert executor._resolve_model(KIND_IMAGE, "") == "img-model"
     assert executor._resolve_model(KIND_VIDEO, "") == "vid-model"

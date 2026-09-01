@@ -11,7 +11,7 @@ API docs: https://www.volcengine.com/docs/82379/1520757
 
 import asyncio
 import logging
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Set
 
 from gyra.agent.util.media_gen.base import (
     MediaGenProvider,
@@ -131,6 +131,14 @@ class SeedanceVideoProvider(MediaGenProvider):
     def supported_video_models(self) -> List[str]:
         return []
 
+    def supported_inputs(self, model: str, kind: str = "") -> Set[str]:
+        """Seedance 支持首帧(图生视频 i2v)与首尾帧生视频；fast 变体不支持首尾帧。
+        参考图(r2v)不支持 —— 传入 reference_images 会被显式拒绝，而非静默忽略。"""
+        supported = {"image_url"}
+        if "fast" not in (model or "").lower():
+            supported.add("image_url_last")
+        return supported
+
     async def generate_image(
         self,
         prompt: str,
@@ -148,7 +156,6 @@ class SeedanceVideoProvider(MediaGenProvider):
         **kwargs: Any,
     ) -> MediaGenResult:
         """Generate a video using Volcano Engine Seedance API.
-
         Args:
             prompt: Text description of the video (supports Chinese & English).
             model: Model to use (doubao-seedance-2-0-250428, doubao-seedance-1-5-pro-251215, etc.).
@@ -167,6 +174,7 @@ class SeedanceVideoProvider(MediaGenProvider):
                 - image_url_last: Last frame image URL for first-last-frame video generation.
                 - timeout: Max wait time in seconds (default 600).
         """
+        self.validate_inputs(model, "video", kwargs)
         submission = await self.submit_video(prompt, model, **kwargs)
         try:
             return await submission.complete()
@@ -189,6 +197,7 @@ class SeedanceVideoProvider(MediaGenProvider):
         params) surface now. Polling + download is deferred to
         ``submission.complete()`` for background execution via AsyncTaskManager.
         """
+        self.validate_inputs(model, "video", kwargs)
         try:
             import httpx
         except ImportError:

@@ -1,6 +1,6 @@
 "use client"
 import { apiInterceptors, getAppInfo, getChatHistory, getCompressionSegments, getDialogueList, newDialogue, queryChatStatus } from '@/client/api';
-import { ChartData, ChatHistoryResponse, CompressionSegmentVo, IChatDialogueSchema, UserChatContent } from '@/types/chat';
+import { ChartData, ChatHistoryResponse, CompressionSegmentVo, IChatDialogueMessageSchema, IChatDialogueSchema, UserChatContent } from '@/types/chat';
 import { IApp } from '@/types/app';
 import React, { forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useAsyncEffect, useDebounceFn, useRequest } from 'ahooks';
@@ -8,6 +8,7 @@ import useChat, { WorkspaceEvent } from '@/hooks/use-chat';
 import useChatPolling from '@/hooks/use-chat-polling';
 import ChatContentContainer from '@/components/chat/chat-content-container';
 import { appendErrorToContext } from '@/components/chat/chat-content-components/VisComponents/VisError';
+import { patchViewByOrder } from '@/utils/patch-round-view';
 import { getInitMessage, transformFileMarkDown, transformFileUrl } from '@/utils';
 import { STORAGE_INIT_MESSAGE_KET } from '@/utils/constants/storage';
 import { Flex, Layout, App } from 'antd';
@@ -388,6 +389,11 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
           }
         }
 
+        // 本轮(order.current)对应的 view 消息以 role+order 作为稳定锚点。
+        // 之前 SSE 各回调直接 setHistory([...tempHistory]) 用「整份本轮快照」回写,
+        // 多轮/并发(第二轮提问已插入 history)时会把第一轮报错覆盖/错位到第二轮问题之后。
+        // 改为只就地更新本轮 view 一条,避免跨轮互相覆盖,保证消息顺序稳定。
+        const roundOrder = order.current;
         const tempHistory: ChatHistoryResponse = [
           ...(initMessage && initMessage.id === chatId ? [] : history),
           {
@@ -406,8 +412,11 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
             thinking: true,
           },
         ];
-        const index = tempHistory.length - 1;
         setHistory([...tempHistory]);
+        // 只更新本轮 view 消息(以 role+roundOrder 定位),不整体覆盖 history。
+        const patchRoundView = (patch: (msg: IChatDialogueMessageSchema) => IChatDialogueMessageSchema) => {
+          setHistory(prev => patchViewByOrder(prev, roundOrder, patch));
+        };
         chat({
           data: {
             user_input: content,
@@ -442,13 +451,10 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
               }
               if (data?.incremental) {
                 // VisParser.update() 返回的是完整合并状态，直接替换而非追加
-                tempHistory[index].context = message;
-                tempHistory[index].thinking = false;
+                patchRoundView(msg => ({ ...msg, context: message, thinking: false }));
               } else {
-                tempHistory[index].context = message;
-                tempHistory[index].thinking = false;
+                patchRoundView(msg => ({ ...msg, context: message, thinking: false }));
               }
-              setHistory([...tempHistory]);
             }
           },
           onDock: (frame: DockFrame) => {
@@ -459,11 +465,12 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
             setSseActive(false);
             setReplyLoading(false);
             setCanAbort(false);
-            if (!tempHistory[index].context && tempHistory[index].thinking) {
-              tempHistory[index].context = '对话发生错误，请稍后重试';
-              tempHistory[index].thinking = false;
-              setHistory([...tempHistory]);
-            }
+            patchRoundView(msg => {
+              if (!msg.context && msg.thinking) {
+                return { ...msg, context: '对话发生错误，请稍后重试', thinking: false };
+              }
+              return msg;
+            });
             // 对话完成,刷新侧边栏历史会话列表(新会话/标题/状态变更即时可见)
             refreshGlobalDialogList?.();
             resolve();
@@ -472,11 +479,12 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
             setSseActive(false);
             setReplyLoading(false);
             setCanAbort(false);
-            if (!tempHistory[index].context && tempHistory[index].thinking) {
-              tempHistory[index].context = '对话发生错误，请稍后重试';
-              tempHistory[index].thinking = false;
-              setHistory([...tempHistory]);
-            }
+            patchRoundView(msg => {
+              if (!msg.context && msg.thinking) {
+                return { ...msg, context: '对话发生错误，请稍后重试', thinking: false };
+              }
+              return msg;
+            });
             resolve();
           },
           onError: message => {
@@ -484,28 +492,28 @@ const ChatSession = forwardRef<ChatSessionHandle, ChatSessionProps>(function Cha
             setReplyLoading(false);
             setCanAbort(false);
             // 保留已流式产出的内容,在末尾追加错误卡片展示原因
-            tempHistory[index].context = appendErrorToContext(tempHistory[index].context, message);
-            tempHistory[index].thinking = false;
-            setHistory([...tempHistory]);
+            patchRoundView(msg => ({ ...msg, context: appendErrorToContext(msg.context, message), thinking: false }));
             refreshGlobalDialogList?.();
             resolve();
           },
           onWorkspaceEvent: (event: WorkspaceEvent) => {
             props.onWorkspaceEvent?.(event);
             if (event.type === 'task_created') {
-              // Append to the same mutable tempHistory so the next onMessage
-              // chunk (which calls setHistory([...tempHistory])) does not
-              // drop the synthetic task_created card.
-              order.current += 1;
-              tempHistory.push({
-                role: 'view',
-                context: JSON.stringify({ type: 'task_created', payload: event.payload }),
-                order: order.current,
-                time_stamp: 0,
-                model_name: '',
-                thinking: false,
+              // 以独立顺序追加合成卡片(不基于本轮快照),避免后续 onMessage 丢弃
+              setHistory(prev => {
+                const lastOrder = prev.reduce((max, m) => Math.max(max, m.order || 0), 0);
+                return [
+                  ...prev,
+                  {
+                    role: 'view',
+                    context: JSON.stringify({ type: 'task_created', payload: event.payload }),
+                    order: lastOrder + 1,
+                    time_stamp: 0,
+                    model_name: '',
+                    thinking: false,
+                  },
+                ];
               });
-              setHistory([...tempHistory]);
             }
           },
         });

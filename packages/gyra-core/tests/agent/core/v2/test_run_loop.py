@@ -225,3 +225,43 @@ async def test_max_steps_no_double_turn_complete(store):
         pass
     turn_complete_calls = [c for c in hook_manager.trigger.call_args_list if c.args[0] == "turn_complete"]
     assert len(turn_complete_calls) == 1, f"Expected 1 turn_complete, got {len(turn_complete_calls)}"
+
+
+async def test_run_loop_forwards_tool_context_factory(store):
+    """回归：run_loop 必须把 tool_context_factory 透传给 run_step。
+
+    之前 tool_context_factory 只在 HarnessContext 里存在，run_loop → run_step
+    均未转发，导致工具执行的 ToolContext 是不带任何资源的裸上下文，
+    RBAC 等 fail-closed 工具拿不到 user_request 而误报"缺少用户上下文"。
+    """
+    from gyra.agent.core.v2.tool_call_types import V2ToolResult
+    from gyra.agent.core.v2.tool_context_factory import ToolContextFactory
+
+    marker = {"user_id": "admin", "roles": ["admin"]}
+    factory = ToolContextFactory(
+        agent_id="a1", conv_id="c1", user_request=marker,
+    )
+
+    captured = {}
+
+    async def thinking(input_):
+        yield {"tool_calls": [{"tool": "probe", "input": {}}]}
+
+    async def acting(tool_call, ctx):
+        captured["resource"] = ctx.get_resource("user_request")
+        captured["config"] = ctx.config.get("user_request")
+        return V2ToolResult.ok(output="ok", tool_name=tool_call.name)
+
+    async for _ in run_loop(
+        agent_id="a1", conv_id="c1",
+        input_={"prompt": "hi", "session_id": "s1"},
+        state_store=store,
+        thinking_fn=thinking,
+        acting_fn=acting,
+        tool_context_factory=factory,
+        max_steps=3,
+    ):
+        pass
+
+    assert captured["resource"] is marker, "工具上下文缺少 user_request 资源"
+    assert captured["config"] is marker, "工具上下文 config 缺少 user_request"

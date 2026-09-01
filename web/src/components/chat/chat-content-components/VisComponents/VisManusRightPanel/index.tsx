@@ -1,6 +1,6 @@
 'use client';
 
-import React, { FC, useMemo, useState, useEffect, useRef, useCallback } from 'react';
+import React, { FC, ReactNode, useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import classNames from 'classnames';
 import {
   LoadingOutlined,
@@ -20,6 +20,7 @@ import {
   FolderOpenOutlined,
   DownloadOutlined,
   EyeOutlined,
+  ExportOutlined,
   FilePdfOutlined,
   PrinterOutlined,
   LeftOutlined,
@@ -458,14 +459,12 @@ const ImageWithFallback: FC<{ url: string; fileName: string }> = ({ url, fileNam
   const [failed, setFailed] = useState(false);
   if (!url || failed) return <MediaErrorFallback fileName={fileName} icon="🖼️" url={url || null} />;
   return (
-    <div className="flex items-center justify-center p-6">
-      <img
-        src={url}
-        alt={fileName}
-        className="max-w-full max-h-[600px] rounded-lg shadow-sm"
-        onError={() => setFailed(true)}
-      />
-    </div>
+    <img
+      src={url}
+      alt={fileName}
+      className="max-w-full max-h-full rounded-xl object-contain"
+      onError={() => setFailed(true)}
+    />
   );
 };
 
@@ -474,17 +473,89 @@ const VideoWithFallback: FC<{ url: string; fileName: string }> = ({ url, fileNam
   const [failed, setFailed] = useState(false);
   if (!url || failed) return <MediaErrorFallback fileName={fileName} icon="🎬" url={url || null} />;
   return (
-    <div style={{ width: '100%' }}>
-      <video
-        src={url}
-        controls
-        preload="metadata"
-        style={{ width: '100%', borderRadius: '8px' }}
-        onError={() => setFailed(true)}
-      />
-    </div>
+    <video
+      src={url}
+      controls
+      preload="metadata"
+      className="max-w-full max-h-full rounded-xl object-contain"
+      onError={() => setFailed(true)}
+    />
   );
 };
+
+/** 媒体类型文案:输出 (类型 · 大小) 的次要信息行 */
+const mediaMetaText = (mime?: string, size?: number): string => {
+  const parts: string[] = [];
+  if (mime) parts.push(mime);
+  if (size && size > 0) parts.push(formatFileSize(size));
+  return parts.join(' · ');
+};
+
+/** 媒体呈现台:浅品牌雾面画布居中承载媒体,底部信息条承载元信息 + 操作。
+ *  把"观看"与"文件信息/操作"分层,媒体是主角,信息条是安静的配角。 */
+function MediaStage({
+  fileName,
+  mime,
+  size,
+  openUrl,
+  downloadUrl,
+  children,
+}: {
+  fileName: string;
+  mime?: string;
+  size?: number;
+  openUrl?: string | null;
+  downloadUrl?: string | null;
+  children: ReactNode;
+}) {
+  const meta = mediaMetaText(mime, size);
+  return (
+    <div className="flex flex-col min-h-full">
+      {/* 画布:媒体居中,浅雾面渐变背景使媒体从白板中"浮现" */}
+      <div
+        className="flex flex-1 items-center justify-center p-8"
+        style={{
+          background: 'linear-gradient(180deg, rgba(var(--brand-rgb), 0.06), rgba(var(--brand-rgb), 0.015))',
+        }}
+      >
+        {children}
+      </div>
+      {/* 底部信息条:左侧文件名/元信息,右侧操作 */}
+      <div className="flex items-center justify-between gap-3 border-t border-black/5 px-5 py-3">
+        <div className="min-w-0">
+          <div className="truncate text-[13px] font-medium text-ink-900">{fileName}</div>
+          {meta && <div className="mt-0.5 truncate text-[11px] text-ink-400">{meta}</div>}
+        </div>
+        <div className="flex flex-shrink-0 items-center gap-1">
+          {openUrl && (
+            <Tooltip title="新窗口打开">
+              <button
+                type="button"
+                aria-label="新窗口打开"
+                onClick={() => window.open(openUrl, '_blank')}
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-400 transition-colors hover:bg-black/5 hover:text-ink-700"
+              >
+                <ExportOutlined className="text-sm" />
+              </button>
+            </Tooltip>
+          )}
+          {downloadUrl && (
+            <Tooltip title="下载">
+              <a
+                href={downloadUrl}
+                download={fileName}
+                aria-label="下载"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-400 transition-colors hover:bg-black/5 hover:text-ink-700"
+              >
+                <DownloadOutlined className="text-sm" />
+              </a>
+            </Tooltip>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /** Deliverable content view — fetches remote content and renders inline */
 const DeliverableContentView: FC<{ file: ManusDeliverableFile }> = ({ file }) => {
@@ -571,7 +642,17 @@ const DeliverableContentView: FC<{ file: ManusDeliverableFile }> = ({ file }) =>
         </div>
       );
     case 'image':
-      return <ImageWithFallback url={resolvedUrl || content || ''} fileName={file_name} />;
+      return (
+        <MediaStage
+          fileName={file_name}
+          mime={file.mime_type}
+          size={file.file_size}
+          openUrl={resolvedUrl || null}
+          downloadUrl={resolvedUrl || transformFileUrl(download_url || '') || null}
+        >
+          <ImageWithFallback url={resolvedUrl || content || ''} fileName={file_name} />
+        </MediaStage>
+      );
     case 'pdf':
       return (
         <div className="h-full flex flex-col">
@@ -615,7 +696,17 @@ const DeliverableContentView: FC<{ file: ManusDeliverableFile }> = ({ file }) =>
         </div>
       );
     case 'video':
-      return <VideoWithFallback url={resolvedUrl || ''} fileName={file_name} />;
+      return (
+        <MediaStage
+          fileName={file_name}
+          mime={file.mime_type}
+          size={file.file_size}
+          openUrl={resolvedUrl || null}
+          downloadUrl={transformFileUrl(download_url || '') || resolvedUrl || null}
+        >
+          <VideoWithFallback url={resolvedUrl || ''} fileName={file_name} />
+        </MediaStage>
+      );
     default:
       return (
         <div className="flex items-center justify-center h-48 text-gray-400 text-sm">

@@ -96,6 +96,7 @@ class V2AgentRuntime:
         thinking_fn = deps["thinking_fn"]
         acting_fn = deps["acting_fn"]
         hook_manager = deps["hook_manager"]
+        tool_context_factory = deps["tool_context_factory"]
         if state_store is None:
             raise ValueError("state_store (or harness.storage) is required")
 
@@ -107,6 +108,7 @@ class V2AgentRuntime:
         self.permission_gate = permission_gate
         self.subagent_runtime = subagent_runtime
         self.hook_manager = hook_manager
+        self.tool_context_factory = tool_context_factory
         self.max_steps = max_steps
         self.user_id = user_id
         self.model_alias = model_alias
@@ -246,6 +248,7 @@ class V2AgentRuntime:
                 permission_gate=self.permission_gate,
                 subagent_runtime=self.subagent_runtime,
                 hook_manager=self.hook_manager,
+                tool_context_factory=self.tool_context_factory,
                 max_steps=self.max_steps,
                 user_id=self.user_id,
                 request_meta=request_meta,

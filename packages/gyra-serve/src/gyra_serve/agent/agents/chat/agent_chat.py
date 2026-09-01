@@ -185,6 +185,35 @@ def _build_media_chat_param_prompt(media_value: str) -> str:
             lines.append(f"- 视频时长(duration，秒)：{parsed['duration']}")
         if parsed.get("quality"):
             lines.append(f"- 质量(quality)：{parsed['quality']}")
+        # 图片角色标注（人工显式指定）→ 确定性透传给多媒体子 Agent 的图片输入字段。
+        # 命中即优先以人工标注为准（覆盖主 Agent 的自动判断）；未标注字段仍由主 Agent 决定。
+        if parsed.get("image_url"):
+            lines.append(f"- 首帧图片 URL(image_url)：{parsed['image_url']}（图生视频，作视频第一帧）")
+        if parsed.get("image_url_last"):
+            lines.append(f"- 尾帧图片 URL(image_url_last)：{parsed['image_url_last']}（首尾帧生视频，需与 image_url 同用）")
+        if parsed.get("reference_images"):
+            ref_list = parsed["reference_images"]
+            if isinstance(ref_list, list):
+                lines.append(
+                    f"- 参考图 URL 列表(reference_images)：{', '.join(str(u) for u in ref_list)}"
+                    "（参考生视频，prompt 用 [Image n] 指代）"
+                )
+        if parsed.get("image_refs") and isinstance(parsed["image_refs"], list):
+            for ref in parsed["image_refs"]:
+                if not isinstance(ref, dict):
+                    continue
+                _url = ref.get("url", "")
+                _role = ref.get("role", "auto")
+                _name = ref.get("name", "")
+                if _role in ("first_frame", "last_frame", "reference") and _url:
+                    _label = {
+                        "first_frame": "首帧",
+                        "last_frame": "尾帧",
+                        "reference": "参考图",
+                    }.get(_role, _role)
+                    lines.append(
+                        f"- 上传图片「{_name or _url}」的角色标注：{_label}（URL：{_url}）"
+                    )
         if not lines:
             return ""
         note = (
@@ -192,7 +221,10 @@ def _build_media_chat_param_prompt(media_value: str) -> str:
             "用户在本轮对话输入框设定了以下图片/视频生成参数。如果本次任务需要生成"
             "图片或视频（例如调用多媒体子 Agent），你必须把这些参数原样通过 "
             "Agent 工具的 media 字段传给多媒体子 Agent（子 Agent 未配置的字段"
-            "才会使用其默认值）：\n"
+            "才会使用其默认值）。其中 image_url/image_url_last/reference_images 为"
+            "用户显式标注的图片角色：首帧/尾帧/参考图，务必按标注对应到子 Agent 的"
+            "media.image_url / media.image_url_last / media.reference_images，不要自行更换"
+            "或猜测图片顺序：\n"
             + "\n".join(lines)
         )
         return note
@@ -3510,17 +3542,35 @@ class AgentChat(BaseComponent, ABC):
                     logger.info(
                         f"[SubAgentTakeover] skip subagent param in context building: {param.param_value}"
                     )
-                else:
-                    llm_context[param.param_type] = param.param_value
-                    if param.param_type == AppParamType.Model.value:
-                        logger.info("用户指定了模型，优先使用")
-                        # 多媒体 Agent 无 llm_config（使用媒体生成模型），跳过 LLM 模型覆盖
+                elif param.param_type == AppParamType.Model.value:
+                    logger.info("用户指定了模型，优先使用")
+                    # 文本 LLM 模型仅对 LLM Agent 生效。多媒体 Agent 使用媒体生成模型，
+                    # 若把该文本模型写进 llm_context["model"]，会被多媒体 Agent 当作媒体
+                    # 参数读取（agent.py thinking 读 ctx["model"]），导致把文本模型当
+                    # 图片/视频模型调用而报错。故对多媒体 Agent 屏蔽该覆盖。
+                    _is_multimedia_agent = False
+                    try:
+                        from gyra_serve.agent.file_io.file_type_config import (
+                            is_multimedia_agent,
+                        )
+
+                        _is_multimedia_agent = is_multimedia_agent(gpt_app=gpts_app)
+                    except Exception:  # noqa: BLE001
+                        _is_multimedia_agent = False
+                    if _is_multimedia_agent:
+                        logger.info(
+                            "多媒体 Agent 使用媒体生成模型，忽略输入框文本模型覆盖"
+                        )
+                    else:
+                        llm_context[param.param_type] = param.param_value
                         if gpts_app.llm_config is not None:
                             gpts_app.llm_config.llm_strategy_value = [
                                 param.param_value
                             ]
 
-                    elif param.param_type == "media":
+                else:
+                    llm_context[param.param_type] = param.param_value
+                    if param.param_type == "media":
                         # 多媒体生成参数（对话输入框设定的图片/视频参数）。
                         # JSON 字符串 → dict；图片尺寸档位名（720p/1080p/2k/4k）解析为具体像素。
                         media_value = param.param_value

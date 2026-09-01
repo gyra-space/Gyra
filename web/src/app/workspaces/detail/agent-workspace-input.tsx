@@ -42,6 +42,9 @@ import {
   MediaParamsButton,
   getMultimediaConfig,
   isMultimediaApp,
+  buildMediaDefaults,
+  MediaImageRoleSelect,
+  type MediaImageRole,
   type MediaParams,
 } from '@/components/chat/input/media-params';
 
@@ -352,13 +355,15 @@ interface ResourceItem {
   file_url?: { url: string; preview_url?: string; file_name?: string };
   audio_url?: { url: string; preview_url?: string; file_name?: string };
   video_url?: { url: string; preview_url?: string; file_name?: string };
+  /** 图片角色标注:'auto' 表示交由主 Agent 自动判断(默认) */
+  image_role?: MediaImageRole;
 }
 
 interface UploadingFile { id: string; file: File; status: 'uploading' | 'success' | 'error'; error?: string }
 
 interface AgentWorkspaceInputProps {
   conversationId?: string;
-  onSend: (payload: { text: string; resources?: ResourceItem[]; model?: string; playbookCommand?: PlaybookCommand; skills?: SkillRef[]; mcps?: PlusMenuMcpRef[]; permission?: string; media?: MediaParams; forceCompress?: boolean }) => void;
+  onSend: (payload: { text: string; resources?: ResourceItem[]; model?: string; playbookCommand?: PlaybookCommand; skills?: SkillRef[]; mcps?: PlusMenuMcpRef[]; permission?: string; media?: MediaParams; forceCompress?: boolean; subAgent?: SubAgentRef; resourceRefs?: ResourceRef[]; commandPayload?: Record<string, unknown> }) => void;
   loading?: boolean;
   /** 运行中且无新内容时,按钮转为"进行中·可停止"状态,点击终止当前生成 */
   onStop?: () => void;
@@ -598,6 +603,10 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const resourcePreview = (r: ResourceItem) =>
       resolvePreviewUrl(r.image_url?.preview_url || r.file_url?.preview_url || r.audio_url?.preview_url || r.video_url?.preview_url || '');
     const isImageResource = (r: ResourceItem) => !!r.image_url;
+    // 图片角色标注:更新某张图片的角色(auto 重置为默认,不写入字段)
+    const setResourceRole = (index: number, role: MediaImageRole) => {
+      applyResources(resources.map((r, j) => (j === index ? { ...r, image_role: role === 'auto' ? undefined : role } : r)));
+    };
 
     const hasContent = text.trim().length > 0 || resources.length > 0 || playbookCommand !== null;
     const popoverOverlay = '[&_.ant-popover-inner]:!p-0 [&_.ant-popover-inner]:!rounded-xl [&_.ant-popover-inner]:!shadow-xl';
@@ -935,26 +944,25 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
           {/* SECTION 1 — attached file chips (only when files present) */}
           {(uploading.length > 0 || resources.length > 0) && (
             <div className="px-4 pt-3 pb-2">
-              {(uploading.length + resources.length) > 1 && (
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-gray-500 dark:text-gray-400">
-                    已上传文件 ({uploading.length + resources.length})
-                  </span>
-                  <button
-                    className="text-xs text-gray-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 px-2 py-0.5 rounded transition-colors"
-                    onClick={() => { applyResources([]); setUploading([]); }}
-                  >
-                    全部清除
-                  </button>
-                </div>
-              )}
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  已上传文件 ({uploading.length + resources.length})
+                </span>
+                <button
+                  className="text-xs text-gray-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 px-2 py-0.5 rounded transition-colors"
+                  onClick={() => { applyResources([]); setUploading([]); }}
+                  title="清除全部附件"
+                >
+                  全部清除
+                </button>
+              </div>
               <div className="flex flex-wrap gap-3">
                 {/* uploading cards */}
                 {uploading.map(u => {
                   const theme = getFileTheme(u.file.name);
                   const isImg = u.file.type.startsWith('image/');
                   return (
-                    <div key={u.id} className="relative">
+                    <div key={u.id} className="relative group">
                       <div className={`w-[60px] h-[60px] rounded-lg border-2 overflow-hidden bg-white dark:bg-gray-800 shadow-sm ${u.status === 'error' ? 'border-red-300' : theme.border}`}>
                         {isImg
                           ? <img src={URL.createObjectURL(u.file)} className="w-full h-full object-cover" />
@@ -976,6 +984,13 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                       <div className="mt-1 max-w-[60px]">
                         <p className={`text-xs truncate ${u.status === 'error' ? 'text-red-500' : 'text-gray-600 dark:text-gray-400'}`}>{u.file.name}</p>
                       </div>
+                      <button
+                        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+                        onClick={() => setUploading(prev => prev.filter(x => x.id !== u.id))}
+                        title="移除附件"
+                      >
+                        <CloseOutlined className="text-[10px]" />
+                      </button>
                     </div>
                   );
                 })}
@@ -997,9 +1012,19 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                       <div className="mt-1 max-w-[60px]">
                         <p className="text-xs text-gray-600 dark:text-gray-400 truncate">{name}</p>
                       </div>
+                      {/* 图片角色标注：上传图片附件均可标注(供多媒体 Agent/生成模型使用) */}
+                      {isImg && (
+                        <div className="mt-0.5 w-[60px]">
+                          <MediaImageRoleSelect
+                            value={r.image_role || 'auto'}
+                            onChange={(v) => setResourceRole(i, v)}
+                          />
+                        </div>
+                      )}
                       <button
-                        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+                        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
                         onClick={() => applyResources(resources.filter((_, j) => j !== i))}
+                        title="移除附件"
                       >
                         <CloseOutlined className="text-[10px]" />
                       </button>
@@ -1288,6 +1313,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                       ? getMultimediaConfig(appInfo)?.video_models
                       : getMultimediaConfig(appInfo)?.image_models
                   }
+                  defaults={buildMediaDefaults(getMultimediaConfig(appInfo))}
                   value={mediaParams}
                   onChange={setMediaParams}
                 />

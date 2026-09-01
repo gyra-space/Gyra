@@ -60,6 +60,7 @@ async def run_loop(
     permission_gate: Optional[Any] = None,
     subagent_runtime: Optional[Any] = None,
     hook_manager: Optional[Any] = None,
+    tool_context_factory: Optional[Any] = None,
     max_steps: int = 20,
     user_id: Optional[str] = None,
     request_meta: Optional[dict] = None,
@@ -85,6 +86,7 @@ async def run_loop(
         thinking_fn=thinking_fn,
         acting_fn=acting_fn,
         hook_manager=hook_manager,
+        tool_context_factory=tool_context_factory,
     )
     state_store = deps["state_store"]
     event_stream = deps["event_stream"]
@@ -93,6 +95,7 @@ async def run_loop(
     thinking_fn = deps["thinking_fn"]
     acting_fn = deps["acting_fn"]
     hook_manager = deps["hook_manager"]
+    tool_context_factory = deps["tool_context_factory"]
     if state_store is None:
         raise ValueError("state_store (or harness.storage) is required")
     if thinking_fn is None:
@@ -127,6 +130,7 @@ async def run_loop(
             subagent_runtime=subagent_runtime,
             request_meta=request_meta,
             event_stream=event_stream,
+            tool_context_factory=tool_context_factory,
         ):
             yield step_event
 

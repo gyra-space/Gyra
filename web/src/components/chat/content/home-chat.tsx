@@ -154,7 +154,8 @@ const UploadedResourcePreview = ({ resource, onRemove }: { resource: any; onRemo
       </div>
       <button
         onClick={(e) => { e.stopPropagation(); onRemove(); }}
-        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+        title="移除附件"
+        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
       >
         <CloseOutlined className="text-[10px]" />
       </button>
@@ -198,7 +199,8 @@ const UploadingFilePreview = ({ uploadingFile, onRetry, onRemove }: { uploadingF
       </div>
       <button
         onClick={(e) => { e.stopPropagation(); onRemove(); }}
-        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+        title="移除附件"
+        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
       >
         <CloseOutlined className="text-[10px]" />
       </button>
@@ -227,7 +229,7 @@ const FileListDisplay = ({
 
   return (
     <div className="pb-3">
-      {totalCount > 1 && (
+      {totalCount > 0 && (
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 rounded-lg bg-indigo-100 flex items-center justify-center">

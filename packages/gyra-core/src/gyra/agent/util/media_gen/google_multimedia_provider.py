@@ -6,7 +6,7 @@ Google's current media API shape, so ``generate_video`` raises NotImplementedErr
 """
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Set
 
 from gyra.agent.util.media_gen.base import (
     MediaGenProvider,
@@ -40,6 +40,10 @@ class GoogleMultimediaProvider(MediaGenProvider):
 
     def supported_video_models(self) -> List[str]:
         return []
+
+    def supported_inputs(self, model: str, kind: str = "") -> Set[str]:
+        """Google 合并协议：仅图片(Nano Banana 支持图片编辑 image_url)。"""
+        return self._image.supported_inputs(model, kind)
 
     async def generate_image(
         self, prompt: str, model: str, **kwargs: Any

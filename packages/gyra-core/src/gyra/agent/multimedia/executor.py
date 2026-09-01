@@ -184,6 +184,15 @@ class MultimediaExecutor:
         # 4) 组装 provider 参数（固定覆盖 + 输出默认 + 请求覆盖）
         gen_kwargs = self._build_gen_kwargs(kind, request)
 
+        # 4.2) 图片输入能力校验：不同 provider/模型的参考图/首尾帧字段名与支持逻辑不同。
+        # 不支持的输入在此显式报错（而非静默丢弃，避免用户标注的角色无效）。
+        cap_err = self._validate_input_capabilities(kind, model, provider, request)
+        if cap_err:
+            return ToolResult.fail(
+                error=cap_err,
+                tool_name=self._tool_name(kind),
+            )
+
         # 4.5) 防重复提交（在任何 provider 提交之前）：同会话已有同 kind/model/
         # 同内容的在途任务时直接复用该 job，不再向 provider 发起请求——图片/视频
         # 生成按次计费，LLM 误判任务丢失而重试时必须在这里拦下，不重复扣费。
@@ -336,7 +345,18 @@ class MultimediaExecutor:
         from gyra.agent.util.media_gen.provider_registry import MediaGenProviderRegistry
 
         if explicit:
-            return explicit
+            # 显式模型必须先通过能力校验：必须是当前 kind 对应的可用媒体生成模型
+            # （已配置且有凭证）。否则把文本 LLM 模型（如从输入框透传的模型）误当
+            # 图片/视频模型调用，会直接报"未找到模型 xxx 对应的媒体生成服务"。
+            capability = "video" if kind == KIND_VIDEO else "image"
+            usable = set(MediaGenProviderRegistry.get_usable_model_names(capability))
+            if explicit in usable:
+                return explicit
+            logger.warning(
+                f"[multimedia-executor] 显式模型 '{explicit}' 不是可用的"
+                f"{capability}生成模型，回退到 Agent 自管模型"
+            )
+            explicit = ""
 
         if kind == KIND_VIDEO:
             default = self.config.default_video_model
@@ -430,6 +450,59 @@ class MultimediaExecutor:
                 kwargs[k] = resolve_image_size(v) if (k == "size" and kind == KIND_IMAGE) else v
 
         return kwargs
+
+    def _validate_input_capabilities(
+        self,
+        kind: str,
+        model: str,
+        provider: Any,
+        request: "MultimediaRequest",
+    ) -> Optional[str]:
+        """校验请求的图片输入字段是否被「该 provider + 指定模型」支持。
+
+        不同厂商/模型对首帧、尾帧、参考图的字段名与支持逻辑差异很大（如 Seedance
+        用 image_url/image_url_last、HappyHorse 用 image_url/reference_images、
+        通义万相 I2I 用 image_url/reference_images）。executor 统一以这三个通用字段
+        透传，由这里在提交前按 provider.supported_inputs(model) 校验；不支持的输入
+        会返回明确报错（而非被 provider 静默丢弃，导致用户标注的角色无效）。
+
+        Returns:
+            错误描述字符串；无问题返回 None。
+        """
+        if not (request.image_url or request.image_url_last or request.reference_images):
+            return None
+        try:
+            supported = set(
+                getattr(
+                    provider,
+                    "supported_inputs",
+                    lambda m, k="": {"image_url", "image_url_last", "reference_images"},
+                )(model, kind)
+                or set()
+            )
+        except Exception:  # noqa: BLE001 - 能力声明异常按「不拦截」处理(维持原透传行为)
+            supported = {"image_url", "image_url_last", "reference_images"}
+
+        problems: List[str] = []
+        if request.image_url and "image_url" not in supported:
+            problems.append("该模型不支持图片输入(image_url/首帧/参考图)")
+        if request.reference_images and "reference_images" not in supported:
+            problems.append(
+                f"该模型不支持参考图生视频/图生图(reference_images，已传 "
+                f"{len(request.reference_images)} 张)"
+            )
+        if request.image_url_last:
+            if "image_url_last" not in supported:
+                problems.append("该模型不支持尾帧(首尾帧生视频)")
+            elif not request.image_url:
+                problems.append("尾帧(image_url_last)必须与首帧(image_url)同时提供")
+
+        if not problems:
+            return None
+        return (
+            f"模型 '{model}' 无法满足你的图片输入要求：{'；'.join(problems)}。"
+            f"请改用支持相应能力的媒体生成模型。"
+        )
 
     def _resolve_wait(self, wait: Optional[bool]) -> bool:
         """wait 解析：显式 › config.async_default 取反 › 默认同步。"""

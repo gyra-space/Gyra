@@ -87,6 +87,7 @@ class SubAgentRuntime(SubagentSeam):
         default_user_id: Optional[str] = None,
         job_registry: Optional[Any] = None,
         ops_delegate: Optional["SubAgentOpsDelegate"] = None,
+        tool_context_factory: Optional[Any] = None,
     ):
         self._store = state_store
         self._max_depth = max_depth
@@ -94,6 +95,9 @@ class SubAgentRuntime(SubagentSeam):
         self._default_thinking_fn = default_thinking_fn
         self._default_acting_fn = default_acting_fn
         self._default_user_id = default_user_id
+        # 主引擎的工具上下文工厂：子 agent 复用主引擎的工具解析时，工具执行的
+        # ToolContext 也需注入 user_request 等资源（RBAC 等 fail-closed 工具依赖）。
+        self._tool_context_factory = tool_context_factory
         # harness.jobs 本地视图：spawn/终态同步（引擎与产品层统一查询）
         self._job_registry = job_registry
         # 运维委托（gyra-serve CoordinatorOpsDelegate）：看板上板/台账镜像/
@@ -317,6 +321,7 @@ class SubAgentRuntime(SubagentSeam):
                 acting_fn=acting_fn,
                 parent_step_id=handle.parent_step_id,
                 permission_gate=permission_gate,
+                tool_context_factory=self._tool_context_factory,
                 max_steps=max(self._max_depth * 4, 10),
             ):
                 event.metadata["is_subagent"] = True
@@ -394,6 +399,7 @@ class SubAgentRuntime(SubagentSeam):
                 acting_fn=acting_fn,
                 parent_step_id=handle.parent_step_id,
                 permission_gate=permission_gate,
+                tool_context_factory=self._tool_context_factory,
                 max_steps=max_steps,
             ):
                 event.metadata["is_subagent"] = True

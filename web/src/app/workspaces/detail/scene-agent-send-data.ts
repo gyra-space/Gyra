@@ -1,7 +1,8 @@
 import type { PlaybookCommand, SkillRef, WorkspaceUserAttachment } from './agent-workspace-types';
-import type { MediaParams } from '@/components/chat/input/media-params';
+import type { MediaParams, MediaImageRef, MediaImageRole } from '@/components/chat/input/media-params';
 import type { PlusMenuMcpRef } from '@/components/chat/input/plus-menu';
 import type { SubAgentRef, ResourceRef } from '@/components/chat/input/trigger-types';
+import { transformFileUrl } from '@/utils';
 
 /** 输入框上传资源项(与 agent-workspace-input 的 ResourceItem 同构):
  *  type 标记资源类别,URL 载荷按模态挂载在对应字段 */
@@ -11,6 +12,63 @@ export interface SceneAgentResource {
   file_url?: { url: string; preview_url?: string; file_name?: string };
   audio_url?: { url: string; preview_url?: string; file_name?: string };
   video_url?: { url: string; preview_url?: string; file_name?: string };
+  /** 图片角色标注:'auto' 表示交由主 Agent 自动判断(默认) */
+  image_role?: MediaImageRole;
+}
+
+/** 把上传返回的 URL 解析成对外可访问的绝对 URL。
+ *  local/本机服务下预览地址可能是相对路径(如 /api/v2/serve/file/...),
+ *  直接给模型/多媒体 Provider 会被当成无 host 的地址而无法访问;
+ *  这里对相对路径补全 API 基址,与 resolvePreviewUrl 逻辑保持一致。 */
+export function resolveAbsolutePublicUrl(u?: string): string {
+  if (!u) return '';
+  const normalized = transformFileUrl(u);
+  if (!normalized) return '';
+  if (normalized.startsWith('http://') || normalized.startsWith('https://')) return normalized;
+  if (normalized.startsWith('/')) {
+    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+    return `${apiBase}${normalized}`;
+  }
+  return normalized;
+}
+
+/** 取资源里对外可访问的公共 URL:优先公共预览地址,其次原始 url(同样补全绝对)。 */
+function resourcePublicUrl(r: SceneAgentResource): string {
+  const d = r.image_url || r.video_url || r.audio_url || r.file_url;
+  if (!d) return '';
+  return resolveAbsolutePublicUrl(d.preview_url || d.url);
+}
+
+/** 根据上传图片的角色标注,构建确定性媒体输入(mapping 到 image_url/image_url_last/reference_images)。
+ *  仅处理标注了角色的图片(role 非 auto);未标注(auto)的不参与,交由主 Agent 自动判断。
+ *  同时返回非 auto 角色的标注明细 image_refs,供后端渲染提示兜底。 */
+export function buildMediaImageInputs(resources: SceneAgentResource[]): {
+  image_url?: string;
+  image_url_last?: string;
+  reference_images?: string[];
+  image_refs?: MediaImageRef[];
+} {
+  const refs: MediaImageRef[] = [];
+  const first: string[] = [];
+  const last: string[] = [];
+  const refImages: string[] = [];
+  for (const r of resources) {
+    if (!r.image_url) continue;
+    const url = resourcePublicUrl(r);
+    if (!url) continue;
+    const role: MediaImageRole = (r.image_role || 'auto') as MediaImageRole;
+    if (role === 'auto') continue;
+    refs.push({ url, role, name: r.image_url.file_name });
+    if (role === 'first_frame') first.push(url);
+    else if (role === 'last_frame') last.push(url);
+    else if (role === 'reference') refImages.push(url);
+  }
+  const out: { image_url?: string; image_url_last?: string; reference_images?: string[]; image_refs?: MediaImageRef[] } = {};
+  if (first.length) out.image_url = first[0];
+  if (last.length) out.image_url_last = last[0];
+  if (refImages.length) out.reference_images = refImages;
+  if (refs.length) out.image_refs = refs;
+  return out;
 }
 
 /** 未随消息发出的上传附件暂存(按空间维度,跨输入框重挂载存活):
@@ -211,10 +269,21 @@ export function buildSceneAgentSendData(
         }),
       });
     });
-  if (media && Object.keys(media).length > 0) {
+  // 多媒体生成参数(media)：合并「用户面板设置(media)」与「图片角色标注确定性透传」，
+  // 只输出一条 media chat_in_param(后端以首个 param_type='media' 为准,重复会互相覆盖)。
+  // 角色标注(image_url/image_url_last/reference_images/image_refs)覆盖用户面板的同类字段,
+  // 使人工标注优先于主 Agent 猜测。
+  const mediaImage = buildMediaImageInputs(resources);
+  const mergedMedia: MediaParams | null =
+    (media && Object.keys(media).length) ? { ...media } : (mediaImage.image_url || mediaImage.image_url_last || mediaImage.reference_images?.length || mediaImage.image_refs?.length ? { kind: 'video' } : null);
+  if (mergedMedia) {
+    if (mediaImage.image_url) mergedMedia.image_url = mediaImage.image_url;
+    if (mediaImage.image_url_last) mergedMedia.image_url_last = mediaImage.image_url_last;
+    if (mediaImage.reference_images?.length) mergedMedia.reference_images = mediaImage.reference_images;
+    if (mediaImage.image_refs?.length) mergedMedia.image_refs = mediaImage.image_refs;
     chatInParams.push({
       param_type: 'media',
-      param_value: JSON.stringify(media),
+      param_value: JSON.stringify(mergedMedia),
       sub_type: '',
     });
   }

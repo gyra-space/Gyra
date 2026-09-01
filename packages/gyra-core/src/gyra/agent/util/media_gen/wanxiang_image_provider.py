@@ -11,7 +11,7 @@ API docs: https://help.aliyun.com/zh/model-studio/text-to-image-v2-api-reference
 """
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Set
 
 from gyra.agent.util.media_gen._dashscope_common import (
     build_headers,
@@ -108,6 +108,13 @@ class WanxiangImageProvider(MediaGenProvider):
     def supported_video_models(self) -> List[str]:
         return []
 
+    def supported_inputs(self, model: str, kind: str = "") -> Set[str]:
+        """通义万相图像：qwen-image-3.0 支持图生图/图像编辑(I2I，1~3 张参考图，
+        兼容单张 image_url)。纯文生图(t2i)系列仅接受文本。不支持尾帧(image_url_last)。"""
+        if "qwen-image" in (model or "").lower():
+            return {"image_url", "reference_images"}
+        return {"image_url"}
+
     async def generate_image(
         self,
         prompt: str,
@@ -128,6 +135,7 @@ class WanxiangImageProvider(MediaGenProvider):
                 - seed: Random seed for reproducibility
                 - timeout: Max wait time in seconds (default 180)
         """
+        self.validate_inputs(model, "image", kwargs)
         try:
             import httpx
         except ImportError:

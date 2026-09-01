@@ -21,7 +21,86 @@ export interface MediaParams {
   duration?: number;
   aspect_ratio?: string;
   quality?: string;
+  /** 首帧图片 URL（图生视频 i2v，确定性透传） */
+  image_url?: string;
+  /** 尾帧图片 URL（首尾帧生视频，需与 image_url 同用） */
+  image_url_last?: string;
+  /** 参考图 URL 列表（参考生视频 r2v，1~9 张） */
+  reference_images?: string[];
+  /** 上传图片的角色标注明细（提示兜底 + 透传校验） */
+  image_refs?: MediaImageRef[];
 }
+
+/** 上传图片的角色标注：human 显式指定，指导/覆盖主 Agent 的自动判断 */
+export type MediaImageRole = 'auto' | 'first_frame' | 'last_frame' | 'reference';
+
+/** 单张上传图片的角色标注条目 */
+export interface MediaImageRef {
+  /** 对外可访问的公共 URL（local 模式下取公共预览地址解析后的绝对 URL） */
+  url: string;
+  role: MediaImageRole;
+  /** 原文件名，提示展示用 */
+  name?: string;
+}
+
+/** 角色下拉选项（多媒体 Agent 输入框图片附件用） */
+export const MEDIA_IMAGE_ROLE_OPTIONS: { value: MediaImageRole; label: string }[] = [
+  { value: 'auto', label: '自动' },
+  { value: 'first_frame', label: '首帧' },
+  { value: 'last_frame', label: '尾帧' },
+  { value: 'reference', label: '参考图' },
+];
+
+/** 角色配色（用于标注后的标识色） */
+export const MEDIA_IMAGE_ROLE_COLOR: Record<MediaImageRole, string> = {
+  auto: '#6b7280',
+  first_frame: '#4f46e5',
+  last_frame: '#db2777',
+  reference: '#059669',
+};
+
+/**
+ * 图片角色标注下拉：明显可见、会随角色变色并带状态圆点。
+ * 放在上传图片附件下方，供用户把某张图标记为 首帧/尾帧/参考图。
+ */
+export const MediaImageRoleSelect = ({
+  value = 'auto',
+  onChange,
+}: {
+  value?: MediaImageRole;
+  onChange: (role: MediaImageRole) => void;
+}) => {
+  const { t } = useTranslation();
+  const annotated = value !== 'auto';
+  const color = MEDIA_IMAGE_ROLE_COLOR[value] || MEDIA_IMAGE_ROLE_COLOR.auto;
+  return (
+    <div className="relative w-full">
+      <Select
+        size="small"
+        value={value}
+        onChange={(v) => onChange(v)}
+        options={MEDIA_IMAGE_ROLE_OPTIONS}
+        popupMatchSelectWidth={false}
+        className="w-full"
+        style={{
+          width: '100%',
+          fontSize: 11,
+          lineHeight: '20px',
+          borderColor: annotated ? color : undefined,
+          color: annotated ? color : undefined,
+        }}
+        data-testid="media-image-role-select"
+      />
+      {annotated && (
+        <span
+          className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full"
+          style={{ backgroundColor: color }}
+          title={t('media_image_role', '图片角色')}
+        />
+      )}
+    </div>
+  );
+};
 
 /** 从 appInfo.ext_config 解析多媒体 Agent 配置；非多媒体应用返回 null */
 export function getMultimediaConfig(appInfo: any): MultimediaAgentConfig | null {
@@ -35,6 +114,23 @@ export function isMultimediaApp(appInfo: any): boolean {
   const cfg = getMultimediaConfig(appInfo);
   if (!cfg) return false;
   return cfg.enabled !== false;
+}
+
+/** 从多媒体 Agent 配置构建面板「默认显示值」：面板初始展示 Agent 的配置数据，用户可修改覆盖 */
+export function buildMediaDefaults(cfg: MultimediaAgentConfig | null | undefined): MediaParams {
+  if (!cfg) return {};
+  const defaults: MediaParams = {};
+  if (cfg.capability) defaults.kind = cfg.capability;
+  if (cfg.capability === 'video') {
+    if (cfg.default_video_model) defaults.model = cfg.default_video_model;
+    if (cfg.default_video_resolution) defaults.resolution = cfg.default_video_resolution;
+    if (cfg.default_video_aspect_ratio) defaults.aspect_ratio = cfg.default_video_aspect_ratio;
+    if (cfg.default_video_duration != null) defaults.duration = cfg.default_video_duration;
+  } else {
+    if (cfg.default_image_model) defaults.model = cfg.default_image_model;
+    if (cfg.default_image_size) defaults.size = cfg.default_image_size;
+  }
+  return defaults;
 }
 
 /** 把多媒体参数序列化为 chat_in_params 的 media 项（param_type='media'，JSON 值） */
@@ -63,15 +159,20 @@ export const MediaParamsPanel: React.FC<{
   capability?: string;
   /** 配置里的候选模型池（image_models / video_models），与全局可用多媒体模型合并展示 */
   modelPool?: string[];
+  /** Agent 配置的默认展示值：面板初始展示，用户可修改覆盖 */
+  defaults?: MediaParams;
   value?: MediaParams;
   onChange: (params: MediaParams) => void;
-}> = ({ capability = 'image', modelPool = [], value = {}, onChange }) => {
+}> = ({ capability = 'image', modelPool = [], defaults = {}, value = {}, onChange }) => {
   const { t } = useTranslation();
   const allowKindSwitch = !capability;
   const effectiveCapability = value.kind || capability || 'image';
   const isVideo = effectiveCapability === 'video';
   const [mediaModels, setMediaModels] = useState<string[]>([]);
   const [mediaVideoModels, setMediaVideoModels] = useState<string[]>([]);
+  /** 取字段生效值：优先用户覆盖（value），为空则回退 Agent 配置默认（defaults） */
+  const eff = <T,>(v: T | undefined | null, d: T | undefined): T | undefined =>
+    v !== undefined && v !== null && v !== '' ? v : d;
 
   useEffect(() => {
     let disposed = false;
@@ -93,8 +194,10 @@ export const MediaParamsPanel: React.FC<{
   const activeModelPool = isVideo ? mediaVideoModels : mediaModels;
   const mergedModels = useMemo(() => {
     const set = new Set<string>([...(modelPool || []), ...activeModelPool]);
+    const defaultModel = defaults.model;
+    if (defaultModel) set.add(defaultModel);
     return Array.from(set);
-  }, [modelPool, activeModelPool]);
+  }, [modelPool, activeModelPool, defaults.model]);
 
   const setParam = (key: keyof MediaParams, val: unknown) => {
     onChange({ ...value, [key]: val });
@@ -128,7 +231,7 @@ export const MediaParamsPanel: React.FC<{
           <Select
             allowClear
             placeholder={t('media_model_auto', '自动（系统默认）')}
-            value={value.model}
+            value={eff(value.model, defaults.model)}
             className="w-full !rounded-lg"
             onChange={(v) => setParam('model', v ?? '')}
             options={mergedModels.map((m) => ({ value: m, label: m }))}
@@ -143,7 +246,7 @@ export const MediaParamsPanel: React.FC<{
             <Select
               allowClear
               placeholder={t('use_default', '默认')}
-              value={value.resolution}
+              value={eff(value.resolution, defaults.resolution)}
               className="w-full !rounded-lg"
               onChange={(v) => setParam('resolution', v ?? '')}
               options={VIDEO_RESOLUTION_OPTIONS.map((v) => ({ value: v, label: v }))}
@@ -154,7 +257,7 @@ export const MediaParamsPanel: React.FC<{
             <Select
               allowClear
               placeholder={t('use_default', '默认')}
-              value={value.aspect_ratio}
+              value={eff(value.aspect_ratio, defaults.aspect_ratio)}
               className="w-full !rounded-lg"
               onChange={(v) => setParam('aspect_ratio', v ?? '')}
               options={VIDEO_ASPECT_RATIO_OPTIONS.map((v) => ({ value: v, label: v }))}
@@ -166,7 +269,7 @@ export const MediaParamsPanel: React.FC<{
               min={1}
               max={600}
               placeholder={t('use_default', '默认')}
-              value={value.duration}
+              value={eff(value.duration, defaults.duration) as number | undefined}
               className="w-full !rounded-lg"
               onChange={(v) => setParam('duration', v ?? undefined)}
             />
@@ -178,7 +281,7 @@ export const MediaParamsPanel: React.FC<{
           <Select
             allowClear
             placeholder={t('use_default', '默认')}
-            value={value.size}
+            value={eff(value.size, defaults.size)}
             className="w-full !rounded-lg"
             onChange={(v) => setParam('size', v ?? '')}
             options={IMAGE_SIZE_OPTIONS.map((v) => ({ value: v, label: v }))}
@@ -196,9 +299,11 @@ export const MediaParamsPanel: React.FC<{
 export const MediaParamsButton: React.FC<{
   capability?: string;
   modelPool?: string[];
+  /** Agent 配置的默认展示值：面板初始展示，用户可修改覆盖 */
+  defaults?: MediaParams;
   value?: MediaParams;
   onChange?: (params: MediaParams) => void;
-}> = ({ capability = 'image', modelPool = [], value, onChange }) => {
+}> = ({ capability = 'image', modelPool = [], defaults, value, onChange }) => {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [inner, setInner] = useState<MediaParams>({});
@@ -229,6 +334,7 @@ export const MediaParamsButton: React.FC<{
         <MediaParamsPanel
           capability={capability}
           modelPool={modelPool}
+          defaults={defaults}
           value={current}
           onChange={applyChange}
         />

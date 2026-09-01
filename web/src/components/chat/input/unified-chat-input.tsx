@@ -30,7 +30,6 @@ import {
   Slider,
   Collapse,
   Spin,
-  Select,
   App,
   Badge,
   Tag,
@@ -48,11 +47,15 @@ import { parseResourceValue, transformFileUrl } from '@/utils';
 import { useSearchParams } from 'next/navigation';
 import { getFileIcon, formatFileSize } from '@/utils/fileUtils';
 import { ConnectorsModal } from '@/components/chat/connectors-modal';
+import { buildMediaImageInputs } from '@/app/workspaces/detail/scene-agent-send-data';
 import {
   MediaParamsButton,
   getMultimediaConfig,
   isMultimediaApp,
   buildMediaChatInParam,
+  buildMediaDefaults,
+  MediaImageRoleSelect,
+  type MediaImageRole,
   type MediaParams,
 } from '@/components/chat/input/media-params';
 
@@ -97,6 +100,8 @@ interface ParsedResourceItem {
   file_path?: string;
   url?: string;
   preview_url?: string;
+  /** 图片角色标注:'auto' 表示交由主 Agent 自动判断(默认) */
+  image_role?: MediaImageRole;
 }
 
 const getAcceptTypes = (type: string) => {
@@ -1383,6 +1388,30 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       }
     };
 
+    // 图片角色标注：更新某张图片的角色(auto 重置为默认,不写入字段),
+    // 并同步 resource chat_in_param,使角色随附件一并下发
+    const handleSetResourceRole = (index: number, role: MediaImageRole) => {
+      const next = resources.map((r, i) => {
+        if (i !== index) return r;
+        const updated = { ...r };
+        if (role === 'auto') delete updated.image_role;
+        else updated.image_role = role;
+        return updated;
+      });
+      setResourceValue(next as unknown as Record<string, unknown>);
+      const chatInParamsResource = chatInParams.find((i: ChatInParamItem) => i.param_type === 'resource');
+      if (chatInParamsResource && chatInParamsResource?.param_value) {
+        setChatInParams([
+          ...extendedChatInParams,
+          {
+            param_type: 'resource',
+            param_value: JSON.stringify(next),
+            sub_type: resourceConfig?.sub_type,
+          },
+        ]);
+      }
+    };
+
     const handleDeleteUploading = (id: string) => {
       setUploadingFiles(prev => prev.filter(f => f.id !== id));
     };
@@ -1434,8 +1463,8 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
     return (
       <div className="px-4 pt-3 pb-2">
-        {/* 多文件上传标题 - 当有多个文件时显示 */}
-        {totalCount > 1 && (
+        {/* 多文件上传标题 - 只要有附件即显示,提供「全部清除」入口 */}
+        {totalCount > 0 && (
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <div className="w-6 h-6 rounded-lg bg-indigo-100 flex items-center justify-center">
@@ -1460,6 +1489,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                 ];
                 setChatInParams(chatInParam);
               }}
+              title={t('clear_all', '全部清除')}
               className="text-xs text-gray-500 hover:text-red-500 transition-colors flex items-center gap-1 px-2 py-1 rounded-full hover:bg-red-50"
             >
               <CloseOutlined className="text-xs" />
@@ -1527,7 +1557,8 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                 {/* 删除按钮 */}
                 <button
                   onClick={() => handleDeleteUploading(uploadingFile.id)}
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+                  title={t('remove_attachment', '移除附件')}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
                 >
                   <CloseOutlined className="text-[10px]" />
                 </button>
@@ -1607,10 +1638,20 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                     {fileName}
                   </p>
                 </div>
+                {/* 图片角色标注：上传图片附件均可标注(供多媒体 Agent/生成模型使用) */}
+                {isImage && (
+                  <div className="mt-0.5 w-[60px]">
+                    <MediaImageRoleSelect
+                      value={item.image_role || 'auto'}
+                      onChange={(v) => handleSetResourceRole(index, v)}
+                    />
+                  </div>
+                )}
                 {/* 删除按钮 */}
                 <button
                   onClick={() => handleDelete(index)}
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+                  title={t('remove_attachment', '移除附件')}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
                 >
                   <CloseOutlined className="text-[10px]" />
                 </button>
@@ -1848,8 +1889,18 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       sub_type: 'mcp(gyra)',
     }));
 
-    // 多媒体参数：多媒体 Agent 对话输入框设定的图片/视频参数（media chat_in_param）
-    const mediaChatInParam = buildMediaChatInParam(mediaParams);
+    // 多媒体参数：合并「用户面板设置(mediaParams)」与「图片角色标注确定性透传」，
+    // 只输出一条 media chat_in_param，人工标注优先于主 Agent 猜测。
+    const mediaImage = buildMediaImageInputs(resources);
+    let mergedMedia: MediaParams | null = Object.keys(mediaParams).length > 0 ? { ...mediaParams } : null;
+    if (mediaImage.image_url || mediaImage.image_url_last || mediaImage.reference_images?.length || mediaImage.image_refs?.length) {
+      if (!mergedMedia) mergedMedia = { kind: 'video' };
+      if (mediaImage.image_url) mergedMedia.image_url = mediaImage.image_url;
+      if (mediaImage.image_url_last) mergedMedia.image_url_last = mediaImage.image_url_last;
+      if (mediaImage.reference_images?.length) mergedMedia.reference_images = mediaImage.reference_images;
+      if (mediaImage.image_refs?.length) mergedMedia.image_refs = mediaImage.image_refs;
+    }
+    const mediaChatInParam = buildMediaChatInParam(mergedMedia || {});
 
     const currentChatInParams = [
       ...chatInParams,
@@ -2020,6 +2071,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                     ? multimediaConfig?.video_models
                     : multimediaConfig?.image_models
                 }
+                defaults={buildMediaDefaults(multimediaConfig)}
                 value={mediaParams}
                 onChange={setMediaParams}
               />

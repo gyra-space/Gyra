@@ -47,6 +47,10 @@ export default function WorkspaceDetailPage() {
   // 深链打开态:URL 带 conv_uid/task_id 时说明用户已打开具体内容,
   // 简洁模式应直达会话运行态而非欢迎页(刷新恢复的关键)。
   const hasDeepLink = !!urlConvUid || !Number.isNaN(urlTaskId);
+  // 「新任务」态标记:点新任务时写入 URL(new_task=1),刷新后据此跳过
+  // 「恢复后端当前会话」——否则清空 URL 会触发会话加载重载,又把旧会话写回,
+  // 刷新仍会跳回旧对话。打开任一真实会话时(onConvChanged)移除该标记。
+  const urlNewTask = searchParams?.get('new_task') === '1';
   // 当前子页面导航激活态(分段控件高亮)
   const navActive = (segment: string) =>
     pathname?.includes(`/workspaces/detail/${segment}`) ? ' ws-console-nav-link--active' : '';
@@ -60,6 +64,9 @@ export default function WorkspaceDetailPage() {
   // 从会话列表选中会话时携带的 task_id:number=进 task 对话,null=workspace 级会话,
   // undefined=非列表触发(初始/任务栏进入)。shell 据此恢复 activeTaskId。
   const [pendingTaskId, setPendingTaskId] = useState<number | null | undefined>(initialPendingTaskId);
+  // 主动「新任务」态:点新任务置 true,刷新时由 URL new_task=1 恢复;打开任一真实会话后复位。
+  // 用于抑制会话加载时恢复后端「当前会话」,否则新任务会立刻被旧会话覆盖。
+  const [manualNew, setManualNew] = useState<boolean>(urlNewTask);
   // 简洁模式抽屉:待办收件箱(header 待办角标与左栏「待办收件箱」共用同一状态)
   const [simpleDrawer, setSimpleDrawer] = useState<'inbox' | 'overview' | null>(null);
 
@@ -70,7 +77,7 @@ export default function WorkspaceDetailPage() {
    * patch 里未出现的字段保持原样;显式传 null 表示从 URL 移除该参数。
    */
   const syncUrl = useCallback(
-    (patch: { convUid?: string | null; taskId?: number | null }) => {
+    (patch: { convUid?: string | null; taskId?: number | null; newTask?: boolean }) => {
       if (!pathname) return;
       const params = new URLSearchParams(searchParams?.toString() || '');
       let changed = false;
@@ -91,12 +98,34 @@ export default function WorkspaceDetailPage() {
           changed = true;
         }
       }
+      if (patch.newTask !== undefined) {
+        const next = patch.newTask ? '1' : '';
+        if ((params.get('new_task') || '') !== next) {
+          if (next) params.set('new_task', next);
+          else params.delete('new_task');
+          changed = true;
+        }
+      }
       if (!changed) return;
       const qs = params.toString();
+      // eslint-disable-next-line no-console
+      console.log('[DEBUG syncUrl]', JSON.stringify(patch), '->', qs ? `${pathname}?${qs}` : pathname);
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
     [pathname, searchParams, router],
   );
+
+  // 简洁模式「新任务」:清空当前会话并进入无会话欢迎态。
+  // 同时给 URL 打 new_task=1 标记,刷新后据此跳过「恢复后端当前会话」,
+  // 否则清空 URL 会触发会话加载重载,又把旧会话写回,刷新仍跳回旧对话。
+  const handleNewTask = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.log('[DEBUG handleNewTask] 触发');
+    setManualNew(true);
+    setConvUid('');
+    setPendingTaskId(undefined);
+    syncUrl({ convUid: null, taskId: null, newTask: true });
+  }, [syncUrl]);
 
   // 场景空间三列布局需要宽度,进入时自动折叠左侧菜单
   const { setIsMenuExpand } = useContext(ChatContext);
@@ -123,6 +152,13 @@ export default function WorkspaceDetailPage() {
   useRequest(
     async () => {
       setConvLoadError(null);
+      // 主动「新任务」:保持无会话(欢迎态),跳过取后端「当前会话」与写回。
+      // 否则清空 URL 会触发本请求重载,又把旧会话 setConvUid + syncUrl 写回,
+      // 新任务刷新后仍会跳回旧对话。
+      if (manualNew) {
+        setConvUid('');
+        return;
+      }
       // 深链:URL 已携带 conv_uid 时直接打开该会话,不再取/建当前会话
       if (urlConvUid) {
         setConvUid(urlConvUid);
@@ -156,9 +192,9 @@ export default function WorkspaceDetailPage() {
       setConvUid(newConv.conv_uid);
     },
     {
-      ready: !!workspaceId,
-      // urlConvUid 变化(同一空间内通过全局历史切换会话)也要重载
-      refreshDeps: [convLoadKey, workspaceId, urlConvUid],
+      ready: !!workspaceId && !manualNew,
+      // urlConvUid 变化(同一空间内通过全局历史切换会话)也要重载;manualNew 变化用于新任务复位
+      refreshDeps: [convLoadKey, workspaceId, urlConvUid, manualNew],
       onError: (e: any) => {
         setConvLoadError(e?.message || '会话加载失败');
       },
@@ -295,11 +331,16 @@ export default function WorkspaceDetailPage() {
           onRefreshLists={handleRefreshLists}
           listsRefreshKey={listsRefreshKey}
           onConvChanged={(uid: string, tid?: number | null) => {
+            // 打开任一真实会话:退出「新任务」态(复位 manualNew、移除 URL new_task 标记),
+            // 之后刷新恢复的是该会话而非新任务首页。
+            setManualNew(false);
             setConvUid(uid);
             setPendingTaskId(tid ?? null);
             // tid 为 undefined 表示非列表触发(如新建/清理上下文),只换会话不动 task_id
-            syncUrl({ convUid: uid, taskId: tid === undefined ? undefined : tid });
+            syncUrl({ convUid: uid, taskId: tid === undefined ? undefined : tid, newTask: false });
           }}
+          // 简洁模式「新任务」:清空会话进欢迎态,并给 URL 打 new_task=1 标记
+          onNewTask={handleNewTask}
           // 仅回写地址栏、不触碰 state:进入/退出任务对话、任务 conv 解析完成都走这里
           onUrlSync={syncUrl}
           initialShowWelcome={!hasDeepLink}

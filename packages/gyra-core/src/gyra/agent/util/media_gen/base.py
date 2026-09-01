@@ -8,7 +8,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,56 @@ class MediaGenProvider(ABC):
     @abstractmethod
     def supported_video_models(self) -> List[str]:
         """List supported video generation models."""
+
+    def supported_inputs(self, model: str, kind: str = "") -> Set[str]:
+        """该 provider + 指定模型实际可消耗的图片输入字段集合。
+
+        取值是 executor 统一传入的**通用图片输入字段名**（不是厂商参数名）：
+        - ``image_url``：单张首帧图 / 图片编辑参考图
+        - ``image_url_last``：尾帧（首尾帧生视频，需与 image_url 同用）
+        - ``reference_images``：参考图列表（参考生视频 r2v / 图生图 i2i）
+
+        ``kind`` 为 "image"/"video"（厂商级合并协议需据此路由到内层 provider）。
+
+        默认返回**全量**（对应"未声明/不确定"的 provider 不做拦截，始终透传）；
+        明确知道自己输入边界的 provider（Seedance / HappyHorse / 万相图像等）
+        必须按 model 覆盖返回**收窄**的集合。模型不支持某输入字段时，executor
+        会据此给出明确报错（而非静默丢弃，避免用户标注的角色无效）。
+        """
+        return {"image_url", "image_url_last", "reference_images"}
+
+    def validate_inputs(self, model: str, kind: str, kwargs: Dict[str, Any]) -> None:
+        """在 provider 内部校验图片输入字段是否被本 provider+模型支持。
+
+        与 executor 层的校验互补：executor 覆盖 agent/子 Agent 路径，这里覆盖
+        直接调用 provider 的工具路径，保证「不支持的输入明确报错，而非静默丢弃」。
+        仅当 provider 已覆盖 ``supported_inputs`` 返回收窄集合时才会真正拦截；
+        未声明的 provider 默认全量支持，维持原透传行为。
+
+        Raises:
+            ValueError: 携带了本模型不支持的图片输入字段。
+        """
+        supported = set(self.supported_inputs(model, kind))
+        labels = {
+            "image_url": "图片输入(image_url/首帧/参考图)",
+            "image_url_last": "尾帧(image_url_last)",
+            "reference_images": "参考图(reference_images)",
+        }
+        problems = []
+        if kwargs.get("image_url") and "image_url" not in supported:
+            problems.append(labels["image_url"])
+        if kwargs.get("reference_images") and "reference_images" not in supported:
+            problems.append(labels["reference_images"])
+        if kwargs.get("image_url_last"):
+            if "image_url_last" not in supported:
+                problems.append(labels["image_url_last"])
+            elif not kwargs.get("image_url"):
+                problems.append("尾帧(image_url_last)必须与首帧(image_url)同时提供")
+        if problems:
+            raise ValueError(
+                f"模型 '{model}' 无法满足你的图片输入要求：{'；'.join(problems)}。"
+                f"请改用支持相应能力的媒体生成模型。"
+            )
 
     async def generate_audio(
         self,

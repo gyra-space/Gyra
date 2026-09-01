@@ -16,7 +16,7 @@ API docs:
 """
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Set
 
 from gyra.agent.util.media_gen._dashscope_common import (
     build_headers,
@@ -146,6 +146,21 @@ class HappyHorseVideoProvider(MediaGenProvider):
     def supported_video_models(self) -> List[str]:
         return []
 
+    def supported_inputs(self, model: str, kind: str = "") -> Set[str]:
+        """HappyHorse 按模型后缀(场景)决定可消耗的图片输入：
+        - t2v：无图片输入
+        - i2v：仅首帧(image_url)
+        - r2v：仅参考图(reference_images, 1~9)
+        无后缀(场景由输入推断)时两种都允许。不支持尾帧(image_url_last)。"""
+        scenario = _scenario_of(model)
+        if scenario == "t2v":
+            return set()
+        if scenario == "i2v":
+            return {"image_url"}
+        if scenario == "r2v":
+            return {"reference_images"}
+        return {"image_url", "reference_images"}
+
     def _video_format_for(self, model: str) -> dict[str, Any]:
         """解析模型的视频格式声明（声明驱动）。
 
@@ -236,6 +251,7 @@ class HappyHorseVideoProvider(MediaGenProvider):
                   refer to them.
                 - timeout: Max wait time in seconds (default 600).
         """
+        self.validate_inputs(model, "video", kwargs)
         submission = await self.submit_video(prompt, model, **kwargs)
         try:
             return await submission.complete()
@@ -258,6 +274,7 @@ class HappyHorseVideoProvider(MediaGenProvider):
         params) surface now. Polling + download is deferred to
         ``submission.complete()`` for background execution via AsyncTaskManager.
         """
+        self.validate_inputs(model, "video", kwargs)
         try:
             import httpx
         except ImportError:

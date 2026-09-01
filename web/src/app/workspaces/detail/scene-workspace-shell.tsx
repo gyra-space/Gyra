@@ -60,7 +60,9 @@ interface SceneWorkspaceShellProps {
    * 仅把「当前打开的会话/任务」回写地址栏,不改任何 React state。
    * 刷新恢复的唯一通道:状态切换即写入 URL,刷新后由上层把 URL 还原成同一现场。
    */
-  onUrlSync?: (patch: { convUid?: string | null; taskId?: number | null }) => void;
+  onUrlSync?: (patch: { convUid?: string | null; taskId?: number | null; newTask?: boolean }) => void;
+  /** 简洁模式「新任务」:清空会话进欢迎态,由上层打 new_task=1 标记并复位当前会话 */
+  onNewTask?: () => void;
   /** 简洁模式欢迎页初始值:URL 不带深链(conv_uid/task_id)时才展示欢迎页 */
   initialShowWelcome?: boolean;
   /** 简洁模式抽屉状态(header 待办角标 / 左栏「待办收件箱」共用) */
@@ -82,6 +84,7 @@ export function SceneWorkspaceShell({
   pendingTaskId,
   viewMode,
   onUrlSync,
+  onNewTask,
   initialShowWelcome = true,
   simpleDrawer,
   onSimpleDrawerChange,
@@ -661,13 +664,19 @@ export function SceneWorkspaceShell({
   };
 
   // 简洁模式:点击「新任务」回到欢迎态,等待输入;不立刻创建会话,
-  // 首次发送时才新建(conversationId 未传入 -> ensureConversation),避免遗留空会话
+  // 首次发送时才新建(conversationId 未传入 -> ensureConversation),避免遗留空会话。
+  // 同时交给上层(handleNewTask)清空会话并给 URL 打 new_task=1 标记:
+  // 点了新任务即关闭最后一个默认打开的任务,刷新时不然会因深链(hasDeepLink)
+  // 或「恢复后端当前会话」再次跳到旧会话,而非停在新建首页。
   const handleSimpleNew = () => {
+    // eslint-disable-next-line no-console
+    console.log('[DEBUG handleSimpleNew] onNewTask?', typeof onNewTask);
     setSimpleShowWelcome(true);
     setActiveTaskId(null);
     setDetailContext('dashboard');
     setPreviewItem(null);
     setSimpleAppCard(null);
+    onNewTask?.();
   };
 
   // 简洁模式:待办入口 → 右侧滑出待办抽屉(不切模式,不打断当前会话)
