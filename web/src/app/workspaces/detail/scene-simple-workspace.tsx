@@ -352,8 +352,12 @@ function stepToOutputs(step: WorkspaceExecutionStep): ManusExecutionOutput[] {
   // 也不渲染通用 d-tool 兜底(通用兜底会把入参/结果再展示一遍),由专用卡片 +
   // FORCE_PARAMS_ACTIONS 的入参区负责展示。
   const isDedicatedRenderAction = DEDICATED_RENDER_ACTIONS.has((step.action || '').toLowerCase());
+  // 标准工具的 vis 若是通用 d-tool 视图(输入/输出参数),结果已由该视图承载(其
+  // tool_result 即裸 output),再追加裸 output 会把同一结果在「输出参数」与下方文本
+  // 里重复渲染,故标记跳过 output 兜底,标准工具只保留 输入/输出参数 视图。
+  const visIsGenericToolView = visText.startsWith('```d-tool');
   if (visText && type !== 'sql' && !outIsDedicatedFence && !isDedicatedRenderAction) outputs.push({ output_type: 'markdown', content: visText });
-  if (out) {
+  if (out && !visIsGenericToolView) {
     let handled = false;
     const parsed = parseOutputJson(out);
     if (outIsDedicatedFence) {

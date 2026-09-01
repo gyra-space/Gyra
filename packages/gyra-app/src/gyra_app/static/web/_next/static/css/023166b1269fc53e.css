@@ -135,18 +135,19 @@
 }
 
 .explore-edit-btn {
-  border-radius: var(--mcp-radius-xs);
   border: 1px solid var(--mcp-border);
   cursor: pointer;
+  width: 28px;
+  height: 28px;
   transition: all var(--mcp-transition);
   color: var(--mcp-text-secondary);
   background: none;
+  border-radius: 8px;
   flex-shrink: 0;
   justify-content: center;
   align-items: center;
-  padding: 5px 12px;
-  font-size: 12px;
-  font-weight: 500;
+  padding: 0;
+  font-size: 14px;
   display: inline-flex;
 }
 
@@ -558,18 +559,19 @@
 }
 
 .explore-chat-btn {
-  border-radius: var(--mcp-radius-xs);
   border: 1px solid var(--mcp-border);
   cursor: pointer;
+  width: 28px;
+  height: 28px;
   transition: all var(--mcp-transition);
   color: var(--mcp-text-secondary);
   background: none;
+  border-radius: 8px;
   flex-shrink: 0;
   justify-content: center;
   align-items: center;
-  padding: 5px 12px;
-  font-size: 12px;
-  font-weight: 500;
+  padding: 0;
+  font-size: 14px;
   display: inline-flex;
 }
 

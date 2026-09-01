@@ -7,7 +7,7 @@ import {
 import { IApp } from '@/types/app';
 import { ReloadOutlined, SearchOutlined, GlobalOutlined, RocketFilled, FireFilled, AppstoreOutlined, UnorderedListOutlined, MessageOutlined, PlusOutlined, EditOutlined } from '@ant-design/icons';
 import { useDebounceFn } from 'ahooks';
-import { App as AntdApp, Spin } from 'antd';
+import { App as AntdApp, Spin, Tooltip } from 'antd';
 import moment from 'moment';
 import { useRouter } from 'next/navigation';
 import { AgentAvatar } from '@/components/common/agent-avatar';
@@ -336,26 +336,30 @@ export default function ExplorePage() {
                         )}
                       </div>
                       <div className='explore-card-footer-actions'>
-                        <button
-                          className='explore-edit-btn'
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleEdit(item);
-                          }}
-                        >
-                          <EditOutlined style={{ marginRight: 6 }} />
-                          {t('edit_application')}
-                        </button>
-                        <button
-                          className='explore-chat-btn'
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleChat(item);
-                          }}
-                        >
-                          <MessageOutlined style={{ marginRight: 6 }} />
-                          {t('start_chat') || 'Chat'}
-                        </button>
+                        <Tooltip title={t('edit_application')} placement='top'>
+                          <button
+                            className='explore-edit-btn'
+                            aria-label={t('edit_application')}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEdit(item);
+                            }}
+                          >
+                            <EditOutlined />
+                          </button>
+                        </Tooltip>
+                        <Tooltip title={t('start_chat') || 'Chat'} placement='top'>
+                          <button
+                            className='explore-chat-btn'
+                            aria-label={t('start_chat') || 'Chat'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleChat(item);
+                            }}
+                          >
+                            <MessageOutlined />
+                          </button>
+                        </Tooltip>
                       </div>
                     </div>
                   </div>

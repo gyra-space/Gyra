@@ -309,13 +309,14 @@ function PhaseGroup({
   selectedStepId?: string | null;
 }) {
   const phaseFailed = phase.status === 'failed' || phase.steps.some((s) => s.status === 'failed');
-  const autoOpen = phase.status === 'running' || phaseFailed;
-  // 默认仅运行中/失败组展开;不强制重开 —— 用户手动折叠后以用户交互为准,
-  // 避免运行中下一帧把已折叠的组重新弹开。
+  const empty = phase.steps.length === 0;
+  // 默认展开所有非空阶段组:运行结束后/刷新历史时,执行过程步骤保持可见,
+  // 而不是收敛成一行摘要(“结果为主、过程随行”会让执行步骤看起来“全丢失”)。
+  const autoOpen = !empty;
+  // 用户手动折叠后以用户交互为准,不强制重开。
   const [open, setOpen] = useState(autoOpen);
 
   const toolStepCount = phase.steps.filter((s) => s.type !== 'thinking').length;
-  const empty = phase.steps.length === 0;
   const phaseDuration = phase.steps.reduce((sum, s) => sum + (durations.get(s.id) ?? 0), 0);
   const meta = empty
     ? '待开始'

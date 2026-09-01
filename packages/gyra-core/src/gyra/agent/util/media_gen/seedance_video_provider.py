@@ -37,6 +37,84 @@ _SUPPORTED_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}
 # Supported aspect ratios
 _SUPPORTED_RATIOS = {"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}
 
+# 各 Seedance 模型族支持的视频时长范围（秒）。模型名按路由透传，Ark 对 duration 的
+# 合法区间随模型版本不同：Seedance 1.0 Pro / Pro Fast 为 [2,12]，1.5 Pro 为 [4,12]，
+# 2.0 系列（含 mini/fast）为 [4,15]。请求时长超出区间会触发 InvalidParameter，因此
+# 在提交前先归一到区间内（就近取值），避免请求直接失败。未命中版本时按 2.0 系列兜底。
+_SEEDANCE_1_0_DURATION_RANGE = (2, 12)
+_SEEDANCE_1_5_DURATION_RANGE = (4, 12)
+_SEEDANCE_2_0_DURATION_RANGE = (4, 15)
+
+
+def _duration_range_for(model: str) -> tuple[int, int]:
+    """按模型名推断该 Seedance 模型族支持的时长范围 (min, max)。"""
+    m = (model or "").lower()
+    if "1-0" in m or "1.0" in m:
+        return _SEEDANCE_1_0_DURATION_RANGE
+    if "1-5" in m or "1.5" in m:
+        return _SEEDANCE_1_5_DURATION_RANGE
+    return _SEEDANCE_2_0_DURATION_RANGE
+
+
+def _normalize_duration(model: str, duration: Any) -> int:
+    """规整 duration 到模型合法区间；越界时就近取值并记 warning。"""
+    if duration is None or isinstance(duration, bool):
+        duration = 5
+    elif not isinstance(duration, int):
+        duration = int(duration)
+    lo, hi = _duration_range_for(model)
+    if duration < lo:
+        logger.warning(
+            f"[SeedanceVideoProvider] duration={duration}s is below model {model} "
+            f"minimum {lo}s; clamped to {lo}s"
+        )
+        return lo
+    if duration > hi:
+        logger.warning(
+            f"[SeedanceVideoProvider] duration={duration}s is above model {model} "
+            f"maximum {hi}s; clamped to {hi}s"
+        )
+        return hi
+    return duration
+
+
+def _extract_video_url(content: Any) -> str:
+    r"""从任务查询响应中提取视频 URL，兼容两种 ``content`` 结构。
+
+    - dict: Volcano Ark 实际返回 ``content`` 为对象，``video_url`` 是字符串
+      （个别版本可能是 ``{"url": ...}``）。
+    - list: 兼容旧格式，元素形如
+      ``{"type": "video_url", "video_url": {"url": "..."}}``。
+
+    Args:
+        content: 响应里的 ``content`` 字段。
+
+    Returns:
+        视频 URL 字符串；找不到时返回空字符串。
+    """
+    if isinstance(content, dict):
+        url = content.get("video_url")
+        if isinstance(url, str) and url:
+            return url
+        if isinstance(url, dict):
+            nested = url.get("url")
+            if isinstance(nested, str) and nested:
+                return nested
+        return ""
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "video_url":
+                video_url_obj = item.get("video_url")
+                if isinstance(video_url_obj, dict):
+                    url = video_url_obj.get("url")
+                    if url:
+                        return url
+                elif isinstance(video_url_obj, str) and video_url_obj:
+                    return video_url_obj
+    return ""
+
 
 @MediaGenProviderRegistry.register(protocol="volcengine_video", env_key="ARK_API_KEY")
 class SeedanceVideoProvider(MediaGenProvider):
@@ -75,7 +153,9 @@ class SeedanceVideoProvider(MediaGenProvider):
             prompt: Text description of the video (supports Chinese & English).
             model: Model to use (doubao-seedance-2-0-250428, doubao-seedance-1-5-pro-251215, etc.).
             **kwargs: Additional params:
-                - duration: Video duration in seconds (default 5, range 1-15).
+                - duration: Video duration in seconds (default 5; range depends on the
+                  model family: Seedance 2.0 系列 [4,15]，1.5 Pro [4,12]，
+                  1.0 Pro/Pro Fast [2,12]；超出区间将自动就近规整).
                 - resolution: "480p", "720p", "1080p", "4k" (default "720p").
                 - aspect_ratio: "16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"
                   (default "16:9").
@@ -120,7 +200,7 @@ class SeedanceVideoProvider(MediaGenProvider):
         timeout = kwargs.get("timeout", 600)
         base_url = self.base_url or _DEFAULT_BASE_URL
 
-        duration = kwargs.get("duration", 5)
+        duration = _normalize_duration(model, kwargs.get("duration", 5))
         resolution = kwargs.get("resolution", "720p")
         aspect_ratio = kwargs.get("aspect_ratio", "16:9")
         seed = kwargs.get("seed")
@@ -362,19 +442,11 @@ class SeedanceVideoProvider(MediaGenProvider):
             status = status_data.get("status", "")
 
             if status == "succeeded":
-                # Extract video URL from content.video_url.url
-                content_list = status_data.get("content", [])
-                if not isinstance(content_list, list):
-                    content_list = []
-                for item in content_list:
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("type") == "video_url":
-                        video_url_obj = item.get("video_url")
-                        if isinstance(video_url_obj, dict):
-                            url = video_url_obj.get("url")
-                            if url:
-                                return url
+                # Extract video URL from content (dict or list).
+                # Volcano Ark returns content as a dict: {'video_url': '...'}.
+                url = _extract_video_url(status_data.get("content"))
+                if url:
+                    return url
 
                 # Fallback: try output field
                 output = status_data.get("output")

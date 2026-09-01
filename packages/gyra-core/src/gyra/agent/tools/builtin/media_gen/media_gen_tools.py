@@ -662,7 +662,11 @@ class GenerateVideoTool(ToolBase):
                 },
                 "duration": {
                     "type": "integer",
-                    "description": "视频时长 (秒)。Seedance 范围 1-15 秒",
+                    "description": (
+                        "视频时长 (秒)。Seedance 2.0 系列 4-15s，Seedance 1.5 Pro 4-12s，"
+                        "Seedance 1.0 Pro/Pro Fast 2-12s（不符合模型区间时将自动就近规整）；"
+                        "HappyHorse 3-15s。默认 5 秒"
+                    ),
                     "default": 5,
                     "minimum": 1,
                     "maximum": 60,
