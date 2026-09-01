@@ -28,6 +28,10 @@ import { SceneAskUserCard, extractAskUserData } from './scene-ask-user-card';
 import { statusLabel } from './scene-task-rail';
 import { StepFlow } from './step-flow';
 import { buildExecutionPhases, usePlanningTimeline } from './use-execution-phases';
+import {
+  openAttachmentPreview,
+  makePreviewPayload,
+} from '@/components/chat/input/attachment-preview';
 import { groupDeliverablesByRound, groupTaskFilesByRound, splitRounds } from './deliverable-rounds';
 import type {
   WorkspaceDeliverableFile,
@@ -67,29 +71,35 @@ function UserBubble({
         {files.length > 0 && (
           <div className="ws-step-user__attachments">
             {images.map((a, i) => (
-              <a
+              <button
+                type="button"
                 key={`${a.url}-${i}`}
                 className="ws-step-user__attachment-img"
-                href={resolveFileDownloadUrl(a.url)}
-                target="_blank"
-                rel="noreferrer"
-                title={a.name}
+                onClick={() =>
+                  openAttachmentPreview(
+                    makePreviewPayload(a.name, a.url, { mimeType: a.mime_type })
+                  )
+                }
+                title={`预览 ${a.name}`}
               >
                 <img src={transformFileUrl(a.url)} alt={a.name} loading="lazy" />
-              </a>
+              </button>
             ))}
             {docs.map((a, i) => (
-              <a
+              <button
+                type="button"
                 key={`${a.url}-${i}`}
                 className="ws-step-user__attachment-file"
-                href={resolveFileDownloadUrl(a.url)}
-                target="_blank"
-                rel="noreferrer"
-                title={a.name}
+                onClick={() =>
+                  openAttachmentPreview(
+                    makePreviewPayload(a.name, a.url, { mimeType: a.mime_type })
+                  )
+                }
+                title={`预览 ${a.name}`}
               >
                 <FileOutlined />
                 <span className="ws-step-user__attachment-name">{a.name}</span>
-              </a>
+              </button>
             ))}
           </div>
         )}

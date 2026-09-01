@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import List, Optional, Union
 
@@ -58,6 +59,8 @@ class Serve(BaseServe):
             system_app, api_prefix, api_tags, db_url_or_db, try_create_tables
         )
         self._config = config
+        # Strong reference to the fire-and-forget startup sync task.
+        self._builtin_sync_task: Optional[asyncio.Task] = None
 
     def init_app(self, system_app: SystemApp):
         if self._app_has_initiated:
@@ -116,9 +119,58 @@ class Serve(BaseServe):
         """Called after the application has started.
 
         Run the one-time, idempotent skill normalization migration to repair
-        legacy hash-suffixed skill_code/directories.
+        legacy hash-suffixed skill_code/directories, then seed the built-in
+        skills shipped under the source tree (fire-and-forget).
         """
         await self._normalize_existing_skills()
+        self._schedule_builtin_skill_sync()
+
+    def _schedule_builtin_skill_sync(self):
+        """Seed built-in skills in the background without blocking startup.
+
+        Normalization must finish first because it can rename skill_code values
+        that the built-in sync would otherwise match against.
+        """
+        from .service.service import Service
+
+        try:
+            service: Service = self._system_app.get_component(Service.name, Service)
+            if not service:
+                logger.info("Skill service not available, skipping built-in skill sync")
+                return
+            if not service.config.enable_builtin_skill_sync:
+                logger.info("Built-in skill sync disabled by config, skipping")
+                return
+
+            task = asyncio.create_task(self._run_builtin_skill_sync(service))
+            # Keep a strong reference: a bare create_task can be garbage
+            # collected mid-flight, silently dropping the sync.
+            self._builtin_sync_task = task
+            task.add_done_callback(self._on_builtin_sync_done)
+        except Exception as e:
+            logger.warning(
+                f"Failed to schedule built-in skill sync: {e}", exc_info=True
+            )
+
+    async def _run_builtin_skill_sync(self, service) -> None:
+        """Background body of the built-in skill sync."""
+        try:
+            skills = await service.sync_from_builtin_dir()
+            logger.info(
+                f"Built-in skill sync uploaded/updated {len(skills)} skill(s)"
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Built-in skill sync failed: {e}", exc_info=True)
+
+    def _on_builtin_sync_done(self, task: asyncio.Task) -> None:
+        """Surface exceptions from the background sync task."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.warning(f"Built-in skill sync task raised: {exc}")
 
     async def _normalize_existing_skills(self):
         """Run the one-time, idempotent skill normalization migration."""

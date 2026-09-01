@@ -121,6 +121,13 @@
   line-height: 16px;
 }
 
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
 .closeButton {
   width: 28px;
   height: 28px;
@@ -138,6 +145,17 @@
 .closeButton:hover {
   background: #f0f0f0;
   color: #434343;
+}
+
+.closeButton:disabled {
+  color: #d9d9d9;
+  background: transparent;
+}
+
+.errorLink {
+  font-size: 13px;
+  color: #4f46e5;
+  text-decoration: underline;
 }
 
 /* ---- Toolbar ---- */
@@ -272,7 +290,46 @@
   font-size: 32px;
 }
 
-/* ---- Image Preview ---- */
+/* ---- Unsupported (binary / unknown) ---- */
+.unsupportedContainer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 260px;
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.unsupportedIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 4px;
+  font-size: 30px;
+  color: #94a3b8;
+  background: #f1f5f9;
+  border-radius: 50%;
+}
+
+.unsupportedTitle {
+  font-size: 15px;
+}
+
+.unsupportedHint {
+  max-width: 380px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.unsupportedButton {
+  margin-top: 8px;
+}
+
+/* ---- Image / Video Preview ---- */
 .imageContainer {
   display: flex;
   align-items: center;
@@ -287,6 +344,13 @@
   border-radius: 4px;
 }
 
+.previewVideo {
+  max-width: 100%;
+  max-height: 70vh;
+  border-radius: 4px;
+  background: #000;
+}
+
 .imagePlaceholder {
   display: flex;
   align-items: center;
@@ -295,6 +359,130 @@
   min-height: 200px;
   background: #f5f5f5;
   border-radius: 4px;
+}
+
+/* ---- Zoomable image viewer ---- */
+.zoomWrap {
+  position: relative;
+  background: #fafafa;
+}
+
+.zoomStage {
+  position: relative;
+  height: 66vh;
+  min-height: 320px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+  background-image:
+    linear-gradient(45deg, #f0f0f0 25%, transparent 25%),
+    linear-gradient(-45deg, #f0f0f0 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #f0f0f0 75%),
+    linear-gradient(-45deg, transparent 75%, #f0f0f0 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.zoomStageGrabbing {
+  cursor: grabbing;
+}
+
+.zoomImage {
+  max-width: 100%;
+  max-height: 100%;
+  will-change: transform;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.zoomToolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 94%);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgb(0 0 0 / 6%);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 10%);
+  z-index: 2;
+}
+
+.zoomBtn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #595959;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.zoomBtn:hover:not(:disabled) {
+  background: #f0f0f0;
+  color: #1f1f1f;
+}
+
+.zoomBtn:disabled {
+  color: #d9d9d9;
+  cursor: not-allowed;
+}
+
+.zoomScale {
+  min-width: 46px;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: #595959;
+}
+
+.zoomDivider {
+  width: 1px;
+  height: 16px;
+  background: #e8e8e8;
+  margin: 0 4px;
+}
+
+.zoomTextBtn {
+  height: 26px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #595959;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.zoomTextBtn:hover {
+  background: #f0f0f0;
+  color: #1f1f1f;
+}
+
+/* ---- PDF Preview ---- */
+.pdfContainer {
+  background: #fafafa;
+  padding: 0;
+}
+
+.pdfFrame {
+  width: 100%;
+  height: 72vh;
+  min-height: 400px;
+  border: none;
+  background: #fff;
 }
 
 /* ---- HTML Preview ---- */

@@ -1909,13 +1909,20 @@
   white-space: normal;
 }
 
+/* 点击放大预览(button 元素,需重置 UA 按钮样式) */
 .ws-step-user__attachment-img {
   display: block;
   width: 72px;
   height: 72px;
+  padding: 0;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
   border-radius: 8px;
   overflow: hidden;
   border: 1px solid rgba(var(--ws-accent-rgb), 0.18);
+  cursor: zoom-in;
 }
 
 .ws-step-user__attachment-img img {
@@ -1930,13 +1937,18 @@
   align-items: center;
   gap: 6px;
   max-width: 220px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
   padding: 5px 10px;
   border-radius: 8px;
   background: rgba(var(--ws-accent-rgb), 0.1);
   border: 1px solid rgba(var(--ws-accent-rgb), 0.18);
   color: var(--ws-ink);
+  font-family: inherit;
   font-size: 12px;
   text-decoration: none;
+  cursor: zoom-in;
 }
 
 .ws-step-user__attachment-file:hover {
@@ -3198,30 +3210,42 @@
   display: grid;
   /* 默认收起右侧工作空间:对话流占满全宽(结果为主,过程随行) */
   grid-template-columns: minmax(0, 1fr);
-  /* 浮动面板:内嵌双栏同样留呼吸间隙,以灰底下沉区分 */
-  gap: 8px;
-  padding: 8px;
-  background: var(--ws-surface-2);
+  /* 单栏态:全出血。外壳 .ws-scene-shell__space 本身已是圆角白卡(描边+双层阴影+
+     overflow:hidden),这里再垫一圈灰底套白卡会形成"卡中卡",露出一圈说不清是留白
+     还是失误的灰边。故单栏时抹平 padding/gap/圆角/阴影,对话流与外壳融为一体。 */
+  gap: 0;
+  padding: 0;
+  background: var(--ws-surface);
   transition: grid-template-columns 0.25s ease;
 }
 /* 右侧工作空间展开(点击步骤/文件触发):左对话 44% + 右预览 56% */
+/* 双栏态才需要"浮动卡片"语义:灰底下沉 + 圆角白卡,让对话流与工作空间互相区分 */
 .ws-simple-workspace--right-open {
   grid-template-columns: minmax(0, 44%) minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+  background: var(--ws-surface-2);
 }
 .ws-simple-chat,
 .ws-simple-right {
   background: var(--ws-surface);
-  /* 浮动面板:圆角白卡浮于灰底之上,不再用分隔线 */
+  /* 单栏态:无圆角无阴影(全出血);双栏态由下方规则恢复卡片感 */
   border: none;
-  border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  border-radius: 0;
+  box-shadow: none;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
-.dark .ws-simple-chat,
-.dark .ws-simple-right {
+/* 双栏态:圆角白卡浮于灰底之上,不再用分隔线 */
+.ws-simple-workspace--right-open .ws-simple-chat,
+.ws-simple-workspace--right-open .ws-simple-right {
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+.dark .ws-simple-workspace--right-open .ws-simple-chat,
+.dark .ws-simple-workspace--right-open .ws-simple-right {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 .ws-simple-chat__hd,
@@ -3258,12 +3282,12 @@
   min-height: 0;
   overflow-y: auto;
   /* 单列对话 feed:宽屏下主列限宽居中,阅读友好 */
-  padding: 12px max(14px, calc((100% - 760px) / 2));
+  padding: 12px max(14px, calc((100% - 880px) / 2));
 }
 /* 输入条:对话 feed 底部,与主列同宽对齐 */
 .ws-simple-chat__input {
   flex-shrink: 0;
-  padding: 8px max(12px, calc((100% - 760px) / 2)) 12px;
+  padding: 8px max(12px, calc((100% - 880px) / 2)) 12px;
 }
 .ws-simple-chat__input .ws-agent-workspace__input {
   padding: 0;
@@ -4214,10 +4238,19 @@
 }
 
 /* 简洁模式右侧工作空间全屏(点击「全屏」):占满整个壳区,隐藏左侧对话流,可随时还原 */
+/* 注:--right-maximized 常与 --right-open 同时挂载,此处须抹平后者带来的灰底/内边距,
+   否则全屏态仍会残留一圈 8px 灰边(与单栏全出血同一原则)。 */
 .ws-simple-workspace--right-maximized {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  background: var(--ws-surface);
 }
 .ws-simple-workspace--right-maximized .ws-simple-chat {
   display: none;
+}
+.ws-simple-workspace--right-maximized .ws-simple-right {
+  border-radius: 0;
+  box-shadow: none;
 }

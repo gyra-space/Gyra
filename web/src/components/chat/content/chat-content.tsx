@@ -25,6 +25,10 @@ import { useSearchParams } from "next/navigation";
 import React, { memo, useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { transformFileUrl } from "@/utils";
+import {
+  openAttachmentPreview,
+  makePreviewPayload,
+} from "@/components/chat/input/attachment-preview";
 
 const UserIcon: React.FC = () => {
   const [user, setUser] = React.useState<any>({});
@@ -213,6 +217,8 @@ const ChatContent: React.FC<{
   const { t } = useTranslation();
   const { context, role, thinking } = content;
   const isRobot = useMemo(() => role === "view", [role]);
+  // 下方的附件/图片点击放大预览走 openAttachmentPreview，
+  // 弹窗由全局宿主 AttachmentPreviewHost 渲染（见 app/layout.tsx）
 
   const { value, cachePluginContext } = useMemo<{
     relations: string[];
@@ -409,8 +415,13 @@ const ChatContent: React.FC<{
                         <img
                           src={transformFileUrl(src || '')}
                           alt={alt || 'image'}
-                          className='max-w-full md:max-w-[80%] lg:max-w-[70%] object-contain'
+                          className='max-w-full md:max-w-[80%] lg:max-w-[70%] object-contain cursor-zoom-in'
                           style={{ maxHeight: '200px' }}
+                          onClick={() =>
+                            openAttachmentPreview(
+                              makePreviewPayload(alt || '图片', transformFileUrl(src || ''))
+                            )
+                          }
                           {...props}
                         />
                       ),
@@ -424,17 +435,16 @@ const ChatContent: React.FC<{
                 {Array.isArray(content?.attachments) && content.attachments.length > 0 && (
                   <div className="mt-2 space-y-1">
                     {content.attachments.map((a, i) => (
-                      <a
+                      <button
                         key={`${a.url}-${i}`}
+                        type="button"
                         className="flex items-center gap-1.5 text-[12px] text-[#4f46e5] hover:text-[#4338ca] transition-colors"
-                        href={transformFileUrl(a.url)}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={a.name}
+                        onClick={() => openAttachmentPreview(makePreviewPayload(a.name, a.url))}
+                        title={`预览 ${a.name}`}
                       >
                         <FileOutlined className="text-[11px]" />
                         <span className="truncate">{a.name}</span>
-                      </a>
+                      </button>
                     ))}
                   </div>
                 )}

@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from gyra._private.config import Config
-from gyra.configs.model_config import DATA_DIR
+from gyra.configs.model_config import DATA_DIR, ROOT_PATH
 from gyra_serve.core import BaseServeConfig
 
 APP_NAME = "skill"
@@ -17,6 +17,9 @@ CFG = Config()
 # Default skill directories (use DATA_DIR/skill as default)
 DEFAULT_PROJECT_SKILL_DIR = os.path.join(DATA_DIR, "skill")
 DEFAULT_TEMP_GIT_DIR = os.path.join(DATA_DIR, "skill", ".git_cache")
+
+# Built-in skills shipped inside the source tree (ROOT_PATH/skill)
+DEFAULT_BUILTIN_SKILL_DIR = os.path.join(ROOT_PATH, "skill")
 
 
 @dataclass
@@ -46,23 +49,19 @@ class ServeConfig(BaseServeConfig):
         default=None, metadata={"help": "Sandbox skill directory path"}
     )
 
-    # Default skill repository to load on startup
-    default_skill_repo_url: Optional[str] = field(
-        default="https://github.com/gyra-ai/gyra-skills.git",
-        metadata={"help": "Default git repository URL for skills to load on startup"},
+    # Built-in skills shipped with the source tree (ROOT_PATH/skill)
+    builtin_skill_dir: Optional[str] = field(
+        default=DEFAULT_BUILTIN_SKILL_DIR,
+        metadata={"help": "Built-in skill directory shipped with the repository"},
     )
 
-    default_skill_repo_branch: Optional[str] = field(
-        default="main",
-        metadata={"help": "Default git branch for skill repository"},
-    )
-
-    # Whether to enable automatic skill sync on startup
-    enable_default_skill_sync: bool = field(
+    # Whether to upload/update built-in skills on startup
+    enable_builtin_skill_sync: bool = field(
         default=True,
-        metadata={"help": "Whether to sync skills from git repository on startup. "
-                          "Set to false to skip auto-sync (useful for slow network or "
-                          "when using local skills only)"},
+        metadata={
+            "help": "Whether to upload/update built-in skills from "
+            "builtin_skill_dir on startup"
+        },
     )
 
     def get_type_value(self):
@@ -88,10 +87,13 @@ class ServeConfig(BaseServeConfig):
             return self.sandbox_skill_dir
         return None
 
-    def get_default_skill_repo_url(self) -> Optional[str]:
-        """Get default skill repository URL"""
-        return self.default_skill_repo_url
+    def get_builtin_skill_dir(self) -> Optional[str]:
+        """Get the built-in skill directory.
 
-    def get_default_skill_repo_branch(self) -> str:
-        """Get default skill repository branch"""
-        return self.default_skill_repo_branch or "main"
+        Returns None when the directory is absent, which is the normal case for
+        pip-installed deployments where the source tree is not available.
+        """
+        candidate = self.builtin_skill_dir or DEFAULT_BUILTIN_SKILL_DIR
+        if candidate and os.path.isdir(candidate):
+            return candidate
+        return None

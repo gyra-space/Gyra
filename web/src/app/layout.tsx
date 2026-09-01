@@ -20,8 +20,19 @@ import "./i18n";
 import "@fontsource-variable/inter";
 import "../styles/globals.css";
 import { Suspense } from 'react'
+import dynamic from "next/dynamic";
 import { authService } from "@/services/auth";
 import { setMessageInstance } from "@/utils/antd-instance";
+
+// 附件预览弹窗宿主：全局挂载一次，供所有输入框/消息流的附件点击预览复用。
+// 懒加载，避免把预览器依赖（GPTVis / syntax-highlighter）打进首屏 chunk。
+const AttachmentPreviewHost = dynamic(
+  () =>
+    import("@/components/chat/input/attachment-preview").then((m) => ({
+      default: m.AttachmentPreviewHost,
+    })),
+  { ssr: false }
+);
 
 // Prevent SSR flash
 const EmptyLayout = ({ children }: { children: React.ReactNode }) => <>{children}</>;
@@ -302,7 +313,11 @@ function LayoutWrapper({ children }: { children: React.ReactNode }) {
         algorithm: mode === "dark" ? theme.darkAlgorithm : undefined,
       }}
     >
-      <App><StaticInstanceBridge />{renderContent()}</App>
+      <App>
+        <StaticInstanceBridge />
+        {renderContent()}
+        <AttachmentPreviewHost />
+      </App>
     </ConfigProvider>
   );
 }

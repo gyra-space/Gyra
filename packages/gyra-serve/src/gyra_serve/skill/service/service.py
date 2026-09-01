@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import io
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ import tempfile
 import threading
 import uuid
 import zipfile
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Tuple
 from pathlib import Path
 
 from gyra.component import SystemApp
@@ -35,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 # Store background tasks by task_id
 _background_tasks: Dict[str, threading.Thread] = {}
+
+# Noise that must never be packaged into a built-in skill zip
+_ZIP_EXCLUDED_DIRS = {"__pycache__", ".git", ".ipynb_checkpoints", ".DS_Store"}
+_ZIP_EXCLUDED_FILES = {".DS_Store", "Thumbs.db"}
 
 
 def normalize_skill_name(name: str) -> str:
@@ -488,6 +493,130 @@ class Service(BaseService[SkillEntity, SkillRequest, SkillResponse]):
             return synced
 
         return await asyncio.to_thread(_run)
+
+    async def sync_from_builtin_dir(
+        self, builtin_dir: Optional[str] = None
+    ) -> List[SkillResponse]:
+        """Upload/update every built-in skill shipped under the source tree.
+
+        This performs no skill recognition of its own: each candidate is packaged
+        as a zip and handed to upload_from_zip, which already owns SKILL.md
+        parsing, skill code derivation (same name -> same code -> in-place
+        update, so a version bump updates instead of duplicating) and file
+        copying. Built-in seeding therefore runs on the exact same code path as
+        a manual upload.
+
+        A directory takes precedence over a sibling ``<name>.zip`` because the
+        directory is what git tracks and is therefore the fresher copy.
+
+        Args:
+            builtin_dir: Override for the built-in skill directory. Defaults to
+                the configured ``builtin_skill_dir``.
+
+        Returns:
+            List[SkillResponse]: Successfully uploaded/updated skills.
+        """
+        target = builtin_dir or self._serve_config.get_builtin_skill_dir()
+        if not target:
+            logger.info(
+                "Built-in skill directory not present, skipping built-in skill sync"
+            )
+            return []
+        if not os.path.isdir(target):
+            logger.warning(
+                f"Built-in skill directory does not exist: {target}, "
+                "skipping built-in skill sync"
+            )
+            return []
+
+        archives = await asyncio.to_thread(self._package_builtin_skills, target)
+        if not archives:
+            logger.info(f"No built-in skills found under {target}")
+            return []
+
+        uploaded: List[SkillResponse] = []
+        for label, payload in archives:
+            upload = UploadFile(file=io.BytesIO(payload), filename=label)
+            try:
+                response = await self.upload_from_zip(upload)
+                uploaded.append(response)
+                logger.info(
+                    f"Built-in skill '{label}' uploaded/updated as "
+                    f"'{response.skill_code}'"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to upload built-in skill '{label}': {e}", exc_info=True
+                )
+
+        logger.info(
+            f"Built-in skill sync finished: {len(uploaded)}/{len(archives)} "
+            f"from {target}"
+        )
+        return uploaded
+
+    def _package_builtin_skills(
+        self, builtin_dir: str
+    ) -> List[Tuple[str, bytes]]:
+        """Package built-in skills into in-memory zips.
+
+        Args:
+            builtin_dir: Built-in skill directory.
+
+        Returns:
+            List of (zip file name, zip payload) pairs, sorted by name so the
+            upload order is deterministic across restarts.
+        """
+        archives: List[Tuple[str, bytes]] = []
+
+        for entry in sorted(os.scandir(builtin_dir), key=lambda e: e.name):
+            if entry.is_dir():
+                if not os.path.exists(os.path.join(entry.path, "SKILL.md")):
+                    logger.warning(
+                        f"Built-in skill '{entry.name}' has no SKILL.md, skipping"
+                    )
+                    continue
+                archives.append(
+                    (f"{entry.name}.zip", self._zip_skill_dir(entry.path, entry.name))
+                )
+            elif entry.is_file() and entry.name.lower().endswith(".zip"):
+                # A sibling directory is git-tracked and fresher, it wins.
+                stem = entry.name[: -len(".zip")]
+                if os.path.isdir(os.path.join(builtin_dir, stem)):
+                    logger.info(
+                        f"Built-in zip '{entry.name}' skipped: sibling directory "
+                        f"'{stem}' takes precedence"
+                    )
+                    continue
+                with open(entry.path, "rb") as f:
+                    archives.append((entry.name, f.read()))
+
+        return archives
+
+    @staticmethod
+    def _zip_skill_dir(src_dir: str, arc_root: str) -> bytes:
+        """Zip a skill directory into an in-memory archive.
+
+        Args:
+            src_dir: Skill directory on disk.
+            arc_root: Top-level folder name inside the archive. upload_from_zip
+                extracts and then locates SKILL.md, so the archive must keep the
+                skill folder as its single top-level entry.
+
+        Returns:
+            bytes: Zip payload.
+        """
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for root, dirs, files in os.walk(src_dir):
+                dirs[:] = [d for d in dirs if d not in _ZIP_EXCLUDED_DIRS]
+                for name in sorted(files):
+                    if name in _ZIP_EXCLUDED_FILES:
+                        continue
+                    full_path = os.path.join(root, name)
+                    rel_path = os.path.relpath(full_path, src_dir)
+                    archive.write(full_path, os.path.join(arc_root, rel_path))
+        return buffer.getvalue()
 
     def _find_skill_directories(self, repo_path: str) -> List[str]:
         """Find skill directories in the repository.

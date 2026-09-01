@@ -32,7 +32,6 @@ import {
   SafetyOutlined,
   ThunderboltOutlined,
   CloseOutlined,
-  FolderAddOutlined,
   BookOutlined,
   UploadOutlined,
   LeftOutlined,
@@ -59,6 +58,13 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ConnectorsModal } from '@/components/chat/connectors-modal';
+import {
+  openAttachmentPreview,
+  normalizeResourceItem,
+  normalizeUploadingFile,
+  LocalFileThumb,
+  type PreviewFilePayload,
+} from '@/components/chat/input/attachment-preview';
 import { InteractionHandler } from '@/components/interaction';
 import { IApp } from '@/types/app';
 import { IModelData } from '@/types/model';
@@ -115,18 +121,16 @@ const getFileTypeTheme = (fileName: string) => {
 };
 
 // 已上传资源显示组件
-const UploadedResourcePreview = ({ resource, onRemove }: { resource: any; onRemove: () => void }) => {
+const UploadedResourcePreview = ({ resource, onRemove, onPreview }: { resource: any; onRemove: () => void; onPreview: () => void }) => {
   const theme = getFileTypeTheme(resource.file_name || resource.image_url?.file_name || resource.file_url?.file_name || '');
   const FileIcon = getFileIcon(resource.file_name || resource.image_url?.file_name || resource.file_url?.file_name || '');
-  
+
   let fileName = 'File';
   let previewUrl = '';
-  let isImage = false;
-  
+
   if (resource.type === 'image_url' && resource.image_url) {
     fileName = resource.image_url.file_name || 'Image';
     previewUrl = resource.image_url.preview_url || resource.image_url.url;
-    isImage = true;
   } else if (resource.type === 'file_url' && resource.file_url) {
     fileName = resource.file_url.file_name || 'File';
     previewUrl = resource.file_url.preview_url || resource.file_url.url;
@@ -137,25 +141,49 @@ const UploadedResourcePreview = ({ resource, onRemove }: { resource: any; onRemo
     fileName = resource.video_url.file_name || 'Video';
     previewUrl = resource.video_url.preview_url || resource.video_url.url;
   }
-  
+
+  const isImage = resource.type === 'image_url';
+  const extLabel = fileName.split('.').pop()?.toUpperCase() || '文件';
+
   return (
     <div className="relative group">
-      <div className={`w-[60px] h-[60px] rounded-lg border-2 overflow-hidden bg-white dark:bg-gray-800 shadow-sm hover:shadow-md transition-all duration-200 ${theme.border}`}>
-        {isImage && previewUrl ? (
-          <img src={previewUrl} alt={fileName} className="w-full h-full object-cover" />
-        ) : (
-          <div className={`w-full h-full flex items-center justify-center ${theme.bg}`}>
-            <FileIcon className={`${theme.icon} text-xl`} />
+      {isImage ? (
+        <div className="flex w-[84px] flex-col items-center">
+          <div
+            className="relative h-[84px] w-[84px] cursor-pointer overflow-hidden rounded-xl border border-gray-200/80 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 shadow-sm transition-shadow hover:shadow-md"
+            onClick={onPreview}
+            title={`预览 ${fileName}`}
+          >
+            {previewUrl
+              ? <img src={previewUrl} alt={fileName} className="h-full w-full object-cover" />
+              : <div className={`flex h-full w-full items-center justify-center ${theme.bg}`}>
+                  <FileIcon className={`${theme.icon} text-xl`} />
+                </div>}
+            {/* 文件名:卡内下沿透明渐变浮层,省去下方一行 */}
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-black/0 px-1 pb-1 pt-4">
+              <p className="truncate text-center text-[10px] leading-tight text-white">{fileName}</p>
+            </div>
           </div>
-        )}
-      </div>
-      <div className="mt-1 max-w-[60px]">
-        <p className="text-xs text-gray-600 dark:text-gray-400 truncate">{fileName}</p>
-      </div>
+        </div>
+      ) : (
+        <div
+          className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-200/80 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-800/60 py-2 pl-2 pr-1.5 transition-colors hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm"
+          onClick={onPreview}
+          title={`预览 ${fileName}`}
+        >
+          <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${theme.bg}`}>
+            <FileIcon className={`${theme.icon} text-base`} />
+          </div>
+          <div className="min-w-0">
+            <p className="max-w-[140px] truncate text-xs font-medium text-gray-700 dark:text-gray-200">{fileName}</p>
+            <p className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">{extLabel}</p>
+          </div>
+        </div>
+      )}
       <button
         onClick={(e) => { e.stopPropagation(); onRemove(); }}
         title="移除附件"
-        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+        className="absolute -top-1.5 -right-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-400 shadow transition-all duration-200 hover:border-red-300 hover:bg-red-50 hover:text-red-500"
       >
         <CloseOutlined className="text-[10px]" />
       </button>
@@ -164,43 +192,60 @@ const UploadedResourcePreview = ({ resource, onRemove }: { resource: any; onRemo
 };
 
 // 上传中文件显示组件
-const UploadingFilePreview = ({ uploadingFile, onRetry, onRemove }: { uploadingFile: { id: string; file: File; status: string }; onRetry: () => void; onRemove: () => void }) => {
+const UploadingFilePreview = ({ uploadingFile, onRetry, onRemove, onPreview }: { uploadingFile: { id: string; file: File; status: string }; onRetry: () => void; onRemove: () => void; onPreview: () => void }) => {
   const theme = getFileTypeTheme(uploadingFile.file.name);
   const FileIcon = getFileIcon(uploadingFile.file.name, uploadingFile.file.type);
   const isImage = uploadingFile.file.type.startsWith('image/');
   const isError = uploadingFile.status === 'error';
-  
+
   return (
     <div className="relative group">
-      <div className={`w-[60px] h-[60px] rounded-lg border-2 overflow-hidden bg-white dark:bg-gray-800 shadow-sm ${isError ? 'border-red-300' : theme.border} relative`}>
-        {isImage ? (
-          <img src={URL.createObjectURL(uploadingFile.file)} alt={uploadingFile.file.name} className="w-full h-full object-cover" />
-        ) : (
-          <div className={`w-full h-full flex items-center justify-center ${theme.bg}`}>
-            <FileIcon className={`${theme.icon} text-xl`} />
+      {isImage ? (
+        <div className="flex w-[84px] flex-col items-center">
+          <div
+            className={`relative h-[84px] w-[84px] cursor-pointer overflow-hidden rounded-xl border bg-gray-50 dark:bg-gray-800 shadow-sm transition-shadow hover:shadow-md ${isError ? 'border-red-300' : 'border-gray-200/80 dark:border-gray-700'}`}
+            onClick={onPreview}
+            title={`预览 ${uploadingFile.file.name}`}
+          >
+            <LocalFileThumb file={uploadingFile.file} className="h-full w-full object-cover" />
+            {/* 文件名:卡内下沿透明渐变浮层,省去下方一行 */}
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-black/0 px-1 pb-1 pt-4">
+              <p className={`truncate text-center text-[10px] leading-tight ${isError ? 'text-red-100' : 'text-white'}`}>{uploadingFile.file.name}</p>
+            </div>
+            {uploadingFile.status === 'uploading' && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+              </div>
+            )}
+            {isError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 bg-red-500/80 cursor-pointer" onClick={(e) => { e.stopPropagation(); onRetry(); }}>
+                <CloseOutlined className="text-white text-xs" />
+                <span className="text-white text-[10px]">重试</span>
+              </div>
+            )}
           </div>
-        )}
-        {uploadingFile.status === 'uploading' && (
-          <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : (
+        <div
+          className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-200/80 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-800/60 py-2 pl-2 pr-1.5 transition-colors hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm"
+          onClick={onPreview}
+          title={`预览 ${uploadingFile.file.name}`}
+        >
+          <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${theme.bg}`}>
+            <FileIcon className={`${theme.icon} text-base`} />
           </div>
-        )}
-        {isError && (
-          <div className="absolute inset-0 bg-red-500/80 flex flex-col items-center justify-center cursor-pointer" onClick={onRetry}>
-            <CloseOutlined className="text-white text-lg mb-1" />
-            <span className="text-white text-[10px]">重试</span>
+          <div className="min-w-0">
+            <p className={`max-w-[140px] truncate text-xs font-medium ${isError ? 'text-red-500' : 'text-gray-700 dark:text-gray-200'}`}>{uploadingFile.file.name}</p>
+            <p className="text-[10px] text-gray-400 dark:text-gray-500">
+              {formatFileSize(uploadingFile.file.size)}{isError ? ' · 失败' : ''}
+            </p>
           </div>
-        )}
-      </div>
-      <div className="mt-1 max-w-[60px]">
-        <p className={`text-xs truncate ${isError ? 'text-red-500' : 'text-gray-600 dark:text-gray-400'}`}>
-          {uploadingFile.file.name}
-        </p>
-      </div>
+        </div>
+      )}
       <button
         onClick={(e) => { e.stopPropagation(); onRemove(); }}
         title="移除附件"
-        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+        className="absolute -top-1.5 -right-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-400 shadow transition-all duration-200 hover:border-red-300 hover:bg-red-50 hover:text-red-500"
       >
         <CloseOutlined className="text-[10px]" />
       </button>
@@ -209,20 +254,22 @@ const UploadingFilePreview = ({ uploadingFile, onRetry, onRemove }: { uploadingF
 };
 
 // 文件列表显示组件
-const FileListDisplay = ({ 
-  uploadingFiles, 
-  uploadedResources, 
-  onRemoveUploading, 
-  onRemoveResource, 
+const FileListDisplay = ({
+  uploadingFiles,
+  uploadedResources,
+  onRemoveUploading,
+  onRemoveResource,
   onRetryUploading,
-  onClearAll 
-}: { 
+  onClearAll,
+  onPreview
+}: {
   uploadingFiles: { id: string; file: File; status: string }[];
   uploadedResources: any[];
   onRemoveUploading: (id: string) => void;
   onRemoveResource: (index: number) => void;
   onRetryUploading: (id: string) => void;
   onClearAll: () => void;
+  onPreview: (payload: PreviewFilePayload | null) => void;
 }) => {
   const totalCount = uploadingFiles.length + uploadedResources.length;
   if (totalCount === 0) return null;
@@ -230,39 +277,37 @@ const FileListDisplay = ({
   return (
     <div className="pb-3">
       {totalCount > 0 && (
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-lg bg-indigo-100 flex items-center justify-center">
-              <FolderAddOutlined className="text-indigo-600 text-xs" />
-            </div>
-            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-              已上传文件
-              <span className="ml-1 text-xs text-gray-500">({totalCount})</span>
-            </span>
+        <div className="mb-2.5 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <PaperClipOutlined className="text-[13px] text-gray-400 dark:text-gray-500" />
+            <span className="text-xs font-medium text-gray-600 dark:text-gray-300">已上传文件</span>
+            <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-gray-100 dark:bg-gray-700 px-1 text-[10px] font-medium text-gray-500 dark:text-gray-400">{totalCount}</span>
           </div>
           <button
             onClick={onClearAll}
-            className="text-xs text-gray-500 hover:text-red-500 transition-colors flex items-center gap-1 px-2 py-1 rounded-full hover:bg-red-50"
+            className="flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs text-gray-400 dark:text-gray-500 transition-colors hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500"
           >
-            <CloseOutlined className="text-xs" />
+            <CloseOutlined className="text-[10px]" />
             全部清除
           </button>
         </div>
       )}
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-2.5">
         {uploadingFiles.map((uf) => (
-          <UploadingFilePreview 
-            key={uf.id} 
-            uploadingFile={uf} 
+          <UploadingFilePreview
+            key={uf.id}
+            uploadingFile={uf}
             onRetry={() => onRetryUploading(uf.id)}
-            onRemove={() => onRemoveUploading(uf.id)} 
+            onRemove={() => onRemoveUploading(uf.id)}
+            onPreview={() => onPreview(normalizeUploadingFile(uf.file))}
           />
         ))}
         {uploadedResources.map((resource, index) => (
-          <UploadedResourcePreview 
-            key={`resource-${index}`} 
-            resource={resource} 
-            onRemove={() => onRemoveResource(index)} 
+          <UploadedResourcePreview
+            key={`resource-${index}`}
+            resource={resource}
+            onRemove={() => onRemoveResource(index)}
+            onPreview={() => onPreview(normalizeResourceItem(resource))}
           />
         ))}
       </div>
@@ -291,6 +336,7 @@ export default function HomeChat() {
   const [isFocus, setIsFocus] = useState<boolean>(false);
   const [uploadingFiles, setUploadingFiles] = useState<{ id: string; file: File; status: 'uploading' | 'success' | 'error' }[]>([]);
   const [uploadedResources, setUploadedResources] = useState<any[]>([]);
+  // 附件点击放大预览：弹窗由全局宿主 AttachmentPreviewHost 渲染（见 app/layout.tsx）
   const [pendingConvUid, setPendingConvUid] = useState<string>('');
   const [isConnectorsModalOpen, setIsConnectorsModalOpen] = useState(false);
   const [connectorsModalTab, setConnectorsModalTab] = useState<'mcp' | 'local' | 'skill'>('skill');
@@ -1606,6 +1652,7 @@ const [recommendedMcps, setRecommendedMcps] = useState<any[]>([]);
                 setUploadingFiles([]);
                 setUploadedResources([]);
               }}
+              onPreview={openAttachmentPreview}
             />
 
 

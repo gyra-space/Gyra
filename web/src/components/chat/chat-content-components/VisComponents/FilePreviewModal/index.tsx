@@ -1,5 +1,5 @@
 import React, { FC, useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Modal, Image, Typography, Tabs, Button, ConfigProvider, Tooltip } from 'antd';
+import { Modal, Typography, Tabs, Button, ConfigProvider, Tooltip } from 'antd';
 import {
   CodeOutlined,
   EyeOutlined,
@@ -7,11 +7,8 @@ import {
   FullscreenExitOutlined,
   DownloadOutlined,
   FileTextOutlined,
-  FileImageOutlined,
-  GlobalOutlined,
   CloseOutlined,
   FormatPainterOutlined,
-  VideoCameraOutlined,
 } from '@ant-design/icons';
 import { CodePreview } from '../../code-preview';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -21,115 +18,81 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
+import ZoomableImage from './ZoomableImage';
+import {
+  FILE_TYPES,
+  getFileType,
+  getLanguage,
+  getFileTypeIcon,
+  isBinaryContent,
+  type FileType,
+} from './file-types';
+import { formatFileSize } from '../VisDAttach/utils';
 import styles from './FilePreviewModal.module.css';
 
 const { Text } = Typography;
 
-interface FilePreviewModalProps {
-  visible: boolean;
-  file: {
-    file_name: string;
-    file_type?: string;
-    object_path?: string;
-    oss_url?: string;
-    preview_url?: string;
-    mime_type?: string;
-  } | null;
-  onClose: () => void;
+export interface PreviewFilePayload {
+  file_name: string;
+  file_type?: string;
+  object_path?: string;
+  oss_url?: string;
+  preview_url?: string;
+  mime_type?: string;
+  /** 本地文件（上传中或尚未上传），存在时优先于所有远程 URL */
+  local_file?: File | null;
+  /** 可直接访问的远程 URL（输入框附件场景） */
+  url?: string;
+  /** 字节数，仅用于 header 展示 */
+  file_size?: number;
 }
 
-const FILE_TYPES = {
-  IMAGE: 'image',
-  HTML: 'html',
-  CODE: 'code',
-  MARKDOWN: 'markdown',
-  TEXT: 'text',
-  VIDEO: 'video',
-  UNKNOWN: 'unknown',
-};
-
-const getFileExtension = (fileName: string): string => {
-  const parts = fileName.split('.');
-  return parts.length > 1 ? parts.pop()!.toLowerCase() : '';
-};
-
-const getFileType = (fileName: string, mimeType?: string): string => {
-  const ext = getFileExtension(fileName);
-
-  const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'];
-  const htmlExts = ['html', 'htm', 'xhtml'];
-  const codeExts = ['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'css', 'scss', 'less', 'xml', 'json', 'yaml', 'yml', 'sql', 'sh', 'bash', 'php', 'rb', 'swift', 'kt', 'scala'];
-  const markdownExts = ['md', 'markdown'];
-  const videoExts = ['mp4', 'mov', 'webm', 'avi', 'mkv'];
-
-  if (imageExts.includes(ext)) return FILE_TYPES.IMAGE;
-  if (htmlExts.includes(ext)) return FILE_TYPES.HTML;
-  if (markdownExts.includes(ext)) return FILE_TYPES.MARKDOWN;
-  if (videoExts.includes(ext)) return FILE_TYPES.VIDEO;
-  if (codeExts.includes(ext)) return FILE_TYPES.CODE;
-
-  if (mimeType) {
-    if (mimeType.startsWith('image/')) return FILE_TYPES.IMAGE;
-    if (mimeType === 'text/html' || mimeType.includes('html')) return FILE_TYPES.HTML;
-    if (mimeType.includes('markdown') || mimeType.includes('md')) return FILE_TYPES.MARKDOWN;
-    if (mimeType.startsWith('video/')) return FILE_TYPES.VIDEO;
-    if (mimeType.includes('json') || mimeType.includes('javascript') || mimeType.includes('typescript') || mimeType.includes('python')) return FILE_TYPES.CODE;
-    if (mimeType.startsWith('text/')) return FILE_TYPES.TEXT;
-  }
-
-  return FILE_TYPES.TEXT;
-};
-
-const getLanguage = (fileName: string): string => {
-  const ext = getFileExtension(fileName);
-  const languageMap: Record<string, string> = {
-    js: 'javascript', jsx: 'jsx', ts: 'typescript', tsx: 'tsx',
-    py: 'python', java: 'java', go: 'go', rs: 'rust',
-    c: 'c', cpp: 'cpp', h: 'c', css: 'css', scss: 'scss', less: 'less',
-    xml: 'xml', json: 'json', yaml: 'yaml', yml: 'yaml', sql: 'sql',
-    sh: 'bash', bash: 'bash', php: 'php', rb: 'ruby',
-    swift: 'swift', kt: 'kotlin', scala: 'scala',
-    md: 'markdown', markdown: 'markdown', txt: 'text',
-    html: 'html', htm: 'html',
-  };
-  return languageMap[ext] || ext || 'text';
-};
-
-const getFileTypeIcon = (fileType: string) => {
-  switch (fileType) {
-    case FILE_TYPES.IMAGE: return <FileImageOutlined />;
-    case FILE_TYPES.HTML: return <GlobalOutlined />;
-    case FILE_TYPES.CODE: return <CodeOutlined />;
-    case FILE_TYPES.MARKDOWN: return <FileTextOutlined />;
-    case FILE_TYPES.VIDEO: return <VideoCameraOutlined />;
-    default: return <FileTextOutlined />;
-  }
-};
+interface FilePreviewModalProps {
+  visible: boolean;
+  file: PreviewFilePayload | null;
+  onClose: () => void;
+}
 
 const FilePreviewModal: FC<FilePreviewModalProps> = ({ visible, file, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [content, setContent] = useState<string>('');
   const [error, setError] = useState<string>('');
-  const [actualPreviewUrl, setActualPreviewUrl] = useState<string | null>(null);
-  const [useDirectOssContent, setUseDirectOssContent] = useState(false);
+  const [urlIndex, setUrlIndex] = useState(0);
+  const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [activeTab, setActiveTab] = useState<'preview' | 'code'>('preview');
   const [animating, setAnimating] = useState(false);
   const [closing, setClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(false);
   const [jsonFormatted, setJsonFormatted] = useState(true);
+  // 扩展名/mime 都认不出来的漏网二进制，按内容二次判定后改显"不支持预览"
+  const [binaryDetected, setBinaryDetected] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  const fileType = useMemo(() => {
-    if (!file) return FILE_TYPES.UNKNOWN;
-    return getFileType(file.file_name, file.mime_type);
-  }, [file]);
+  const localFile = file?.local_file ?? null;
 
-  const fallbackUrl = file?.preview_url || file?.oss_url;
+  // 关闭时父组件通常立即把 file 置空，但弹窗还有 250ms 退场动画。
+  // 记住最后一份非空 payload，避免动画期间内容/尺寸闪变成空壳。
+  const lastFileRef = useRef<PreviewFilePayload | null>(null);
+  if (file) lastFileRef.current = file;
+  const activeFile = file ?? lastFileRef.current;
 
-  // Build a preview URL for this backend: gyra-fs:// URIs go through the
-  // /files/preview endpoint (uri parameter); object_path files use the legacy
-  // /api/oss/getFileByFileName endpoint.
+  useEffect(() => {
+    if (!shouldRender) lastFileRef.current = null;
+  }, [shouldRender]);
+
+  const fileType = useMemo<FileType>(() => {
+    if (!activeFile) return FILE_TYPES.UNKNOWN;
+    return getFileType(activeFile.file_name, activeFile.mime_type || localFile?.type);
+  }, [activeFile, localFile]);
+
+  const needsTextContent =
+    fileType === FILE_TYPES.HTML ||
+    fileType === FILE_TYPES.MARKDOWN ||
+    fileType === FILE_TYPES.CODE ||
+    fileType === FILE_TYPES.TEXT;
+
+  // gyra-fs:// 走 /files/preview（支持 inline）；object_path 走 legacy 接口；其余按原样/拼 apiBase
   const buildPreviewUrl = (fileUri: string): string => {
     const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
     if (fileUri.startsWith('gyra-fs://')) {
@@ -146,20 +109,147 @@ const FilePreviewModal: FC<FilePreviewModalProps> = ({ visible, file, onClose })
     return `${apiBaseUrl}/api/oss/getFileByFileName?fileName=${encodeURIComponent(objectPath)}`;
   };
 
+  /** 远程候选 URL，按优先级排列；前一个加载失败时自动顺延到下一个 */
+  const remoteCandidates = useMemo(() => {
+    if (!file) return [] as string[];
+    const list: string[] = [];
+    if (file.oss_url) list.push(buildPreviewUrl(file.oss_url));
+    if (file.object_path) list.push(buildObjectPathUrl(file.object_path));
+    if (file.url) list.push(buildPreviewUrl(file.url));
+    if (file.preview_url) list.push(buildPreviewUrl(file.preview_url));
+    return Array.from(new Set(list));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file?.oss_url, file?.object_path, file?.url, file?.preview_url]);
+
+  // 本地文件：创建 objectURL 并在关闭/切换时释放，避免内存泄漏
+  useEffect(() => {
+    if (!visible || !localFile) {
+      setLocalUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(localFile);
+    setLocalUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+      setLocalUrl(null);
+    };
+  }, [visible, localFile]);
+
+  const candidates = useMemo(
+    () => (localUrl ? [localUrl] : remoteCandidates),
+    [localUrl, remoteCandidates]
+  );
+
+  const resolvedUrl = candidates[Math.min(urlIndex, Math.max(candidates.length - 1, 0))] || '';
+
+  useEffect(() => {
+    setUrlIndex(0);
+  }, [file, visible, localUrl]);
+
+  /** 图片/PDF/视频加载失败时顺延下一个候选；全部失败则提示 */
+  const handleUrlError = useCallback(() => {
+    if (urlIndex < candidates.length - 1) {
+      setUrlIndex(urlIndex + 1);
+    } else {
+      setError('文件加载失败，请检查链接或稍后重试');
+    }
+  }, [urlIndex, candidates.length]);
+
+  // 拉取文本内容（markdown / code / text / html）。本地文件走 FileReader。
+  useEffect(() => {
+    if (!visible || !file) {
+      setContent('');
+      setError('');
+      setBinaryDetected(false);
+      setLoading(false);
+      return;
+    }
+    if (!needsTextContent) return;
+
+    let cancelled = false;
+
+    /** 统一写入文本内容，顺带按内容兜底识别二进制（见 isBinaryContent） */
+    const applyText = (text: string) => {
+      if (cancelled) return;
+      setContent(text);
+      setBinaryDetected(isBinaryContent(text));
+    };
+
+    const readLocalText = (target: File) =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result ?? ''));
+        reader.onerror = () => reject(new Error('读取本地文件失败'));
+        reader.readAsText(target);
+      });
+
+    const run = async () => {
+      setLoading(true);
+      setError('');
+
+      if (localFile) {
+        try {
+          const text = await readLocalText(localFile);
+          applyText(text);
+        } catch (err) {
+          if (!cancelled) setError(err instanceof Error ? err.message : '读取本地文件失败');
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+        return;
+      }
+
+      if (candidates.length === 0) {
+        if (!cancelled) {
+          setError('无可用的文件地址');
+          setLoading(false);
+        }
+        return;
+      }
+
+      let lastError = '';
+      for (const url of candidates) {
+        try {
+          const response = await fetch(url);
+          if (!response.ok) {
+            lastError = `HTTP ${response.status}`;
+            continue;
+          }
+          const text = await response.text();
+          applyText(text);
+          return;
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : '网络错误';
+        }
+      }
+
+      if (!cancelled) {
+        setError(`无法读取文件内容${lastError ? `（${lastError}）` : ''}`);
+      }
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+      setLoading(false);
+    };
+  }, [visible, file, localFile, needsTextContent, candidates]);
+
   const parsedHtmlContent = useMemo(() => {
     if (!content || fileType !== FILE_TYPES.HTML) return '';
-    
+
     if (content.includes('<!DOCTYPE') || content.includes('<html')) {
       return content;
     }
-    
+
     return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    body { 
+    body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       line-height: 1.6;
       padding: 24px;
@@ -167,9 +257,9 @@ const FilePreviewModal: FC<FilePreviewModalProps> = ({ visible, file, onClose })
       color: #1e293b;
       background: #ffffff;
     }
-    pre, code { 
-      background: #f1f5f9; 
-      padding: 2px 6px; 
+    pre, code {
+      background: #f1f5f9;
+      padding: 2px 6px;
       border-radius: 4px;
       font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
     }
@@ -189,7 +279,7 @@ ${content}
 
   const toggleFullscreen = () => {
     if (!iframeRef.current) return;
-    
+
     if (!isFullscreen) {
       iframeRef.current.requestFullscreen?.();
     } else {
@@ -201,7 +291,7 @@ ${content}
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
     };
-    
+
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
@@ -228,6 +318,12 @@ ${content}
     setTimeout(() => {
       setShouldRender(false);
       setClosing(false);
+      setContent('');
+      setError('');
+      setBinaryDetected(false);
+      setUrlIndex(0);
+      setIsFullscreen(false);
+      setActiveTab('preview');
       onClose();
     }, 250);
   }, [onClose]);
@@ -238,121 +334,29 @@ ${content}
     }
   }, [visible, shouldRender, animating, closing, handleClose]);
 
+  const handleDownload = () => {
+    if (!activeFile) return;
+    const anchor = document.createElement('a');
+    anchor.href = resolvedUrl || candidates[0] || '';
+    anchor.download = activeFile.file_name || 'download';
+    anchor.rel = 'noreferrer';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
+
   const handleDownloadHtml = () => {
     if (!content) return;
     const blob = new Blob([parsedHtmlContent], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = file?.file_name || 'preview.html';
+    a.download = activeFile?.file_name || 'preview.html';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
-
-  useEffect(() => {
-    if (!visible || !file) {
-      setContent('');
-      setError('');
-      setActualPreviewUrl(null);
-      setUseDirectOssContent(false);
-      return;
-    }
-
-    const resolvePreviewUrl = async () => {
-      // 优先使用 gyra-fs:// oss_url 走 /files/preview 接口（支持 inline 预览）
-      const fileUri = file.oss_url || file.object_path;
-      if (fileUri) {
-        const previewUrl = file.object_path && !file.oss_url
-          ? buildObjectPathUrl(file.object_path)
-          : buildPreviewUrl(fileUri);
-        console.log('[FilePreview] 使用 preview 接口预览:', previewUrl);
-
-        try {
-          const response = await fetch(previewUrl, { method: 'GET' });
-          if (response.ok) {
-            // 对于非图片/视频文件，先获取内容，再设置 URL（避免触发第二个 useEffect 时标志位还是 false）
-            if (fileType !== FILE_TYPES.IMAGE && fileType !== FILE_TYPES.VIDEO) {
-              setLoading(true);
-              try {
-                const textContent = await response.text();
-                setContent(textContent);
-                // 同时设置 URL 和标志位，确保第二个 useEffect 检查时标志位已更新
-                setActualPreviewUrl(previewUrl);
-                setUseDirectOssContent(true);
-              } catch {
-                // 获取内容失败，降级使用代理接口
-                setActualPreviewUrl(previewUrl);
-                setUseDirectOssContent(false);
-              } finally {
-                setLoading(false);
-              }
-            } else {
-              // 图片文件直接设置 URL
-              setActualPreviewUrl(previewUrl);
-            }
-            return;
-          }
-        } catch (err) {
-          console.warn('[FilePreview] preview 接口请求失败，尝试降级:', err);
-        }
-      } else {
-        console.warn('[FilePreview] 缺少可预览 URL。文件:', file.file_name, '可用字段:', {
-          oss_url: file.oss_url ? '✓' : '✗',
-          preview_url: file.preview_url ? '✓' : '✗',
-          object_path: file.object_path ? '✓' : '✗',
-        });
-      }
-
-      // 降级使用 fallbackUrl（preview_url 或 oss_url）
-      if (fallbackUrl) {
-        console.log('[FilePreview] 使用降级 URL 预览:', fallbackUrl);
-        setActualPreviewUrl(buildPreviewUrl(fallbackUrl));
-        return;
-      }
-
-      console.warn('[FilePreview] 无可用预览 URL，文件:', file.file_name);
-      setActualPreviewUrl(null);
-    };
-
-    resolvePreviewUrl();
-  }, [visible, file, fallbackUrl]);
-
-  useEffect(() => {
-    if (!visible || !actualPreviewUrl || !file) {
-      setContent('');
-      setError('');
-      return;
-    }
-
-    if (fileType === FILE_TYPES.IMAGE || fileType === FILE_TYPES.VIDEO) return;
-
-    // 如果已经通过 OSS 接口直接获取了内容，跳过代理接口
-    if (useDirectOssContent) return;
-
-    const fetchContent = async () => {
-      setLoading(true);
-      setError('');
-
-      try {
-        // actualPreviewUrl 已经是 /files/preview?uri=... 可直接获取内容
-        const response = await fetch(actualPreviewUrl);
-        if (!response.ok) {
-          throw new Error(`Failed to fetch file: ${response.statusText}`);
-        }
-
-        setContent(await response.text());
-      } catch (err) {
-        console.error('Failed to fetch file content:', err);
-        setError(err instanceof Error ? err.message : '加载失败');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchContent();
-  }, [visible, file, actualPreviewUrl, fileType, useDirectOssContent]);
 
   const renderLoadingState = () => (
     <div className={styles.loadingContainer}>
@@ -368,14 +372,46 @@ ${content}
     </div>
   );
 
+  /** 二进制 / 不支持预览的类型：给下载出口，别让用户对着一屏乱码 */
+  const renderUnsupported = () => (
+    <div className={styles.unsupportedContainer}>
+      <div className={styles.unsupportedIcon}>{getFileTypeIcon(FILE_TYPES.UNKNOWN)}</div>
+      <Text strong className={styles.unsupportedTitle}>
+        该文件格式暂不支持在线预览
+      </Text>
+      <Text type="secondary" className={styles.unsupportedHint}>
+        {activeFile?.file_name || '当前文件'} 为二进制格式，可下载后用本地应用打开
+      </Text>
+      <Button
+        type="primary"
+        icon={<DownloadOutlined />}
+        onClick={handleDownload}
+        disabled={!candidates.length}
+        className={styles.unsupportedButton}
+      >
+        下载文件
+      </Button>
+    </div>
+  );
+
   const renderContent = () => {
-    if (!file) return null;
+    if (!activeFile) return null;
+
+    if (fileType === FILE_TYPES.UNKNOWN) return renderUnsupported();
+
+    // 扩展名/mime 没认出来的二进制，按内容兜底判定后同样改显不支持
+    if (binaryDetected) return renderUnsupported();
 
     if (error) {
       return (
         <div className={styles.errorContainer}>
           <div className={styles.errorIcon}>⚠️</div>
           <Text type="danger">{error}</Text>
+          {resolvedUrl && (
+            <a className={styles.errorLink} href={resolvedUrl} target="_blank" rel="noreferrer">
+              在新窗口打开
+            </a>
+          )}
         </div>
       );
     }
@@ -386,34 +422,43 @@ ${content}
 
     switch (fileType) {
       case FILE_TYPES.IMAGE: {
-        if (!actualPreviewUrl) return null;
-        // actualPreviewUrl 已经是 /files/preview?uri=... 可直接展示
+        if (!resolvedUrl) return null;
         return (
-          <div className={styles.imageContainer}>
-            <Image
-              src={actualPreviewUrl}
-              alt={file.file_name}
-              className={styles.previewImage}
-              fallback={actualPreviewUrl}
-              placeholder={
-                <div className={styles.imagePlaceholder}>
-                  <FileTextOutlined spin style={{ fontSize: 32, color: '#6366f1' }} />
-                </div>
-              }
+          <ZoomableImage
+            key={resolvedUrl}
+            src={resolvedUrl}
+            alt={activeFile.file_name}
+            onError={handleUrlError}
+          />
+        );
+      }
+
+      case FILE_TYPES.PDF: {
+        if (!resolvedUrl) return null;
+        return (
+          <div className={styles.pdfContainer}>
+            <iframe
+              key={resolvedUrl}
+              src={resolvedUrl}
+              className={styles.pdfFrame}
+              title={activeFile.file_name || 'PDF Preview'}
+              onError={handleUrlError}
             />
           </div>
         );
       }
 
       case FILE_TYPES.VIDEO: {
-        if (!actualPreviewUrl) return null;
+        if (!resolvedUrl) return null;
         return (
           <div className={styles.imageContainer}>
             <video
-              src={actualPreviewUrl}
+              key={resolvedUrl}
+              src={resolvedUrl}
               controls
               autoPlay
-              style={{ maxWidth: '100%', maxHeight: '70vh' }}
+              className={styles.previewVideo}
+              onError={handleUrlError}
             />
           </div>
         );
@@ -428,7 +473,7 @@ ${content}
                 <EyeOutlined /> 预览
               </span>
             ),
-            children: (
+            children: content ? (
               <div className={styles.htmlPreviewContainer}>
                 <iframe
                   ref={iframeRef}
@@ -455,6 +500,15 @@ ${content}
                     下载
                   </Button>
                 </div>
+              </div>
+            ) : (
+              <div className={styles.htmlPreviewContainer}>
+                <iframe
+                  src={resolvedUrl}
+                  className={styles.htmlPreviewFrame}
+                  sandbox="allow-scripts allow-same-origin"
+                  title="HTML Preview"
+                />
               </div>
             ),
           },
@@ -495,20 +549,22 @@ ${content}
           </div>
         );
 
+      case FILE_TYPES.UNKNOWN:
+        return renderUnsupported();
+
       case FILE_TYPES.CODE:
       case FILE_TYPES.TEXT:
       default: {
-        const lang = getLanguage(file.file_name);
+        const lang = getLanguage(activeFile.file_name);
         let isJson = false;
         let formattedContent = content;
-        // 尝试解析 JSON
         if (lang === 'json' || lang === 'text') {
           try {
             const parsed = JSON.parse(content);
             formattedContent = JSON.stringify(parsed, null, 2);
             isJson = true;
           } catch {
-            // 不是合法 JSON
+            // 不是合法 JSON，按原文展示
           }
         }
         const displayContent = isJson && jsonFormatted ? formattedContent : content;
@@ -542,6 +598,8 @@ ${content}
     }
   };
 
+  const sizeText = activeFile?.file_size ?? localFile?.size;
+
   return (
     <ConfigProvider
       theme={{
@@ -553,7 +611,14 @@ ${content}
       <Modal
         open={shouldRender}
         onCancel={handleClose}
-        width={fileType === FILE_TYPES.IMAGE || fileType === FILE_TYPES.HTML || fileType === FILE_TYPES.VIDEO ? '90%' : 900}
+        width={
+          fileType === FILE_TYPES.IMAGE ||
+          fileType === FILE_TYPES.HTML ||
+          fileType === FILE_TYPES.VIDEO ||
+          fileType === FILE_TYPES.PDF
+            ? '90%'
+            : 900
+        }
         footer={null}
         destroyOnClose
         closable={false}
@@ -563,36 +628,51 @@ ${content}
         transitionName=""
         maskTransitionName=""
       >
-        <div className={`${styles.modalWrapper} ${animating ? styles.animateIn : ''} ${closing ? styles.animateOut : ''}`}>
+        <div
+          className={`${styles.modalWrapper} ${animating ? styles.animateIn : ''} ${
+            closing ? styles.animateOut : ''
+          }`}
+        >
           <div className={styles.modalHeader}>
             <div className={styles.headerLeft}>
               <span className={styles.fileIconWrap}>{getFileTypeIcon(fileType)}</span>
               <div className={styles.headerInfo}>
                 <Text strong className={styles.fileName}>
-                  {file?.file_name || '文件预览'}
+                  {activeFile?.file_name || '文件预览'}
                 </Text>
-                {file?.file_type && (
-                  <Text type="secondary" className={styles.fileType}>
-                    {file.file_type}
-                  </Text>
-                )}
+                <Text type="secondary" className={styles.fileType}>
+                  {[activeFile?.file_type, sizeText != null ? formatFileSize(sizeText) : null]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </Text>
               </div>
             </div>
-            <Button
-              type="text"
-              icon={<CloseOutlined />}
-              onClick={handleClose}
-              className={styles.closeButton}
-            />
+            <div className={styles.headerRight}>
+              <Tooltip title={localFile ? '下载本地文件' : '下载'}>
+                <Button
+                  type="text"
+                  icon={<DownloadOutlined />}
+                  onClick={handleDownload}
+                  disabled={!candidates.length}
+                  className={styles.closeButton}
+                />
+              </Tooltip>
+              <Button
+                type="text"
+                icon={<CloseOutlined />}
+                onClick={handleClose}
+                className={styles.closeButton}
+              />
+            </div>
           </div>
-          
-          <div className={styles.modalBody}>
-            {renderContent()}
-          </div>
+
+          <div className={styles.modalBody}>{renderContent()}</div>
         </div>
       </Modal>
     </ConfigProvider>
   );
 };
 
+export { FILE_TYPES, getFileType, getLanguage } from './file-types';
+export type { FileType } from './file-types';
 export default FilePreviewModal;

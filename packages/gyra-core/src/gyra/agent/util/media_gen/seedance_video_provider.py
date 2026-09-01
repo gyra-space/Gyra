@@ -18,6 +18,7 @@ from gyra.agent.util.media_gen.base import (
     MediaGenResult,
     MediaSubmission,
     download_media_with_retry,
+    resolve_media_image_url,
 )
 from gyra.agent.util.media_gen.provider_registry import MediaGenProviderRegistry
 
@@ -216,8 +217,10 @@ class SeedanceVideoProvider(MediaGenProvider):
         watermark = kwargs.get("watermark", False)
         camera_fixed = kwargs.get("camera_fixed", False)
         generate_audio = kwargs.get("generate_audio")
-        image_url = kwargs.get("image_url")
-        image_url_last = kwargs.get("image_url_last")
+        # 首帧/尾帧可能是内部 AFS URI(gyra-fs://)或文件服务相对路径，必须转成
+        # Ark 可抓取的公网 URL 或 base64 data URI，否则会触发 InvalidParameter。
+        image_url = resolve_media_image_url(kwargs.get("image_url"))
+        image_url_last = resolve_media_image_url(kwargs.get("image_url_last"))
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",

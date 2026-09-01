@@ -10,6 +10,7 @@ import {
   DownOutlined,
   FileOutlined,
   LoadingOutlined,
+  PaperClipOutlined,
   ReloadOutlined,
   RobotOutlined,
   SafetyOutlined,
@@ -19,6 +20,7 @@ import { useRequest } from 'ahooks';
 import { apiInterceptors, getModelList, getSkillList, getMCPList, postChatModeParamsFileLoad, listResources, listArtifacts, listAssets } from '@/client/api';
 import ModelIcon from '@/components/icons/model-icon';
 import { transformFileUrl } from '@/utils';
+import { formatFileSize } from '@/utils/fileUtils';
 import type { IModelData } from '@/types/model';
 import {
   formatTokens,
@@ -35,6 +37,10 @@ import {
   type PlusMenuPermission,
 } from '@/components/chat/input/plus-menu';
 import { SceneTriggerMenu, type SceneTriggerMenuHandle, type SceneTriggerSelection } from '@/components/chat/input/scene-trigger-menu';
+import {
+  useAttachmentPreview,
+  LocalFileThumb,
+} from '@/components/chat/input/attachment-preview';
 import type { SessionCommandItem, SessionCommandAction, SubAgentRef, ArtifactRef, AssetRef, ResourceRef } from '@/components/chat/input/trigger-types';
 import { detectTrigger, stripTrigger, type TriggerState } from '@/components/chat/input/trigger-detect';
 import { VoiceInputButton } from '@/components/chat/input/voice-input-button';
@@ -408,6 +414,9 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       if (attachmentScopeKey) setPendingResources(attachmentScopeKey, next);
     };
     const [uploading, setUploading] = useState<UploadingFile[]>([]);
+    // 附件点击放大预览（图片 / PDF / Markdown / 文本 / 代码 / 视频）
+    // 弹窗由全局宿主 AttachmentPreviewHost 渲染（见 app/layout.tsx）
+    const { openResource, openLocalFile } = useAttachmentPreview();
     const [modelList, setModelList] = useState<IModelData[]>([]);
     const [internalSelectedModel, setInternalSelectedModel] = useState<string>('');
     // 受控(外部传入 model)与非受控(本地 state)共用同一读值:场景空间简洁模式由 shell 记忆,
@@ -603,6 +612,11 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     const resourcePreview = (r: ResourceItem) =>
       resolvePreviewUrl(r.image_url?.preview_url || r.file_url?.preview_url || r.audio_url?.preview_url || r.video_url?.preview_url || '');
     const isImageResource = (r: ResourceItem) => !!r.image_url;
+    // 文件扩展名兜底:无尺寸信息时用扩展名作为辅信息
+    const getExtLabel = (name: string) => {
+      const ext = name.split('.').pop()?.toLowerCase() || '';
+      return ext ? ext.toUpperCase() : '文件';
+    };
     // 图片角色标注:更新某张图片的角色(auto 重置为默认,不写入字段)
     const setResourceRole = (index: number, role: MediaImageRole) => {
       applyResources(resources.map((r, j) => (j === index ? { ...r, image_role: role === 'auto' ? undefined : role } : r)));
@@ -943,49 +957,82 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
 
           {/* SECTION 1 — attached file chips (only when files present) */}
           {(uploading.length > 0 || resources.length > 0) && (
-            <div className="px-4 pt-3 pb-2">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs text-gray-500 dark:text-gray-400">
-                  已上传文件 ({uploading.length + resources.length})
-                </span>
+            <div className="px-4 pt-3 pb-3">
+              {/* 附件区标题:回形针图标 + 文案 + 数量胶囊 + 右侧「全部清除」 */}
+              <div className="mb-2.5 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <PaperClipOutlined className="text-[13px] text-gray-400 dark:text-gray-500" />
+                  <span className="text-xs font-medium text-gray-600 dark:text-gray-300">已上传文件</span>
+                  <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-gray-100 dark:bg-gray-700 px-1 text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                    {uploading.length + resources.length}
+                  </span>
+                </div>
                 <button
-                  className="text-xs text-gray-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 px-2 py-0.5 rounded transition-colors"
+                  type="button"
+                  className="flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs text-gray-400 dark:text-gray-500 transition-colors hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500"
                   onClick={() => { applyResources([]); setUploading([]); }}
                   title="清除全部附件"
                 >
+                  <CloseOutlined className="text-[10px]" />
                   全部清除
                 </button>
               </div>
-              <div className="flex flex-wrap gap-3">
-                {/* uploading cards */}
+              <div className="flex flex-wrap gap-2.5">
+                {/* uploading:图片走缩略卡,文件走横条卡 */}
                 {uploading.map(u => {
                   const theme = getFileTheme(u.file.name);
                   const isImg = u.file.type.startsWith('image/');
                   return (
                     <div key={u.id} className="relative group">
-                      <div className={`w-[60px] h-[60px] rounded-lg border-2 overflow-hidden bg-white dark:bg-gray-800 shadow-sm ${u.status === 'error' ? 'border-red-300' : theme.border}`}>
-                        {isImg
-                          ? <img src={URL.createObjectURL(u.file)} className="w-full h-full object-cover" />
-                          : <div className={`w-full h-full flex items-center justify-center ${theme.bg}`}>
-                              <FileOutlined className={`${theme.icon} text-xl`} />
-                            </div>}
-                        {u.status === 'uploading' && (
-                          <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                            <LoadingOutlined className="text-white text-lg" spin />
+                      {isImg ? (
+                        <div className="flex w-[84px] flex-col items-center">
+                          <div
+                            className={`relative h-[84px] w-[84px] cursor-pointer overflow-hidden rounded-xl border bg-gray-50 dark:bg-gray-800 shadow-sm transition-shadow hover:shadow-md ${u.status === 'error' ? 'border-red-300' : 'border-gray-200/80 dark:border-gray-700'}`}
+                            onClick={() => openLocalFile(u.file)}
+                            title={`预览 ${u.file.name}`}
+                          >
+                            <LocalFileThumb
+                              file={u.file}
+                              alt={u.file.name}
+                              className="h-full w-full object-cover"
+                            />
+                            {/* 文件名:卡内下沿透明渐变浮层,省去下方一行 */}
+                            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-black/0 px-1 pb-1 pt-4">
+                              <p className={`truncate text-center text-[10px] leading-tight ${u.status === 'error' ? 'text-red-100' : 'text-white'}`}>{u.file.name}</p>
+                            </div>
+                            {u.status === 'uploading' && (
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                                <LoadingOutlined className="text-white text-lg" spin />
+                              </div>
+                            )}
+                            {u.status === 'error' && (
+                              <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 bg-red-500/80">
+                                <CloseOutlined className="text-white text-xs" />
+                                <span className="text-white text-[10px]">失败</span>
+                              </div>
+                            )}
                           </div>
-                        )}
-                        {u.status === 'error' && (
-                          <div className="absolute inset-0 bg-red-500/80 flex flex-col items-center justify-center gap-0.5">
-                            <CloseOutlined className="text-white text-xs" />
-                            <span className="text-white text-[10px]">失败</span>
+                        </div>
+                      ) : (
+                        <div
+                          className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-200/80 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-800/60 py-2 pl-2 pr-1.5 transition-colors hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm"
+                          onClick={() => openLocalFile(u.file)}
+                          title={`预览 ${u.file.name}`}
+                        >
+                          <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${theme.bg}`}>
+                            <FileOutlined className={`${theme.icon} text-base`} />
                           </div>
-                        )}
-                      </div>
-                      <div className="mt-1 max-w-[60px]">
-                        <p className={`text-xs truncate ${u.status === 'error' ? 'text-red-500' : 'text-gray-600 dark:text-gray-400'}`}>{u.file.name}</p>
-                      </div>
+                          <div className="min-w-0">
+                            <p className={`max-w-[140px] truncate text-xs font-medium ${u.status === 'error' ? 'text-red-500' : 'text-gray-700 dark:text-gray-200'}`}>{u.file.name}</p>
+                            <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                              {formatFileSize(u.file.size)}{u.status === 'error' ? ' · 失败' : ''}
+                            </p>
+                          </div>
+                        </div>
+                      )}
                       <button
-                        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+                        type="button"
+                        className="absolute -top-1.5 -right-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-400 shadow transition-all duration-200 hover:border-red-300 hover:bg-red-50 hover:text-red-500"
                         onClick={() => setUploading(prev => prev.filter(x => x.id !== u.id))}
                         title="移除附件"
                       >
@@ -994,7 +1041,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                     </div>
                   );
                 })}
-                {/* uploaded chips */}
+                {/* uploaded:图片走缩略卡,文件走横条卡 */}
                 {resources.map((r, i) => {
                   const name = resourceName(r);
                   const theme = getFileTheme(name);
@@ -1002,27 +1049,51 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                   const isImg = isImageResource(r);
                   return (
                     <div key={`${name}-${i}`} className="relative group">
-                      <div className={`w-[60px] h-[60px] rounded-lg border-2 overflow-hidden bg-white dark:bg-gray-800 shadow-sm hover:shadow-md transition-all duration-200 ${theme.border}`}>
-                        {isImg && preview
-                          ? <img src={preview} className="w-full h-full object-cover" onError={(e) => { const t = e.currentTarget; t.onerror = null; t.style.display = 'none'; if (t.parentElement) { t.parentElement.innerHTML = `<div class="w-full h-full flex items-center justify-center ${theme.bg}"><span class="text-xl">📷</span></div>`; } }} />
-                          : <div className={`w-full h-full flex items-center justify-center ${theme.bg}`}>
-                              <FileOutlined className={`${theme.icon} text-xl`} />
-                            </div>}
-                      </div>
-                      <div className="mt-1 max-w-[60px]">
-                        <p className="text-xs text-gray-600 dark:text-gray-400 truncate">{name}</p>
-                      </div>
-                      {/* 图片角色标注：上传图片附件均可标注(供多媒体 Agent/生成模型使用) */}
-                      {isImg && (
-                        <div className="mt-0.5 w-[60px]">
-                          <MediaImageRoleSelect
-                            value={r.image_role || 'auto'}
-                            onChange={(v) => setResourceRole(i, v)}
-                          />
+                      {isImg ? (
+                        <div className="flex w-[84px] flex-col items-center">
+                          <div
+                            className="relative h-[84px] w-[84px] cursor-pointer overflow-hidden rounded-xl border border-gray-200/80 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 shadow-sm transition-shadow hover:shadow-md"
+                            onClick={() => openResource(r)}
+                            title={`预览 ${name}`}
+                          >
+                            {preview
+                              ? <img src={preview} alt={name} className="h-full w-full object-cover" onError={(e) => { const t = e.currentTarget; t.onerror = null; t.style.display = 'none'; if (t.parentElement) { t.parentElement.innerHTML = `<div class="w-full h-full flex items-center justify-center ${theme.bg}"><span class="text-xl">🧾</span></div>`; } }} />
+                              : <div className={`flex h-full w-full items-center justify-center ${theme.bg}`}>
+                                  <FileOutlined className={`${theme.icon} text-xl`} />
+                                </div>}
+                            {/* 文件名:卡内下沿透明渐变浮层,省去下方一行 */}
+                            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-black/0 px-1 pb-1 pt-4">
+                              <p className="truncate text-center text-[10px] leading-tight text-white">{name}</p>
+                            </div>
+                          </div>
+                          {/* 图片角色标注：上传图片附件均可标注(供多媒体 Agent/生成模型使用) */}
+                          {isImg && (
+                            <div className="mt-1.5">
+                              <MediaImageRoleSelect
+                                value={r.image_role || 'auto'}
+                                onChange={(v) => setResourceRole(i, v)}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div
+                          className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-200/80 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-800/60 py-2 pl-2 pr-1.5 transition-colors hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm"
+                          onClick={() => openResource(r)}
+                          title={`预览 ${name}`}
+                        >
+                          <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${theme.bg}`}>
+                            <FileOutlined className={`${theme.icon} text-base`} />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="max-w-[140px] truncate text-xs font-medium text-gray-700 dark:text-gray-200">{name}</p>
+                            <p className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">{getExtLabel(name)}</p>
+                          </div>
                         </div>
                       )}
                       <button
-                        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+                        type="button"
+                        className="absolute -top-1.5 -right-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-400 shadow transition-all duration-200 hover:border-red-300 hover:bg-red-50 hover:text-red-500"
                         onClick={() => applyResources(resources.filter((_, j) => j !== i))}
                         title="移除附件"
                       >

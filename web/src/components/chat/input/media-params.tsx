@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { InputNumber, Popover, Select, Tooltip } from 'antd';
-import { PictureOutlined, VideoCameraOutlined } from '@ant-design/icons';
+import { CheckOutlined, PictureOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { configService } from '@/services/config';
@@ -71,34 +71,61 @@ export const MediaImageRoleSelect = ({
   onChange: (role: MediaImageRole) => void;
 }) => {
   const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
   const annotated = value !== 'auto';
   const color = MEDIA_IMAGE_ROLE_COLOR[value] || MEDIA_IMAGE_ROLE_COLOR.auto;
+  const current = MEDIA_IMAGE_ROLE_OPTIONS.find((o) => o.value === value)?.label || '自动';
+
   return (
-    <div className="relative w-full">
-      <Select
-        size="small"
-        value={value}
-        onChange={(v) => onChange(v)}
-        options={MEDIA_IMAGE_ROLE_OPTIONS}
-        popupMatchSelectWidth={false}
-        className="w-full"
-        style={{
-          width: '100%',
-          fontSize: 11,
-          lineHeight: '20px',
-          borderColor: annotated ? color : undefined,
-          color: annotated ? color : undefined,
-        }}
-        data-testid="media-image-role-select"
-      />
-      {annotated && (
-        <span
-          className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full"
-          style={{ backgroundColor: color }}
-          title={t('media_image_role', '图片角色')}
-        />
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      trigger="click"
+      placement="top"
+      arrow={false}
+      overlayClassName="[&_.ant-popover-inner]:!rounded-xl [&_.ant-popover-inner]:!shadow-lg [&_.ant-popover-inner]:!p-1"
+      content={(
+        <div className="w-32 py-0.5">
+          {MEDIA_IMAGE_ROLE_OPTIONS.map((opt) => {
+            const oc = MEDIA_IMAGE_ROLE_COLOR[opt.value];
+            const active = opt.value === value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                className={classNames(
+                  'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] transition-colors',
+                  active
+                    ? 'bg-gray-100 dark:bg-gray-700/70 text-gray-800 dark:text-gray-100'
+                    : 'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800',
+                )}
+                onClick={() => { onChange(opt.value); setOpen(false); }}
+              >
+                <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ background: oc }} />
+                <span>{opt.label}</span>
+                {active && <CheckOutlined className="ml-auto text-[10px]" style={{ color: oc }} />}
+              </button>
+            );
+          })}
+        </div>
       )}
-    </div>
+    >
+      <button
+        type="button"
+        data-testid="media-image-role-select"
+        title={t('media_image_role', '图片角色')}
+        className={classNames(
+          'inline-flex items-center gap-1 rounded-full px-2.5 h-[22px] text-[11px] font-medium transition-all',
+          annotated
+            ? 'border shadow-sm'
+            : 'border border-gray-200 dark:border-gray-600 text-gray-400 dark:text-gray-500 hover:border-gray-300 dark:hover:border-gray-500 hover:text-gray-500 dark:hover:text-gray-400',
+        )}
+        style={annotated ? { borderColor: color, color, background: `${color}0f` } : undefined}
+      >
+        <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
+        {current}
+      </button>
+    </Popover>
   );
 };
 

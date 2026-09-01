@@ -13,6 +13,45 @@ from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 
+def resolve_media_image_url(url: Any) -> str:
+    """把媒体生成的图片输入（image_url / image_url_last / reference_images）里的
+    内部文件地址转成外部模型可消费的**无鉴权公共预览地址**（签名公网 URL），
+    兜底为 base64 data URI。
+
+    媒体生成 provider（Seedance、HappyHorse、万相、Google/Nano-Banana 等）收到的
+    图片输入可能是内部 Agent File System URI（``gyra-fs://...``，本地 fs 协议）或
+    文件服务相对路径（``/api/v2/serve/file/files/...``）。外部图片/视频 API 无法抓取
+    这两种地址，因此复用 LLM 链路已验证的存储改写逻辑：**优先**调用
+    ``storage_client.get_public_url(metadata.uri)`` 产出无鉴权的签名公共预览地址
+    （``/api/v2/serve/file/public/files/<bucket>/<file_id>?...token&expires``），
+    仅当拿不到可访问的公网 URL（如 host 为本地/回环、未配置 public_url_secret）时
+    **兜底**为图片字节 base64 data URI。任何失败都原样返回，调用方退化为原行为，
+    而不是直接中断。
+
+    Args:
+        url: 原始图片地址（str）。None / 非字符串原样返回。
+
+    Returns:
+        改写后可被厂商 API 消费的 URL 字符串。
+    """
+    if not url or not isinstance(url, str):
+        return url  # type: ignore[return-value]
+    try:
+        from gyra.agent.util.llm.provider._image_url_rewriter import (
+            build_image_url_rewriter,
+            resolve_storage_client,
+        )
+
+        rewriter = build_image_url_rewriter(resolve_storage_client())
+        return rewriter(url)
+    except Exception:  # noqa: BLE001 - 改写失败不阻断生成，维持原地址
+        logger.debug(
+            "[media_gen] media image URL rewrite failed; returning original url",
+            exc_info=True,
+        )
+        return url
+
+
 @dataclass
 class MediaGenResult:
     """Result of a media generation call."""

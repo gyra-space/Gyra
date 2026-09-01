@@ -12,7 +12,6 @@ import {
   CheckOutlined,
   LoadingOutlined,
   FileOutlined,
-  FolderAddOutlined,
   DatabaseOutlined,
   PlusOutlined,
   ThunderboltOutlined,
@@ -58,6 +57,10 @@ import {
   type MediaImageRole,
   type MediaParams,
 } from '@/components/chat/input/media-params';
+import {
+  useAttachmentPreview,
+  LocalFileThumb,
+} from '@/components/chat/input/attachment-preview';
 
 const { Panel } = Collapse;
 
@@ -296,6 +299,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   
   // 上传中的文件列表
   const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
+
+  // 附件点击放大预览（图片 / PDF / Markdown / 文本 / 代码 / 视频）
+  // 弹窗由全局宿主 AttachmentPreviewHost 渲染（见 app/layout.tsx）
+  const { openResource, openLocalFile } = useAttachmentPreview();
 
   // "+" 按钮相关
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
@@ -1462,17 +1469,17 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     const totalCount = resources.length + uploadingFiles.length;
 
     return (
-      <div className="px-4 pt-3 pb-2">
-        {/* 多文件上传标题 - 只要有附件即显示,提供「全部清除」入口 */}
+      <div className="px-4 pt-3 pb-3">
+        {/* 多文件上传标题 - 回形针图标 + 文案 + 数量胶囊 + 右侧「全部清除」 */}
         {totalCount > 0 && (
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-lg bg-indigo-100 flex items-center justify-center">
-                <FolderAddOutlined className="text-indigo-600 text-xs" />
-              </div>
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                {t('uploaded_files', '已上传文件')} 
-                <span className="ml-1 text-xs text-gray-500">({totalCount})</span>
+          <div className="mb-2.5 flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <PaperClipOutlined className="text-[13px] text-gray-400 dark:text-gray-500" />
+              <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                {t('uploaded_files', '已上传文件')}
+              </span>
+              <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-gray-100 dark:bg-gray-700 px-1 text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                {totalCount}
               </span>
             </div>
             <button
@@ -1490,16 +1497,16 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                 setChatInParams(chatInParam);
               }}
               title={t('clear_all', '全部清除')}
-              className="text-xs text-gray-500 hover:text-red-500 transition-colors flex items-center gap-1 px-2 py-1 rounded-full hover:bg-red-50"
+              className="flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs text-gray-400 dark:text-gray-500 transition-colors hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500"
             >
-              <CloseOutlined className="text-xs" />
+              <CloseOutlined className="text-[10px]" />
               {t('clear_all', '全部清除')}
             </button>
           </div>
         )}
-        
-        {/* 文件列表 - 统一使用大正方形卡片风格 */}
-        <div className="flex flex-wrap gap-3">
+
+        {/* 文件列表 - 图片走缩略卡,普通文件走横条卡 */}
+        <div className="flex flex-wrap gap-2.5">
           {/* 上传中的文件 */}
           {uploadingFiles.map((uploadingFile) => {
             const fileName = uploadingFile.file.name;
@@ -1507,65 +1514,73 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
             const FileIcon = getFileIcon(fileName);
             const isImage = uploadingFile.file.type.startsWith('image/');
             const isError = uploadingFile.status === 'error';
-            
+
             return (
-              <div
-                key={uploadingFile.id}
-                className="relative group"
-              >
-                {/* 正方形卡片 */}
-                <div className={`w-[60px] h-[60px] rounded-lg border-2 overflow-hidden bg-white dark:bg-gray-800 shadow-sm ${isError ? 'border-red-300' : theme.border} relative`}>
-                  {isImage ? (
-                    <img 
-                      src={URL.createObjectURL(uploadingFile.file)} 
-                      alt={fileName}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className={`w-full h-full flex items-center justify-center ${theme.bg}`}>
-                      <FileIcon className={`${theme.icon} text-xl`} />
-                    </div>
-                  )}
-                  
-                  {/* 上传中遮罩 */}
-                  {uploadingFile.status === 'uploading' && (
-                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                      <LoadingOutlined className="text-white text-lg" spin />
-                    </div>
-                  )}
-                  
-                  {/* 错误遮罩 */}
-                  {isError && (
-                    <div className="absolute inset-0 bg-red-500/80 flex flex-col items-center justify-center cursor-pointer"
-                      onClick={() => {
-                        // 重试上传
-                        setUploadingFiles(prev => prev.filter(f => f.id !== uploadingFile.id));
-                        handleFileUpload(uploadingFile.file);
-                      }}
+              <div key={uploadingFile.id} className="relative group">
+                {isImage ? (
+                  <div className="flex w-[84px] flex-col items-center">
+                    <div
+                      className={`relative h-[84px] w-[84px] cursor-pointer overflow-hidden rounded-xl border bg-gray-50 dark:bg-gray-800 shadow-sm transition-shadow hover:shadow-md ${isError ? 'border-red-300' : 'border-gray-200/80 dark:border-gray-700'}`}
+                      onClick={() => openLocalFile(uploadingFile.file)}
+                      title={`预览 ${fileName}`}
                     >
-                      <CloseOutlined className="text-white text-lg mb-1" />
-                      <span className="text-white text-[10px]">{t('retry', '重试')}</span>
+                      <LocalFileThumb
+                        file={uploadingFile.file}
+                        alt={fileName}
+                        className="h-full w-full object-cover"
+                      />
+                      {/* 文件名:卡内下沿透明渐变浮层,省去下方一行 */}
+                      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-black/0 px-1 pb-1 pt-4">
+                        <p className={`truncate text-center text-[10px] leading-tight ${isError ? 'text-red-100' : 'text-white'}`}>{fileName}</p>
+                      </div>
+                      {uploadingFile.status === 'uploading' && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                          <LoadingOutlined className="text-white text-lg" spin />
+                        </div>
+                      )}
+                      {isError && (
+                        <div
+                          className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 bg-red-500/80 cursor-pointer"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setUploadingFiles(prev => prev.filter(f => f.id !== uploadingFile.id));
+                            handleFileUpload(uploadingFile.file);
+                          }}
+                        >
+                          <CloseOutlined className="text-white text-xs" />
+                          <span className="text-white text-[10px]">{t('retry', '重试')}</span>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-                {/* 文件名 */}
-                <div className="mt-1 max-w-[60px]">
-                  <p className={`text-xs truncate ${isError ? 'text-red-500' : 'text-gray-600 dark:text-gray-400'}`}>
-                    {fileName}
-                  </p>
-                </div>
-                {/* 删除按钮 */}
+                  </div>
+                ) : (
+                  <div
+                    className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-200/80 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-800/60 py-2 pl-2 pr-1.5 transition-colors hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm"
+                    onClick={() => openLocalFile(uploadingFile.file)}
+                    title={`预览 ${fileName}`}
+                  >
+                    <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${theme.bg}`}>
+                      <FileIcon className={`${theme.icon} text-base`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`max-w-[140px] truncate text-xs font-medium ${isError ? 'text-red-500' : 'text-gray-700 dark:text-gray-200'}`}>{fileName}</p>
+                      <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                        {formatFileSize(uploadingFile.file.size)}{isError ? ` · ${t('upload_failed', '上传失败')}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                )}
                 <button
                   onClick={() => handleDeleteUploading(uploadingFile.id)}
                   title={t('remove_attachment', '移除附件')}
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+                  className="absolute -top-1.5 -right-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-400 shadow transition-all duration-200 hover:border-red-300 hover:bg-red-50 hover:text-red-500"
                 >
                   <CloseOutlined className="text-[10px]" />
                 </button>
               </div>
             );
           })}
-          
+
           {/* 已上传的文件 */}
           {resources.map((item: ParsedResourceItem, index: number) => {
             // 提取文件名和URL
@@ -1573,7 +1588,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
             let fileUrl = '';
             let previewUrl = '';
             let isImage = false;
-            
+
             // 先判断类型
             if (item.type === 'image_url' && item.image_url) {
               fileName = item.image_url.file_name || 'Image';
@@ -1600,58 +1615,73 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               previewUrl = item.preview_url || transformFileUrl(fileUrl);
               isImage = /\.(jpg|jpeg|png|gif|bmp|webp|svg)$/i.test(fileName);
             }
-            
+
             const theme = getFileTypeTheme(fileName);
             const FileIcon = getFileIcon(fileName);
-            
+            const extLabel = fileName.split('.').pop()?.toUpperCase() || '文件';
+
             return (
-              <div
-                key={`file-${index}`}
-                className="relative group"
-              >
-                {/* 正方形卡片 - 图片显示预览，文件显示大图标 */}
-                <div className={`w-[60px] h-[60px] rounded-lg border-2 overflow-hidden bg-white dark:bg-gray-800 shadow-sm hover:shadow-md transition-all duration-200 ${theme.border}`}>
-                  {isImage && previewUrl ? (
-                    <img 
-                      src={previewUrl} 
-                      alt={fileName}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        console.error('Image load error:', previewUrl);
-                        const target = e.target as HTMLImageElement;
-                        target.onerror = null;
-                        target.style.display = 'none';
-                        if (target.parentElement) {
-                          target.parentElement.innerHTML = `<div class="w-full h-full flex items-center justify-center ${theme.bg}"><span class="text-xl">📷</span></div>`;
-                        }
-                      }}
-                    />
-                  ) : (
-                    <div className={`w-full h-full flex items-center justify-center ${theme.bg}`}>
-                      <FileIcon className={`${theme.icon} text-xl`} />
+              <div key={`file-${index}`} className="relative group">
+                {isImage ? (
+                  <div className="flex w-[84px] flex-col items-center">
+                    <div
+                      className="relative h-[84px] w-[84px] cursor-pointer overflow-hidden rounded-xl border border-gray-200/80 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 shadow-sm transition-shadow hover:shadow-md"
+                      onClick={() => openResource(item)}
+                      title={`预览 ${fileName}`}
+                    >
+                      {isImage && previewUrl ? (
+                        <img
+                          src={previewUrl}
+                          alt={fileName}
+                          className="h-full w-full object-cover"
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement;
+                            target.onerror = null;
+                            target.style.display = 'none';
+                            if (target.parentElement) {
+                              target.parentElement.innerHTML = `<div class="w-full h-full flex items-center justify-center ${theme.bg}"><span class="text-xl">📷</span></div>`;
+                            }
+                          }}
+                        />
+                      ) : (
+                        <div className={`flex h-full w-full items-center justify-center ${theme.bg}`}>
+                          <FileIcon className={`${theme.icon} text-xl`} />
+                        </div>
+                      )}
+                      {/* 文件名:卡内下沿透明渐变浮层,省去下方一行 */}
+                      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-black/0 px-1 pb-1 pt-4">
+                        <p className="truncate text-center text-[10px] leading-tight text-white">{fileName}</p>
+                      </div>
                     </div>
-                  )}
-                </div>
-                {/* 文件名 */}
-                <div className="mt-1 max-w-[60px]">
-                  <p className="text-xs text-gray-600 dark:text-gray-400 truncate">
-                    {fileName}
-                  </p>
-                </div>
-                {/* 图片角色标注：上传图片附件均可标注(供多媒体 Agent/生成模型使用) */}
-                {isImage && (
-                  <div className="mt-0.5 w-[60px]">
-                    <MediaImageRoleSelect
-                      value={item.image_role || 'auto'}
-                      onChange={(v) => handleSetResourceRole(index, v)}
-                    />
+                    {/* 图片角色标注：上传图片附件均可标注(供多媒体 Agent/生成模型使用) */}
+                    {isImage && (
+                      <div className="mt-1.5">
+                        <MediaImageRoleSelect
+                          value={item.image_role || 'auto'}
+                          onChange={(v) => handleSetResourceRole(index, v)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div
+                    className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-gray-200/80 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-800/60 py-2 pl-2 pr-1.5 transition-colors hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm"
+                    onClick={() => openResource(item)}
+                    title={`预览 ${fileName}`}
+                  >
+                    <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${theme.bg}`}>
+                      <FileIcon className={`${theme.icon} text-base`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="max-w-[140px] truncate text-xs font-medium text-gray-700 dark:text-gray-200">{fileName}</p>
+                      <p className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">{extLabel}</p>
+                    </div>
                   </div>
                 )}
-                {/* 删除按钮 */}
                 <button
                   onClick={() => handleDelete(index)}
                   title={t('remove_attachment', '移除附件')}
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-full flex items-center justify-center transition-all duration-200 shadow hover:bg-red-50 hover:border-red-300 hover:text-red-500"
+                  className="absolute -top-1.5 -right-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-400 shadow transition-all duration-200 hover:border-red-300 hover:bg-red-50 hover:text-red-500"
                 >
                   <CloseOutlined className="text-[10px]" />
                 </button>
