@@ -214,3 +214,6 @@ configs/local
 
 # Promo site (本地保留，不提交到远端)
 gyra-open-source-promo/
+
+# PPT 素材 (本地保留，不提交到远端)
+/ppt/
