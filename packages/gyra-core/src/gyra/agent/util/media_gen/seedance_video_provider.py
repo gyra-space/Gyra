@@ -196,6 +196,8 @@ class SeedanceVideoProvider(MediaGenProvider):
                 try:
                     err = submit_resp.json()
                 except ValueError:
+                    err = None
+                if not isinstance(err, dict):
                     err = {}
                 code = err.get("code", "")
                 msg = (
@@ -208,6 +210,11 @@ class SeedanceVideoProvider(MediaGenProvider):
                     f"{f' {code}' if code else ''}): {msg}"
                 )
             job = submit_resp.json()
+            if not isinstance(job, dict):
+                raise RuntimeError(
+                    f"Seedance API returned an unexpected non-dict response "
+                    f"(type={type(job).__name__}): {submit_resp.text[:200]}"
+                )
 
         task_id = job.get("id")
         if not task_id:
@@ -337,22 +344,40 @@ class SeedanceVideoProvider(MediaGenProvider):
 
             resp = await client.get(query_url, headers=headers)
             resp.raise_for_status()
-            status_data = resp.json()
+            try:
+                raw = resp.json()
+            except ValueError:
+                raise RuntimeError(
+                    f"Seedance task query returned non-JSON body "
+                    f"(task_id={task_id}): {resp.text[:200]}"
+                )
+            if not isinstance(raw, dict):
+                raise RuntimeError(
+                    f"Seedance task query returned non-dict JSON "
+                    f"(type={type(raw).__name__}, task_id={task_id}): "
+                    f"{resp.text[:200]}"
+                )
+            status_data = raw
 
             status = status_data.get("status", "")
 
             if status == "succeeded":
                 # Extract video URL from content.video_url.url
                 content_list = status_data.get("content", [])
+                if not isinstance(content_list, list):
+                    content_list = []
                 for item in content_list:
+                    if not isinstance(item, dict):
+                        continue
                     if item.get("type") == "video_url":
-                        video_url_obj = item.get("video_url", {})
-                        url = video_url_obj.get("url")
-                        if url:
-                            return url
+                        video_url_obj = item.get("video_url")
+                        if isinstance(video_url_obj, dict):
+                            url = video_url_obj.get("url")
+                            if url:
+                                return url
 
                 # Fallback: try output field
-                output = status_data.get("output", {})
+                output = status_data.get("output")
                 if isinstance(output, dict):
                     url = output.get("url")
                     if url:

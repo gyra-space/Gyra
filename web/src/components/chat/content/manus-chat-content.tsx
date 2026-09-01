@@ -291,10 +291,13 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
   // process: both panels (read-only)
   // report: only right panel (deliverable content)
   // hideRightPanel: workspace mode - always hide right panel
+  // 默认进入(会话已有内容)即呈现「左对话 + 右工作台」双面板;即便还没有
+  // running_window,右栏也显示「Workspace / 等待开始」占位空态,而不是让
+  // 双面板塌缩成单栏,避免默认视图看起来「只有半边」。
   const isRightPanelVisible = hideRightPanel ? false
     : shareMode === 'conversation' ? false
     : shareMode === 'report' ? true
-    : !userClosedPanel && latestHasData;
+    : !userClosedPanel && (latestHasData || hasMessages);
   const showLeftPanel = shareMode !== 'report';
   const showInput = !isSharedView;
 
@@ -375,7 +378,7 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
             ) : (
               <div className="h-full flex items-center justify-center px-6">
                 <div className="text-center max-w-md">
-                  <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white flex items-center justify-center overflow-hidden shadow-sm border border-[#eeeff3]">
+                  <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white dark:bg-[#1d2150] flex items-center justify-center overflow-hidden shadow-sm border border-[#eeeff3] dark:border-[#2a2f3e]">
                     <AgentAvatar
                       icon={appInfo?.icon}
                       name={appInfo?.app_name}
@@ -383,8 +386,8 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
                       rounded={false}
                     />
                   </div>
-                  <h3 className="text-[16px] font-medium text-[#3b4154] mb-1">{appInfo?.app_name || 'Agent 工作台'}</h3>
-                  <p className="text-[#8a92a6] text-[13px] mb-6">
+                  <h3 className="text-[16px] font-medium text-[#3b4154] dark:text-[#cbd2e0] mb-1">{appInfo?.app_name || 'Agent 工作台'}</h3>
+                  <p className="text-[#8a92a6] text-[13px] dark:text-[#8b95a8] mb-6">
                     {appInfo?.app_describe || '输入消息开始对话'}
                   </p>
                   {recommendQuestions.length > 0 && (
@@ -394,7 +397,7 @@ const ManusChatContent: React.FC<ManusChatContentProps> = ({ ctrl, hideRightPane
                           key={idx}
                           type="button"
                           onClick={() => handleChat?.(q)}
-                          className="max-w-[260px] px-3 py-2 text-[13px] text-[#3b4154] bg-white border border-[#e5e8ef] rounded-lg hover:border-[#4f46e5] hover:text-[#4f46e5] transition-colors text-left truncate"
+                          className="max-w-[260px] px-3 py-2 text-[13px] text-[#3b4154] bg-white dark:bg-[#161a26] dark:text-[#cbd2e0] border border-[#e5e8ef] dark:border-[#2a2f3e] rounded-lg hover:border-[#4f46e5] hover:text-[#4f46e5] dark:hover:text-[#a5b4fc] transition-colors text-left truncate"
                           title={q}
                         >
                           {q}

@@ -111,6 +111,27 @@ function downloadFile(url: string, fileName: string) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   无法在线预览的二进制办公文档识别
+   (Word/PPT/Excel 等按 mime 或扩展名命中即不拉取文本,避免把二进制当文本渲染出乱码)
+   ═══════════════════════════════════════════════════════════════ */
+
+const OFFICE_BINARY_EXT_RE = /\.(docx?|pptx?|xlsx?|odt|ods|odp|rtf|pages|numbers|key)$/i;
+const OFFICE_BINARY_MIME_RE =
+  /application\/(vnd\.openxmlformats-|vnd\.ms-|msword|ms-excel|ms-powerpoint)|officedocument|opendocument|wordprocessingml|spreadsheetml|presentationml/;
+
+/** 是否为二进制办公文档(Word/PPT/Excel 等):这类文件浏览器无法内联渲染,
+ * 命中后应引导下载而非当作文本/代码拉取展示。 */
+function isOfficeBinaryExhibit(exhibit: LobbyExhibit): boolean {
+  const name = exhibit.title || '';
+  const mime = (exhibit.source.mime_type || '').toLowerCase();
+  return OFFICE_BINARY_EXT_RE.test(name) || OFFICE_BINARY_MIME_RE.test(mime);
+}
+
+/** 会以内联方式「拉取文本/加载 as 文档」展示内容的 kind:命中二进制办公文档时须兜底为
+ * FileR,否则会把二进制流当 UTF-8 文本渲染成乱码(含 html 的 srcDoc 内联路径)。 */
+const TEXT_FETCH_KINDS: ReadonlySet<LobbyExhibit['kind']> = new Set(['text', 'code', 'markdown', 'data', 'chart', 'table', 'html']);
+
+/* ═══════════════════════════════════════════════════════════════
    打印 / 导出 PDF:源文本 → 干净排版文档 → 隐藏 iframe 打印
    (浏览器打印对话框中选择"另存为 PDF"即导出;iframe 标题即默认文件名)
    ═══════════════════════════════════════════════════════════════ */
@@ -232,7 +253,16 @@ function useExhibitText(exhibit: LobbyExhibit, skipFetch = false): { text: strin
         return res.text();
       })
       .then((t) => {
-        if (!cancelled) setText(t);
+        if (!cancelled) {
+          // 二进制内容(如 zip/office 等)被 res.text() 解码后会夹杂 NUL 字节:
+          // 直接展示会是一堆乱码,识别为「无法在线预览」并给出友好提示。
+          if (t.includes('\u0000')) {
+            setText(null);
+            setError('该文档无法在线展示，请下载后查看');
+            return;
+          }
+          setText(t);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(err.message);
@@ -783,11 +813,25 @@ function DataR({ exhibit }: { exhibit: LobbyExhibit }) {
 }
 
 function FileR({ exhibit }: { exhibit: LobbyExhibit }) {
+  const downloadUrl = resolveExhibitDownloadUrl(exhibit);
   return (
     <div className="ws-renderer__empty-panel">
       <FileOutlined style={{ fontSize: 28, color: '#d1d5db', marginBottom: 8 }} />
       <span className="ws-renderer__empty-hint">{exhibit.title}</span>
-      <span className="ws-renderer__empty-hint">此类型暂不支持内联预览,可使用右上角图标下载或在新窗口打开</span>
+      <span className="ws-renderer__empty-hint">该文档无法在线展示，下载后查看</span>
+      {downloadUrl && (
+        <a
+          href={downloadUrl}
+          download={exhibit.title || 'download'}
+          className="ws-renderer__download-btn"
+          onClick={(e) => {
+            e.preventDefault();
+            downloadFile(downloadUrl, exhibit.title || 'download');
+          }}
+        >
+          <DownloadOutlined /> 下载
+        </a>
+      )}
     </div>
   );
 }
@@ -856,6 +900,11 @@ export function ExhibitHost({ exhibit, workspaceId }: { exhibit: LobbyExhibit; w
   const downloadUrl = resolveExhibitDownloadUrl(exhibit);
   const actions = exhibit.actions || ['preview', 'download'];
   const Renderer = EXHIBIT_RENDERERS[exhibit.kind] || FileR;
+  // 二进制办公文档(Word/PPT/Excel 等)无法内联预览:命中「按文本拉取渲染」的
+  // kind 时统一兜底为 FileR,避免把二进制流当 UTF-8 文本展示成乱码。
+  const officeBinary = isOfficeBinaryExhibit(exhibit);
+  const EffectiveRenderer =
+    officeBinary && TEXT_FETCH_KINDS.has(exhibit.kind) ? FileR : Renderer;
   const size = fmtSize(exhibit.source.file_size);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [docBusy, setDocBusy] = useState(false);
@@ -868,7 +917,7 @@ export function ExhibitHost({ exhibit, workspaceId }: { exhibit: LobbyExhibit; w
   // 交付的 .json 文件内容可能是 App Card payload;识别出来后在右侧面板直接渲染应用本体,
   // 并可切回源码查看,作为开发阶段「先看效果 → 确认无误 → 导入落库」的通道。
   // 仅对文本类文件(code/data/text)拉取文本检测,避免对二进制类型做无谓 fetch。
-  const { text: rawText } = useExhibitText(exhibit, !isTextKind);
+  const { text: rawText } = useExhibitText(exhibit, !isTextKind || officeBinary);
   const appCardPayload = useMemo(() => {
     if (workspaceId == null || !rawText || !isAppCardPayloadText(rawText)) return null;
     return extractAppCardPayload(rawText, workspaceId);
@@ -1166,7 +1215,7 @@ export function ExhibitHost({ exhibit, workspaceId }: { exhibit: LobbyExhibit; w
         {isAppCard && viewMode === 'app' && previewCard ? (
           <AppCardRenderer appCard={previewCard} workspaceId={workspaceId!} height={560} invoke={previewInvoke} />
         ) : (
-          <Renderer exhibit={exhibit} />
+          <EffectiveRenderer exhibit={exhibit} />
         )}
       </div>
     </div>

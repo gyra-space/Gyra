@@ -836,6 +836,14 @@ export function SceneWorkspaceShell({
     return ensureConversation();
   };
   const handleSimpleSend = async (payload: any) => {
+    // 欢迎态首页提交:无论上一轮会话是否仍在运行(loading/RUNNING 残留态),
+    // 一律新建会话,不与任何已存在/运行中的会话纠缠。否则上一轮会话的残留态
+    // 会让本次请求被当作「补充输入」投递到旧会话队列,追问承接在旧对话里,
+    // 而不是真正新开会话。
+    if (simpleWelcome) {
+      await simpleChat.send(payload);
+      return;
+    }
     if (simpleChat.loading || simpleChat.convState === 'RUNNING') {
       setSimpleShowWelcome(false);
       // 投递补充输入队列;后端校验确有活跃执行才入队。若提交失败(会话无活跃
@@ -847,11 +855,13 @@ export function SceneWorkspaceShell({
         await simpleChat.send(payload);
       }
     } else {
-      // 首次发送(欢迎态):不要在 send 前关闭欢迎页 —— 新建会话是异步的
-      // (ensureConversation 内 createConversation/link/setCurrent 多次网络请求),
-      // 提前关闭会让运行态先以「最后一次会话」的 conversationId 渲染并拉取其历史(闪烁跳转)。
-      // 欢迎页统一由 send 内部的 onConversationStart 在 ensureConversation 完成、
-      // 新会话已写回 workspaceConvUid 之后关闭,一次渲染直达当前新会话。
+      // 运行态下、会话空闲时继续发送:复用当前会话;新建会话的欢迎态
+      // 已由上方 simpleWelcome 分支处理。不要在 send 前关闭欢迎页 ——
+      // 新建会话是异步的(ensureConversation 内 createConversation/link/setCurrent
+      // 多次网络请求),提前关闭会让运行态先以「最后一次会话」的 conversationId
+      // 渲染并拉取其历史(闪烁跳转)。欢迎页统一由 send 内部的 onConversationStart
+      // 在 ensureConversation 完成、新会话已写回 workspaceConvUid 之后关闭,
+      // 一次渲染直达当前新会话。
       await simpleChat.send(payload);
     }
   };
