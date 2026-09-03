@@ -1446,7 +1446,13 @@ class ToolAction(Action[ToolInput]):
 
                         idx = _ToolDispatcher.build_index(snap.all_tools())
                         entry = idx.get(tool_info.name)
-                        entry_exec_id = getattr(entry, "executor_id", None) if entry else None
+                        entry_exec_id = None
+                        if entry is not None:
+                            entry_exec_id = getattr(
+                                entry, "executor_id", None
+                            ) or getattr(
+                                getattr(entry, "content", None), "executor_id", None
+                            )
                         if entry_exec_id and entry_exec_id != _BUILTIN_ID:
                             conv_id = agent.agent_context.conv_id
                             dispatch_result = await dispatcher.dispatch(

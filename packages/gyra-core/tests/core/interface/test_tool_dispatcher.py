@@ -7,6 +7,7 @@
 - builtin 但无 builtin_executor 注册 → 失败
 - executor 未 acquire → 失败
 - 旧式 Contribution(content=BaseTool)兼容查
+- Contribution(content=ToolEntry)(capability declare 形态,如 memory 工具)兼容查
 - build_index 索引
 """
 
@@ -201,8 +202,57 @@ async def test_legacy_contribution_content_as_tool():
 
 
 # --------------------------------------------------------------------------- #
-# build_index
+# Contribution(content=ToolEntry)兼容(capability declare 形态)
 # --------------------------------------------------------------------------- #
+def _wrap_tool_entry(entry: ToolEntry) -> Contribution:
+    return Contribution(
+        "mcp:memory_tools", Slot.TOOLS, entry,
+        lifetime=Lifetime.CONFIG_STATIC, cache_scope=CacheScope.NONE,
+    )
+
+
+async def test_contribution_wrapped_tool_entry_dispatch_builtin():
+    """Contribution(content=ToolEntry) 能被找到,executor_id 从 content 读取。"""
+    called = []
+
+    async def cb(name, t, args):
+        called.append(name)
+        return f"cb-{name}"
+
+    reg = InMemoryExecutorRegistry()
+    dispatcher = ToolDispatcher(reg, builtin_executor=cb)
+    entry = ToolEntry(
+        tool_name="memory_save", tool=object(),
+        capability_id="mcp:memory_tools", executor_id=BUILTIN_EXECUTOR_ID,
+    )
+    res = await dispatcher.dispatch(
+        tool_name="memory_save", args={}, conv_id="c1",
+        entries=[_wrap_tool_entry(entry)],
+    )
+    assert res.success is True
+    assert res.result == "cb-memory_save"
+    assert called == ["memory_save"]
+
+
+async def test_contribution_wrapped_tool_entry_dispatch_executor():
+    """Contribution(content=ToolEntry) 且 executor_id 指向真实 Executor。"""
+    sandbox = _MockExecutor("sandbox")
+    reg = InMemoryExecutorRegistry()
+    await reg.acquire("c1", sandbox)
+    dispatcher = ToolDispatcher(reg)
+    entry = ToolEntry(
+        tool_name="kg_query", tool=object(),
+        capability_id="mcp:memory_tools", executor_id="sandbox",
+    )
+    res = await dispatcher.dispatch(
+        tool_name="kg_query", args={}, conv_id="c1",
+        entries=[_wrap_tool_entry(entry)],
+    )
+    assert res.success is True
+    assert res.result == "exec-result:kg_query"
+    assert sandbox.executed == ["kg_query"]
+
+
 def test_build_index():
     entries = [
         ToolEntry("a", object(), "c1"),
@@ -212,3 +262,20 @@ def test_build_index():
     assert set(idx.keys()) == {"a", "b"}
     assert idx["a"].tool_name == "a"
     assert idx["b"].executor_id == "sandbox"
+
+
+def test_build_index_contribution_wrapped_tool_entry():
+    """build_index 必须索引 Contribution(content=ToolEntry) 形态。
+
+    回归:memory 等 capability 工具经 facade declare 后以该形态进入
+    snapshot.frozen.tools;旧实现只回退 content.name(ToolEntry 无 .name),
+    导致执行面 resolve 永远 miss → "Tool 'memory_save' not found in resources"。
+    """
+    entry = ToolEntry(
+        tool_name="memory_save", tool=object(),
+        capability_id="mcp:memory_tools", executor_id=BUILTIN_EXECUTOR_ID,
+    )
+    contrib = _wrap_tool_entry(entry)
+    idx = ToolDispatcher.build_index([contrib])
+    assert "memory_save" in idx
+    assert idx["memory_save"] is contrib

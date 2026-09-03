@@ -6,6 +6,7 @@
 
 from gyra.core.interface.resource.bundle import CacheScope, Contribution, Lifetime, Slot
 from gyra.core.interface.resource.tool_entry import BUILTIN_EXECUTOR_ID, ToolEntry
+from gyra.core.interface.resource.capability import Capability
 from gyra.agent.capabilities.facade import ResourceFacade
 
 
@@ -30,7 +31,17 @@ class _FakeAgent:
         entry = idx.get(tool_name)
         if entry is None:
             return None
-        return getattr(entry, "tool", None) or getattr(entry, "content", None)
+        tool = getattr(entry, "tool", None)
+        if tool is None:
+            tool = getattr(entry, "content", None)
+        while (
+            tool is not None
+            and hasattr(tool, "tool_name")
+            and hasattr(tool, "tool")
+            and not hasattr(tool, "to_openai_tool")
+        ):
+            tool = tool.tool
+        return tool
 
 
 async def _make_snapshot_with_tools():
@@ -96,3 +107,94 @@ async def test_builtin_tools_marked_agent_builtin():
     for entry in snap.builtin_tools:
         assert entry.executor_id == BUILTIN_EXECUTOR_ID
         assert entry.capability_id == "agent:builtin"
+
+
+# --------------------------------------------------------------------------- #
+# capability 声明工具(memory 工具形态):Contribution(content=ToolEntry)
+# --------------------------------------------------------------------------- #
+class _FakeMcpLikeCapability(Capability):
+    """模拟 MCPCapability.declare:TOOLS 槽产 Contribution(content=ToolEntry)。"""
+
+    def __init__(self, tools):
+        self._tools = tools
+
+    @property
+    def capability_id(self) -> str:
+        return "mcp:memory_tools"
+
+    def declare(self, config=None):
+        return [
+            Contribution(
+                capability_id=self.capability_id,
+                slot=Slot.TOOLS,
+                content=ToolEntry(
+                    tool_name=t.name,
+                    tool=t,
+                    capability_id=self.capability_id,
+                    executor_id=BUILTIN_EXECUTOR_ID,
+                    description=getattr(t, "description", "") or "",
+                ),
+                lifetime=Lifetime.CONFIG_STATIC,
+                cache_scope=CacheScope.NONE,
+                order=60,
+            )
+            for t in self._tools
+        ]
+
+    async def prepare(self) -> None:
+        pass
+
+    async def execute(self, call):
+        raise NotImplementedError
+
+    async def release(self, reason) -> None:
+        pass
+
+
+async def _make_snapshot_with_capability_tools():
+    from gyra.agent.resource import FunctionTool
+    from gyra.core.interface.resource.capability import CapabilityPack
+
+    def _fn(**kw):
+        return "ok"
+
+    tools = [
+        FunctionTool(name="memory_save", func=_fn, description="save"),
+        FunctionTool(name="memory_remember", func=_fn, description="remember"),
+    ]
+    facade = ResourceFacade()
+    return await facade.assemble(
+        agent_id="canvas-agent",
+        conv_id="c1",
+        resource_root=CapabilityPack([_FakeMcpLikeCapability(tools)]),
+        identity="id-cap",
+        control_block="ctl-cap",
+    ), tools
+
+
+async def test_resolve_tool_entry_finds_capability_declared_tools():
+    """capability 工具(Contribution(content=ToolEntry))执行面必须可查。
+
+    回归:memory 工具经 MCPCapability.declare 后,LLM 声明面可见
+    (function_calling_params 经 _tool_from_entry 解包),但执行面
+    build_index 不识别该形态 → "Tool 'memory_save' not found in resources"。
+    """
+    from gyra.core.interface.resource.dispatcher import ToolDispatcher
+
+    snap, tools = await _make_snapshot_with_capability_tools()
+    idx = ToolDispatcher.build_index(snap.all_tools())
+    assert "memory_save" in idx
+    assert "memory_remember" in idx
+
+    agent = _FakeAgent(snap)
+    for tool in tools:
+        resolved = agent.resolve_tool_entry(tool.name)
+        assert resolved is tool
+
+
+async def test_capability_declared_tool_declare_and_execute_same_handle():
+    """声明面(function_calling_params 视角)与执行面取同一工具句柄。"""
+    snap, tools = await _make_snapshot_with_capability_tools()
+    agent = _FakeAgent(snap)
+    for tool in tools:
+        assert agent.resolve_tool_entry(tool.name) is tool

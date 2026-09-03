@@ -1376,8 +1376,19 @@ class ReActMasterAgent(ConversableAgent, Team):
         entry = idx.get(tool_name)
         if entry is None:
             return None
-        # ToolEntry 取 .tool;Contribution 取 .content
-        return getattr(entry, "tool", None) or getattr(entry, "content", None)
+        tool = getattr(entry, "tool", None)
+        if tool is None:
+            tool = getattr(entry, "content", None)
+        # Contribution(content=ToolEntry) 再解一层到真实工具句柄;
+        # 与 _tool_from_entry 同一套解包语义(防嵌套包装误判)。
+        while (
+            tool is not None
+            and hasattr(tool, "tool_name")
+            and hasattr(tool, "tool")
+            and not hasattr(tool, "to_openai_tool")
+        ):
+            tool = tool.tool
+        return tool
 
     async def _build_sandbox_capability(self):
         """S14+S20:沙箱 Capability 输入投影。

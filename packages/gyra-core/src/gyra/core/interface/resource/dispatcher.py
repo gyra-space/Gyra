@@ -87,6 +87,10 @@ class ToolDispatcher:
             )
 
         executor_id = getattr(entry, "executor_id", None)
+        if executor_id is None:
+            executor_id = getattr(
+                getattr(entry, "content", None), "executor_id", None
+            )
         # ToolEntry 用 .tool;旧式 Contribution(content 是 BaseTool)用 .content
         tool = getattr(entry, "tool", None)
         if tool is None:
@@ -120,7 +124,9 @@ class ToolDispatcher:
                     f"{conv_id}; tool '{tool_name}'"
                 ),
             )
-        capability_id = capability_id_hint or getattr(entry, "capability_id", "")
+        capability_id = capability_id_hint or getattr(
+            entry, "capability_id", ""
+        ) or getattr(getattr(entry, "content", None), "capability_id", "")
         call = ExecutorCall(
             executor_id=executor_id,
             capability_id=capability_id,
@@ -138,16 +144,17 @@ class ToolDispatcher:
     def _find_entry(entries: Iterable[Any], tool_name: str) -> Optional[Any]:
         """在 TOOLS 槽内按 tool_name 查条目。
 
-        兼容 ToolEntry(取 .tool_name)与旧式 Contribution(content 为 BaseTool,
-        取 .name)。
+        兼容三种形态:ToolEntry(取 .tool_name)、Contribution(content 为
+        ToolEntry,取 .content.tool_name)、旧式 Contribution(content 为
+        BaseTool,取 .content.name)。
         """
         for e in entries:
-            # ToolEntry 形态
             tn = getattr(e, "tool_name", None)
             if tn is None:
-                # 旧式 Contribution:content 是 BaseTool,取其 name
-                tool = getattr(e, "content", None)
-                tn = getattr(tool, "name", None)
+                content = getattr(e, "content", None)
+                tn = getattr(content, "tool_name", None) or getattr(
+                    content, "name", None
+                )
             if tn == tool_name:
                 return e
         return None
@@ -157,9 +164,12 @@ class ToolDispatcher:
         """构建 tool_name → entry 索引(O(N) 查找替代每次线性扫)。"""
         index: Dict[str, Any] = {}
         for e in entries:
-            tn = getattr(e, "tool_name", None) or getattr(
-                getattr(e, "content", None), "name", None
-            )
+            tn = getattr(e, "tool_name", None)
+            if not tn:
+                content = getattr(e, "content", None)
+                tn = getattr(content, "tool_name", None) or getattr(
+                    content, "name", None
+                )
             if tn:
                 index[tn] = e
         return index
