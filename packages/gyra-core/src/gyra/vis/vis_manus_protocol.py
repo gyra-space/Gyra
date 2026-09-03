@@ -417,6 +417,8 @@ ACTION_TO_STEP_TYPE = {
     "glob": ManusStepType.GLOB,
     "html": ManusStepType.HTML,
     "planning": ManusStepType.TASK,
+    # V2 引擎子 Agent seam：spawn_subagent 任务作为 TASK 步骤展示
+    "spawn_subagent": ManusStepType.TASK,
 }
 
 

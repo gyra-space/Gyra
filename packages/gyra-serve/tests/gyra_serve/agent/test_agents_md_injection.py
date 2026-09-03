@@ -11,11 +11,14 @@ import os
 
 import pytest
 
+from gyra_serve.agent.agents.chat import agents_md_injection
 from gyra_serve.agent.agents.chat.agents_md_injection import (
     _coerce_ext_config,
     _resolve_memory_space_slug,
     build_agents_md_block,
+    resolve_workspace_memory_space,
 )
+from gyra_serve.knowledge.service.service import Service as KnowledgeService
 
 
 class FakeApp:
@@ -71,7 +74,7 @@ def test_slug_missing():
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_explicit_relative_path_via_workspace_root(tmp_path, monkeypatch):
@@ -111,3 +114,137 @@ def test_disabled_config_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(ds, "workspace_sandbox_root", lambda wid: str(ws))
     app = FakeApp(ext_config={"agents_md": {"enabled": False, "path": "AGENTS.md"}})
     assert _run(build_agents_md_block(object(), app, {"workspace_id": 1})) is None
+
+
+# --------------------------- workspace 记忆空间 --------------------------- #
+
+
+class _FakeWS:
+    def __init__(self, workspace_code):
+        self.workspace_code = workspace_code
+
+
+class _FakeWorkspaceService:
+    _by_id = {}
+
+    def __init__(self, system_app=None, config=None):
+        pass
+
+    def get_by_id(self, ws_id):
+        return self._by_id.get(ws_id)
+
+
+class _FakeKS:
+    def __init__(self):
+        self.created = []
+
+    async def get_or_create_workspace_space(self, workspace_code):
+        self.created.append(workspace_code)
+        return object()
+
+    @staticmethod
+    def workspace_space_slug(workspace_code):
+        return KnowledgeService.workspace_space_slug(workspace_code)
+
+
+@pytest.fixture(autouse=True)
+def _clear_ws_slug_cache():
+    agents_md_injection._WORKSPACE_SLUG_CACHE.clear()
+    yield
+    agents_md_injection._WORKSPACE_SLUG_CACHE.clear()
+
+
+def _patch_workspace_env(monkeypatch, fake_ks, ws_by_id=None):
+    _FakeWorkspaceService._by_id = ws_by_id or {}
+    import gyra_serve.workspace.config as ws_cfg_mod
+    import gyra_serve.workspace.service.service as ws_svc_mod
+
+    monkeypatch.setattr(ws_svc_mod, "WorkspaceService", _FakeWorkspaceService)
+    monkeypatch.setattr(ws_cfg_mod, "ServeConfig", lambda: object())
+    monkeypatch.setattr(
+        KnowledgeService, "get_instance", classmethod(lambda cls, app: fake_ks)
+    )
+
+
+def test_workspace_space_slug_cleaning():
+    assert KnowledgeService.workspace_space_slug("ws-abc") == "memory-ws-ws-abc"
+    assert KnowledgeService.workspace_space_slug("ws abc/1") == "memory-ws-ws_abc_1"
+    assert KnowledgeService.workspace_space_slug("") == "memory-ws-unknown"
+
+
+def test_resolve_workspace_memory_space_creates_and_caches(monkeypatch):
+    fake_ks = _FakeKS()
+    _patch_workspace_env(monkeypatch, fake_ks, ws_by_id={7: _FakeWS("ws-seven")})
+
+    slug = _run(resolve_workspace_memory_space(object(), 7))
+    assert slug == "memory-ws-ws-seven"
+    assert fake_ks.created == ["ws-seven"]
+
+    # 第二次走缓存：不再触发建空间
+    slug2 = _run(resolve_workspace_memory_space(object(), 7))
+    assert slug2 == slug
+    assert fake_ks.created == ["ws-seven"]
+
+
+def test_resolve_workspace_memory_space_fallback_code(monkeypatch):
+    """workspace 查不到 / 查询失败时回退 ws-{id}，仍建空间。"""
+    fake_ks = _FakeKS()
+    _patch_workspace_env(monkeypatch, fake_ks, ws_by_id={})  # 查不到
+
+    slug = _run(resolve_workspace_memory_space(object(), 42))
+    assert slug == "memory-ws-ws-42"
+    assert fake_ks.created == ["ws-42"]
+
+
+def test_resolve_workspace_memory_space_degrades_on_error(monkeypatch):
+    import gyra_serve.workspace.service.service as ws_svc_mod
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ws_svc_mod, "WorkspaceService", _boom)
+    slug = _run(resolve_workspace_memory_space(object(), 9))
+    assert slug is None
+
+
+# --------------------------- 四路收集（含 workspace 路） --------------------------- #
+
+
+def test_collect_sections_includes_workspace_memory(tmp_path, monkeypatch):
+    """workspace 路命中时,空间级 AGENTS.md 进入注入块,优先于 app 记忆空间。"""
+    from gyra_serve.agent.agents.chat.agents_md_injection import (
+        collect_agents_md_sections,
+    )
+
+    async def _fake_resolve(system_app, workspace_id):
+        return "memory-ws-1"
+
+    async def _fake_load(system_app, slug):
+        return "# 空间记忆\n\n本空间用 PostgreSQL 16\n"
+
+    monkeypatch.setattr(agents_md_injection, "resolve_workspace_memory_space", _fake_resolve)
+    monkeypatch.setattr(agents_md_injection, "_load_vault_agents_md", _fake_load)
+
+    app = FakeApp(resource_memory=_resource_memory())  # app 级路自然降级(无 DB)
+    sections = _run(collect_agents_md_sections(object(), app, {"workspace_id": 1}))
+    sources = [s for s, _ in sections]
+    assert "workspace-memory" in sources
+    joined = "\n".join(c for _, c in sections)
+    assert "本空间用 PostgreSQL 16" in joined
+
+
+def test_collect_sections_no_workspace_id_skips_workspace_path(monkeypatch):
+    from gyra_serve.agent.agents.chat.agents_md_injection import (
+        collect_agents_md_sections,
+    )
+
+    called = []
+
+    async def _fake_resolve(system_app, workspace_id):
+        called.append(workspace_id)
+        return None
+
+    monkeypatch.setattr(agents_md_injection, "resolve_workspace_memory_space", _fake_resolve)
+    app = FakeApp()
+    _run(collect_agents_md_sections(object(), app, {}))
+    assert called == []

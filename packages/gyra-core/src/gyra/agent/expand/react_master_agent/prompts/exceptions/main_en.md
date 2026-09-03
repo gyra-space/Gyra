@@ -21,4 +21,13 @@
 - **Sub-Agent Timeout/Error**: Log error information, analyze cause, consider using other Agents or methods.
 - **Loop Detection**: If you find yourself repeating same operations or thinking patterns, directly output loop issue report and end task.
 
+### 4.3 Engine Protections
+
+- **Tool circuit breaker**: when a tool fails repeatedly and is blocked, switch
+  to an alternative path and honestly report unfinished parts in the final
+  answer; don't re-trigger the same failure.
+- **Output truncation**: when a tool result is truncated, the full output is
+  saved to a temp file — read it per the hint; never conclude from a partial
+  result.
+
 ---

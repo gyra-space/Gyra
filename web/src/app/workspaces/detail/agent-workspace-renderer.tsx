@@ -666,10 +666,10 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
     [task_files, deliverable_files],
   );
 
-  // 上下文注入:默认注入的协议文件(skill / agents.md 等 preload 内容)抽离到
+  // 上下文注入:默认注入的协议文件(skill / 记忆等 preload 内容)抽离到
   // 用户消息之后、Agent 回复之前展示(参考图2),不再混入执行步骤流。
   const injectedSteps = useMemo(
-    () => (view.execution || []).filter((s) => s.type === 'skill_loaded'),
+    () => (view.execution || []).filter((s) => s.type === 'skill_loaded' || s.type === 'memory_loaded'),
     [view.execution],
   );
 
@@ -682,7 +682,7 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
       ? view.execution
       : view.execution.map((s) => (s.status === 'running' ? { ...s, status: 'done' as const } : s));
     // 上下文注入步骤已抽离到 feed 顶部(用户消息后/Agent 回复前),步骤流里不再重复渲染
-    return splitRounds(execution.filter((s) => s.type !== 'skill_loaded'));
+    return splitRounds(execution.filter((s) => s.type !== 'skill_loaded' && s.type !== 'memory_loaded'));
   }, [view.execution, running]);
 
   // 上下文注入插到「首个用户消息之后、Agent 回复之前」:取首个带 user 步骤的轮次。

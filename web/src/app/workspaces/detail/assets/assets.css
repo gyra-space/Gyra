@@ -102,6 +102,12 @@
   gap: 4px;
 }
 
+.ws-asset-card__default {
+  font-size: 12px;
+  line-height: 20px;
+  margin-inline-start: 2px;
+}
+
 .ws-asset-card__source {
   font-size: 12px;
   color: var(--ws-ink-2);

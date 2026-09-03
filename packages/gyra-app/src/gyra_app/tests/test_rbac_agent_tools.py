@@ -112,6 +112,73 @@ def test_create_user_success_assigns_roles():
 
 
 # --------------------------------------------------------------------------- #
+# rbac_set_role_permissions: 兼容字符串/权限 key 传参
+# --------------------------------------------------------------------------- #
+def test_set_role_permissions_accepts_string_keys():
+    """LLM 把 permission key 当字符串传(如 'agent.admin')不应抛异常。"""
+    with patch.object(agent_tools, "_dao") as mock_dao, \
+         patch.object(agent_tools, "_svc"):
+        mock_dao.get_role.return_value = {
+            "id": 14, "name": "cs_space_admin", "is_system": 0
+        }
+        result = agent_tools.rbac_set_role_permissions(
+            role_id=14,
+            permissions=["agent.admin", "tool.admin", "database.admin"],
+            context=_ctx(_admin()),
+        )
+    assert result["success"] is True
+    assert len(result["applied"]) == 3
+    assert len(result["skipped"]) == 0
+    calls = mock_dao.add_role_permission.call_args_list
+    assert calls[0].kwargs == {
+        "role_id": 14, "resource_type": "agent", "action": "admin",
+        "resource_id": "*", "effect": "allow",
+    }
+    assert calls[1].kwargs["resource_type"] == "tool"
+    assert calls[2].kwargs["resource_type"] == "database"
+
+
+def test_set_role_permissions_accepts_key_dict():
+    """dict 形态但用 key 字段(来自 rbac_list_permission_definitions)。"""
+    with patch.object(agent_tools, "_dao") as mock_dao, \
+         patch.object(agent_tools, "_svc"):
+        mock_dao.get_role.return_value = {
+            "id": 14, "name": "cs_space_admin", "is_system": 0
+        }
+        result = agent_tools.rbac_set_role_permissions(
+            role_id=14,
+            permissions=[{"key": "channel.manage"}, {"key": "cron.manage"}],
+            context=_ctx(_admin()),
+        )
+    assert result["success"] is True
+    calls = mock_dao.add_role_permission.call_args_list
+    assert [c.kwargs["resource_type"] for c in calls] == ["channel", "cron"]
+    assert [c.kwargs["action"] for c in calls] == ["manage", "manage"]
+
+
+def test_set_role_permissions_skips_invalid_items():
+    """非法/无法解析的项跳过并记录原因,不抛异常。"""
+    with patch.object(agent_tools, "_dao") as mock_dao, \
+         patch.object(agent_tools, "_svc"):
+        mock_dao.get_role.return_value = {
+            "id": 14, "name": "cs_space_admin", "is_system": 0
+        }
+        result = agent_tools.rbac_set_role_permissions(
+            role_id=14,
+            permissions=[
+                "agent.admin",
+                "not-a-key",
+                {"resource_type": "tool", "action": "admin"},
+            ],
+            context=_ctx(_admin()),
+        )
+    assert result["success"] is True
+    assert len(result["applied"]) == 2
+    assert len(result["skipped"]) == 1
+    mock_dao.add_role_permission.assert_called()
+
+
+# --------------------------------------------------------------------------- #
 # 批量注册:dry_run 预览
 # --------------------------------------------------------------------------- #
 def _batch_users():

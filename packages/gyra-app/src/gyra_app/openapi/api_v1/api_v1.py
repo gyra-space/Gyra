@@ -380,6 +380,11 @@ async def chat_query(
             return Result.failed(code="E0103", msg=f"会话 {conv_id} 不存在")
 
         vis_final, user_answer, current_vis_render, is_final, state, dock = result
+        try:
+            injected_context = await multi_agents.collect_injected_context(conv_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"collect_injected_context failed for {conv_id}: {e}")
+            injected_context = []
         return Result.succ(
             {
                 "conv_id": conv_id,
@@ -389,6 +394,7 @@ async def chat_query(
                 "user_answer": user_answer,
                 "vis_render": current_vis_render,
                 "dock": dock,
+                "injected_context": injected_context,
             }
         )
     except Exception as e:

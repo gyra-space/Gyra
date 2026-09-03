@@ -28,7 +28,7 @@ import logging
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from gyra._private.pydantic import Field, PrivateAttr
 from gyra.agent.core.action.base import ActionOutput, AskUserType
@@ -75,6 +75,10 @@ _V2_STATE_STORES_CAP = 32
 # 目录内容变化时 catalog consumer 重新注入）。
 _V2_SKILL_REGISTRIES: "dict[str, object]" = {}
 
+# PIXIU 独立模板 Registry（standalone 实例，目录 v2_agent/prompts/）。
+# 不走 PromptRegistry 进程级单例——避免与 BAIZE 的 agent 级模板目录互相覆盖。
+_V2_PROMPT_REGISTRY: Optional[object] = None
+
 
 def _state_store_cache_put(key: tuple, store) -> None:
     if len(_V2_STATE_STORES) >= _V2_STATE_STORES_CAP:
@@ -94,6 +98,11 @@ class V2Agent(ReActMasterAgent):
 
     复用现有 serve bind 链与 BAIZE vis 渲染，内部 think/act 由 V2 run_loop 驱动。
     """
+
+    # PromptAssembler 引擎标识（"v2"=PIXIU/V2 引擎；V1/BAIZE 缺省 "v1"）。
+    # PIXIU 使用独立模板目录（v2_agent/prompts/）与 standalone Registry，
+    # 此值仅作为元数据保留，供用户自定义模板与运维辨识引擎。
+    prompt_architecture: ClassVar[str] = "v2"
 
     profile: ProfileConfig = Field(
         default_factory=lambda: ProfileConfig(
@@ -162,6 +171,44 @@ class V2Agent(ReActMasterAgent):
     _v2_engine_ready_hook: Any = PrivateAttr(default=None)
     # 会话对话消息事件 seq（user/message、assistant/message 单调递增）
     _v2_dialog_seq: Any = PrivateAttr(default_factory=lambda: {"n": 0})
+
+    # ---- PIXIU 独立 Prompt 架构 ----
+
+    def _get_prompt_assembler(self) -> "PromptAssembler":
+        """PIXIU 使用独立模板目录与独立 Registry 实例（不与 BAIZE 混用）。
+
+        PromptRegistry 进程级单例的 set_agent_prompts_dir 会清空并重载全量模板，
+        V1/V2 同进程混跑时共用单例会互相覆盖模板；因此 V2 持有 standalone
+        Registry（进程内缓存一份），模板目录为本文件旁的 prompts/，
+        四层静态模板（identity/workflow/exceptions/delivery）为 PIXIU 专版。
+        """
+        if self._prompt_assembler is None:
+            from pathlib import Path
+
+            from gyra.agent.shared.prompt_assembly.prompt_assembler import (
+                PromptAssembler,
+                PromptAssemblyConfig,
+            )
+            from gyra.agent.shared.prompt_assembly.prompt_registry import PromptRegistry
+
+            global _V2_PROMPT_REGISTRY
+            if _V2_PROMPT_REGISTRY is None:
+                prompts_dir = Path(__file__).parent / "prompts"
+                registry = PromptRegistry(standalone=True)
+                registry.set_agent_prompts_dir(prompts_dir)
+                registry.initialize(prompts_dir)
+                _V2_PROMPT_REGISTRY = registry
+            self._prompt_assembler = PromptAssembler(
+                PromptAssemblyConfig(
+                    architecture="v2",
+                    workflow_version="v2",
+                    language=getattr(self.profile, "language", "zh")
+                    if hasattr(self, "profile")
+                    else "zh",
+                ),
+                registry=_V2_PROMPT_REGISTRY,
+            )
+        return self._prompt_assembler
 
     def _ensure_v2_state_store(self):
         """懒创建 V2 事件溯源持久化 StateStore（真实库，非 tempdir）。
@@ -1057,9 +1104,10 @@ class V2Agent(ReActMasterAgent):
             role="assistant",
             model_name=self._v2_model_alias or None,
             metrics=tool_call_metrics,
-            # content 必须置空：工具调用消息是动作声明，历史 thinking 若回流
-            # 会让模型在下一轮复述旧思考再新增，导致 thinking 文本逐轮累积重复
-            content="",
+            # content 携带调用工具前的旁白（V1 把旁白留在消息 content 供渲染；
+            # V2 据此在规划空间/聊天区展示叙述文本，且不影响 LLM 上下文——
+            # V2 上下文来自事件日志投影，不读 gpts_messages 的 content）。
+            content=getattr(self, "_v2_pending_narration", "") or "",
             tool_calls=[
                 {
                     "id": tool_call_id,

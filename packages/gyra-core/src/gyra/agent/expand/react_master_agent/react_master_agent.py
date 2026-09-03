@@ -1316,7 +1316,7 @@ class ReActMasterAgent(ConversableAgent, Team):
             agent_prompts_dir = Path(__file__).parent / "prompts"
 
             config = PromptAssemblyConfig(
-                architecture="v1",
+                architecture=getattr(self, "prompt_architecture", "v1"),
                 language=getattr(self.profile, "language", "zh")
                 if hasattr(self, "profile")
                 else "zh",
@@ -1923,6 +1923,8 @@ class ReActMasterAgent(ConversableAgent, Team):
                 # S10: 经 ResourceFacade 产完整 system 快照(四层 Contribution)。
                 # 用现有 PromptAssembler 产身份层/控制层文本(复用渲染,不重写),
                 # 资源层由 facade 经各 capability wrapper 原生 declare 注入(legacy 桥接已移除)。
+                # 引擎分叉变量：模板内 {% if architecture == "v2" %} 依赖它
+                render_vars.setdefault("architecture", assembler.config.architecture)
                 identity_text = await assembler._assemble_identity(
                     user_identity, **render_vars
                 )

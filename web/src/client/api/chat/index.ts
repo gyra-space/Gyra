@@ -50,6 +50,12 @@ export const stopChat = (data: {conv_session_id: string}) => {
   );
 };
 
+/** 记忆注入标记（injected_context 单元）：随 /chat/query 返回，刷新后重注入卡片。 */
+export interface InjectedContextBlock {
+  conv_id: string;
+  blocks: { kind?: string; title?: string; chars?: number }[];
+}
+
 export type ChatQueryResponse = {
   conv_id: string;
   state: 'RUNNING' | 'COMPLETE' | 'FAILED' | 'WAITING' | (string & {});
@@ -59,6 +65,8 @@ export type ChatQueryResponse = {
   vis_render: string;
   /** Composer Dock 协议：输入框上方固定区域渲染数据（todo_list / subagent_board 等）。 */
   dock?: DockFrame;
+  /** 会话各轮持久化的记忆注入标记（AGENTS.md / user.md），刷新重注入用。 */
+  injected_context?: InjectedContextBlock[];
 };
 
 export const queryChatStatus = (conversationId: string, visRender?: string) => {

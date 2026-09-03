@@ -833,6 +833,57 @@ class Service(BaseComponent):
         )
         return self._vaults[slug]
 
+    @staticmethod
+    def workspace_space_slug(workspace_code: str) -> str:
+        """Derive the deterministic per-workspace memory space slug.
+
+        Each workspace gets its own AGENTS.md (analogue of one CLAUDE.md per
+        project). The slug must satisfy ``create_space`` validation
+        (non-empty, no ``/``, no leading dot).
+        """
+        import re as _re
+
+        safe = _re.sub(r"[^a-zA-Z0-9_-]", "_", str(workspace_code or "").strip()).strip("_")
+        if not safe:
+            safe = "unknown"
+        return f"memory-ws-{safe}"
+
+    async def get_or_create_workspace_space(
+        self,
+        workspace_code: str,
+        *,
+        owner_id: Optional[str] = None,
+    ) -> Any:
+        """Resolve (creating if needed) the per-workspace memory space vault.
+
+        Lazily creates an ``agent_memory`` space so the workspace's
+        ``AGENTS.md`` is persisted per workspace. Idempotent: if the space
+        already exists, returns the cached vault (and refreshes the AGENTS.md
+        seed if it is still a placeholder).
+        """
+        slug = self.workspace_space_slug(workspace_code)
+        if slug in self._vaults:
+            vault = self._vaults[slug]
+            space = self._spaces.get(slug) or Space(
+                id=new_space_id(),
+                slug=slug,
+                name=slug,
+                space_type="agent_memory",
+            )
+            if space.space_type != "agent_memory":
+                space.space_type = "agent_memory"
+            await self._ensure_memory_schema(vault, space)
+            return vault
+
+        await self.create_space(
+            slug,
+            default_agent_id=None,
+            owner_id=str(owner_id) if owner_id else None,
+            visibility="private",
+            space_type="agent_memory",
+        )
+        return self._vaults[slug]
+
     async def create_space(
         self,
         slug: str,
@@ -974,13 +1025,18 @@ class Service(BaseComponent):
             )
 
             current = parse_schema(await vault.read_schema_md())
-            if validate_predicate(current, "supersedes") and validate_predicate(
-                current, "merged-into"
-            ):
-                return
-            await vault.write_schema_md(default_memory_schema_md(space.name or space.slug))
+            needs_schema_md = not (
+                validate_predicate(current, "supersedes")
+                and validate_predicate(current, "merged-into")
+            )
+            if needs_schema_md:
+                await vault.write_schema_md(default_memory_schema_md(space.name or space.slug))
         except Exception as e:
             logger.warning("ensure memory schema failed for %s: %s", space.slug, e)
+
+        # 注意：这里不能提前 return——create_space 已先写入占位 schema.md，
+        # 占位模板同样通过 predicate 校验，早退会跳过下方 AGENTS.md/user.md
+        # 播种（它们的占位保护各自独立，不会覆盖用户内容）。
 
         # Seed AGENTS.md（Agent 整体记忆文档）模板——仅当文件仍是占位/空内容
         # 时写入，绝不覆盖用户已手写的内容。user_memory 空间不播种 AGENTS.md

@@ -198,3 +198,27 @@ class TestSummaryAndEvidence:
         assert view.evidence[0].source == "财务核算办法.docx"
         assert view.evidence[0].quote == "净销售额剔税"
         assert not hasattr(view.evidence[0], "extra_field")
+
+
+# ---------------------------------------------------------------- 畸形数据降级
+# 历史/导入数据可能出现 payload 不是 object(JSON 数组),打开详情曾报
+# "'list' object has no attribute 'get'"。视图必须降级渲染而不是抛异常。
+class TestMalformedPayload:
+    def test_list_payload_degrades(self):
+        vo = _vo(payload=["SUM(F003)", "extra"])  # 非 object 的脏 payload
+        view = build_proposal_view(vo)
+        assert view.summary
+        assert view.lineage is not None
+        assert view.sql_preview is not None  # full 级降级为警告
+
+    def test_entity_list_binding_and_fields_degrades(self):
+        vo = _vo(
+            obj_type="entity",
+            payload={"binding": ["bad"], "fields": ["bad"], "name": "脏实体"},
+        )
+        view = build_proposal_view(vo)
+        assert view.summary == "绑定表 ?"
+        assert view.lineage is not None
+        assert view.sql_preview is not None
+        assert view.sql_preview.sql is None
+        assert view.sql_preview.warnings

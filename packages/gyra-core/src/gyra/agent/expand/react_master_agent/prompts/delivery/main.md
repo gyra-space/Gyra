@@ -6,6 +6,7 @@
 
 - 新建或覆写文件：`Write(path=绝对路径, content=内容)` 一次写入；内容过大可拆多次追加（`Edit`）。
 - 脚本/工具已生成的文件：`deliver_file(path=绝对路径, description=用途说明, file_type=deliverable|report|data|log|other)`，`path` 必填。
+- 没有经 `deliver_file` 交付的文件，用户拿不到。
 
 **内容组织**：已加载技能则按技能定义的结构输出；无技能时按任务特点组织（如：问题现象 → 排查过程 → 结论 → 建议/计划）。
 

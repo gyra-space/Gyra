@@ -85,9 +85,13 @@ def _validate_tokens(
             idx += 1
             continue
         if token.startswith("~"):
-            raise PermissionError("禁止访问 home 目录")
+            raise PermissionError(
+                f"禁止访问 home 目录（参数 '{token}'）。请使用工作空间内的相对路径"
+            )
         if any(part == ".." for part in token.split("/")):
-            raise PermissionError("命令参数尝试跳出工作空间目录，已被禁止")
+            raise PermissionError(
+                f"命令参数 '{token}' 尝试跳出工作空间目录，已被禁止"
+            )
         if any(ch in _NON_PATH_CHARS for ch in token):
             # regex / shell pattern, not a file path -> skip the path fence
             idx += 1
@@ -97,7 +101,12 @@ def _validate_tokens(
         else:
             combined = posixpath.join(sandbox_work_dir, token)
         if not _within_roots(combined, roots):
-            raise PermissionError("命令参数解析后超出了沙箱工作目录，已被禁止")
+            raise PermissionError(
+                f"命令参数 '{token}' 超出了沙箱工作目录，已被禁止。"
+                "命令中所有路径参数（包括 find/grep 的搜索起点、cd 的目标）"
+                "都必须位于工作空间内，请改用以工作目录为起点的相对路径"
+                "（如 find . 而非 find /）"
+            )
         idx += 1
 
 

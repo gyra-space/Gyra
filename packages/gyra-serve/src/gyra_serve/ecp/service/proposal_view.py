@@ -39,16 +39,25 @@ _DB_TYPES = ("entity", "metric", "dimension", "relation")
 _DOC_TYPES = ("claim", "terminology", "policy")
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """把任意值安全当作 dict 用(非 dict 一律按空处理)。
+
+    历史/导入数据可能出现 payload / binding / fields 不是 object(如 JSON 数组),
+    读时派生的详情视图必须能降级而不是抛 ``'list' object has no attribute 'get'``。
+    """
+    return value if isinstance(value, dict) else {}
+
+
 # ------------------------------------------------------------------ summary
 def _summary(vo: SemanticObjectVO) -> str:
     """一句话业务口径(按类型契约生成;取代前端 summarizePayload 的散落逻辑)。"""
-    p = vo.payload or {}
+    p = _as_dict(vo.payload)
     if vo.obj_type == "entity":
-        binding = p.get("binding") or {}
+        binding = _as_dict(p.get("binding"))
         table = binding.get("table") or "?"
         pk = binding.get("pk")
         base = f"绑定表 {table}" + (f"(PK: {pk})" if pk else "")
-        n_fields = len(p.get("fields") or {})
+        n_fields = len(_as_dict(p.get("fields")))
         return f"{base} · {n_fields} 个字段" if n_fields else base
     if vo.obj_type == "metric":
         expr = p.get("expression") or "?"
@@ -70,7 +79,7 @@ def _summary(vo: SemanticObjectVO) -> str:
 
 # -------------------------------------------------------------------- origin
 def _origin(vo: SemanticObjectVO) -> OriginVO:
-    prov = getattr(vo, "provenance", None) or {}
+    prov = _as_dict(getattr(vo, "provenance", None))
     if prov:
         kind = prov.get("origin") or "legacy"
         return OriginVO(
@@ -107,7 +116,7 @@ def _column_ref(
     col: str, usage: str, fields: Dict[str, Any], seen: Dict[str, ColumnRefVO]
 ) -> None:
     """登记一个列引用(按列名去重,usage 合并);fields 为 entity.fields 声明。"""
-    meta = fields.get(col) or {}
+    meta = _as_dict(fields.get(col))
     existing = seen.get(col)
     if existing:
         if usage and usage not in existing.usage:
@@ -158,11 +167,11 @@ def _build_lineage(
     objects: Any,
     ds_name_resolver: Optional[Callable[[Any], Optional[str]]],
 ) -> Optional[LineageVO]:
-    p = vo.payload or {}
+    p = _as_dict(vo.payload)
     ws = vo.workspace_id
 
     if vo.obj_type in _DOC_TYPES:
-        binding = p.get("binding") or {}
+        binding = _as_dict(p.get("binding"))
         return LineageVO(
             document={
                 "space": binding.get("space"),
@@ -172,13 +181,14 @@ def _build_lineage(
         )
 
     if vo.obj_type == "entity":
-        binding = p.get("binding") or {}
+        binding = _as_dict(p.get("binding"))
         ds_id = binding.get("datasource_id")
         table = binding.get("table")
-        fields = p.get("fields") or {}
+        fields = _as_dict(p.get("fields"))
         cols: Dict[str, ColumnRefVO] = {}
         for name, meta in fields.items():
-            role = (meta or {}).get("role")
+            meta = _as_dict(meta)
+            role = meta.get("role")
             usage = {
                 "identifier": "主键" if binding.get("pk") == name else "标识",
                 "measure": "度量",
@@ -187,7 +197,7 @@ def _build_lineage(
             }.get(role, role or "")
             cols[name] = ColumnRefVO(
                 column=name,
-                meaning=(meta or {}).get("meaning"),
+                meaning=meta.get("meaning"),
                 role=role,
                 usage=usage,
                 declared=True,
@@ -204,9 +214,9 @@ def _build_lineage(
 
     if vo.obj_type == "metric":
         entity = _resolve_ref(objects, p.get("entity"), ws)
-        ep = (entity.payload or {}) if entity else {}
-        binding = ep.get("binding") or {}
-        fields = ep.get("fields") or {}
+        ep = _as_dict(entity.payload) if entity else {}
+        binding = _as_dict(ep.get("binding"))
+        fields = _as_dict(ep.get("fields"))
         ds_id = binding.get("datasource_id")
         cols: Dict[str, ColumnRefVO] = {}
         for col in _sql_columns(p.get("expression")):
@@ -221,7 +231,7 @@ def _build_lineage(
         if pk:
             _column_ref(pk, "主键", fields, cols)
         for name, meta in fields.items():
-            if (meta or {}).get("role") == "time":
+            if _as_dict(meta).get("role") == "time":
                 _column_ref(name, "时间列", fields, cols)
         objects_refs = [_ref_vo(entity)] if entity else []
         return LineageVO(
@@ -234,9 +244,9 @@ def _build_lineage(
 
     if vo.obj_type == "dimension":
         entity = _resolve_ref(objects, p.get("entity"), ws)
-        ep = (entity.payload or {}) if entity else {}
-        binding = ep.get("binding") or {}
-        fields = ep.get("fields") or {}
+        ep = _as_dict(entity.payload) if entity else {}
+        binding = _as_dict(ep.get("binding"))
+        fields = _as_dict(ep.get("fields"))
         ds_id = binding.get("datasource_id")
         cols: Dict[str, ColumnRefVO] = {}
         col = p.get("column")
@@ -257,7 +267,7 @@ def _build_lineage(
         tables: List[str] = []
         ds_id = None
         for e in (src, dst):
-            b = ((e.payload or {}).get("binding") or {}) if e else {}
+            b = _as_dict(_as_dict(e.payload).get("binding")) if e else {}
             if b.get("table") and b["table"] not in tables:
                 tables.append(b["table"])
             ds_id = ds_id if ds_id is not None else b.get("datasource_id")
@@ -279,8 +289,8 @@ def _build_lineage(
 # --------------------------------------------------------------- sql preview
 def _sample_time_range(ep: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """实体声明了 role=time 字段时,生成"近 7 天"示例时间窗(静态预览用)。"""
-    for name, meta in (ep.get("fields") or {}).items():
-        if (meta or {}).get("role") == "time":
+    for name, meta in _as_dict(ep.get("fields")).items():
+        if _as_dict(meta).get("role") == "time":
             today = datetime.now().date()
             start = today - timedelta(days=7)
             return {"column": name, "range": f"{start.isoformat()}~{today.isoformat()}"}
@@ -295,7 +305,7 @@ def _build_sql_preview(
     任何解析失败不报错——提案本就允许不完整,失败原因进 warnings,
     sql=None 由前端降级展示。
     """
-    p = vo.payload or {}
+    p = _as_dict(vo.payload)
     ws = vo.workspace_id
     warnings: List[str] = []
     participants: List[ObjectRefVO] = []
@@ -308,8 +318,8 @@ def _build_sql_preview(
                     sql=None, warnings=[f"指标引用的实体 {p.get('entity')} 未解析"],
                 )
             participants.append(_ref_vo(entity))
-            ep = entity.payload or {}
-            binding = ep.get("binding") or {}
+            ep = _as_dict(entity.payload)
+            binding = _as_dict(ep.get("binding"))
             if not binding.get("table"):
                 return SqlPreviewVO(
                     sql=None,
@@ -338,7 +348,7 @@ def _build_sql_preview(
             )
 
         if vo.obj_type == "entity":
-            binding = p.get("binding") or {}
+            binding = _as_dict(p.get("binding"))
             table = binding.get("table")
             if not table:
                 return SqlPreviewVO(sql=None, warnings=["实体缺少 binding.table"])
@@ -361,8 +371,8 @@ def _build_sql_preview(
                     sql=None, warnings=[f"维度引用的实体 {p.get('entity')} 未解析"]
                 )
             participants.append(_ref_vo(entity))
-            ep = entity.payload or {}
-            binding = ep.get("binding") or {}
+            ep = _as_dict(entity.payload)
+            binding = _as_dict(ep.get("binding"))
             table = binding.get("table")
             if not table:
                 return SqlPreviewVO(
@@ -384,8 +394,8 @@ def _build_sql_preview(
             if not src or not dst:
                 return SqlPreviewVO(sql=None, warnings=["relation 端点实体未解析"])
             participants.extend([_ref_vo(src), _ref_vo(dst)])
-            sb = (src.payload or {}).get("binding") or {}
-            db = (dst.payload or {}).get("binding") or {}
+            sb = _as_dict(_as_dict(src.payload).get("binding"))
+            db = _as_dict(_as_dict(dst.payload).get("binding"))
             if sb.get("datasource_id") != db.get("datasource_id"):
                 return SqlPreviewVO(
                     sql=None, participants=participants,

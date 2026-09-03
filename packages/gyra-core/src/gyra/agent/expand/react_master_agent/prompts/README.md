@@ -79,6 +79,19 @@ prompts/
 - `{{ role }}` - Agent 角色
 - `{{ name }}` - Agent 名称
 
+### 引擎目录隔离
+
+本目录是 **BAIZE(V1 引擎)专属**的静态模板。PIXIU(V2 引擎)拥有完全独立的
+模板目录 `../../v2_agent/prompts/` 与 standalone `PromptRegistry` 实例
+（见 `V2Agent._get_prompt_assembler`），二者互不覆盖。
+
+原因：`PromptRegistry` 进程级单例的 `set_agent_prompts_dir` 会清空重载全量
+模板，V1/V2 同进程混跑时共用单例会互相污染。
+
+**注意**：`resources/` 与 `user/` 为动态协议层（运行时注入）；
+动态内容一律不得写入静态层——V2 引擎的 system prompt 是 KV-cache 静态前缀，
+每轮变化的内容必须走 user-role `<system-reminder>` 通道。
+
 ### resources 模板变量
 - `sandbox_enable` - 是否启用沙箱
 - `work_dir` - 工作目录

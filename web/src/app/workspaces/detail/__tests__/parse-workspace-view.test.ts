@@ -465,3 +465,18 @@ describe('deliverable_files / task_files(追问轮不丢前轮交付物)', () =>
     expect(view.deliverable_files!.map(f => f.file_id)).toEqual(['f1']);
   });
 });
+describe('memory_loaded(记忆注入步骤)', () => {
+  test('memory_loaded 在 VALID_TYPES 白名单内,不被 normalizeStep 丢弃', () => {
+    const view = parseWorkspaceView({
+      render_name: 'scene_agent_workspace',
+      planning: null,
+      execution: [
+        { id: 'mem-inject-agents_md', type: 'memory_loaded', title: 'AGENTS.md注入上下文', status: 'done' },
+      ],
+      summary: null,
+    }, null);
+    expect(view.execution).toHaveLength(1);
+    expect(view.execution[0].type).toBe('memory_loaded');
+    expect(view.execution[0].title).toBe('AGENTS.md注入上下文');
+  });
+});

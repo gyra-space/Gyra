@@ -23,6 +23,55 @@ from gyra.agent.agents_md_context import (
 
 logger = logging.getLogger(__name__)
 
+# workspace_id → 记忆空间 slug 模块级缓存（进程内；避免每轮查 workspace 表）
+_WORKSPACE_SLUG_CACHE: Dict[int, Optional[str]] = {}
+
+
+async def resolve_workspace_memory_space(
+    system_app: Any, workspace_id: int
+) -> Optional[str]:
+    """解析 workspace 级记忆空间 slug（必要时 lazy 建空间并播种 AGENTS.md）。
+
+    workspace_id → workspace_code → ``memory-ws-{workspace_code}``。
+    首次对话时调用（get_or_create 语义，幂等）；失败降级返回 None，
+    由调用方跳过 workspace 记忆路。查询结果按 workspace_id 缓存。
+    """
+    ws_id = int(workspace_id)
+    if ws_id in _WORKSPACE_SLUG_CACHE:
+        return _WORKSPACE_SLUG_CACHE[ws_id]
+
+    slug: Optional[str] = None
+    try:
+        from gyra_serve.knowledge.service.service import (
+            Service as KnowledgeService,
+        )
+
+        workspace_code: Optional[str] = None
+        try:
+            from gyra_serve.workspace.config import ServeConfig
+            from gyra_serve.workspace.service.service import WorkspaceService
+
+            ws_service = WorkspaceService(system_app=system_app, config=ServeConfig())
+            ws = ws_service.get_by_id(ws_id)
+            workspace_code = getattr(ws, "workspace_code", None) if ws else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[agents-md] resolve workspace_code failed: {e}")
+        if not workspace_code:
+            workspace_code = f"ws-{ws_id}"
+
+        ks = KnowledgeService.get_instance(system_app)
+        if ks is not None:
+            await ks.get_or_create_workspace_space(workspace_code)
+            slug = ks.workspace_space_slug(workspace_code)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"[agents-md] resolve workspace memory space (id={ws_id}) failed: {e}"
+        )
+        slug = None
+
+    _WORKSPACE_SLUG_CACHE[ws_id] = slug
+    return slug
+
 
 def _coerce_ext_config(ext_config: Any) -> Dict[str, Any]:
     """ext_config 落库为 JSON Text，读取侧可能是 dict 或 JSON 字符串。"""
@@ -110,14 +159,24 @@ async def collect_agents_md_sections(
         if content and not is_agents_md_placeholder(content):
             sections.append(("explicit-config", content))
 
-    # 2. 记忆空间 vault AGENTS.md
+    # 2. workspace 级记忆空间 AGENTS.md（场景空间；优先于 app 级记忆空间，
+    #    空间级 AGENTS.md 是场景空间的权威记忆）
+    ws_id = ext_info.get("workspace_id")
+    if ws_id:
+        ws_slug = await resolve_workspace_memory_space(system_app, int(ws_id))
+        if ws_slug:
+            raw = await _load_vault_agents_md(system_app, ws_slug)
+            if raw and (raw := raw.strip()) and not is_agents_md_placeholder(raw):
+                sections.append(("workspace-memory", raw))
+
+    # 3. app 级记忆空间 vault AGENTS.md
     slug = _resolve_memory_space_slug(gpt_app)
     if slug:
         raw = await _load_vault_agents_md(system_app, slug)
         if raw and (raw := raw.strip()) and not is_agents_md_placeholder(raw):
             sections.append(("memory-space", raw))
 
-    # 3. project_dir 自动探测（AGENTS.md；CLAUDE.md 系列归项目生态链路）
+    # 4. project_dir 自动探测（AGENTS.md；CLAUDE.md 系列归项目生态链路）
     eco_cfg = ext_config.get("project_ecosystem") or {}
     content = detect_project_agents_md(eco_cfg.get("project_dir"))
     if content:

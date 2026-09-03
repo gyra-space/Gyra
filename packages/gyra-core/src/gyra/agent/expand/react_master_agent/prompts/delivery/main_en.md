@@ -72,3 +72,4 @@ Task Complete
     │
     └─ Output content: Has file → concise summary, No file → full content
 ```
+

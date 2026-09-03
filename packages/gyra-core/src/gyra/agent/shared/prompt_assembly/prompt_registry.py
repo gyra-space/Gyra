@@ -69,7 +69,16 @@ class PromptRegistry:
 
     _instance: Optional["PromptRegistry"] = None
 
-    def __new__(cls):
+    def __new__(cls, standalone: bool = False):
+        # standalone=True 创建独立实例（私有模板目录用，如 PIXIU/V2 独立 prompts），
+        # 不与进程级单例互扰——单例的 set_agent_prompts_dir 会清空全量模板，
+        # V1/V2 同进程混跑时共用单例会互相覆盖模板。缺省仍返回单例。
+        if standalone:
+            instance = object.__new__(cls)
+            instance._templates = {}
+            instance._initialized = False
+            instance._agent_prompts_dir = None
+            return instance
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._templates = {}
@@ -153,7 +162,10 @@ class PromptRegistry:
             name = file_path.stem
             if name.endswith(".md"):
                 name = name[:-3]  # 去掉 ".md" 后缀
-            is_jinja2 = file_path.suffix == ".j2" or "{{" in content
+            # 含 {% %} 控制语句（如 architecture 引擎分叉）也按 Jinja2 渲染
+            is_jinja2 = (
+                file_path.suffix == ".j2" or "{{" in content or "{%" in content
+            )
 
             template = PromptTemplate(
                 category=category,

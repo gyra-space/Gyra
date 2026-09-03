@@ -54,6 +54,37 @@ export function buildSkillLoadedExecutionSteps(
   return steps;
 }
 
+/**
+ * 把 loaded_memories 事件 / chat_query injected_context 的记忆块列表转换为
+ * memory_loaded 执行步骤。纯函数(可单测):按 kind 生成稳定 id(mem-inject-{kind})
+ * 去重 —— AGENTS.md/user.md 每轮都会注入但卡片只保留一份。
+ */
+export function buildMemoryInjectionSteps(
+  blocks: { kind?: string; title?: string; chars?: number }[] | undefined,
+  existingIds: string[] = [],
+): WorkspaceExecutionStep[] {
+  if (!Array.isArray(blocks)) return [];
+  const existing = new Set(existingIds);
+  const now = new Date().toISOString();
+  const steps: WorkspaceExecutionStep[] = [];
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') continue;
+    const kind = typeof block.kind === 'string' && block.kind ? block.kind : 'memory';
+    const title = typeof block.title === 'string' && block.title ? block.title : kind;
+    const id = `mem-inject-${kind}`;
+    if (existing.has(id)) continue;
+    existing.add(id);
+    steps.push({
+      id,
+      type: 'memory_loaded',
+      title,
+      status: 'done',
+      ts: now,
+    });
+  }
+  return steps;
+}
+
 interface UseSceneAgentChatOptions {
   conversationId?: string;
   appCode?: string;
@@ -311,6 +342,18 @@ export function useSceneAgentChat({
           });
         }
       }
+      // 记忆注入事件:AGENTS.md / user.md 注入成功后渲染「上下文注入」卡片
+      // (与 loaded_skills 同链路);刷新后由 chat_query injected_context 重注入。
+      if (event.type === 'loaded_memories' && Array.isArray(event.payload?.blocks)) {
+        setWorkspaceView((prev) => {
+          const added = buildMemoryInjectionSteps(
+            event.payload.blocks,
+            prev.execution.map((s) => s.id),
+          );
+          if (added.length === 0) return prev;
+          return { ...prev, execution: [...prev.execution, ...added] };
+        });
+      }
       onWorkspaceEvent?.(event);
     },
     [onWorkspaceEvent],
@@ -403,6 +446,18 @@ export function useSceneAgentChat({
         setWorkspaceView((prev) => {
           const merged = parseWorkspaceView(parsed, prev);
           return { ...merged, execution: dedupOptimisticUser(merged.execution) };
+        });
+      }
+      // 刷新重注入:记忆注入卡片不落在 vis_final 里,后端经 injected_context
+      // 透出各轮注入标记,这里按稳定 id 去重合并,保证刷新后卡片仍可见。
+      if (Array.isArray(res.injected_context) && res.injected_context.length > 0) {
+        setWorkspaceView((prev) => {
+          const added = buildMemoryInjectionSteps(
+            res.injected_context!.flatMap((r) => r.blocks || []),
+            prev.execution.map((s) => s.id),
+          );
+          if (added.length === 0) return prev;
+          return { ...prev, execution: [...prev.execution, ...added] };
         });
       }
     },

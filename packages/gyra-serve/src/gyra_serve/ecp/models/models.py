@@ -46,6 +46,7 @@ from ..api.schemas import (
 from ..config import (
     DEFAULT_WORKSPACE_ID,
     STATUS_CONFIRMED,
+    STATUS_DEPRECATED,
     STATUS_PROPOSED,
     STATUS_REJECTED,
     STATUS_SUPERSEDED,
@@ -300,7 +301,7 @@ def to_object_vo(e: EcpSemanticObjectEntity) -> SemanticObjectVO:
         obj_type=e.obj_type,
         status=e.status,
         name=e.name,
-        payload=e.payload or {},
+        payload=e.payload if isinstance(e.payload, dict) else {},
         confidence=e.confidence,
         evidence=e.evidence,
         created_by=e.created_by,
@@ -495,6 +496,67 @@ class SemanticObjectDao(BaseDao[EcpSemanticObjectEntity, Any, Any]):
             session.flush()
             session.refresh(entity)
             return to_object_vo(entity)
+
+    def deprecate_by_datasource(self, datasource_id: str) -> int:
+        """Mark semantic objects bound to a datasource as deprecated.
+
+        由 datasource 模块在删除数据库时级联调用:ECP 不应继续展示指向已删
+        资产的 proposal / confirmed 对象。跨所有 workspace 清扫(持有模块不
+        知道哪个 ECP workspace 引用了它)。返回被更新的行数。
+
+        依赖链(entity 是锚点,datasource_id 只存于 entity binding;metric /
+        dimension / relation 通过 entity / from / to 引用实体间接绑定):
+        - 直接:payload.binding.datasource_id == datasource_id(含扁平旧形态)
+        - 间接:metric/dimension 的 payload.entity、relation 的 from/to 指向
+          受影响的锚点实体
+        """
+        ds_id = str(datasource_id)
+        active_statuses = (STATUS_PROPOSED, STATUS_CONFIRMED)
+        with self.session() as session:
+            rows = (
+                session.query(EcpSemanticObjectEntity)
+                .filter(EcpSemanticObjectEntity.status.in_(active_statuses))
+                .all()
+            )
+            affected_ids: set = set()
+            affected_entities: set = set()
+            # 第一遍:直接指向该 datasource 的对象(entity 同时作为锚点)
+            for row in rows:
+                payload = row.payload or {}
+                binding = payload.get("binding") or {}
+                ds = binding.get("datasource_id")
+                if ds is None:
+                    ds = payload.get("datasource_id")
+                if ds is not None and str(ds) == ds_id:
+                    affected_ids.add(row.id)
+                    if row.obj_type == "entity":
+                        affected_entities.add(row.id)
+            # 第二遍:引用受影响锚点实体的 metric/dimension/relation
+            for row in rows:
+                if row.id in affected_ids:
+                    continue
+                payload = row.payload or {}
+                refs: tuple = ()
+                if row.obj_type in ("metric", "dimension"):
+                    refs = (payload.get("entity"),)
+                elif row.obj_type == "relation":
+                    refs = (payload.get("from"), payload.get("to"))
+                if any(ref in affected_entities for ref in refs if ref):
+                    affected_ids.add(row.id)
+            if not affected_ids:
+                return 0
+            count = (
+                session.query(EcpSemanticObjectEntity)
+                .filter(
+                    EcpSemanticObjectEntity.id.in_(affected_ids),
+                    EcpSemanticObjectEntity.status.in_(active_statuses),
+                )
+                .update(
+                    {EcpSemanticObjectEntity.status: STATUS_DEPRECATED},
+                    synchronize_session=False,
+                )
+            )
+            return int(count)
 
     # ------------------------------------------------------------------ reads
     def get_version(

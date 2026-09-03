@@ -1,20 +1,23 @@
-"""预加载技能 helper —— 剧本关联技能 / 手动选择技能 的 SKILL.md 全文注入。
+"""预加载技能 helper —— 剧本关联技能 / 空间默认技能 / 手动选择技能 的
+SKILL.md 全文注入。
 
 背景（场景空间）：剧本会关联 Skill，该 Skill 是剧本的指导，每次对话必然加载。
 现状是 skill 只把 ``<available_skills>`` 目录（name+description）注入上下文，
 完整指令要 LLM 调用 ``skill()`` 工具才进入上下文（多一轮工具调用 token）。
 
-本模块为两个特殊情况提供"预加载"：在对话开始时把 SKILL.md **全文**直接放进
+本模块为以下情况提供"预加载"：在对话开始时把 SKILL.md **全文**直接放进
 上下文（V1 引擎 append 进 system prompt；V2 引擎以 user-role ``<system-reminder>``
 注入），等价于 LLM 已调用过 skill 工具，省掉那一轮。**动态 skill 机制（目录 +
 skill() 工具）完全不变**——大部分场景仍由 agent 自主选择加载。
 
 约定：
-- 内容格式与 V2 ``SkillTool`` 输出一致：``<skill_content name="...">正文</skill_content>``
-  （正文去掉 YAML frontmatter，模型对这个格式已经熟悉）；
+- 内容格式与 V2 ``SkillTool`` 输出一致：``<skill_content name="...">正文
+  </skill_content>``（正文去掉 YAML frontmatter，模型对这个格式已经熟悉）；
 - **不截断**：SKILL.md 全文注入，大小由 skill 作者在 SKILL.md 里自己控制；
 - 注入文案提示模型"已加载，直接按其执行"，避免重复调用 skill 工具；
-- 数据来源：剧本 ``declaration.skills`` + ``chat_in_params`` 中 ``sub_type='skill(gyra)'``。
+- 数据来源：剧本 ``declaration.skills`` + 空间绑定的"默认使用"技能（workspace_resource
+  中 ``type='skill'`` 且 ``config.default_inject=True``）+ ``chat_in_params`` 中
+  ``sub_type='skill(gyra)'``。
 """
 from __future__ import annotations
 
@@ -28,7 +31,8 @@ logger = logging.getLogger(__name__)
 # 与 V2 SkillTool / SkillCatalogConsumer 对齐的注入说明文案
 _PRELOAD_NOTE = (
     "以下技能指令已预加载到当前对话上下文，直接按其执行，无需再次调用 skill "
-    "工具加载指令；如需读取技能目录下的其它文件（references/scripts 等），可调用 skill 工具。"
+    "工具加载指令；如需读取技能目录下的其它文件（references/scripts 等），"
+    "可调用 skill 工具。"
 )
 
 
@@ -59,10 +63,24 @@ def build_preloaded_skills_reminder(xmls: List[str]) -> str:
     )
 
 
+def strip_loaded_skills_block(text: str) -> str:
+    """从文本中剥掉 ``<loaded_skills>`` 注入块（仅用于持久化瘦身）。
+
+    技能全文只在本轮内存/LLM 上下文使用；落库前从 system_prompt 副本中
+    移除该块，防止撑爆 ``gpts_conversations.extra``（TEXT 64KB）。
+    """
+    if not text or "<loaded_skills>" not in text:
+        return text
+    import re
+
+    pattern = r"(?s)<loaded_skills>.*?</loaded_skills>\n\n" + re.escape(_PRELOAD_NOTE)
+    return re.sub(r"\n{3,}", "\n\n", re.sub(pattern, "", text)).strip()
+
+
 def _get_skill_service(system_app):
     from gyra_serve.skill.service.service import (
-        Service,
         SKILL_SERVICE_COMPONENT_NAME,
+        Service,
     )
 
     return system_app.get_component(
@@ -72,12 +90,23 @@ def _get_skill_service(system_app):
 
 def _get_playbook_service(system_app):
     from gyra_serve.playbook.service.service import (
-        PlaybookService,
         PLAYBOOK_SERVICE_COMPONENT_NAME,
+        PlaybookService,
     )
 
     return system_app.get_component(
         PLAYBOOK_SERVICE_COMPONENT_NAME, PlaybookService, default=None
+    )
+
+
+def _get_workspace_service(system_app):
+    from gyra_serve.workspace.service.service import (
+        WORKSPACE_SERVICE_COMPONENT_NAME,
+        WorkspaceService,
+    )
+
+    return system_app.get_component(
+        WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService, default=None
     )
 
 
@@ -163,6 +192,45 @@ def _resolve_playbook_skills(system_app, playbook_id) -> List[str]:
         return []
 
 
+def _resolve_default_bound_skills(system_app, ext_info) -> List[str]:
+    """提取场景空间中勾选了「默认使用」的绑定技能引用。
+
+    语义：在场景空间「能力」Tab 维护绑定技能列表时勾选"默认使用"（对应
+    ``workspace_resource.type == 'skill'`` 且 ``config.default_inject`` 为真），
+    对话开始就应把该技能的 SKILL.md 全文注入上下文——等价于用 /命令指定了
+    skill。任何单点失败仅降级（跳过该空间），绝不阻断对话。
+    """
+    if not ext_info:
+        return []
+    ws_id = ext_info.get("workspace_id")
+    if ws_id is None:
+        return []
+    ws_service = _get_workspace_service(system_app)
+    if ws_service is None:
+        return []
+    try:
+        rows = ws_service.list_resources(int(ws_id), "skill")
+    except Exception as e:  # noqa: BLE001
+        logger.debug(
+            f"[preload-skills] list workspace {ws_id} skills failed: {e}"
+        )
+        return []
+    out: List[str] = []
+    for r in rows or []:
+        if r is None:
+            continue
+        if not getattr(r, "is_active", False):
+            continue
+        cfg = getattr(r, "config", None) or {}
+        if not bool(cfg.get("default_inject")):
+            continue
+        ref = getattr(r, "physical_ref", None) or ""
+        ref = str(ref or "").strip()
+        if ref:
+            out.append(ref)
+    return out
+
+
 def _extract_chat_param_skills(chat_in_params) -> List[str]:
     """从 ``chat_in_params`` 提取 ``sub_type='skill(gyra)'`` 的技能引用。"""
     if not chat_in_params:
@@ -200,8 +268,8 @@ def _resolve_bound_playbook_id(system_app, ext_info) -> Optional[int]:
         return None
     try:
         from gyra_serve.task.service.service import (
-            TaskService,
             TASK_SERVICE_COMPONENT_NAME,
+            TaskService,
         )
 
         ts = system_app.get_component(
@@ -215,20 +283,24 @@ def _resolve_bound_playbook_id(system_app, ext_info) -> Optional[int]:
         return None
 
 
-def collect_preloaded_skill_xmls(
+def collect_preloaded_skills(
     system_app, ext_info: Optional[Dict[str, Any]], chat_in_params
-) -> List[str]:
-    """汇总预加载技能 XML 列表（剧本关联 + 手动选择，按引用去重）。
+) -> List[Dict[str, str]]:
+    """汇总预加载技能（剧本关联 + 空间默认 + 手动选择，按引用去重）。
 
-    任何单点失败都不阻断：加载不到的技能直接跳过，绝不抛异常。
+    Returns:
+        ``[{"name": str, "skill_code": str, "body": str}, ...]``（正文去 YAML
+        frontmatter 的 SKILL.md 全文）。任何单点失败都不阻断：加载不到的
+        技能直接跳过，绝不抛异常。
     """
     refs: List[str] = []
     playbook_id = _resolve_bound_playbook_id(system_app, ext_info)
     if playbook_id is not None:
         refs.extend(_resolve_playbook_skills(system_app, playbook_id))
+    refs.extend(_resolve_default_bound_skills(system_app, ext_info))
     refs.extend(_extract_chat_param_skills(chat_in_params))
 
-    xmls: List[str] = []
+    loaded_skills: List[Dict[str, str]] = []
     seen = set()
     for ref in refs:
         key = ref.lower()
@@ -238,5 +310,15 @@ def collect_preloaded_skill_xmls(
         loaded = load_skill_markdown(system_app, ref)
         if loaded is None:
             continue
-        xmls.append(render_preloaded_skill_xml(loaded["name"], loaded["body"]))
-    return xmls
+        loaded_skills.append(loaded)
+    return loaded_skills
+
+
+def collect_preloaded_skill_xmls(
+    system_app, ext_info: Optional[Dict[str, Any]], chat_in_params
+) -> List[str]:
+    """汇总预加载技能 XML 列表（``collect_preloaded_skills`` 的 XML 渲染包装）。"""
+    return [
+        render_preloaded_skill_xml(s["name"], s["body"])
+        for s in collect_preloaded_skills(system_app, ext_info, chat_in_params)
+    ]

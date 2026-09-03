@@ -67,10 +67,11 @@ from gyra_serve.agent.db import (
 from gyra_serve.agent.db.gpts_tool import GptsToolDao
 from gyra_serve.agent.preload_skills import (
     build_preloaded_skills_reminder,
-    collect_preloaded_skill_xmls,
+    collect_preloaded_skills,
+    render_preloaded_skill_xml,
+    strip_loaded_skills_block,
 )
 from gyra_serve.agent.resource import GyraSkillResource
-from gyra_serve.agent.resource.tool.memory_tool import MemoryToolPack
 from gyra_serve.agent.team.base import TeamMode
 from gyra_serve.building.app.api.schema_app import GptsApp
 from gyra_serve.building.app.api.schemas import ServerResponse
@@ -123,7 +124,15 @@ def _serialize_extra_for_db(extra: Dict[str, Any]) -> str:
 
     extra_agents contains pre-built ConversableAgent instances which cannot be
     JSON-serialized and are rebuilt on each chat request, so they are omitted.
-    Pydantic models (e.g. AgentResource) and dataclasses are converted to dicts.
+    preloaded_skills holds full SKILL.md texts only consumed in-process this
+    turn (V2Agent.set_preloaded_skills); only the name/skill_code refs are
+    persisted. Pydantic models (e.g. AgentResource) and dataclasses are
+    converted to dicts.
+
+    ``gpts_conversations.extra`` is a TEXT column (64KB); if the serialized
+    payload still exceeds ~63KB, regenerable large keys are dropped in turn
+    (system_prompt / workspace_context / dynamic_resources) to keep the
+    conversation INSERT alive.
     """
     from dataclasses import asdict, is_dataclass
 
@@ -136,10 +145,31 @@ def _serialize_extra_for_db(extra: Dict[str, Any]) -> str:
             return asdict(obj)
         return serialize(obj)
 
-    return orjson.dumps(
-        {k: v for k, v in extra.items() if k != "extra_agents"},
-        default=_default,
-    ).decode()
+    # 技能全文只在内存消费；持久化副本剥块 + 丢全文键，refs 保留
+    slim = {k: v for k, v in extra.items() if k not in ("extra_agents", "preloaded_skills")}
+    if isinstance(slim.get("system_prompt"), str):
+        slim["system_prompt"] = strip_loaded_skills_block(slim["system_prompt"])
+
+    payload = orjson.dumps(slim, default=_default).decode()
+    if len(payload) <= 63 * 1024:
+        return payload
+    for key in ("system_prompt", "workspace_context", "dynamic_resources"):
+        if key not in slim:
+            continue
+        slim.pop(key)
+        payload = orjson.dumps(slim, default=_default).decode()
+        logger.warning(
+            f"[AgentChat] ext_info payload exceeds gpts_conversations.extra "
+            f"TEXT limit, dropped regenerable key {key!r} "
+            f"({len(payload)} bytes after drop)"
+        )
+        if len(payload) <= 63 * 1024:
+            return payload
+    logger.warning(
+        f"[AgentChat] ext_info payload still oversized after dropping "
+        f"regenerable keys ({len(payload)} bytes); DB may reject the insert"
+    )
+    return payload
 
 
 def _merge_scene_dynamic_context(gpt_app: GptsApp, ext_info: Dict[str, Any]) -> None:
@@ -345,6 +375,7 @@ WORKSPACE_EVENT_TYPES = frozenset(
         "task_created",
         "context_loaded",
         "loaded_skills",
+        "loaded_memories",
         "intervention_triggered",
         "artifact_produced",
         "delivery_sent",
@@ -386,76 +417,6 @@ def _serialize_stream_chunk(chunk: Any) -> str:
     if isinstance(chunk, dict) and "dock" in chunk:
         return orjson.dumps(chunk).decode("utf-8")
     return orjson.dumps({"vis": chunk}).decode("utf-8")
-
-
-async def _register_memory_curator_cron(system_app: Any, space_slug: str) -> None:
-    """幂等注册 idle memory curator cron job（每天凌晨 3 点）。
-
-    job_id 固定为 `memory-curator-{space_slug}`，重复调用时若 job 已存在则跳过。
-    cron job 触发时派发 MemoryCurateAgent，message 为 `curate:{space_slug}`，
-    agent 在 _run_memory_task 里识别该前缀走 curate_space 全量整理路径。
-
-    注意：`cron.get_job` / `cron.add_job` 都是 async def，必须 await；早年缺 await
-    会让 `get_job` 返回未启动的 coroutine（非 None），命中幂等早退分支，导致定时
-    任务永不注册、且无任何日志（既不成功也不报错）。
-    """
-    try:
-        from gyra.cron.types import (
-            CronJobCreate,
-            CronPayload,
-            CronSchedule,
-            PayloadKind,
-            ScheduleKind,
-            SessionMode,
-        )
-        from gyra_serve.cron.config import SERVE_SERVICE_COMPONENT_NAME
-        from gyra_serve.cron.service.service import Service as CronService
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            f"[AgentChat] cron modules unavailable, skip curator cron: {e}"
-        )
-        return
-
-    try:
-        cron = system_app.get_component(SERVE_SERVICE_COMPONENT_NAME, CronService)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            f"[AgentChat] cron service unavailable for slug={space_slug}: {e}"
-        )
-        return
-
-    job_id = f"memory-curator-{space_slug}"
-    try:
-        existing = await cron.get_job(job_id)
-        if existing is not None:
-            return
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            f"[AgentChat] curator cron get_job failed for {job_id}, "
-            f"will attempt add: {e}"
-        )
-
-    await cron.add_job(
-        CronJobCreate(
-            id=job_id,
-            name=f"Memory Curator for {space_slug}",
-            description="Daily idle curator: L1 umbrella merge + classification + backup",
-            enabled=True,
-            schedule=CronSchedule(
-                kind=ScheduleKind.CRON, expr="0 3 * * *", tz="Asia/Shanghai"
-            ),
-            payload=CronPayload(
-                kind=PayloadKind.AGENT_TURN,
-                message=f"curate:{space_slug}",
-                agent_id="MemoryCurateAgent",
-                session_mode=SessionMode.ISOLATED,
-                timeout_seconds=1800,
-            ),
-        )
-    )
-    logger.info(
-        f"[AgentChat] registered memory curator cron job_id={job_id} (0 3 * * *)"
-    )
 
 
 async def _build_conversation(
@@ -1680,14 +1641,23 @@ class AgentChat(BaseComponent, ABC):
         # <system-reminder> 注入——XML 放 ext_info["preloaded_skills"]，由
         # _inner_chat 构建 agent 后 set 到 V2Agent。任何失败仅降级，不阻断对话。
         try:
-            _preloaded_xmls = collect_preloaded_skill_xmls(
+            _preloaded = collect_preloaded_skills(
                 self.system_app, ext_info, chat_in_params,
             )
-            if _preloaded_xmls:
+            if _preloaded:
+                _preloaded_xmls = [
+                    render_preloaded_skill_xml(s["name"], s["body"])
+                    for s in _preloaded
+                ]
                 system_prompt_parts.append(
                     build_preloaded_skills_reminder(_preloaded_xmls)
                 )
                 ext_info["preloaded_skills"] = _preloaded_xmls
+                # 落库瘦身：extra 里只留名称/编码引用，技能全文仅本轮内存使用
+                ext_info["preloaded_skill_refs"] = [
+                    {"name": s["name"], "skill_code": s["skill_code"]}
+                    for s in _preloaded
+                ]
                 logger.info(
                     f"[AgentChat] preloaded {len(_preloaded_xmls)} skill(s) "
                     f"into conversation context (playbook/task/chat-in-params)"
@@ -1714,10 +1684,12 @@ class AgentChat(BaseComponent, ABC):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[AgentChat] preload skills injection failed: {e}")
 
-        # AGENTS.md 注入（对话开始默认进上下文）：显式配置路径 > 记忆空间
-        # vault > project_dir 自动探测，三路合并共享预算。实现见同目录
-        # agents_md_injection.py，规则与 V2（read_pipeline.load_static_block /
-        # react_master_agent）对齐。失败仅降级，不阻断对话。
+        # AGENTS.md 注入（对话开始默认进上下文）：显式配置路径 > workspace
+        # 记忆空间 > app 记忆空间 vault > project_dir 自动探测，多路合并共享
+        # 预算。实现见同目录 agents_md_injection.py，规则与 V2
+        # （read_pipeline.load_static_block / react_master_agent）对齐。失败仅
+        # 降级，不阻断对话。
+        _injected_memory_blocks: List[Dict[str, Any]] = []
         try:
             from gyra_serve.agent.agents.chat.agents_md_injection import (
                 build_agents_md_block,
@@ -1728,6 +1700,13 @@ class AgentChat(BaseComponent, ABC):
             )
             if _agents_md_block:
                 system_prompt_parts.append(_agents_md_block)
+                _injected_memory_blocks.append(
+                    {
+                        "kind": "agents_md",
+                        "title": "AGENTS.md注入上下文",
+                        "chars": len(_agents_md_block),
+                    }
+                )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[AgentChat] agents_md injection failed: {e}")
 
@@ -1743,12 +1722,40 @@ class AgentChat(BaseComponent, ABC):
             )
             if _user_md_block:
                 system_prompt_parts.append(_user_md_block)
+                _injected_memory_blocks.append(
+                    {
+                        "kind": "user_md",
+                        "title": "user.md注入上下文",
+                        "chars": len(_user_md_block),
+                    }
+                )
                 logger.info(
                     f"[AgentChat] user.md injected for user={user_code} "
                     f"({len(_user_md_block)} chars)"
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[AgentChat] user_md injection failed: {e}")
+
+        # 记忆注入可见化（对齐 loaded_skills 链路）：本轮成功注入的记忆块推给
+        # 前端「上下文注入」卡片；同时写入 ext_info（随 a_add 持久化到
+        # gpts_conversations.extra），刷新后由 /chat/query 的 injected_context
+        # 重注入，解决 skill 卡片刷新即丢的问题。
+        if _injected_memory_blocks:
+            _ws_id_inj = ext_info.get("workspace_id")
+            if _ws_id_inj:
+                try:
+                    workspace_event_queue.put_nowait(
+                        (
+                            "loaded_memories",
+                            {
+                                "workspace_id": int(_ws_id_inj),
+                                "blocks": list(_injected_memory_blocks),
+                            },
+                        )
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"[AgentChat] loaded_memories event push failed: {e}")
+            ext_info["injected_context"] = {"blocks": _injected_memory_blocks}
 
         if system_prompt_parts:
             ext_info["system_prompt"] = "\n\n".join(system_prompt_parts).strip()
@@ -2400,29 +2407,6 @@ class AgentChat(BaseComponent, ABC):
             logger.warning(f"[AgentChat] build CapabilityPack failed: {e}")
         return cap_pack
 
-    async def _inject_user_md_into_pipeline(
-        self, pipeline: Any, user_id: Optional[str]
-    ) -> None:
-        """Build and set the current user's user.md block onto a V2 pipeline.
-
-        user.md is the user private long-term memory, shared across all
-        workspaces (resolved via ``KnowledgeService.get_or_create_user_space``).
-        Failure is degraded (logged, never raised) so the frozen static memory
-        block still loads its AGENTS.md / profile sections.
-        """
-        if not user_id:
-            return
-        try:
-            from gyra_serve.agent.agents.chat.agents_md_injection import (
-                build_user_md_block,
-            )
-
-            block = await build_user_md_block(self.system_app, user_id)
-            if block:
-                pipeline.set_user_md_block(block)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[AgentChat] V2 user.md block failed: {e}")
-
     @trace("agent.build_agent_by_gpts")
     async def _build_agent_by_gpts(
         self,
@@ -2605,56 +2589,39 @@ class AgentChat(BaseComponent, ABC):
                 recipient.bind(temp_profile)
 
                 # ========== Memory Integration Bundle Creation (V1 Agent) ==========
-                # Parse resource_memory and create MemoryIntegrationBundle for V1 agents
-                # Check both app.resource_memory (explicit field) and app.all_resources (merged list)
+                # Parse resource_memory and create MemoryIntegrationBundle for
+                # V1 agents. Store/processor/manager/wiring construction lives
+                # in memory_bundle_factory (shared with the AUTO_PLAN
+                # workspace-memory path).
                 memory_resources = []
-
-                # Debug: Check what resources are available
-                logger.info(
-                    f"[AgentChat] Memory integration check for {app.app_code}: "
-                    f"resource_memory={bool(app.resource_memory) if hasattr(app, 'resource_memory') else 'N/A'}, "
-                    f"all_resources={len(app.all_resources) if hasattr(app, 'all_resources') and app.all_resources else 0}"
-                )
 
                 # Check explicit resource_memory field
                 if hasattr(app, "resource_memory") and app.resource_memory and len(app.resource_memory) > 0:
                     memory_resources.extend(app.resource_memory)
-                    logger.info(f"[AgentChat] Found {len(app.resource_memory)} items in resource_memory")
 
                 # Also check all_resources for memory-type resources
                 if hasattr(app, "all_resources") and app.all_resources:
                     for res in app.all_resources:
                         res_type = getattr(res, "type", "") or ""
-                        logger.debug(f"[AgentChat] Checking resource type: {res_type}")
                         if res_type.lower() == "memory" or res_type == "MemoryResource":
                             # Avoid duplicates
                             if res not in memory_resources:
                                 memory_resources.append(res)
-                                logger.info(f"[AgentChat] Found memory resource in all_resources: type={res_type}")
-
-                logger.info(f"[AgentChat] Total memory_resources found: {len(memory_resources)}")
 
                 if memory_resources:
                     try:
                         from gyra.agent.core.memory.longterm_manager import (
                             LongTermMemoryConfig,
                         )
-                        from gyra.storage.memory import LLMMemoryProcessor
+                        from gyra_serve.agent.agents.chat.memory_bundle_factory import (
+                            build_memory_bundle,
+                            specs_from_memories,
+                            wire_memory_bundle,
+                        )
 
                         # Parse from first memory resource item
-                        memory_resource = memory_resources[0]
-                        memory_value = getattr(memory_resource, "value", None)
-                        logger.info(
-                            f"[AgentChat] Parsing memory resource: "
-                            f"value type={type(memory_value).__name__ if memory_value else 'None'}, "
-                            f"value={memory_value[:200] if memory_value and isinstance(memory_value, str) else memory_value}"
-                        )
-                        memory_config = LongTermMemoryConfig.from_resource_value(memory_value)
-
-                        config_memories = memory_config.memories if memory_config else None
-                        logger.info(
-                            f"[AgentChat] Memory config parsed: "
-                            f"config={bool(memory_config)}, memories={len(config_memories) if config_memories else 0}"
+                        memory_config = LongTermMemoryConfig.from_resource_value(
+                            getattr(memory_resources[0], "value", None)
                         )
 
                         if memory_config and memory_config.memories:
@@ -2673,372 +2640,25 @@ class AgentChat(BaseComponent, ABC):
                                 )
                                 return recipient
 
-                            # Memory store factory: prefer knowledge-vault
-                            # (each agent gets its own llm-wiki Space as the
-                            # 4-tier hermes memory sink). Fall back to
-                            # SimpleSQLite if the Space is unavailable
-                            # (migration period / missing knowledge service).
-                            memory_bundle = None
-                            try:
-                                from gyra.agent.core.memory.longterm_manager import (
-                                    LongTermMemoryManager,
-                                    MemoryIntegrationBundle,
-                                    MemorySpaceStrategy,
-                                )
-                                from gyra_ext.storage.memory.knowledge_vault_store import (
-                                    KnowledgeVaultMemoryConfig,
-                                    KnowledgeVaultMemoryStore,
-                                )
-                                from gyra_serve.knowledge.service.service import (
-                                    Service as KnowledgeService,
-                                )
-
-                                memory_stores = {}
-                                strategies = {}
-                                ks = None
-                                try:
-                                    ks = KnowledgeService.get_instance(self.system_app)
-                                except Exception as ks_e:
-                                    logger.warning(
-                                        f"[AgentChat] KnowledgeService unavailable: {ks_e}"
-                                    )
-
-                                for mem_item in memory_config.memories:
-                                    mem_id = mem_item.get("memory_id")
-                                    if not mem_id:
-                                        continue
-
-                                    store = None
-                                    space_slug = (
-                                        mem_item.get("space_slug")
-                                        or (mem_id.startswith("memory-") and mem_id)
-                                        or None
-                                    )
-                                    store_type = mem_item.get("store_type")
-
-                                    # Try knowledge-vault path first when we
-                                    # have a slug OR the memory_id looks like
-                                    # a slug (migration: old apps without
-                                    # explicit store_type but slug-shaped id).
-                                    if ks is not None and space_slug and (
-                                        store_type == "knowledge_vault"
-                                        or mem_id.startswith("memory-")
-                                    ):
-                                        try:
-                                            vault = await ks.get_vault(space_slug)
-                                            kv_cfg = KnowledgeVaultMemoryConfig(
-                                                space_slug=space_slug,
-                                                enable_kg=memory_config.enable_kg,
-                                            )
-                                            store = KnowledgeVaultMemoryStore(
-                                                config=kv_cfg,
-                                                vault=vault,
-                                                system_app=self.system_app,
-                                            )
-                                            logger.info(
-                                                f"[AgentChat] Created KnowledgeVaultMemoryStore for slug={space_slug}"
-                                            )
-                                            # 注册 idle curator cron job（幂等：
-                                            # job_id 固定，重复注册时 get_job 命中即跳过）
-                                            try:
-                                                await _register_memory_curator_cron(
-                                                    self.system_app, space_slug
-                                                )
-                                            except Exception as cron_e:
-                                                logger.warning(
-                                                    f"[AgentChat] register memory curator "
-                                                    f"cron for slug={space_slug} failed: {cron_e}"
-                                                )
-                                        except Exception as kv_e:
-                                            logger.warning(
-                                                f"[AgentChat] KnowledgeVault store creation failed "
-                                                f"for slug={space_slug}: {kv_e}; falling back to SimpleSQLite"
-                                            )
-                                            store = None
-
-                                    if store is None:
-                                        from gyra_ext.storage.memory.simple_sqlite_store import (
-                                            SimpleSQLiteMemoryConfig,
-                                            SimpleSQLiteMemoryStore,
-                                        )
-                                        fallback_cfg = SimpleSQLiteMemoryConfig(
-                                            enable_kg=memory_config.enable_kg,
-                                        )
-                                        store = SimpleSQLiteMemoryStore(
-                                            config=fallback_cfg,
-                                            index_name=mem_id,
-                                        )
-                                        logger.info(
-                                            f"[AgentChat] Created SimpleSQLite store for {mem_id}"
-                                        )
-
-                                    memory_stores[mem_id] = store
-                                    strategies[mem_id] = MemorySpaceStrategy(
-                                        space_id=mem_id,
-                                        auto_extraction=memory_config.auto_memory,
-                                        kg_extraction=memory_config.enable_kg,
-                                    )
-
-                                if memory_stores:
-                                    from gyra.storage.memory.hybrid_search import (
-                                        HybridSearchEngine,
-                                    )
-                                    from gyra.storage.memory.lifecycle import (
-                                        DefaultLifecycleHooks,
-                                    )
-                                    from gyra.storage.memory.promotion import (
-                                        MemoryPromotionEngine,
-                                    )
-                                    from gyra.storage.memory.recall_tracker import (
-                                        RecallTracker,
-                                    )
-                                    from gyra.storage.memory.snapshot import (
-                                        FrozenSnapshotManager,
-                                    )
-
-                                    # 为每个 space 建 LLMMemoryProcessor。
-                                    # 优先用 self.llm_provider（chat 自己的 working LLM
-                                    # client）；生产路径下它是 None（controller.py
-                                    # 用 SimpleAgentChat(self.system_app) 实例化时不
-                                    # 注入），此时从 ModelConfigCache 取第一个可用
-                                    # 模型，构造 AIWrapper 让它跑一遍 _init_provider
-                                    # 的 secrets/env/placeholder 解析，再取其 _provider。
-                                    # LLMProvider ABC 与 LLMClient 在 generate(req) /
-                                    # models() 上签名一致，可鸭子类型喂给
-                                    # LLMMemoryProcessor。
-                                    processors = {}
-                                    llm_client = self.llm_provider
-                                    if llm_client is None:
-                                        try:
-                                            from gyra.agent.core.llm_config import (
-                                                AgentLLMConfig,
-                                            )
-                                            from gyra.agent.util.llm.llm_client import (
-                                                AIWrapper,
-                                            )
-                                            from gyra.agent.util.llm.model_config_cache import (
-                                                ModelConfigCache,
-                                            )
-
-                                            all_models = (
-                                                ModelConfigCache.get_all_models()
-                                            )
-                                            if all_models:
-                                                model_name = all_models[0]
-                                                cfg_dict = (
-                                                    ModelConfigCache.get_config(
-                                                        model_name
-                                                    )
-                                                    or {}
-                                                )
-                                                temp_llm_config = (
-                                                    AgentLLMConfig.from_dict(
-                                                        cfg_dict
-                                                    )
-                                                )
-                                                wrapper = AIWrapper(
-                                                    llm_config=temp_llm_config
-                                                )
-                                                llm_client = wrapper._provider
-                                                if llm_client is not None:
-                                                    logger.info(
-                                                        f"[AgentChat] Built LLMProvider "
-                                                        f"(provider={temp_llm_config.provider}, "
-                                                        f"model={temp_llm_config.model}) "
-                                                        f"via AIWrapper for memory processor"
-                                                    )
-                                                else:
-                                                    logger.warning(
-                                                        "[AgentChat] AIWrapper resolved no "
-                                                        "provider; tier2/tier3 LLM "
-                                                        "extraction will be skipped"
-                                                    )
-                                            else:
-                                                logger.warning(
-                                                    "[AgentChat] ModelConfigCache empty; "
-                                                    "tier2/tier3 LLM extraction will be skipped"
-                                                )
-                                        except Exception as e:
-                                            logger.warning(
-                                                f"[AgentChat] Failed to build LLMProvider "
-                                                f"via AIWrapper: {e}"
-                                            )
-                                            llm_client = None
-
-                                    if llm_client is not None:
-                                        for mem_id in memory_stores.keys():
-                                            try:
-                                                processors[mem_id] = (
-                                                    LLMMemoryProcessor(
-                                                        llm_client=llm_client
-                                                    )
-                                                )
-                                            except Exception as proc_e:
-                                                logger.warning(
-                                                    f"[AgentChat] LLMMemoryProcessor "
-                                                    f"creation failed for {mem_id}: {proc_e}"
-                                                )
-                                        logger.info(
-                                            f"[AgentChat] Built {len(processors)} "
-                                            f"LLMMemoryProcessor(s) for memory spaces"
-                                        )
-                                    else:
-                                        logger.warning(
-                                            "[AgentChat] no llm_provider and no "
-                                            "ModelConfigCache fallback; tier2/tier3 "
-                                            "LLM extraction will be skipped"
-                                        )
-
-                                    # 持久化召回统计（SQLite，跟随 gyra
-                                    # 本地存储惯例 data/memory/），重启后
-                                    # promotion 不再冷启动。
-                                    recall_tracker = RecallTracker(
-                                        db_path=os.path.join(
-                                            os.getcwd(),
-                                            "data",
-                                            "memory",
-                                            "recall_tracker.db",
-                                        )
-                                    )
-                                    promotion_engine = MemoryPromotionEngine(
-                                        recall_tracker=recall_tracker,
-                                    )
-                                    lifecycle_hooks = DefaultLifecycleHooks(
-                                        memory_store=next(
-                                            iter(memory_stores.values()), None
-                                        )
-                                    )
-                                    snapshot_manager = FrozenSnapshotManager()
-                                    hybrid_search = HybridSearchEngine()
-                                    # 把全部组件注入 manager —— curate_session 通过
-                                    # getattr(self, "_promotion_engine", None) 等读取，
-                                    # 不注入则 tier3 promotion/snapshot 全是 None 而变成 0ms no-op。
-                                    manager = LongTermMemoryManager(
-                                        config=memory_config,
-                                        memory_stores=memory_stores,
-                                        processors=processors,
-                                        strategies=strategies,
-                                        recall_tracker=recall_tracker,
-                                        hybrid_search_engine=hybrid_search,
-                                        lifecycle_hooks=lifecycle_hooks,
-                                        snapshot_manager=snapshot_manager,
-                                        promotion_engine=promotion_engine,
-                                    )
-                                    memory_bundle = MemoryIntegrationBundle(
-                                        config=memory_config,
-                                        manager=manager,
-                                        processors=processors,
-                                        strategies=strategies,
-                                        recall_tracker=recall_tracker,
-                                        hybrid_search=hybrid_search,
-                                        lifecycle_hooks=lifecycle_hooks,
-                                        snapshot_manager=snapshot_manager,
-                                        promotion_engine=promotion_engine,
-                                    )
-                                    logger.info(
-                                        f"[AgentChat] Memory bundle created with {len(memory_stores)} stores"
-                                    )
-                            except Exception as bundle_e:
-                                logger.warning(f"[AgentChat] Memory bundle creation failed: {bundle_e}")
-
-                            if memory_bundle:
-                                # Inject bundle to agent via private attribute
-                                recipient._memory_bundle = memory_bundle
-                                # 装配 V2 读路径管线（prefetch/scrub/静态块）。
-                                # 按 conv_session_id 键控跨轮共享：serve 每轮换
-                                # conv_uid，按轮键控 prefetch 永远跨轮 miss。
-                                try:
-                                    from gyra.agent.core.memory.hook_dispatcher import (
-                                        get_memory_pipeline as _get_session_pipeline,
-                                    )
-                                    from gyra.agent.core.memory.hook_dispatcher import (
-                                        register_memory_pipeline as _register_session_pipeline,
-                                    )
-                                    from gyra.agent.core.memory.read_pipeline import (
-                                        MemoryReadPipeline,
-                                    )
-
-                                    _sess_id = (
-                                        getattr(
-                                            recipient.agent_context, "conv_session_id", None
-                                        )
-                                        or recipient.agent_context.conv_id
-                                    )
-                                    _pipeline = _get_session_pipeline(_sess_id)
-                                    if _pipeline is None:
-                                        _pipeline = MemoryReadPipeline()
-                                        _register_session_pipeline(_sess_id, _pipeline)
-                                    # 注入当前用户 user.md 私有记忆块（跨空间共享），
-                                    # 与 AGENTS.md 一起进入冻结的静态记忆块（失败仅降级）。
-                                    await self._inject_user_md_into_pipeline(
-                                        _pipeline, user_code
-                                    )
-                                    memory_bundle.pipeline = _pipeline
-                                except Exception as pipe_e:  # noqa: BLE001
-                                    logger.warning(
-                                        f"[AgentChat] Memory pipeline wiring failed: {pipe_e}"
-                                    )
-                                # Register the bundle with the conversation's
-                                # HookManager so the memory dispatcher can
-                                # find it, and so the default memory hooks
-                                # (tier 1/2/3) get appended — either now
-                                # (if HookManager already exists) or
-                                # deferred to init_hook_manager.
-                                try:
-                                    conv_id = recipient.agent_context.conv_id
-                                    recipient.memory.gpts_memory.register_memory_bundle(
-                                        conv_id, memory_bundle
-                                    )
-                                except Exception as hook_e:
-                                    logger.warning(
-                                        f"[AgentChat] Memory hook registration failed: {hook_e}"
-                                    )
-
-                                # Inject memory tools so the agent can actively
-                                # search/save memories and query/edit the KG.
-                                try:
-                                    if memory_bundle.manager.has_stores():
-                                        memory_tool_pack = MemoryToolPack(
-                                            memory_stores=memory_bundle.manager.memory_stores,
-                                            wing=memory_config.wing
-                                            if memory_config
-                                            else "default",
-                                        )
-                                        await memory_tool_pack.preload_resource()
-
-                                        # Phase D:记忆工具包包装为 MCPCapability
-                                        # (工具已 preload,纯 declare 投影),
-                                        # 挂进 capability_pack 供 facade 渲染。
-                                        from gyra.core.interface.resource.capability import (
-                                            CapabilityPack,
-                                        )
-                                        from gyra_serve.agent.capabilities.mcp import (
-                                            MCPCapability,
-                                        )
-
-                                        memory_cap = MCPCapability.from_tools(
-                                            list(memory_tool_pack.sub_resources),
-                                            name="memory_tools",
-                                        )
-                                        if recipient.capability_pack is None:
-                                            recipient.capability_pack = CapabilityPack(
-                                                [memory_cap]
-                                            )
-                                        else:
-                                            recipient.capability_pack.add(memory_cap)
-                                        logger.info(
-                                            f"[AgentChat] Memory tools injected for "
-                                            f"{app.app_code}: "
-                                            f"{len(memory_bundle.manager.memory_stores)} stores"
-                                        )
-                                except Exception as tool_e:
-                                    logger.warning(
-                                        f"[AgentChat] Memory tool injection failed: {tool_e}"
-                                    )
-
-                                logger.info(
-                                    f"[AgentChat] Memory bundle created for {app.app_code}: "
-                                    f"{len(memory_bundle.manager.memory_stores)} stores"
+                            bundle = await build_memory_bundle(
+                                self.system_app,
+                                self.llm_provider,
+                                app_code=app.app_code,
+                                memory_config=memory_config,
+                                specs=specs_from_memories(memory_config),
+                            )
+                            if bundle is not None:
+                                await wire_memory_bundle(
+                                    recipient,
+                                    bundle,
+                                    self.system_app,
+                                    user_id=getattr(
+                                        recipient.agent_context, "user_id", None
+                                    ),
+                                    conv_id=recipient.agent_context.conv_id,
+                                    conv_session_id=getattr(
+                                        recipient.agent_context, "conv_session_id", None
+                                    ),
                                 )
                     except Exception as e:
                         logger.warning(f"[AgentChat] Failed to create memory bundle: {e}")
@@ -3091,6 +2711,74 @@ class AgentChat(BaseComponent, ABC):
                 if app.user_prompt_template:
                     temp_profile.user_prompt_template = app.user_prompt_template
                 manager.bind(temp_profile)
+
+                # ========== 场景空间（AUTO_PLAN）workspace 记忆绑定 ==========
+                # 按 workspace 粒度绑定记忆空间（memory-ws-{workspace_code}）：
+                # AGENTS.md 空间级、user.md 用户级；bundle/tools/tier hooks
+                # 复用与 SINGLE_AGENT 相同的 memory_bundle_factory。仅当
+                # ext_info 携带 workspace_id（场景空间对话）时触发，非场景
+                # app 不进此段。
+                try:
+                    _ws_id = (agent_context.extra or {}).get("workspace_id")
+                    if _ws_id:
+                        from gyra.agent.core.memory.longterm_manager import (
+                            LongTermMemoryConfig,
+                        )
+                        from gyra_serve.agent.agents.chat.agents_md_injection import (
+                            resolve_workspace_memory_space,
+                        )
+                        from gyra_serve.agent.agents.chat.memory_bundle_factory import (
+                            MemorySpaceSpec,
+                            build_memory_bundle,
+                            wire_memory_bundle,
+                        )
+
+                        _slug = await resolve_workspace_memory_space(
+                            self.system_app, int(_ws_id)
+                        )
+                        if _slug:
+                            memory_config = LongTermMemoryConfig(
+                                memories=[
+                                    {
+                                        "memory_id": _slug,
+                                        "space_slug": _slug,
+                                        "store_type": "knowledge_vault",
+                                    }
+                                ],
+                                auto_memory=True,
+                                enable_kg=True,
+                                enable_long_term_use=True,
+                                enable_collect_long_term=True,
+                            )
+                            bundle = await build_memory_bundle(
+                                self.system_app,
+                                self.llm_provider,
+                                app_code=app.app_code,
+                                memory_config=memory_config,
+                                specs=[
+                                    MemorySpaceSpec(
+                                        memory_id=_slug,
+                                        space_slug=_slug,
+                                        store_type="knowledge_vault",
+                                    )
+                                ],
+                            )
+                            if bundle is not None:
+                                await wire_memory_bundle(
+                                    manager,
+                                    bundle,
+                                    self.system_app,
+                                    user_id=getattr(agent_context, "user_id", None),
+                                    conv_id=agent_context.conv_id,
+                                    conv_session_id=getattr(
+                                        agent_context, "conv_session_id", None
+                                    ),
+                                    capability_pack=manager.capability_pack,
+                                )
+                except Exception as mem_e:
+                    logger.warning(
+                        f"[AgentChat] workspace memory wiring failed: {mem_e}"
+                    )
 
                 # 统一治理：不再 hire 预构建子 Agent（子 Agent 按需经
                 # AppResource/_dispatch_to_app 构建）。
@@ -4832,6 +4520,50 @@ class AgentChat(BaseComponent, ABC):
             )
         finally:
             await gpts_memory.clear(conv_id)
+
+    async def collect_injected_context(self, conv_id: str) -> List[Dict[str, Any]]:
+        """收集会话各轮持久化的记忆注入标记（刷新重注入用）。
+
+        conv_id 兼容 agent_conv_id / conversation_session_id 两种入参（与
+        query_chat 一致）。返回按轮次升序的
+        ``[{"conv_id": ..., "blocks": [{"kind","title","chars"}]}]``，
+        无记录返回空列表。失败降级不抛错。
+        """
+        out: List[Dict[str, Any]] = []
+        try:
+            session_convs = None
+            conv = await self.gpts_conversations.a_get_by_conv_id(conv_id)
+            if not conv:
+                session_convs = await self.gpts_conversations.get_by_session_id_asc(
+                    conv_id
+                )
+                conv = session_convs[-1] if session_convs else None
+            if not conv:
+                return out
+            if session_convs is None:
+                session_convs = await self.gpts_conversations.get_by_session_id_asc(
+                    conv.conv_session_id
+                ) or [conv]
+            for turn in session_convs:
+                try:
+                    extra = (
+                        json.loads(turn.extra)
+                        if isinstance(turn.extra, str)
+                        else (turn.extra or {})
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(extra, dict):
+                    continue
+                injected = extra.get("injected_context") or {}
+                blocks = injected.get("blocks") if isinstance(injected, dict) else None
+                if blocks:
+                    out.append(
+                        {"conv_id": turn.conv_id, "blocks": list(blocks)}
+                    )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[AgentChat] collect_injected_context failed: {e}")
+        return out
 
     async def _build_dock_frame(self, gpts_memory: GptsMemory, conv_id: str) -> dict:
         """Dock 帧缓存外壳：TTL 内多客户端轮询同一会话合并为一次构建。

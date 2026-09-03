@@ -3,24 +3,29 @@
 覆盖：
   - SKILL.md 全文读取、YAML frontmatter 剥离、**不截断**；
   - 剧本 declaration.skills（ext_info.playbook_id 直接命中 / task_id 反查）;
+  - 空间绑定技能的「默认使用」（config.default_inject）自动预加载；
   - chat_in_params sub_type='skill(gyra)' 手动选择合并 + 按引用去重；
   - <loaded_skills> 注入块格式与说明文案。
 """
 from __future__ import annotations
 
+import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from gyra_serve.agent.preload_skills import (
     build_preloaded_skills_reminder,
     collect_preloaded_skill_xmls,
+    collect_preloaded_skills,
     load_skill_markdown,
     render_preloaded_skill_xml,
+    strip_loaded_skills_block,
 )
 
 _SKILL_SVC = "serve_skill_service"
 _PLAYBOOK_SVC = "serve_playbook_service"
 _TASK_SVC = "serve_task_service"
+_WORKSPACE_SVC = "serve_workspace_service"
 
 
 # --------------------------------------------------------------------------- #
@@ -60,6 +65,20 @@ class FakeTaskService:
 
     def get_by_id(self, tid):
         return self._tasks.get(tid)
+
+
+class FakeWorkspaceService:
+    def __init__(self, resources_by_ws: Dict[int, List[Any]]):
+        self._resources_by_ws = resources_by_ws
+
+    def list_resources(self, workspace_id, type_filter=None):
+        rows = self._resources_by_ws.get(workspace_id, []) or []
+        if type_filter:
+            rows = [
+                r for r in rows
+                if getattr(r, "type", None) == type_filter
+            ]
+        return rows
 
 
 class _Obj:
@@ -106,6 +125,39 @@ def _make_app(tmp_path) -> FakeSystemApp:
             _SKILL_SVC: FakeSkillService({"test-skill": skill_dir}),
             _PLAYBOOK_SVC: FakePlaybookService({1: playbook}),
             _TASK_SVC: FakeTaskService({10: task}),
+        }
+    )
+
+
+def _make_default_app(tmp_path) -> FakeSystemApp:
+    """带 workspace 默认绑定技能的 app：ws=7 勾了默认、未勾默认、停用三种。"""
+    skill_dir = _write_skill(
+        tmp_path,
+        "test-skill",
+        "测试技能",
+        "# 指令正文\n\n完整内容 line2\n完整内容 line3",
+    )
+    return FakeSystemApp(
+        {
+            _SKILL_SVC: FakeSkillService({"test-skill": skill_dir}),
+            _WORKSPACE_SVC: FakeWorkspaceService(
+                {
+                    7: [
+                        _Obj(
+                            type="skill", physical_ref="test-skill",
+                            is_active=True, config={"default_inject": True},
+                        ),
+                        _Obj(
+                            type="skill", physical_ref="other-skill",
+                            is_active=True, config={"default_inject": False},
+                        ),
+                        _Obj(
+                            type="skill", physical_ref="inactive-skill",
+                            is_active=False, config={"default_inject": True},
+                        ),
+                    ],
+                }
+            ),
         }
     )
 
@@ -173,6 +225,41 @@ def test_collect_no_source_returns_empty(tmp_path):
     assert collect_preloaded_skill_xmls(app, {}, None) == []
 
 
+def test_collect_from_workspace_default_skills(tmp_path):
+    """空间绑定技能勾选「默认使用」→ 对话开始自动注入 SKILL.md 全文。"""
+    app = _make_default_app(tmp_path)
+    xmls = collect_preloaded_skill_xmls(app, {"workspace_id": 7}, None)
+    assert len(xmls) == 1
+    assert "<skill_content name=\"测试技能\">" in xmls[0]
+    assert "完整内容 line3" in xmls[0]
+
+
+def test_collect_workspace_default_skips_inactive_and_non_default(tmp_path):
+    """停用 / 未勾「默认使用」的绑定技能不预加载。"""
+    app = _make_default_app(tmp_path)
+    xmls = collect_preloaded_skill_xmls(app, {"workspace_id": 7}, None)
+    # 仅 test-skill 启用且 default_inject=True；其它两个被过滤
+    assert len(xmls) == 1
+    assert "完整内容 line2" in xmls[0]
+
+
+def test_collect_workspace_default_dedup_with_chat_param(tmp_path):
+    """空间默认技能与 /命令手动选择同一技能 → 按引用去重。"""
+    app = _make_default_app(tmp_path)
+    xmls = collect_preloaded_skill_xmls(
+        app,
+        {"workspace_id": 7},
+        [ChatInParam("skill(gyra)", '{"name": "test-skill"}')],
+    )
+    assert len(xmls) == 1
+
+
+def test_collect_workspace_default_without_service_returns_empty(tmp_path):
+    """workspace service 缺失时跳过空间默认技能，不阻断。"""
+    app = _make_app(tmp_path)
+    assert collect_preloaded_skill_xmls(app, {"workspace_id": 7}, None) == []
+
+
 def test_build_preloaded_skills_reminder_format(tmp_path):
     app = _make_app(tmp_path)
     xmls = collect_preloaded_skill_xmls(app, {"playbook_id": 1}, None)
@@ -213,3 +300,70 @@ def test_chat_flow_system_prompt_assembly(tmp_path):
     assert "完整内容 line3" in final  # SKILL.md 全文在 system prompt 中
     # V2 引擎走 user-role：清单经 ext_info["preloaded_skills"] set 给 V2Agent
     assert ext_info["preloaded_skills"] == xmls
+
+
+# --------------------------------------------------------------------------- #
+# 落库瘦身：refs 而非全文；<loaded_skills> 剥离；序列化兜底
+# --------------------------------------------------------------------------- #
+
+
+def test_collect_preloaded_skills_returns_refs(tmp_path):
+    """collect_preloaded_skills 返回 {name, skill_code, body}，供落库 refs 使用。"""
+    app = _make_app(tmp_path)
+    loaded = collect_preloaded_skills(app, {"playbook_id": 1}, None)
+    assert len(loaded) == 1
+    assert loaded[0]["name"] == "测试技能"  # frontmatter name
+    assert loaded[0]["skill_code"] == "test-skill"
+    assert "完整内容 line3" in loaded[0]["body"]  # 全文不截断
+
+
+def test_strip_loaded_skills_block():
+    """strip_loaded_skills_block 只剥注入块，保留其余段落。"""
+    reminder = build_preloaded_skills_reminder(
+        ['<skill_content name="a">\nsecret-body\n</skill_content>']
+    )
+    text = f"BASE_PROMPT\n\n# 当前空间\n\n{reminder}\n\nAGENTS_MD"
+    out = strip_loaded_skills_block(text)
+    assert "<loaded_skills>" not in out
+    assert "secret-body" not in out
+    assert "已预加载到当前对话上下文" not in out
+    assert "BASE_PROMPT" in out
+    assert "# 当前空间" in out
+    assert "AGENTS_MD" in out
+    # 无注入块时原样返回
+    assert strip_loaded_skills_block("plain prompt") == "plain prompt"
+
+
+def test_serialize_extra_for_db_drops_skill_fulltext():
+    """落库 JSON：preloaded_skills 全文键被丢、refs 保留、system_prompt 剥块。"""
+    from gyra_serve.agent.agents.chat.agent_chat import _serialize_extra_for_db
+
+    xmls = ['<skill_content name="a">\n' + "x" * 200 + "\n</skill_content>"]
+    extra = {
+        "workspace_id": 2,
+        "preloaded_skills": xmls,
+        "preloaded_skill_refs": [{"name": "a", "skill_code": "a"}],
+        "system_prompt": f"BASE\n\n{build_preloaded_skills_reminder(xmls)}\n\nAGENTS",
+    }
+    slim = json.loads(_serialize_extra_for_db(extra))
+    assert "preloaded_skills" not in slim  # 全文键被剔除
+    assert slim["preloaded_skill_refs"] == [{"name": "a", "skill_code": "a"}]
+    assert "<loaded_skills>" not in slim["system_prompt"]
+    assert "BASE" in slim["system_prompt"] and "AGENTS" in slim["system_prompt"]
+
+
+def test_serialize_extra_for_db_oversize_fallback():
+    """超 63KB 时依次丢弃可再生大键，保证 INSERT 不被 TEXT 上限拒绝。"""
+    from gyra_serve.agent.agents.chat.agent_chat import _serialize_extra_for_db
+
+    extra = {
+        "workspace_context": {"blob": "y" * 70_000},
+        "system_prompt": "SP",
+        "workspace_id": 2,
+    }
+    payload = _serialize_extra_for_db(extra)
+    assert len(payload) < 63 * 1024
+    slim = json.loads(payload)
+    assert "system_prompt" not in slim  # 兜底第一层先丢 system_prompt
+    assert "workspace_context" not in slim
+    assert slim["workspace_id"] == 2

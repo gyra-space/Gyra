@@ -11,7 +11,7 @@ import {
   getAppList,
 } from '@/client/api';
 import {
-  Alert, App, Button, Empty, Input, Modal, Select, Space, Spin, Switch, Tag,
+  Alert, App, Button, Checkbox, Empty, Input, Modal, Select, Space, Spin, Switch, Tag,
 } from 'antd';
 import {
   ToolOutlined,
@@ -56,6 +56,7 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
   const [saving, setSaving] = useState(false);
   const [addType, setAddType] = useState<'skill' | 'mcp' | 'app' | 'command'>('skill');
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
+  const [skillDefault, setSkillDefault] = useState(false);
   const [selectedMcp, setSelectedMcp] = useState<any>(null);
   const [selectedApp, setSelectedApp] = useState<string | null>(null);
   // 自定义命令表单(workspace_resource type='command' 的新建,非选择已有实体)
@@ -140,7 +141,7 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
         category: 'scenario_bound',
         access_mode: 'read',
         is_active: true,
-        config: {},
+        config: { default_inject: skillDefault },
       }));
     } else if (addType === 'mcp') {
       if (!selectedMcp?.mcp_code) { setSaving(false); message.warning('请选择 MCP 服务'); return; }
@@ -197,6 +198,7 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
     message.success('能力已添加');
     setAddOpen(false);
     setSelectedSkill(null);
+    setSkillDefault(false);
     setSelectedMcp(null);
     setSelectedApp(null);
     setCmdName('');
@@ -239,6 +241,26 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
     });
   };
 
+  /** 勾选「默认使用」：把该技能标记为对话开始自动全文注入（config.default_inject）。 */
+  const handleDefaultToggle = async (r: any, checked: boolean) => {
+    const config = { ...(r.config || {}), default_inject: checked };
+    const [err] = await apiInterceptors(updateResource({
+      resource_id: r.id,
+      resource: {
+        workspace_id: workspaceId,
+        type: r.type,
+        name: r.name,
+        category: r.category,
+        physical_ref: r.physical_ref,
+        config,
+        access_mode: r.access_mode,
+        is_active: r.is_active,
+      },
+    }));
+    if (err) { message.error(err.message); return; }
+    refresh();
+  };
+
   const renderCard = (r: any) => {
     const meta = TYPE_META[r.type] || TYPE_META.skill;
     const active = !!r.is_active;
@@ -259,6 +281,20 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
         <div className="ws-asset-card__tags">
           <Tag color={meta.tagColor}>{meta.label}</Tag>
           {active ? null : <Tag>已停用</Tag>}
+          {r.type === 'skill' && (
+            canManage ? (
+              <Checkbox
+                className="ws-asset-card__default"
+                checked={!!r.config?.default_inject}
+                onChange={(e) => handleDefaultToggle(r, e.target.checked)}
+                title="对话开始时将该技能 SKILL.md 全文注入上下文，无需再调用 skill 工具"
+              >
+                默认使用
+              </Checkbox>
+            ) : r.config?.default_inject ? (
+              <Tag color="green">默认使用</Tag>
+            ) : null
+          )}
         </div>
         <div className="ws-asset-card__source" title={r.physical_ref || r.name}>
           {r.physical_ref || r.name}
@@ -453,6 +489,13 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
         ) : addType === 'skill' ? (
           <div>
             <div className="text-sm text-gray-500 mb-2">选择技能</div>
+            <Checkbox
+              className="mb-3"
+              checked={skillDefault}
+              onChange={(e) => setSkillDefault(e.target.checked)}
+            >
+              默认使用（对话开始时自动注入该技能 SKILL.md 全文）
+            </Checkbox>
             <Select
               style={{ width: '100%' }}
               placeholder="从技能库选择"

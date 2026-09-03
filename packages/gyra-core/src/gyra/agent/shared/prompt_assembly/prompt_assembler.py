@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from .prompt_registry import get_registry, PromptTemplate
+from .prompt_registry import PromptRegistry, get_registry, PromptTemplate
 
 if TYPE_CHECKING:
     from gyra.util.template_utils import render
@@ -95,15 +95,18 @@ class PromptAssembler:
     def __init__(
         self,
         config: Optional[PromptAssemblyConfig] = None,
+        registry: Optional["PromptRegistry"] = None,
     ):
         """
         初始化
 
         Args:
             config: 组装配置，如果为 None 则使用默认配置
+            registry: 模板注册表，缺省用进程级单例；需要私有模板目录的
+                Agent（如 PIXIU/V2）可传入 standalone 实例实现目录隔离
         """
         self.config = config or PromptAssemblyConfig()
-        self.registry = get_registry()
+        self.registry = registry or get_registry()
 
     # ==================== 核心组装方法 ====================
 
@@ -243,7 +246,8 @@ class PromptAssembler:
         if not exceptions:
             exceptions = self.registry.get("exceptions", "main")
         if exceptions:
-            sections.append(exceptions.content)
+            # 渲染而非裸拼 content：支持模板内 architecture 等引擎分叉条件
+            sections.append(exceptions.render(**kwargs))
 
         # 3. 交付规范
         delivery_name = f"main_{language}" if language != "zh" else "main"
@@ -251,7 +255,8 @@ class PromptAssembler:
         if not delivery:
             delivery = self.registry.get("delivery", "main")
         if delivery:
-            sections.append(delivery.content)
+            # 同 exceptions：渲染以支持模板内条件分叉
+            sections.append(delivery.render(**kwargs))
 
         return "\n\n".join(sections)
 

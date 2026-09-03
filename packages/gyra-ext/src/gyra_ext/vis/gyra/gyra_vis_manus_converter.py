@@ -276,6 +276,28 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             if code_type:
                 return code_type
 
+        # V2 统一工具 db 按 action 细分：execute_sql/run_sql/query → sql（可结构化渲染），
+        # 其余动作（describe/list/search 等）保持 other，由输出内容判定渲染方式。
+        if (
+            action_lower == "db"
+            and base_type == ManusStepType.OTHER.value
+            and action_input
+        ):
+            db_action = ""
+            if isinstance(action_input, dict):
+                db_action = str(
+                    action_input.get("action", "")
+                    or action_input.get("query_type", "")
+                    or action_input.get("type", "")
+                ).lower()
+            elif isinstance(action_input, str):
+                db_action = action_input.lower()
+            if any(
+                kw in db_action
+                for kw in ("execute_sql", "run_sql", "query", "select", "sql")
+            ):
+                return ManusStepType.SQL.value
+
         return base_type
 
     def _extract_phase_key(self, text: str) -> Optional[str]:
@@ -1027,23 +1049,25 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         observation = getattr(act_out, 'observations', None) or getattr(act_out, 'content', None)
         is_success = getattr(act_out, 'is_exe_success', True)
         action_id = getattr(act_out, 'action_id', None) or ""
+        thoughts = self._extract_step_thoughts(act_out)
 
         step_info = ManusActiveStepInfo(
             id=action_id,
             type=self._map_action_to_step_type(action_name, action_input),
             title=action_name or "执行中",
-            subtitle=observation[:100] if observation and isinstance(observation, str) else None,
+            subtitle=(
+                observation[:100]
+                if observation and isinstance(observation, str)
+                else (thoughts[:100] if thoughts else None)
+            ),
             status=ManusStepStatus.COMPLETED.value if is_success else ManusStepStatus.ERROR.value,
             action=action_name,
             action_input=action_input,
         )
 
-        outputs = []
-        if observation and isinstance(observation, str):
-            outputs.append(ManusExecutionOutput(
-                output_type=ManusOutputType.TEXT.value,
-                content=observation,
-            ))
+        outputs = self._step_outputs(
+            step_info.type, act_out, observation if isinstance(observation, str) else None, thoughts
+        )
 
         meta_out = self._extract_skill_meta_output(act_out, step_info.type)
         if meta_out:
@@ -1081,6 +1105,7 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         action_id = getattr(act_out, 'action_id', None) or ""
         if not action_id and isinstance(act_out, dict):
             action_id = act_out.get('action_id', '')
+        thoughts = self._extract_step_thoughts(act_out)
 
         if not action_name:
             return None, []
@@ -1089,18 +1114,19 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             id=action_id,
             type=self._map_action_to_step_type(action_name, action_input),
             title=action_name or "执行中",
-            subtitle=observation[:100] if observation and isinstance(observation, str) else None,
+            subtitle=(
+                observation[:100]
+                if observation and isinstance(observation, str)
+                else (thoughts[:100] if thoughts else None)
+            ),
             status=ManusStepStatus.RUNNING.value,
             action=action_name,
             action_input=action_input,
         )
 
-        outputs = []
-        if observation and isinstance(observation, str):
-            outputs.append(ManusExecutionOutput(
-                output_type=ManusOutputType.TEXT.value,
-                content=observation,
-            ))
+        outputs = self._step_outputs(
+            step_info.type, act_out, observation if isinstance(observation, str) else None, thoughts
+        )
 
         meta_out = self._extract_skill_meta_output(act_out, step_info.type)
         if meta_out:
@@ -1120,18 +1146,9 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
         """
         vis_text = await self._gen_plan_items(gpt_msg=gpt_msg, senders_map=senders_map)
 
+        # _extract_step_from_gpt_msg 已按步骤类型组装输出（含旁白 thought + SQL
+        # 结构化 sql_query），此处不再二次覆盖，避免丢失旁白/思考文本。
         step_info, outputs = self._extract_step_from_gpt_msg(gpt_msg)
-
-        if step_info and gpt_msg.action_report:
-            for act_out in (gpt_msg.action_report if isinstance(gpt_msg.action_report, list) else [gpt_msg.action_report]):
-                if step_info.type == ManusStepType.SQL.value:
-                    sql_data = self._extract_sql_query_data(act_out)
-                    if sql_data:
-                        outputs = [ManusExecutionOutput(
-                            output_type=ManusOutputType.SQL_QUERY.value,
-                            content=sql_data,
-                        )]
-                        break
 
         # 收集该消息的任务文件（点击历史步骤时展示）
         task_files: List[ManusTaskFileItem] = []
@@ -1152,6 +1169,68 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
             "vis_content": vis_text or "",
             "step_data": step_data,
         }
+
+    @staticmethod
+    def _extract_step_thoughts(act_out) -> Optional[str]:
+        """从 ActionOutput 提取旁白/思考文本（V2 唯一来源为 WorkEntry.assistant_content）。
+
+        V1 把旁白写入 GptsMessage.content 供聊天区渲染；V2 的 tool_call 消息
+        content="" 强制清空、仅存于 WorkEntry.assistant_content，经
+        ``to_action_output()`` 映射到 ``thoughts``。此处接回，防止旁白丢失。
+        """
+        if act_out is None:
+            return None
+        thoughts = getattr(act_out, 'thoughts', None) or getattr(act_out, 'thought', None)
+        if not thoughts and isinstance(act_out, dict):
+            thoughts = act_out.get('thoughts') or act_out.get('thought')
+        if isinstance(thoughts, str) and thoughts.strip():
+            return thoughts
+        return None
+
+    def _step_outputs(
+        self,
+        step_type: str,
+        act_out,
+        observation: Optional[str],
+        thoughts: Optional[str],
+    ) -> List[ManusExecutionOutput]:
+        """按步骤类型生成执行输出（旁白/思考 + 结构化结果）。
+
+        对齐 ``_create_step_for_action`` / ``_process_v1_action_report`` 语义：
+        - 旁白（thoughts，即 WorkEntry.assistant_content）追加为 ``thought`` 输出，
+          使「执行过程」右面板能看到触发该工具调用的 AI 叙述文本（V2 因 tool_call
+          消息 content 为空、仅存于 assistant_content，此处接回）；
+        - 结果按步骤类型选 output_type：SQL→sql_query(结构化)/markdown，python→code，
+          html→html，bash→text，其余→markdown——避免工具结果以裸 TEXT 原样呈现。
+        """
+        outputs: List[ManusExecutionOutput] = []
+        if thoughts:
+            outputs.append(ManusExecutionOutput(
+                output_type=ManusOutputType.THOUGHT.value,
+                content=thoughts,
+            ))
+        if observation and isinstance(observation, str):
+            if step_type == ManusStepType.SQL.value:
+                sql_data = self._extract_sql_query_data(act_out)
+                if sql_data:
+                    outputs.append(ManusExecutionOutput(
+                        output_type=ManusOutputType.SQL_QUERY.value,
+                        content=sql_data,
+                    ))
+                    return outputs
+            if step_type == ManusStepType.PYTHON.value:
+                out_type = ManusOutputType.CODE.value
+            elif step_type == ManusStepType.HTML.value:
+                out_type = ManusOutputType.HTML.value
+            elif step_type == ManusStepType.BASH.value:
+                out_type = ManusOutputType.TEXT.value
+            else:
+                out_type = ManusOutputType.MARKDOWN.value
+            outputs.append(ManusExecutionOutput(
+                output_type=out_type,
+                content=observation,
+            ))
+        return outputs
 
     def _build_steps_from_messages_stateless(
         self, messages: List["GptsMessage"], lazy: bool = False
@@ -1191,12 +1270,18 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                     step_id = f"step_{msg_id_prefix}_{step_counter}"
                     action_input = getattr(act_out, 'action_input', None)
                     observation = getattr(act_out, 'observations', None) or getattr(act_out, 'content', None)
+                    # 旁白/思考：V1 在 msg.content，V2 在 WorkEntry.assistant_content → thoughts
+                    thoughts = self._extract_step_thoughts(act_out)
 
                     step = ManusExecutionStep(
                         id=step_id,
                         type=self._map_action_to_step_type(action_name, action_input),
                         title=action_name or "执行中",
-                        subtitle=observation[:100] if observation and isinstance(observation, str) else None,
+                        subtitle=(
+                            observation[:100]
+                            if observation and isinstance(observation, str)
+                            else (thoughts[:100] if thoughts else None)
+                        ),
                         description=msg.current_goal,
                         status=ManusStepStatus.COMPLETED.value if getattr(act_out, 'is_exe_success', True) else ManusStepStatus.ERROR.value,
                         action=action_name,
@@ -1208,20 +1293,11 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                     if action_id:
                         local_uid_map[action_id] = step_id
 
-                    if observation and isinstance(observation, str):
-                        # SQL 步骤特殊处理：提取 d-sql-query VIS Tag 中的结构化数据
-                        if step.type == ManusStepType.SQL.value:
-                            sql_data = self._extract_sql_query_data(act_out)
-                            if sql_data:
-                                local_outputs[step_id] = [ManusExecutionOutput(
-                                    output_type=ManusOutputType.SQL_QUERY.value,
-                                    content=sql_data,
-                                )]
-                                continue
-                        local_outputs[step_id] = [ManusExecutionOutput(
-                            output_type=ManusOutputType.TEXT.value,
-                            content=observation,
-                        )]
+                    step_outputs = self._step_outputs(
+                        step.type, act_out, observation if isinstance(observation, str) else None, thoughts
+                    )
+                    if step_outputs:
+                        local_outputs[step_id] = step_outputs
 
         def _step_to_info(s: ManusExecutionStep) -> ManusActiveStepInfo:
             detail = s.description or ""
@@ -2171,12 +2247,18 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                     step_id = f"step_{msg_id_prefix}_{step_counter}"
                     action_input = getattr(act_out, 'action_input', None)
                     observation = getattr(act_out, 'observations', None) or getattr(act_out, 'content', None)
+                    # 旁白/思考：V1 在 msg.content，V2 在 WorkEntry.assistant_content → thoughts
+                    thoughts = self._extract_step_thoughts(act_out)
 
                     step = ManusExecutionStep(
                         id=step_id,
                         type=self._map_action_to_step_type(action_name, action_input),
                         title=action_name or "执行中",
-                        subtitle=observation[:100] if observation and isinstance(observation, str) else None,
+                        subtitle=(
+                            observation[:100]
+                            if observation and isinstance(observation, str)
+                            else (thoughts[:100] if thoughts else None)
+                        ),
                         description=msg.current_goal,
                         status=ManusStepStatus.COMPLETED.value if getattr(act_out, 'is_exe_success', True) else ManusStepStatus.ERROR.value,
                         action=action_name,
@@ -2188,20 +2270,11 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                     if action_id:
                         local_uid_map[action_id] = step_id
 
-                    if observation and isinstance(observation, str):
-                        # SQL 步骤特殊处理：提取 d-sql-query VIS Tag 中的结构化数据
-                        if step.type == ManusStepType.SQL.value:
-                            sql_data = self._extract_sql_query_data(act_out)
-                            if sql_data:
-                                local_outputs[step_id] = [ManusExecutionOutput(
-                                    output_type=ManusOutputType.SQL_QUERY.value,
-                                    content=sql_data,
-                                )]
-                                continue
-                        local_outputs[step_id] = [ManusExecutionOutput(
-                            output_type=ManusOutputType.TEXT.value,
-                            content=observation,
-                        )]
+                    step_outputs = self._step_outputs(
+                        step.type, act_out, observation if isinstance(observation, str) else None, thoughts
+                    )
+                    if step_outputs:
+                        local_outputs[step_id] = step_outputs
 
         # 构建 steps_map（局部数据）— 终态视图非 lazy：每个步骤回填真实 outputs，
         # 使重开对话时右面板/左栏步骤列表能直接看到工具执行结果，而非只有元信息空壳。
@@ -2558,41 +2631,29 @@ class GyraIncrVisManusConverter(GyraIncrVisWindow3Converter):
                         obs = _get(act_out, 'observations')
                         cnt = _get(act_out, 'content')
                         display_content = obs or cnt
+                        thoughts = self._extract_step_thoughts(act_out)
 
-                        out_type = ManusOutputType.TEXT.value
-                        if step_type in (ManusStepType.PYTHON.value,):
-                            out_type = ManusOutputType.CODE.value
-                        elif step_type == ManusStepType.HTML.value:
-                            out_type = ManusOutputType.HTML.value
-                        elif step_type == ManusStepType.SQL.value:
-                            sql_data = self._extract_sql_query_data(act_out)
-                            if sql_data:
-                                return {
-                                    "active_step": {
-                                        "id": temp_step_id,
-                                        "type": step_type,
-                                        "title": action_name,
-                                        "status": ManusStepStatus.COMPLETED.value if is_success else ManusStepStatus.ERROR.value,
-                                        "action": action_name,
-                                        "action_input": action_input,
-                                    },
-                                    "outputs": [{"output_type": ManusOutputType.SQL_QUERY.value, "content": sql_data}],
-                                }
-
-                        outputs = []
-                        if display_content:
-                            outputs.append({"output_type": out_type, "content": display_content})
+                        step_outputs = self._step_outputs(
+                            step_type, act_out,
+                            display_content if isinstance(display_content, str) else None,
+                            thoughts,
+                        )
 
                         return {
                             "active_step": {
                                 "id": temp_step_id,
                                 "type": step_type,
                                 "title": action_name,
+                                "subtitle": (
+                                    display_content[:100]
+                                    if isinstance(display_content, str)
+                                    else (thoughts[:100] if thoughts else None)
+                                ),
                                 "status": ManusStepStatus.COMPLETED.value if is_success else ManusStepStatus.ERROR.value,
                                 "action": action_name,
                                 "action_input": action_input,
                             },
-                            "outputs": outputs,
+                            "outputs": [o.to_dict() for o in step_outputs],
                         }
 
         return None

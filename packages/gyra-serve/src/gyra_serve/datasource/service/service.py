@@ -373,18 +373,21 @@ class Service(
             ds_id = int(datasource_id)
             self.learning_service.delete_by_datasource_id(ds_id)
 
-            # Cascade: drop ECP asset refs pointing at this datasource so the
-            # ECP asset list doesn't keep showing a deleted DB. ECP owns only
-            # the reference, so this is the correct place to clean it up.
+            # Cascade: drop ECP asset refs pointing at this datasource and mark
+            # the semantic objects bound to it as deprecated, so the ECP asset
+            # list doesn't keep showing a deleted DB and its proposals/confirmed
+            # objects stop being executable. ECP owns only the reference, so this
+            # is the correct place to clean it up.
             try:
-                from gyra_serve.ecp.models.models import AssetRefDao
+                from gyra_serve.ecp.models.models import AssetRefDao, SemanticObjectDao
 
                 AssetRefDao().delete_by_ref_all_workspaces(
                     kind="db", ref_id=str(ds_id)
                 )
+                SemanticObjectDao().deprecate_by_datasource(ds_id)
             except Exception:  # noqa: BLE001
                 logger.warning(
-                    "cascade delete ECP asset refs for datasource %s failed",
+                    "cascade ECP cleanup for datasource %s failed",
                     ds_id,
                     exc_info=True,
                 )

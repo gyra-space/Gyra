@@ -28,6 +28,9 @@ _AGENTS_MD_CATEGORY_SECTION = {
     "data": "References",
     "convention": "Conventions",
     "user": "Identity",
+    # user.md 分类（user_remember）
+    "communication": "Communication",
+    "feedback": "Feedback",
 }
 
 # 用户显式写入 AGENTS.md 的标记（永不淘汰）
@@ -113,6 +116,7 @@ class MemoryToolPack(ToolPack):
         memory_store: Optional[MemoryStoreBase] = None,
         memory_stores: Optional[Dict[str, MemoryStoreBase]] = None,
         wing: str = "default",
+        user_vault: Optional[Any] = None,
         **kwargs,
     ):
         super().__init__([], name="Memory Tool Pack", **kwargs)
@@ -130,6 +134,9 @@ class MemoryToolPack(ToolPack):
         else:
             raise ValueError("Either memory_store or memory_stores must be provided.")
         self._wing = wing
+        # 用户记忆空间 vault（user.md 写入通道，user_remember 工具用）；
+        # 为 None 时不注册 user_remember。
+        self._user_vault = user_vault
 
     @classmethod
     def type_alias(cls) -> str:
@@ -148,6 +155,35 @@ class MemoryToolPack(ToolPack):
                 command_prefix=f"memory_{suffix}_",
                 kg_prefix=f"kg_{suffix}_",
                 space_hint=f" (space: {space_id})",
+            )
+
+        # user_remember：写当前用户私有记忆文档 user.md（仅当绑定了用户
+        # 记忆空间 vault 时注册，避免无 vault 场景出现死工具）。
+        if self._user_vault is not None and hasattr(self._user_vault, "read_user_md"):
+            self.add_command(
+                command_label=(
+                    "Record a stable fact about the current user into the "
+                    "user's private memory document (user.md). Use this when "
+                    "the user confirms a personal preference, habit, or "
+                    "communication style worth remembering across sessions. "
+                    "Items are categorized as: identity (身份/角色), preference "
+                    "(偏好/习惯), communication (沟通方式), feedback (反馈/纠正)."
+                ),
+                command_name="user_remember",
+                args={
+                    "content": {
+                        "type": "string",
+                        "description": "The user preference/fact to remember (concise statement).",
+                        "required": True,
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "identity | preference | communication | feedback",
+                        "required": False,
+                    },
+                },
+                function=self._do_user_remember,
+                parse_execute_args_func=json_parse_execute_args_func,
             )
 
     def _register_memory_commands(
@@ -288,7 +324,7 @@ class MemoryToolPack(ToolPack):
     # Tool implementations
     # ------------------------------------------------------------------
 
-    def _do_search(
+    async def _do_search(
         self,
         query: str,
         top_k: int = 5,
@@ -297,12 +333,20 @@ class MemoryToolPack(ToolPack):
         **kwargs,
     ) -> str:
         store = store or self._memory_store
-        entries = store.search_memory(
-            query=query,
-            top_k=top_k,
-            wing=self._wing,
-            room=room,
-        )
+        if hasattr(store, "asearch_memory"):
+            entries = await store.asearch_memory(
+                query=query,
+                top_k=top_k,
+                wing=self._wing,
+                room=room,
+            )
+        else:
+            entries = store.search_memory(
+                query=query,
+                top_k=top_k,
+                wing=self._wing,
+                room=room,
+            )
         if not entries:
             return "No relevant memories found."
 
@@ -319,7 +363,7 @@ class MemoryToolPack(ToolPack):
             )
         return json.dumps(results, ensure_ascii=False, indent=2)
 
-    def _do_save(
+    async def _do_save(
         self,
         content: str,
         room: str = "general",
@@ -327,11 +371,18 @@ class MemoryToolPack(ToolPack):
         **kwargs,
     ) -> str:
         store = store or self._memory_store
-        entry = store.write_memory(
-            content=content,
-            wing=self._wing,
-            room=room,
-        )
+        if hasattr(store, "awrite_memory"):
+            entry = await store.awrite_memory(
+                content=content,
+                wing=self._wing,
+                room=room,
+            )
+        else:
+            entry = store.write_memory(
+                content=content,
+                wing=self._wing,
+                room=room,
+            )
         return json.dumps(
             {
                 "status": "saved",
@@ -395,6 +446,52 @@ class MemoryToolPack(ToolPack):
                 "source": "user",
                 "category": category,
                 "section": _AGENTS_MD_CATEGORY_SECTION.get(category, "Conventions"),
+            },
+            ensure_ascii=False,
+        )
+
+    async def _do_user_remember(
+        self,
+        content: str,
+        category: str = "preference",
+        **kwargs,
+    ) -> str:
+        """Record a stable user preference/fact into the user's user.md.
+
+        Symmetric with ``memory_remember`` but targets the current user's
+        private memory document (user.md, user-level, cross-workspace).
+        """
+        vault = self._user_vault
+        if vault is None or not hasattr(vault, "read_user_md"):
+            return json.dumps(
+                {"status": "unsupported", "reason": "no user memory space bound"}
+            )
+        content = (content or "").strip()
+        if not content:
+            return json.dumps({"status": "error", "reason": "empty content"})
+
+        category = (category or "preference").strip().lower()
+        try:
+            existing = await vault.read_user_md()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[user_remember] read user.md failed: {e}")
+            existing = ""
+        # 空文档时给 user.md 的默认标题，避免 _insert_agents_md_user_item
+        # 回退成 AGENTS.md 的标题。
+        merged = _insert_agents_md_user_item(
+            existing or "# 用户私有记忆（user.md）\n", content, category
+        )
+        try:
+            await vault.write_user_md(merged)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[user_remember] write user.md failed: {e}")
+            return json.dumps({"status": "error", "reason": str(e)})
+        return json.dumps(
+            {
+                "status": "remembered",
+                "target": "user.md",
+                "category": category,
+                "section": _AGENTS_MD_CATEGORY_SECTION.get(category, "Preferences"),
             },
             ensure_ascii=False,
         )

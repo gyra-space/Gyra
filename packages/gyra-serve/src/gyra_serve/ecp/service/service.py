@@ -197,6 +197,10 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
         # 统一先机械归一(幂等)：所有写入路径在此拉齐到契约形态，后续
         # 语义指纹与"payload 是否相等"才有可比基础。
         payload = normalize_payload(obj_type, payload)
+        # 非 dict 的 payload(如 JSON 数组)不再入库——它违反契约、会让详情视图
+        # 报 "'list' object has no attribute 'get'"。提前拦截并给出明确错误。
+        if not isinstance(payload, dict):
+            raise ValueError("payload 必须是 object")
         if gate_level == "executable":
             self._normalize_entity_binding_fallback(payload, obj_type)
             problems = validate_payload(obj_type, payload, level="executable")

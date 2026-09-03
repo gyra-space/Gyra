@@ -89,6 +89,50 @@ def _resolve_role_by_name(role_name: str) -> Optional[Dict[str, Any]]:
     return _dao.get_role_by_name(role_name.strip())
 
 
+def _parse_permission_item(p: Any) -> Optional[Dict[str, Any]]:
+    """把权限项规范化为 ``{resource_type, action, resource_id, effect}``。
+
+    Agent/LLM 传参有歧义，可能为三种形态：
+    - dict ``{"resource_type": "agent", "action": "admin"}``（约定格式）；
+    - dict ``{"key": "agent.admin"}``（来自 ``rbac_list_permission_definitions`` 的 key）；
+    - 直接字符串 ``"agent.admin"``（同上，LLM 常把 key 当字符串传）。
+
+    统一经 ``parse_key`` 解析为存量存储格式 ``(resource_type, action)``，
+    ``resource_id`` 缺省 ``*``、``effect`` 缺省 ``allow``。解析失败返回 None
+    （由调用方跳过并记录原因），避免 ``'str' object has no attribute 'get'``。
+    """
+    if isinstance(p, dict):
+        rt = p.get("resource_type")
+        act = p.get("action")
+        if not rt and p.get("key"):
+            try:
+                from gyra_serve.permissions import parse_key
+                rt, act = parse_key(str(p["key"]))
+            except (ValueError, TypeError):
+                return None
+        if not rt or not act:
+            return None
+        return {
+            "resource_type": str(rt),
+            "action": str(act),
+            "resource_id": p.get("resource_id") or "*",
+            "effect": p.get("effect") or "allow",
+        }
+    if isinstance(p, str) and p.strip():
+        try:
+            from gyra_serve.permissions import parse_key
+            rt, act = parse_key(p.strip())
+        except (ValueError, TypeError):
+            return None
+        return {
+            "resource_type": rt,
+            "action": act,
+            "resource_id": "*",
+            "effect": "allow",
+        }
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # 读类工具(safe)
 # --------------------------------------------------------------------------- #
@@ -644,21 +688,27 @@ def rbac_set_role_permissions(
         return {"success": False, "error": "mode 必须是 add 或 remove"}
     if not permissions:
         return {"success": False, "error": "permissions 为空"}
+    if not isinstance(permissions, list):
+        return {"success": False, "error": "permissions 必须是数组"}
 
     applied, skipped = [], []
     for p in permissions:
-        rt, act = p.get("resource_type"), p.get("action")
-        if not rt or not act:
-            skipped.append({"item": p, "reason": "缺少 resource_type 或 action"})
+        norm = _parse_permission_item(p)
+        if norm is None:
+            skipped.append({
+                "item": p,
+                "reason": "权限项格式非法(需 {resource_type, action} 或 'resource_type.action' 字符串)",
+            })
             continue
-        rid = p.get("resource_id") or "*"
+        rt, act = norm["resource_type"], norm["action"]
+        rid, effect = norm["resource_id"], norm["effect"]
         if mode == "add":
             _dao.add_role_permission(
                 role_id=role_id,
                 resource_type=rt,
                 action=act,
                 resource_id=rid,
-                effect=p.get("effect") or "allow",
+                effect=effect,
             )
             applied.append({"resource_type": rt, "action": act, "resource_id": rid})
         else:

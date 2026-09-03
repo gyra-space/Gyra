@@ -208,23 +208,29 @@ const FilePreviewModal: FC<FilePreviewModalProps> = ({ visible, file, onClose })
       }
 
       let lastError = '';
-      for (const url of candidates) {
-        try {
-          const response = await fetch(url);
-          if (!response.ok) {
-            lastError = `HTTP ${response.status}`;
-            continue;
+      try {
+        for (const url of candidates) {
+          try {
+            const response = await fetch(url);
+            if (!response.ok) {
+              lastError = `HTTP ${response.status}`;
+              continue;
+            }
+            const text = await response.text();
+            applyText(text);
+            return;
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : '网络错误';
           }
-          const text = await response.text();
-          applyText(text);
-          return;
-        } catch (err) {
-          lastError = err instanceof Error ? err.message : '网络错误';
         }
-      }
 
-      if (!cancelled) {
-        setError(`无法读取文件内容${lastError ? `（${lastError}）` : ''}`);
+        if (!cancelled) {
+          setError(`无法读取文件内容${lastError ? `（${lastError}）` : ''}`);
+        }
+      } finally {
+        // 成功路径此前是裸 return，漏了收尾 —— 远程文本内容会永久停在"加载中"。
+        // 放在 finally 里，成功/失败/异常三条路径都能收尾。
+        if (!cancelled) setLoading(false);
       }
     };
 
@@ -397,10 +403,11 @@ ${content}
   const renderContent = () => {
     if (!activeFile) return null;
 
-    if (fileType === FILE_TYPES.UNKNOWN) return renderUnsupported();
-
-    // 扩展名/mime 没认出来的二进制，按内容兜底判定后同样改显不支持
-    if (binaryDetected) return renderUnsupported();
+    // 不支持预览的两种情况在这里一次性拦掉，所以下面的 switch 里没有 UNKNOWN 分支
+    // （否则 TS 会因类型收窄报「unknown 不可比较」，那是个死分支）：
+    //   1. 扩展名/mime 判定为二进制
+    //   2. 判定为文本，但读出来的内容经嗅探仍是二进制（漏网之鱼）
+    if (fileType === FILE_TYPES.UNKNOWN || binaryDetected) return renderUnsupported();
 
     if (error) {
       return (
@@ -548,9 +555,6 @@ ${content}
             </GPTVis>
           </div>
         );
-
-      case FILE_TYPES.UNKNOWN:
-        return renderUnsupported();
 
       case FILE_TYPES.CODE:
       case FILE_TYPES.TEXT:

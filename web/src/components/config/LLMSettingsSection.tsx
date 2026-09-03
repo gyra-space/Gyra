@@ -595,7 +595,7 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                       inlineModels
                     );
                     const defaultModel = inlineModels.find(
-                      (m: { is_default?: boolean }) => m.is_default
+                      (m: { is_default?: boolean } | undefined) => m?.is_default
                     );
                     const defaultModelName = defaultModel?.name;
                     const inlineEnabled = form.getFieldValue([
@@ -749,7 +749,16 @@ export default function LLMSettingsSection({ config, onChange }: Props) {
                                     type="link"
                                     size="small"
                                     icon={<PlusOutlined />}
-                                    onClick={() => addModel()}
+                                    onClick={() =>
+                                      addModel({
+                                        name: "",
+                                        temperature: 0.7,
+                                        max_new_tokens: 32768,
+                                        context_window: 128000,
+                                        model_type: "llm",
+                                        capabilities: ["text"],
+                                      })
+                                    }
                                   >
                                     添加模型
                                   </Button>
