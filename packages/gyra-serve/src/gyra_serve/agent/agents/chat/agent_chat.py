@@ -376,6 +376,7 @@ WORKSPACE_EVENT_TYPES = frozenset(
         "context_loaded",
         "loaded_skills",
         "loaded_memories",
+        "skill_published",
         "intervention_triggered",
         "artifact_produced",
         "delivery_sent",

@@ -2,8 +2,6 @@
 
 import {
   apiInterceptors, getWorkspaceInfo, listTasks, listInterventions,
-  createConversation, getCurrentConversation, setCurrentConversation,
-  linkConversation,
 } from '@/client/api';
 import { Button, Spin } from 'antd';
 import { useRequest } from 'ahooks';
@@ -38,7 +36,7 @@ export default function WorkspaceDetailPage() {
   const urlTaskId = urlTaskIdParam != null && urlTaskIdParam !== '' ? Number(urlTaskIdParam) : NaN;
   // 深链初始状态:task_id 与 conv_uid 各自独立生效 ——
   // 有 task_id -> 进任务对话(即便 conv_uid 尚未落到 URL,也能靠 getTaskInfo 还原);
-  // 有 conv_uid 无 task_id -> workspace 级会话(回工作台);两者都无 -> 非深链,走后端当前会话。
+  // 有 conv_uid 无 task_id -> workspace 级会话(回工作台);两者都无 -> 非深链,进入无会话欢迎态。
   const initialPendingTaskId = !Number.isNaN(urlTaskId)
     ? urlTaskId
     : urlConvUid
@@ -47,9 +45,8 @@ export default function WorkspaceDetailPage() {
   // 深链打开态:URL 带 conv_uid/task_id 时说明用户已打开具体内容,
   // 简洁模式应直达会话运行态而非欢迎页(刷新恢复的关键)。
   const hasDeepLink = !!urlConvUid || !Number.isNaN(urlTaskId);
-  // 「新任务」态标记:点新任务时写入 URL(new_task=1),刷新后据此跳过
-  // 「恢复后端当前会话」——否则清空 URL 会触发会话加载重载,又把旧会话写回,
-  // 刷新仍会跳回旧对话。打开任一真实会话时(onConvChanged)移除该标记。
+  // 「新任务」态标记:点新任务时写入 URL(new_task=1),刷新后据此跳过会话装载、
+  // 直接保持欢迎态。打开任一真实会话时(onConvChanged)移除该标记。
   const urlNewTask = searchParams?.get('new_task') === '1';
   // 当前子页面导航激活态(分段控件高亮)
   const navActive = (segment: string) =>
@@ -116,8 +113,7 @@ export default function WorkspaceDetailPage() {
   );
 
   // 简洁模式「新任务」:清空当前会话并进入无会话欢迎态。
-  // 同时给 URL 打 new_task=1 标记,刷新后据此跳过「恢复后端当前会话」,
-  // 否则清空 URL 会触发会话加载重载,又把旧会话写回,刷新仍跳回旧对话。
+  // 同时给 URL 打 new_task=1 标记,刷新后据此跳过会话装载,保持欢迎态。
   const handleNewTask = useCallback(() => {
     // eslint-disable-next-line no-console
     console.log('[DEBUG handleNewTask] 触发');
@@ -149,47 +145,21 @@ export default function WorkspaceDetailPage() {
   const defaultViewMode: WorkspaceViewMode = role === 'owner' ? 'ops' : 'simple';
   const { mode: viewMode, setMode: setViewMode } = useWorkspaceViewMode(workspaceId, defaultViewMode);
 
+  // 会话装载:仅两类入口会打开具体会话 ——
+  // 深链(URL 带 conv_uid/task_id)与列表/新建动作(onConvChanged 主动 set)。
+  // 非深链直接进入空间(新 tab、地址栏裸访问)一律停在无会话欢迎态:
+  // 后端「当前会话」是跨 tab 的全局状态,自动恢复会让多个 tab 互相抢占、
+  // 无法并行开多个对话;首个会话由欢迎页发送时懒创建(shell ensureConversation),
+  // 「继续上次会话」走欢迎页/左侧列表入口。
   useRequest(
     async () => {
       setConvLoadError(null);
-      // 主动「新任务」:保持无会话(欢迎态),跳过取后端「当前会话」与写回。
-      // 否则清空 URL 会触发本请求重载,又把旧会话 setConvUid + syncUrl 写回,
-      // 新任务刷新后仍会跳回旧对话。
-      if (manualNew) {
-        setConvUid('');
-        return;
-      }
-      // 深链:URL 已携带 conv_uid 时直接打开该会话,不再取/建当前会话
+      // 深链:URL 已携带 conv_uid 时直接打开该会话
       if (urlConvUid) {
         setConvUid(urlConvUid);
         return;
       }
-      const [, current] = await apiInterceptors(getCurrentConversation(workspaceId));
-      if (current?.conv_uid) {
-        setConvUid(current.conv_uid);
-        // 恢复后端「当前会话」后回写地址栏,让 URL 成为刷新恢复的唯一真相源,
-        // 避免其它端改动 current conversation 后本次刷新跳到别的会话。
-        syncUrl({ convUid: current.conv_uid });
-        return;
-      }
-      const [newErr, newConv] = await apiInterceptors(createConversation({}));
-      if (newErr || !newConv?.conv_uid) {
-        setConvLoadError(newErr?.message || '无法创建会话，请稍后重试');
-        return;
-      }
-      const [linkErr] = await apiInterceptors(
-        linkConversation({ workspace_id: workspaceId, conv_uid: newConv.conv_uid, user_id: Number(getUserId()) || undefined })
-      );
-      if (linkErr) {
-        setConvLoadError(`会话关联空间失败：${linkErr.message || '未知错误'}`);
-        return;
-      }
-      const [currErr] = await apiInterceptors(setCurrentConversation(workspaceId, newConv.conv_uid));
-      if (currErr) {
-        setConvLoadError(`设置当前会话失败：${currErr.message || '未知错误'}`);
-        return;
-      }
-      setConvUid(newConv.conv_uid);
+      setConvUid('');
     },
     {
       ready: !!workspaceId && !manualNew,

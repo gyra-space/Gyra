@@ -1311,7 +1311,8 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                 mcpsLoading={mcpLoading}
                 selectedMcps={selectedMcps}
                 onMcpsChange={setSelectedMcps}
-                disabled={!conversationId || inputDisabled || loading}
+                // 无会话但可懒创建(onEnsureConversation)时保持可用:上传会先建会话
+                disabled={(!conversationId && !onEnsureConversation) || inputDisabled || loading}
               />
               <input
                 ref={fileInputRef}

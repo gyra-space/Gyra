@@ -42,7 +42,7 @@ import type {
 } from './agent-workspace-types';
 
 /** 进入执行胶囊归组的步骤类型(user/answer/task_created 等由 feed 直接渲染) */
-const CAPSULE_STEP_TYPES = new Set(['tool_call', 'thinking', 'artifact', 'delivery', 'skill_loaded']);
+const CAPSULE_STEP_TYPES = new Set(['tool_call', 'thinking', 'artifact', 'delivery', 'skill_loaded', 'skill_published']);
 
 /** 轮次无归属文件时复用同一空数组,避免每次渲染新建数组触发子组件无谓更新 */
 const NO_DELIVERABLES: WorkspaceDeliverableFile[] = [];

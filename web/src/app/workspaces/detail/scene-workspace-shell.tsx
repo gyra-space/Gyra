@@ -3,7 +3,7 @@
 import './scene-workspace.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Input, Modal, Drawer } from 'antd';
-import { CloseOutlined, LeftOutlined, MenuFoldOutlined, MenuUnfoldOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
+import { CloseOutlined, LeftOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MessageOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation, getAppInfo, listResources, deleteTask, deleteConversation, favoriteConversation, renameConversation } from '@/client/api';
 import { getUsageConversationSummary, type ConversationUsageSummary } from '@/client/api/usage';
@@ -182,7 +182,8 @@ export function SceneWorkspaceShell({
     message.success(tip);
   };
 
-  // 简洁模式:conversationId 为空时,首次发送前创建会话并注入
+  // 会话缺失时(欢迎态/新进入空间)首次发送或上传前创建会话并注入。
+  // 不在进入页面时预建,避免堆积空会话。
   const ensureConversation = async (): Promise<string | null> => {
     if (!workspaceId) return null;
     const [, newConv] = await apiInterceptors(createConversation({ workspace_id: workspaceId }));
@@ -536,7 +537,7 @@ export function SceneWorkspaceShell({
   // 简洁模式复用同一份会话(chat hook),保证与运维模式零数据孤岛;
   // enabled 仅在简洁模式开启(运维模式由 AgentWorkspace 自己接管,避免双轮询)。
   // 欢迎态不传 conversationId:首页输入框提交即新建会话(onConvCreated -> ensureConversation),
-  // 而不是续写页面加载时恢复的旧 current conversation。
+  // 而不是续写历史会话。
   const simpleChat = useSceneAgentChat({
     conversationId: simpleWelcome ? undefined : rightConvUid,
     appCode,
@@ -626,6 +627,12 @@ export function SceneWorkspaceShell({
     });
   }, [tasks, conversations, runningConvIds]);
 
+  // 欢迎态「继续上次会话」入口:最近一条大厅会话(simpleItems 已按更新时间倒序)
+  const lastLobbyItem = useMemo<SimpleHistoryItem | undefined>(
+    () => simpleItems.find((it) => it.kind === 'lobby' && it.conversationId),
+    [simpleItems],
+  );
+
   // 批量拉取会话级用量（模型 + token），供左栏历史列表 chip 展示，避免 N+1
   const simpleConvUids = useMemo(
     () => simpleItems.map((it) => it.conversationId).filter(Boolean) as string[],
@@ -667,7 +674,7 @@ export function SceneWorkspaceShell({
   // 首次发送时才新建(conversationId 未传入 -> ensureConversation),避免遗留空会话。
   // 同时交给上层(handleNewTask)清空会话并给 URL 打 new_task=1 标记:
   // 点了新任务即关闭最后一个默认打开的任务,刷新时不然会因深链(hasDeepLink)
-  // 或「恢复后端当前会话」再次跳到旧会话,而非停在新建首页。
+  // 再次跳到旧会话,而非停在新建首页。
   const handleSimpleNew = () => {
     // eslint-disable-next-line no-console
     console.log('[DEBUG handleSimpleNew] onNewTask?', typeof onNewTask);
@@ -960,6 +967,19 @@ export function SceneWorkspaceShell({
                     usageMetrics={simpleChat.usageMetrics}
                   />
                 </div>
+                {lastLobbyItem && (
+                  <div className="ws-simple-welcome__resume">
+                    <button
+                      type="button"
+                      className="ws-simple-welcome__resume-btn"
+                      onClick={() => handleSimpleOpenItem(lastLobbyItem)}
+                    >
+                      <MessageOutlined />
+                      <span>继续上次会话</span>
+                      <em>{lastLobbyItem.title}</em>
+                    </button>
+                  </div>
+                )}
                 <div className="ws-simple-welcome__sugg">
                   <div className="ws-simple-welcome__sugg-label">试试这些</div>
                   <div className="ws-simple-welcome__sugg-row">
@@ -1223,6 +1243,8 @@ export function SceneWorkspaceShell({
               switchingTask={switchingTask}
               convLoadError={convLoadError}
               retryLoadConv={retryLoadConv}
+              // 无会话进入(新 tab/新任务)时,首次发送/上传懒创建会话
+              onEnsureConversation={ensureConversation}
               playbooks={playbooks}
               tasks={tasks}
             />

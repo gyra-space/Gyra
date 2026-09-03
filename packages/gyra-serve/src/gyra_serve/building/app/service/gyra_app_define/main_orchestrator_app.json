@@ -23,6 +23,9 @@
         "reuse_name": "vis_manus"
       }
     },
+    "resource_tool": [
+      {"type": "tool(system)", "name": "skill_publish", "value": "{\"tool_id\": \"skill_publish\", \"name\": \"skill_publish\", \"display_name\": \"发布技能\", \"description\": \"把会话内创建的技能发布到技能资源库(全局生效)。参数为含 SKILL.md 的技能目录路径;skill-creator 创建完技能后调用;同名技能会被覆盖更新\", \"category\": \"builtin\", \"source\": \"system\"}"}
+    ],
     "published": true,
     "is_default_orchestrator": true
   }

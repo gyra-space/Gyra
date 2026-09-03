@@ -575,7 +575,7 @@ export function SceneSimpleWorkspace({
 
   // 步骤 prev/next 导航:按执行序列浏览历史步骤(问题溯源)
   const navSteps = useMemo(
-    () => view.execution.filter((s) => s.type === 'tool_call' || s.type === 'thinking' || s.type === 'skill_loaded'),
+    () => view.execution.filter((s) => s.type === 'tool_call' || s.type === 'thinking' || s.type === 'skill_loaded' || s.type === 'skill_published'),
     [view.execution],
   );
   const currentStepIndex = useMemo(

@@ -680,11 +680,17 @@ class V2Agent(ReActMasterAgent):
                 if agent_ctx.extra
                 else None
             )
+            ws_id = (
+                (agent_ctx.extra or {}).get("workspace_id")
+                if agent_ctx.extra
+                else None
+            )
             self._v2_tool_context_factory = ToolContextFactory(
                 agent_id=agent_ctx.agent_app_code,
                 conv_id=self._v2_conv_id,
                 agent=self,
                 user_request=user_req,
+                workspace_id=ws_id,
             )
             acting_fn = make_default_acting_fn(
                 tool_resolver=tool_resolver,

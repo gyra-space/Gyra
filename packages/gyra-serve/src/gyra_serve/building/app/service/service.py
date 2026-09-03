@@ -1844,6 +1844,16 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[define-app] Failed to import RBAC agent_tools: {e}")
 
+        # 注册技能发布工具(同上,@tool 导入即注册,resource_tool 绑定后注入)。
+        try:
+            from gyra_app.feature_plugins.skills import agent_tools as _skill_tools  # noqa: F401
+            logger.info(
+                "[define-app] skill_publish tool registered via "
+                "gyra_app.feature_plugins.skills.agent_tools"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[define-app] Failed to import skill agent_tools: {e}")
+
         # 1. 获取当前脚本所在目录
         import os
 

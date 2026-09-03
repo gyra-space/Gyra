@@ -67,7 +67,6 @@ export const MarkdownPreviewWrapper = styled.div`
   z-index: 20;
   overflow-y: auto;
   background: #fff;
-  scrollbar-width: thin;
   scrollbar-gutter: stable;
 
   .prompt-md-content {

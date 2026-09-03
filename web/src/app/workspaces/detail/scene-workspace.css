@@ -247,67 +247,6 @@
   min-height: 0;
 }
 
-/* 统一悬浮滚动条:默认隐去,悬停滚动容器时以纤细圆角条浮现(延续 globals.css 的设计语言);
-   8px 命中区 + 2px 透明边 + background-clip,视觉粗细收敛到 ~4px,悬停 thumb 加深 */
-.ws-scene-shell__space,
-.ws-scene-space--dashboard,
-.ws-scene-space__body,
-.ws-agent-workspace__process,
-.ws-rail-inbox,
-.ws-scene-task-rail__list {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-.ws-scene-shell__space:hover,
-.ws-scene-space--dashboard:hover,
-.ws-scene-space__body:hover,
-.ws-agent-workspace__process:hover,
-.ws-rail-inbox:hover,
-.ws-scene-task-rail__list:hover {
-  scrollbar-color: rgba(100, 116, 139, 0.35) transparent;
-}
-.ws-scene-shell__space::-webkit-scrollbar,
-.ws-scene-space--dashboard::-webkit-scrollbar,
-.ws-scene-space__body::-webkit-scrollbar,
-.ws-agent-workspace__process::-webkit-scrollbar,
-.ws-rail-inbox::-webkit-scrollbar,
-.ws-scene-task-rail__list::-webkit-scrollbar { width: 8px; height: 8px; }
-.ws-scene-shell__space::-webkit-scrollbar-thumb,
-.ws-scene-space--dashboard::-webkit-scrollbar-thumb,
-.ws-scene-space__body::-webkit-scrollbar-thumb,
-.ws-agent-workspace__process::-webkit-scrollbar-thumb,
-.ws-rail-inbox::-webkit-scrollbar-thumb,
-.ws-scene-task-rail__list::-webkit-scrollbar-thumb {
-  background-color: transparent;
-  border: 2px solid transparent;
-  border-radius: 99px;
-  background-clip: padding-box;
-}
-.ws-scene-shell__space:hover::-webkit-scrollbar-thumb,
-.ws-scene-space--dashboard:hover::-webkit-scrollbar-thumb,
-.ws-scene-space__body:hover::-webkit-scrollbar-thumb,
-.ws-agent-workspace__process:hover::-webkit-scrollbar-thumb,
-.ws-rail-inbox:hover::-webkit-scrollbar-thumb,
-.ws-scene-task-rail__list:hover::-webkit-scrollbar-thumb { background-color: rgba(100, 116, 139, 0.32); }
-.ws-scene-shell__space::-webkit-scrollbar-thumb:hover,
-.ws-scene-space--dashboard::-webkit-scrollbar-thumb:hover,
-.ws-scene-space__body::-webkit-scrollbar-thumb:hover,
-.ws-agent-workspace__process::-webkit-scrollbar-thumb:hover,
-.ws-rail-inbox::-webkit-scrollbar-thumb:hover,
-.ws-scene-task-rail__list::-webkit-scrollbar-thumb:hover { background-color: rgba(100, 116, 139, 0.5); }
-.ws-scene-shell__space::-webkit-scrollbar-track,
-.ws-scene-space--dashboard::-webkit-scrollbar-track,
-.ws-scene-space__body::-webkit-scrollbar-track,
-.ws-agent-workspace__process::-webkit-scrollbar-track,
-.ws-rail-inbox::-webkit-scrollbar-track,
-.ws-scene-task-rail__list::-webkit-scrollbar-track { background: transparent; }
-.dark .ws-scene-shell__space:hover::-webkit-scrollbar-thumb,
-.dark .ws-scene-space--dashboard:hover::-webkit-scrollbar-thumb,
-.dark .ws-scene-space__body:hover::-webkit-scrollbar-thumb,
-.dark .ws-agent-workspace__process:hover::-webkit-scrollbar-thumb,
-.dark .ws-rail-inbox:hover::-webkit-scrollbar-thumb,
-.dark .ws-scene-task-rail__list:hover::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.22); }
-
 .ws-agent-workspace__loading {
   display: flex;
   align-items: center;
@@ -321,6 +260,34 @@
   align-items: center;
   justify-content: center;
   min-height: 120px;
+}
+
+/* 无会话空态(新 tab/新任务进入):替代无限转圈,提示直接输入即可开始 */
+.ws-agent-workspace__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 160px;
+  padding: 24px;
+  text-align: center;
+}
+.ws-agent-workspace__empty-icon {
+  font-size: 22px;
+  color: var(--ws-accent);
+  opacity: .8;
+}
+.ws-agent-workspace__empty-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ws-ink);
+}
+.ws-agent-workspace__empty-desc {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ws-ink-2);
 }
 
 .ws-agent-workspace__input {
@@ -2959,6 +2926,43 @@
   border-color: var(--ws-border);
 }
 .ws-simple-welcome__sugg { margin-top: 26px; width: 100%; max-width: 680px; }
+/* 「继续上次会话」入口:位于输入框与预设问题之间 */
+.ws-simple-welcome__resume {
+  margin-top: 14px;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  max-width: 680px;
+}
+.ws-simple-welcome__resume-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: 1px solid var(--ws-border);
+  background: var(--ws-surface);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  color: var(--ws-ink-2);
+  cursor: pointer;
+  transition: all .18s;
+}
+.ws-simple-welcome__resume-btn:hover {
+  border-color: var(--ws-accent);
+  color: var(--ws-accent);
+  box-shadow: var(--ws-shadow-sm);
+}
+.ws-simple-welcome__resume-btn em {
+  font-style: normal;
+  font-weight: 500;
+  color: var(--ws-ink);
+  max-width: 260px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ws-simple-welcome__resume-btn:hover em { color: inherit; }
 .ws-simple-welcome__sugg-label {
   font-size: 11px;
   color: var(--ws-ink-2);

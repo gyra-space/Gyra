@@ -88,6 +88,16 @@ class ChannelPermModule(PermissionModule):
     ]
 
 
+class SkillPermModule(PermissionModule):
+    name = "skill"
+    permissions = [
+        PermDef("skill.read", "技能查看", "查看技能资源列表与详情",
+                risk_level="read"),
+        PermDef("skill.publish", "技能发布", "把会话内创建的技能发布到技能资源库",
+                risk_level="write"),
+    ]
+
+
 class DatabasePermModule(PermissionModule):
     name = "database"
     permissions = [

@@ -81,7 +81,7 @@ export interface WorkspaceUserAttachment {
 
 export interface WorkspaceExecutionStep {
   id: string;
-  type: 'tool_call' | 'thinking' | 'artifact' | 'delivery' | 'user' | 'task_created' | 'skill_loaded' | 'memory_loaded' | 'answer';
+  type: 'tool_call' | 'thinking' | 'artifact' | 'delivery' | 'user' | 'task_created' | 'skill_loaded' | 'memory_loaded' | 'answer' | 'skill_published';
   title: string;
   status: 'running' | 'done' | 'failed';
   /** 时间戳(ISO 字符串),跨轮次合并时按此交错排序 */
@@ -97,6 +97,8 @@ export interface WorkspaceExecutionStep {
   exhibit?: LobbyExhibit | null;
   /** skill_loaded 步骤:预加载技能的 <skill_content> XML(右侧渲染用) */
   skill_xml?: string | null;
+  /** skill_published 步骤:发布成功的技能 code(技能资源库详情页定位用) */
+  skill_code?: string;
   /** task_created 步骤:关联的任务信息 */
   task_id?: number;
   task_title?: string;

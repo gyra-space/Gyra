@@ -408,15 +408,12 @@ h6 {
   color: white !important;
 }
 
-.scrollbar-default::-webkit-scrollbar {
-  display: block;
-  width: 6px;
-}
-
-/* 滚动条：默认隐藏,悬停滚动区域时以纤细悬浮条显现 */
+/* 滚动条：全站统一悬浮式设计——默认隐形,悬停滚动容器浮现纤细圆角条,直接悬停滑块加深并微增粗;
+   8px 命中区 + 2px 透明边 + background-clip,视觉粗细收敛到 ~4px;
+   Chromium/Safari 走 ::-webkit-scrollbar 通道,Firefox 走底部 @supports 标准属性分支 */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -424,25 +421,90 @@ h6 {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: transparent;
+  background-color: transparent;
+  border: 2px solid transparent;
   border-radius: 99px;
+  background-clip: padding-box;
 }
 
 *:hover::-webkit-scrollbar-thumb {
-  background: rgba(20, 22, 28, 0.16);
+  background-color: rgba(20, 22, 28, 0.18);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(20, 22, 28, 0.34);
+  border-width: 1px;
 }
 
 .dark *:hover::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.36);
+  border-width: 1px;
+}
+
+/* 常显模式：未悬停时也保留纤细滑块,用于需要持续展示滚动位置的区域 */
+.scrollbar-default::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+  height: 8px;
+}
+
+.scrollbar-default::-webkit-scrollbar-thumb {
+  background-color: rgba(20, 22, 28, 0.22);
+  border: 2px solid transparent;
+  border-radius: 99px;
+  background-clip: padding-box;
+}
+
+.scrollbar-default::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(20, 22, 28, 0.38);
+  border-width: 1px;
+}
+
+.dark .scrollbar-default::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.26);
+}
+
+.dark .scrollbar-default::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.42);
+  border-width: 1px;
 }
 
 .scrollbar-hide::-webkit-scrollbar {
-    display: none;
+  display: none;
 }
 
 .scrollbar-hide {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Firefox：不支持 ::-webkit-scrollbar,用标准属性实现同款"悬停浮现"交互 */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  *:hover {
+    scrollbar-color: rgba(20, 22, 28, 0.3) transparent;
+  }
+
+  .dark *:hover {
+    scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+  }
+
+  .scrollbar-default {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(20, 22, 28, 0.3) transparent;
+  }
+
+  .dark .scrollbar-default {
+    scrollbar-color: rgba(255, 255, 255, 0.34) transparent;
+  }
 }
 
 

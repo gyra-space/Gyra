@@ -11106,14 +11106,9 @@ h1, h2, h3, h4, h5, h6 {
   color: #fff !important;
 }
 
-.scrollbar-default::-webkit-scrollbar {
-  width: 6px;
-  display: block;
-}
-
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -11121,16 +11116,55 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: none;
+  background-color: #0000;
+  background-clip: padding-box;
+  border: 2px solid #0000;
   border-radius: 99px;
 }
 
 :hover::-webkit-scrollbar-thumb {
-  background: #14161c29;
+  background-color: #14161c2e;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #14161c57;
+  border-width: 1px;
 }
 
 .dark :hover::-webkit-scrollbar-thumb {
-  background: #ffffff2e;
+  background-color: #fff3;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background-color: #ffffff5c;
+  border-width: 1px;
+}
+
+.scrollbar-default::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  display: block;
+}
+
+.scrollbar-default::-webkit-scrollbar-thumb {
+  background-color: #14161c38;
+  background-clip: padding-box;
+  border: 2px solid #0000;
+  border-radius: 99px;
+}
+
+.scrollbar-default::-webkit-scrollbar-thumb:hover {
+  background-color: #14161c61;
+  border-width: 1px;
+}
+
+.dark .scrollbar-default::-webkit-scrollbar-thumb {
+  background-color: #ffffff42;
+}
+
+.dark .scrollbar-default::-webkit-scrollbar-thumb:hover {
+  background-color: #ffffff6b;
+  border-width: 1px;
 }
 
 .scrollbar-hide::-webkit-scrollbar {
@@ -11140,6 +11174,30 @@ h1, h2, h3, h4, h5, h6 {
 .scrollbar-hide {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  :hover {
+    scrollbar-color: #14161c4d transparent;
+  }
+
+  .dark :hover {
+    scrollbar-color: #ffffff4d transparent;
+  }
+
+  .scrollbar-default {
+    scrollbar-width: thin;
+    scrollbar-color: #14161c4d transparent;
+  }
+
+  .dark .scrollbar-default {
+    scrollbar-color: #ffffff57 transparent;
+  }
 }
 
 .dark .css-dev-only-do-not-override-18iikkb.ant-tabs .ant-tabs-tab-btn {

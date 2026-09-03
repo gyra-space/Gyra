@@ -88,6 +88,17 @@ def register_enabled_feature_plugin_routers(app: FastAPI) -> None:
     except Exception as e:
         logger.warning(f"RBAC admin agent tools registration failed: {e}")
 
+    # 注册技能发布 Agent 工具(@tool auto_register 进全局工具 registry)。
+    # 工具本身 fail-closed(校验 skill.publish 权限),注册不依赖插件开关。
+    try:
+        from gyra_app.feature_plugins.skills import (
+            agent_tools as _skill_agent_tools,  # noqa: F401
+        )
+
+        logger.info("Skill publish agent tools registered")
+    except Exception as e:
+        logger.warning(f"Skill publish agent tools registration failed: {e}")
+
     if permissions_enabled:
         from gyra_app.feature_plugins.permissions.seed import (
             ensure_default_roles,

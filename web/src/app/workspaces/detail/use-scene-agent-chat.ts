@@ -354,6 +354,32 @@ export function useSceneAgentChat({
           return { ...prev, execution: [...prev.execution, ...added] };
         });
       }
+      // 技能发布事件:skill_publish 工具发布成功后渲染「技能已发布」卡片
+      // (点击在右侧预览,详情跳技能资源库详情页);同 code 去重。
+      if (event.type === 'skill_published' && event.payload?.skill_code) {
+        const p = event.payload;
+        const stepId = `skill-published-${p.skill_code}`;
+        setWorkspaceView((prev) => {
+          if (prev.execution.some((s) => s.id === stepId)) return prev;
+          return {
+            ...prev,
+            execution: [
+              ...prev.execution,
+              {
+                id: stepId,
+                type: 'skill_published' as const,
+                title: p.name || p.skill_code,
+                status: 'done' as const,
+                ts: new Date().toISOString(),
+                skill_code: p.skill_code,
+                output: p.description
+                  ? `${p.description}(已发布到技能资源库)`
+                  : '已发布到技能资源库',
+              },
+            ],
+          };
+        });
+      }
       onWorkspaceEvent?.(event);
     },
     [onWorkspaceEvent],

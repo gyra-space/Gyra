@@ -42,6 +42,8 @@ export interface AgentWorkspaceProps {
   switchingTask?: boolean;
   convLoadError?: string | null;
   retryLoadConv?: () => void;
+  /** 会话缺失时(新 tab/新任务进入)首次发送或上传前懒创建会话的回调 */
+  onEnsureConversation?: () => Promise<string | null>;
   playbooks?: { playbook_id: number; playbook_name: string }[];
   /** 工作空间全量任务列表(用于恢复视图时重注入当前会话的任务卡片) */
   tasks?: any[];
@@ -68,6 +70,7 @@ export function AgentWorkspace({
   switchingTask,
   convLoadError,
   retryLoadConv,
+  onEnsureConversation,
   playbooks,
   tasks,
 }: AgentWorkspaceProps) {
@@ -81,6 +84,8 @@ export function AgentWorkspace({
     focusArtifactId: focus?.id,
     tasks,
     playbooks,
+    // 无会话时首次发送懒创建(与简洁模式欢迎态同一链路)
+    onConvCreated: onEnsureConversation,
     onWorkspaceEvent,
     onConversationStart,
   });
@@ -212,7 +217,11 @@ export function AgentWorkspace({
               />
             </div>
           ) : !conversationId ? (
-            <div className="ws-agent-workspace__loading"><Spin /></div>
+            <div className="ws-agent-workspace__empty">
+              <span className="ws-agent-workspace__empty-icon">✦</span>
+              <p className="ws-agent-workspace__empty-title">开启新会话</p>
+              <p className="ws-agent-workspace__empty-desc">在下方输入指令即可开始;历史会话可从左侧列表回溯</p>
+            </div>
           ) : (
             <AgentWorkspaceRenderer
               view={workspaceView}
@@ -265,7 +274,8 @@ export function AgentWorkspace({
             }}
             loading={running}
             onStop={abort}
-            disabled={!conversationId || switchingTask}
+            disabled={switchingTask}
+            onEnsureConversation={onEnsureConversation}
             readOnly={chatReadOnly}
             lastInput={lastInput ? { text: typeof lastInput.text === 'string' ? lastInput.text : '' } : null}
             onRetry={lastInput ? () => send(lastInput) : undefined}
