@@ -31,10 +31,27 @@ def _deny(reason: str) -> Dict[str, Any]:
     return {"success": False, "error": reason, "code": "PERMISSION_DENIED"}
 
 
-def _get_user_request(context: Optional[ToolContext]):
+def _resolve_caller(context: Any):
+    """兼容两种 context 注入形态,返回 (user_request, workspace_id)。
+
+    - V2 引擎(tool_context_factory):context 是 ToolContext,
+      user_request/workspace_id 经 set_resource 注入;
+    - V1 引擎(react_master):tool_action 约定 context 即 agent 本身
+      (见 tool_action.py "统一框架非沙箱 ToolBase 工具 context 即 agent"),
+      身份/空间从 ``agent.agent_context.extra`` 取(由
+      ``AgentContext(extra=ext_info)`` 注入,ext_info 含 user_request/workspace_id)。
+    """
     if context is None:
-        return None
-    return context.get_resource("user_request") or context.config.get("user_request")
+        return None, None
+    if isinstance(context, ToolContext):
+        return (
+            context.get_resource("user_request"),
+            context.get_resource("workspace_id"),
+        )
+    # V1:context 是 agent(或包装对象,内含 .agent)
+    agent = getattr(context, "agent", None) or context
+    extra = getattr(getattr(agent, "agent_context", None), "extra", None) or {}
+    return extra.get("user_request"), extra.get("workspace_id")
 
 
 def _operator_name(user_request) -> str:
@@ -66,7 +83,7 @@ def skill_publish(
     Args:
         skill_dir: 技能目录路径(目录内含 SKILL.md;支持传父目录自动查找)
     """
-    user_request = _get_user_request(context)
+    user_request, workspace_id = _resolve_caller(context)
     if user_request is None:
         return _deny("无法确认操作者身份(缺少用户上下文),拒绝发布技能")
     from gyra_serve.permissions import has as has_permission
@@ -77,7 +94,6 @@ def skill_publish(
             f"用户 {name} 没有技能发布权限({_PUBLISH_PERMISSION_KEY}),拒绝发布"
         )
 
-    workspace_id = context.get_resource("workspace_id") if context else None
     from gyra_serve.skill.publish import publish_skill_from_dir
 
     return publish_skill_from_dir(
