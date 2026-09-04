@@ -65,6 +65,9 @@ interface SceneWorkspaceShellProps {
   onNewTask?: () => void;
   /** 简洁模式欢迎页初始值:URL 不带深链(conv_uid/task_id)时才展示欢迎页 */
   initialShowWelcome?: boolean;
+  /** 「新任务」态(上层 handleNewTask 置位,URL new_task=1):首条发送懒创建会话时
+   * 不触发 onConvChanged,避免 URL 从 new_task=1 跳回 conv_uid、conversationId 翻转打断 SSE 流 */
+  manualNew?: boolean;
   /** 简洁模式抽屉状态(header 待办角标 / 左栏「待办收件箱」共用) */
   simpleDrawer?: 'inbox' | 'overview' | null;
   onSimpleDrawerChange?: (drawer: 'inbox' | 'overview' | null) => void;
@@ -86,6 +89,7 @@ export function SceneWorkspaceShell({
   onUrlSync,
   onNewTask,
   initialShowWelcome = true,
+  manualNew,
   simpleDrawer,
   onSimpleDrawerChange,
 }: SceneWorkspaceShellProps) {
@@ -190,7 +194,13 @@ export function SceneWorkspaceShell({
     if (!newConv?.conv_uid) return null;
     await apiInterceptors(linkConversation({ workspace_id: workspaceId, conv_uid: newConv.conv_uid, user_id: Number(getUserId()) || undefined }));
     await apiInterceptors(setCurrentConversation(workspaceId, newConv.conv_uid));
-    onConvChanged?.(newConv.conv_uid);
+    // 「新任务」欢迎态首次发送懒创建(manualNew=true):不触发 onConvChanged,
+    // 否则父组件会把 URL 从 new_task=1 翻回 conv_uid、并在发送窗口内翻转 conversationId,
+    // 打断刚发起的 SSE 流(表现为「对话直接被中断」)。会话已由 setCurrentConversation 持久化,
+    // 消息经 send 内部 internalConvUid 正常投递,列表刷新(onRefreshLists)后出现在历史中。
+    if (!manualNew) {
+      onConvChanged?.(newConv.conv_uid);
+    }
     return newConv.conv_uid;
   };
 

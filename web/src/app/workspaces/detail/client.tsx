@@ -314,6 +314,7 @@ export default function WorkspaceDetailPage() {
           // 仅回写地址栏、不触碰 state:进入/退出任务对话、任务 conv 解析完成都走这里
           onUrlSync={syncUrl}
           initialShowWelcome={!hasDeepLink}
+          manualNew={manualNew}
           convLoadError={convLoadError}
           retryLoadConv={retryLoadConv}
           pendingTaskId={pendingTaskId}
