@@ -3,7 +3,11 @@ SQLite persistence (no cold start after restart)."""
 
 from gyra.storage.memory.base import MemoryEntry
 from gyra.storage.memory.promotion import MemoryPromotionEngine
-from gyra.storage.memory.recall_tracker import RecallTracker
+from gyra.storage.memory.recall_tracker import (
+    RecallStatsBackend,
+    RecallTracker,
+    SqliteStatsBackend,
+)
 
 
 def _entry(mid: str, score: float = 0.9) -> MemoryEntry:
@@ -117,3 +121,68 @@ class TestRecallTrackerPersistence:
         await tracker.record("q", [_entry("m1")], "s1")
         stats = await tracker.get_recall_stats("s1")
         assert stats["m1"].recall_count == 1
+
+
+class _FakeBackend(RecallStatsBackend):
+    """In-dict backend double implementing the backend contract."""
+
+    def __init__(self):
+        self.rows = {}
+        self.inits = 0
+        self.deleted = []
+
+    def init(self):
+        self.inits += 1
+
+    def load(self):
+        return [dict(row, **{
+            "query_hashes": list(row["query_hashes"]),
+            "recall_days": list(row["recall_days"]),
+        }) for row in self.rows.values()]
+
+    def upsert(self, row):
+        self.rows[row["memory_id"]] = dict(row)
+
+    def delete(self, memory_ids=None):
+        if memory_ids is None:
+            self.rows.clear()
+        else:
+            for mid in memory_ids:
+                self.rows.pop(mid, None)
+        self.deleted.append(memory_ids)
+
+
+class TestRecallStatsBackend:
+    async def test_backend_receives_upserts_and_init(self):
+        backend = _FakeBackend()
+        tracker = RecallTracker(backend=backend)
+        assert backend.inits == 1
+        await tracker.record("q", [_entry("m1")], "s1")
+        assert set(backend.rows.keys()) == {"m1"}
+        row = backend.rows["m1"]
+        assert row["recall_count"] == 1
+        assert row["space_id"] == "s1"
+        assert len(row["query_hashes"]) == 1
+
+    async def test_backend_survives_restart(self):
+        backend = _FakeBackend()
+        for i in range(2):
+            tracker = RecallTracker(backend=backend)
+            await tracker.record(f"query-{i}", [_entry("m1")], "s1")
+        # Fresh tracker over the same backend == restart.
+        reloaded = RecallTracker(backend=backend)
+        stats = await reloaded.get_recall_stats("s1")
+        assert stats["m1"].recall_count == 2
+
+    async def test_backend_delete_on_clear(self):
+        backend = _FakeBackend()
+        tracker = RecallTracker(backend=backend)
+        await tracker.record("q", [_entry("m1")], "s1")
+        await tracker.clear("s1")
+        assert backend.rows == {}
+        assert backend.deleted == [{"m1"}]
+
+    async def test_db_path_shorthand_creates_sqlite_backend(self, tmp_path):
+        tracker = RecallTracker(db_path=str(tmp_path / "recall.db"))
+        assert isinstance(tracker._backend, SqliteStatsBackend)
+        assert tracker._backend._db_path == str(tmp_path / "recall.db")

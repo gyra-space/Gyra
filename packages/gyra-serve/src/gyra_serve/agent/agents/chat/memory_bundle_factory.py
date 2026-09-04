@@ -20,7 +20,6 @@ Two entry points:
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -239,6 +238,7 @@ async def build_memory_bundle(
     from gyra.storage.memory.promotion import MemoryPromotionEngine
     from gyra.storage.memory.recall_tracker import RecallTracker
     from gyra.storage.memory.snapshot import FrozenSnapshotManager
+    from gyra_serve.memory.recall_stats_store import create_recall_stats_backend
 
     # 为每个 space 建 LLMMemoryProcessor。优先用传入的 llm_provider（chat 自己
     # 的 working LLM client）；生产路径下它是 None（controller.py 用
@@ -302,11 +302,10 @@ async def build_memory_bundle(
             "tier2/tier3 LLM extraction will be skipped"
         )
 
-    # 持久化召回统计（SQLite，跟随 gyra 本地存储惯例 data/memory/），重启后
-    # promotion 不再冷启动。
-    recall_tracker = RecallTracker(
-        db_path=os.path.join(os.getcwd(), "data", "memory", "recall_tracker.db")
-    )
+    # 持久化召回统计：走主库（[service.web.database]），分布式部署下各节点
+    # 共享同一份统计、重启 promotion 不冷启动；主库未初始化（如单测/工具态）
+    # 时退化为纯内存追踪。
+    recall_tracker = RecallTracker(backend=create_recall_stats_backend())
     promotion_engine = MemoryPromotionEngine(recall_tracker=recall_tracker)
     lifecycle_hooks = DefaultLifecycleHooks(
         memory_store=next(iter(memory_stores.values()), None)

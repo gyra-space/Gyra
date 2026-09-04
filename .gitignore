@@ -160,6 +160,8 @@ logswebserver.log.*
 /pilot/meta_data/*.db-shm
 /pilot/meta_data/*.db-wal
 /pilot/meta_data/*.db.bak.*
+# runtime memory stores (local sqlite fallbacks + recall tracker)
+data/memory/
 # Ignore for now
 thirdparty
 

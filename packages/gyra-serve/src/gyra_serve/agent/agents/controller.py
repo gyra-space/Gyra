@@ -251,5 +251,9 @@ class MultiAgents(BaseComponent, ABC):
     async def query_step_detail(self, conv_id: str, step_uid: str):
         return await self.simpale_chat.query_step_detail(conv_id=conv_id, step_uid=step_uid)
 
+    async def collect_injected_context(self, conv_id: str):
+        """收集会话各轮记忆注入标记(刷新重注入用),委托给 AgentChat 实现。"""
+        return await self.simpale_chat.collect_injected_context(conv_id)
+
 
 multi_agents = MultiAgents(CFG.SYSTEM_APP)

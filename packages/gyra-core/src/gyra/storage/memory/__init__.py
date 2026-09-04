@@ -15,6 +15,8 @@ from gyra.storage.memory.recall_tracker import (  # noqa: F401
     RecallTracker,
     RecallEntry,
     MemoryRecallStats,
+    RecallStatsBackend,
+    SqliteStatsBackend,
 )
 from gyra.storage.memory.hybrid_search import (  # noqa: F401
     HybridSearchEngine,
@@ -46,6 +48,8 @@ __all__ = [
     "RecallTracker",
     "RecallEntry",
     "MemoryRecallStats",
+    "RecallStatsBackend",
+    "SqliteStatsBackend",
     "HybridSearchEngine",
     "HybridSearchConfig",
     "SearchResult",
