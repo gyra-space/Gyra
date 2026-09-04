@@ -176,11 +176,22 @@ async def dialogue_new(
                 WORKSPACE_SERVICE_COMPONENT_NAME, WorkspaceService,
             )
             user_code = res.user_name
+            # user.user_id 是用户名(如 "admin"),user.user_no 才是数值用户ID。
+            # 直接 int(用户名) 会抛 invalid literal,这里按 user_no 优先、user_id/user_code 兜底,
+            # 并做 isdigit 校验,非数值一律回退 None,避免链接失败。
+            _link_user_no = next(
+                (int(str(raw).strip()) for raw in (
+                    getattr(user, "user_no", None),
+                    getattr(user, "user_id", None),
+                    data.get("user_code") if data else None,
+                ) if raw is not None and str(raw).strip().isdigit()),
+                None,
+            )
             ws_service.link_conversation(
                 workspace_id=int(ws_id),
                 conv_uid=str(unique_id),
                 task_id=int(task) if task else None,
-                user_id=int(user_code) if user_code else None,
+                user_id=_link_user_no,
             )
         except Exception as e:
             logger.warning(f"failed to link conversation to workspace {ws_id}: {e}")
