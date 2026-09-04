@@ -14,3 +14,5 @@ CREATE INDEX "ix_server_app_workspace_agent_maturity_workspace_id" ON "server_ap
 CREATE INDEX "ix_server_app_workspace_agent_role_agent_id" ON "server_app_workspace_agent_role" ("agent_id");
 CREATE UNIQUE INDEX "uk_workspace_agent_role" ON "server_app_workspace_agent_role" ("workspace_id", "agent_id");
 CREATE INDEX "ix_server_app_workspace_agent_role_workspace_id" ON "server_app_workspace_agent_role" ("workspace_id");
+CREATE UNIQUE INDEX "ix_gyra_memory_recall_stats_memory_id" ON "gyra_memory_recall_stats" ("memory_id");
+CREATE INDEX "ix_gyra_memory_recall_stats_space_id" ON "gyra_memory_recall_stats" ("space_id");
