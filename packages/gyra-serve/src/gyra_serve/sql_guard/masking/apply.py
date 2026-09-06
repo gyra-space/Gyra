@@ -153,6 +153,35 @@ def is_internal_catalog_table(table_name: str) -> bool:
     return name in _SYSTEM_TABLE_NAMES
 
 
+def resolve_result_table(sql: Optional[str]) -> Optional[str]:
+    """Return the primary (first) non-system table referenced by ``sql``.
+
+    Gives the masker precise table context so it can use exact ``table.column``
+    matching instead of a loose column-name fallback (which would mask a column
+    that is only sensitive in another table of the same datasource). Returns
+    None when no business table can be determined (e.g. pure system catalog
+    query or parse failure), leaving the fallback path unchanged.
+    """
+    if not sql or not sql.strip():
+        return None
+    try:
+        statements = [s for s in sqlglot.parse(sql) if s is not None]
+    except Exception:  # noqa: BLE001
+        return None
+    if not statements:
+        return None
+    cte_names = {cte.alias_or_name for cte in statements[0].find_all(exp.CTE)}
+    for table in statements[0].find_all(exp.Table):
+        name = (table.name or "").strip('"`[]')
+        if not name or name in cte_names:
+            continue
+        db = (table.db or "").strip('"`[]')
+        if db in _SYSTEM_SCHEMA_NAMES or name in _SYSTEM_TABLE_NAMES:
+            continue
+        return f"{db}.{name}" if db else name
+    return None
+
+
 def mask_run_result(
     datasource_id: Optional[int],
     columns,

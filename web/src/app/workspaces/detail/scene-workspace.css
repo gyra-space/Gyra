@@ -460,8 +460,10 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  /* 预览面板撑满 body,内部内容(iframe/图片)可占满剩余高度 */
-  flex: 1;
+  /* 预览面板撑满 body,内部内容(iframe/图片)可占满剩余高度;
+     内容超高时禁止 flex 收缩(否则 overflow:hidden 的 section 会收缩裁切,
+     导致工具结果等长内容无法滚动),改由外层 .ws-scene-space__body 整体滚动 */
+  flex: 1 0 auto;
   min-height: 0;
 }
 

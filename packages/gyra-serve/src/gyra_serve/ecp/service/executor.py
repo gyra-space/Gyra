@@ -72,6 +72,7 @@ def _mask_dict_rows(
             is_internal_catalog_sql,
             is_internal_catalog_table,
             mask_run_result,
+            resolve_result_table,
         )
 
         # 系统目录表(ALL_TABLES/PG_CATALOG 等)无业务数据,跳过脱敏。
@@ -80,6 +81,11 @@ def _mask_dict_rows(
                 return rows, []
         elif table_name and is_internal_catalog_table(table_name):
             return rows, []
+
+        # 未显式给出表名时,从 SQL 解析业务表,让脱敏走精确 table.column 匹配,
+        # 避免列名兜底把"其它表仍开启的同名列"误识别为敏感列。
+        if not table_name and sql:
+            table_name = resolve_result_table(sql)
 
         list_rows = [[r.get(c) for c in columns] for r in rows]
         _, list_rows, masked = mask_run_result(

@@ -249,6 +249,15 @@ export const toggleSensitiveColumn = (
     `/api/v2/serve/sql-guard/masking/${datasourceId}/columns/${tableName}/${columnName}/toggle?enabled=${enabled}`,
   );
 };
+export const deleteSensitiveColumn = (
+  datasourceId: string | number,
+  tableName: string,
+  columnName: string,
+) => {
+  return DELETE<null, string>(
+    `/api/v2/serve/sql-guard/masking/${datasourceId}/columns/${tableName}/${columnName}`,
+  );
+};
 export const detectSensitiveColumns = (
   datasourceId: string | number,
   tableNames?: string[],

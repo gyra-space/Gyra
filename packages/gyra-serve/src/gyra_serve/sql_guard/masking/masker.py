@@ -103,6 +103,21 @@ class MaskingContext:
 _GLOBAL_DS = -1
 
 
+def _normalize_table_name(table_name: Optional[str]) -> Optional[str]:
+    """Normalize a table identifier for schema-prefix-agnostic matching.
+
+    Strips quotes and any ``schema.`` prefix and lowercases, so a config stored
+    as ``XTHIS.IPI_REGISTRATION`` matches a query referencing ``IPI_REGISTRATION``.
+    Returns None for empty/unset input.
+    """
+    if not table_name:
+        return None
+    name = str(table_name).strip().strip('"`[]')
+    if not name:
+        return None
+    return name.rsplit(".", 1)[-1].lower()
+
+
 class DataMasker:
     """Applies masking to SQL query result rows.
 
@@ -362,8 +377,12 @@ class DataMasker:
 
         Lookup order, restricted to the given datasource (plus the global
         fallback bucket) so rules never leak across datasources:
-        1. exact ``table.column`` match
-        2. column-name match within the bucket (when table_name unknown)
+        1. exact ``table.column`` match (schema-prefix agnostic), only when a
+           table is known. This keeps a column that is disabled for the queried
+           table from being masked just because the same column name is enabled
+           in another table of the datasource.
+        2. column-name match within the bucket, ONLY when no table is known
+           (the masker cannot disambiguate, so it conservatively masks).
         """
         ds_keys = []
         if datasource_id is not None:
@@ -371,21 +390,31 @@ class DataMasker:
         # Always consult the global/legacy bucket as a fallback.
         ds_keys.append(_GLOBAL_DS)
 
-        # Pass 1: exact table.column match
-        if table_name:
+        # Pass 1: exact table.column match (schema-prefix agnostic).
+        target_table = _normalize_table_name(table_name)
+        if target_table:
             for ds in ds_keys:
                 bucket = self._configs.get(ds)
-                if bucket and f"{table_name}.{col_name}" in bucket:
-                    return bucket[f"{table_name}.{col_name}"]
+                if not bucket:
+                    continue
+                for config in bucket.values():
+                    if (
+                        config.column_name == col_name
+                        and _normalize_table_name(config.table_name) == target_table
+                    ):
+                        return config
 
-        # Pass 2: match by column name within the bucket(s)
-        for ds in ds_keys:
-            bucket = self._configs.get(ds)
-            if not bucket:
-                continue
-            for config in bucket.values():
-                if config.column_name == col_name:
-                    return config
+        # Pass 2: match by column name within the bucket(s) — only when the
+        # queried table is unknown, so a disabled column of a specific table is
+        # not re-masked via a same-named column in another table.
+        if not target_table:
+            for ds in ds_keys:
+                bucket = self._configs.get(ds)
+                if not bucket:
+                    continue
+                for config in bucket.values():
+                    if config.column_name == col_name:
+                        return config
 
         return None
 

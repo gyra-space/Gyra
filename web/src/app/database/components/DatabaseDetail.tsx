@@ -16,6 +16,7 @@ import {
   toggleSensitiveColumn,
   toggleTableMasking,
   updateSensitiveColumn,
+  deleteSensitiveColumn,
   detectSensitiveColumns,
   refreshTableSampleData,
   updateTableSpec,
@@ -52,6 +53,7 @@ import {
   CheckOutlined,
   CloseOutlined,
   ThunderboltOutlined,
+  DeleteOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
@@ -592,6 +594,31 @@ export default function DatabaseDetail({
     }
   }, [datasourceId, editingColumn, editForm, message, refreshSensitive]);
 
+  // Delete a sensitive column config (fully removes masking rule for the column)
+  const handleDeleteSensitive = useCallback(
+    (tableName: string, columnName: string) => {
+      modal.confirm({
+        title: 'Delete Masking Rule',
+        content: `确定删除 ${tableName}.${columnName} 的脱敏配置?删除后该列将不再被脱敏(重新自动检测也不会恢复)。`,
+        okText: 'Delete',
+        okButtonProps: { danger: true },
+        cancelText: 'Cancel',
+        onOk: async () => {
+          const [err] = await apiInterceptors(
+            deleteSensitiveColumn(datasourceId, tableName, columnName),
+          );
+          if (err) {
+            message.error('Failed to delete masking rule');
+            return;
+          }
+          message.success('Masking rule deleted');
+          refreshSensitive();
+        },
+      });
+    },
+    [datasourceId, message, modal, refreshSensitive],
+  );
+
   const handleViewTable = useCallback(
     (tableName: string) => {
       setSelectedTableName(tableName);
@@ -1035,21 +1062,37 @@ export default function DatabaseDetail({
               title: 'Action',
               key: 'action',
               render: (_: any, record: SensitiveColumnConfig) => (
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => {
-                    setEditingColumn(record);
-                    editForm.setFieldsValue({
-                      sensitive_type: record.sensitive_type,
-                      masking_mode: record.masking_mode,
-                    });
-                    setEditSensitiveModalOpen(true);
-                  }}
-                >
-                  Edit
-                </Button>
+                <Space size={0}>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<EditOutlined />}
+                    onClick={() => {
+                      setEditingColumn(record);
+                      editForm.setFieldsValue({
+                        sensitive_type: record.sensitive_type,
+                        masking_mode: record.masking_mode,
+                      });
+                      setEditSensitiveModalOpen(true);
+                    }}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    type="link"
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={() =>
+                      handleDeleteSensitive(
+                        record.table_name,
+                        record.column_name,
+                      )
+                    }
+                  >
+                    Delete
+                  </Button>
+                </Space>
               ),
             },
           ]}
@@ -1745,7 +1788,7 @@ function InlineMaskingConfig({
   existing: SensitiveColumnConfig | null;
   onSaved: () => void;
 }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [form] = Form.useForm();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1791,6 +1834,27 @@ function InlineMaskingConfig({
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleDelete = () => {
+    modal.confirm({
+      title: 'Delete Masking Rule',
+      content: `确定删除 ${tableName}.${columnName} 的脱敏配置?删除后该列将不再被脱敏(重新自动检测也不会恢复)。`,
+      okText: 'Delete',
+      okButtonProps: { danger: true },
+      cancelText: 'Cancel',
+      onOk: async () => {
+        const [err] = await apiInterceptors(
+          deleteSensitiveColumn(datasourceId, tableName, columnName),
+        );
+        if (err) {
+          message.error('Failed to delete masking rule');
+          return;
+        }
+        message.success('Masking rule deleted');
+        onSaved();
+      },
+    });
   };
 
   const content = (
@@ -1862,6 +1926,13 @@ function InlineMaskingConfig({
           </Tag>
         </Tooltip>
         <Button type="text" size="small" icon={<EditOutlined />} />
+        <Button
+          type="text"
+          size="small"
+          danger
+          icon={<DeleteOutlined />}
+          onClick={handleDelete}
+        />
       </Space>
     </Popover>
   );

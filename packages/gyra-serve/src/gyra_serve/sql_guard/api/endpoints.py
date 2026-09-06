@@ -307,6 +307,37 @@ async def update_sensitive_column(
     return Result.succ(SensitiveColumnResponse(**result))
 
 
+@router.delete(
+    "/sql-guard/masking/{datasource_id}/columns/{table_name}/{column_name}",
+    response_model=Result[str],
+)
+async def delete_sensitive_column(
+    datasource_id: int,
+    table_name: str,
+    column_name: str,
+) -> Result[str]:
+    """Delete a single sensitive column config entirely.
+
+    Unlike toggling ``enabled``, this removes the config so the column is
+    never masked again (even if auto-detection later re-runs). Requires the
+    exact datasource/table/column triple.
+    """
+    dao = _get_sensitive_dao()
+    deleted = dao.delete_column(datasource_id, table_name, column_name)
+    if not deleted:
+        return Result.failed(msg="Column config not found")
+    # 从内存桶移除并失效缓存,确保当前进程与后续查询立刻不再脱敏该列。
+    try:
+        from gyra_serve.sql_guard.masking.masker import get_data_masker
+
+        masker = get_data_masker()
+        masker.remove_column(table_name, column_name, datasource_id)
+        masker.invalidate(datasource_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Failed to refresh masker after delete: {e}")
+    return Result.succ("OK")
+
+
 @router.put(
     "/sql-guard/masking/{datasource_id}/columns/{table_name}/{column_name}/toggle",
     response_model=Result[str],
@@ -356,20 +387,17 @@ async def detect_sensitive_columns(
 
     for table_name, columns in detections.items():
         for col_info in columns:
-            saved = dao.upsert(
+            # 保留已存在配置的 source/enabled(关闭或手动配置不会被重新开启)。
+            saved = dao.upsert_auto_detected(
                 datasource_id=datasource_id,
                 table_name=col_info.table_name,
                 column_name=col_info.column_name,
-                data={
-                    "sensitive_type": col_info.sensitive_type,
-                    "masking_mode": (
-                        "mask" if col_info.masking_strategy == "full"
-                        else col_info.masking_strategy
-                    ),
-                    "confidence": col_info.confidence,
-                    "source": "auto",
-                    "enabled": 1,
-                },
+                sensitive_type=col_info.sensitive_type,
+                masking_mode=(
+                    "mask" if col_info.masking_strategy == "full"
+                    else col_info.masking_strategy
+                ),
+                confidence=col_info.confidence,
             )
             results.append(SensitiveColumnResponse(**saved))
 

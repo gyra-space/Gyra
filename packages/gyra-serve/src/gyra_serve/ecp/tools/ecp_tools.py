@@ -525,11 +525,18 @@ async def execute_raw_sql(
             from gyra_serve.sql_guard.masking import (
                 is_internal_catalog_sql,
                 mask_run_result,
+                resolve_result_table,
             )
 
             if not is_internal_catalog_sql(sql):
+                # 传解析出的业务表名,让脱敏走精确 table.column 匹配;
+                # 否则列名兜底会把"其它表仍开启的同名列"误识别为敏感列。
                 columns, rows, _masked = await asyncio.to_thread(
-                    mask_run_result, datasource_id, columns, rows
+                    mask_run_result,
+                    datasource_id,
+                    columns,
+                    rows,
+                    table_name=resolve_result_table(sql),
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[execute_raw_sql] masking skipped: {e}")

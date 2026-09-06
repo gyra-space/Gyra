@@ -92,4 +92,64 @@ describe('buildManusWorkspaceView', () => {
     );
     expect(ws.deliverable_files!.filter((f) => f.file_id === 'f1')).toHaveLength(1);
   });
+
+  // 构造带 planning_window(左面板)的 view 消息
+  const viewWithPlanning = (order: number, planningWindow: string): ManusViewMessage => ({
+    role: 'view',
+    order,
+    context: JSON.stringify({ running_window: '', planning_window: planningWindow }),
+  });
+
+  test('思考:d-thinking 围栏被提取为 thinking 步骤(实时流)', () => {
+    const pw = '```d-thinking\n' + JSON.stringify({ uid: 'm2_thinking', markdown: '正在分析方案', type: 'incr', dynamic: true }) + '\n```';
+    const ws = buildManusWorkspaceView([human(0, '帮我分析'), viewWithPlanning(1, pw)], null);
+    const thinks = ws.execution.filter((s) => s.type === 'thinking');
+    expect(thinks).toHaveLength(1);
+    expect(thinks[0].output).toContain('正在分析方案');
+  });
+
+  test('思考:drsk-content 的正文块(manus_content_stream)不会被误判为思考', () => {
+    // V2 工具旁白走 drsk-content(uid=manus_content_stream),不是深度思考,不应生成 thinking 步骤,
+    // 避免旁白被误标成「深度思考」并与工具胶囊 narration 行重复。
+    const pw = '```drsk-content\n' + JSON.stringify({ uid: 'manus_content_stream', markdown: '我先检查一下日志目录', type: 'incr', dynamic: true }) + '\n```';
+    const ws = buildManusWorkspaceView([human(0, '查一下日志'), viewWithPlanning(1, pw)], null);
+    const thinks = ws.execution.filter((s) => s.type === 'thinking');
+    expect(thinks).toHaveLength(0);
+  });
+
+  test('旁白:thought 输出被折进工具步骤 narration,结果正文取非 thought 输出', () => {
+    const s = {
+      active_step: { id: 't1', type: 'bash', title: 'Bash', status: 'completed', action: 'Bash' },
+      outputs: [
+        { output_type: 'thought', content: '我先看一下当前目录结构' },
+        { output_type: 'text', content: 'file1.txt' },
+      ],
+    };
+    const v1 = view(1, rightPanel({ steps_map: { t1: s } }));
+    const ws = buildManusWorkspaceView([human(0, '看看目录'), v1], rightPanel({ steps_map: { t1: s } }) as any);
+    const tool = ws.execution.find((e) => e.id === 't1');
+    expect(tool).toBeDefined();
+    expect(tool?.narration).toBe('我先看一下当前目录结构');
+    // 旁白不应被当作结果正文
+    expect(tool?.output).toBe('file1.txt');
+  });
+
+  test('旁白补全:流式 steps_map 为懒加载(无 outputs)时,从 latestRight 回填 narration', () => {
+    // 每条 view 消息的 steps_map 只有元信息(无 outputs)
+    const lazyS = { active_step: { id: 't1', type: 'bash', title: 'Bash', status: 'running', action: 'Bash' }, outputs: [] };
+    const v1 = view(1, rightPanel({ steps_map: { t1: lazyS } }));
+    // 最新 right panel 才带完整 outputs(含 thought 旁白)
+    const latest = rightPanel({
+      steps_map: {
+        t1: {
+          active_step: { id: 't1', type: 'bash', title: 'Bash', status: 'completed', action: 'Bash' },
+          outputs: [{ output_type: 'thought', content: '我准备执行这条命令了' }, { output_type: 'text', content: '' }],
+        },
+      },
+    });
+    const ws = buildManusWorkspaceView([human(0, '跑一下'), v1], latest as any);
+    const tool = ws.execution.find((e) => e.id === 't1');
+    expect(tool).toBeDefined();
+    expect(tool?.narration).toBe('我准备执行这条命令了');
+  });
 });

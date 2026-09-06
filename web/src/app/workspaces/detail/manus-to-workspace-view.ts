@@ -44,6 +44,9 @@ const THINKING_FENCE = /```(?:d-thinking|drsk-thinking)\s*\n([\s\S]*?)\n```/g;
  *
  * thinking 围栏的 markdown 在流式阶段按 uid 累积,最后一帧携带完整文本;
  * 历史消息里同一 uid 会重复出现,故取"最后一次出现"的完整值,避免只渲染到片段。
+ * 注:仅从 d-thinking / drsk-thinking 提取(唯一的「深度思考」块);drsk-content
+ * 的 step_thought 块在 V2 里承载的是工具旁白(内容),不当作 thinking 步骤,避免
+ * 把旁白误判成思考、并与工具胶囊的 narration 行重复。
  */
 function extractThinkingFromPlanning(planningWindow: string): Map<string, string> {
   const byUid = new Map<string, string>();
@@ -92,10 +95,19 @@ function toWsStatus(status?: string): WorkspaceExecutionStep['status'] {
   return STATUS_MAP[key] || 'done';
 }
 
-/** 取步骤首个可读文本 output(用于左侧 summary/展开) */
-function firstOutputText(outputs?: Array<{ content?: unknown }>): string | null {
+/** 从步骤 outputs 中取「旁白」(thought 类型,即 LLM 调用工具前的叙述文本,由
+ *  manus 转换器映射自 WorkEntry.assistant_content → ActionOutput.thoughts)。 */
+function extractNarration(outputs?: Array<{ output_type?: string; content?: unknown }>): string | null {
+  if (!outputs || !outputs.length) return null;
+  const thought = outputs.find((o) => o?.output_type === 'thought' && typeof o.content === 'string' && o.content.trim());
+  return typeof thought?.content === 'string' ? thought.content : null;
+}
+
+/** 取步骤首个可读的非旁白 output(工具结果正文):跳过 thought 类型,防止旁白被当成结果。 */
+function firstOutputText(outputs?: Array<{ output_type?: string; content?: unknown }>): string | null {
   if (!outputs || !outputs.length) return null;
   for (const o of outputs) {
+    if (o?.output_type === 'thought') continue;
     if (typeof o.content === 'string' && o.content.trim()) return o.content;
   }
   return null;
@@ -157,6 +169,7 @@ function stepsMapToExecution(stepsMap: Record<string, any> | undefined): Workspa
       action: step.action || null,
       action_input: step.action_input && typeof step.action_input === 'object' ? (step.action_input as Record<string, unknown>) : null,
       output: firstOutputText(sd?.outputs),
+      narration: extractNarration(sd?.outputs),
     });
   }
   return out;
@@ -312,6 +325,19 @@ export function buildManusWorkspaceView(
   const isWorking = !!latestRight?.is_running || !!leftPanel?.is_working;
   const hasRunningTool = execution.some((s) => s.type === 'tool_call' && s.status === 'running');
   const runningThinking = !!isWorking && !hasRunningTool && !runningPhaseTitle;
+
+  // 旁白补全:流式阶段每条 view 消息的 steps_map 可能只是懒加载元信息(无 outputs),
+  // 最新 right panel(source.steps_map)才带完整 outputs。据此为工具步骤回填 narration,
+  // 使工具胶囊能稳定展示 LLM 调用工具前的旁白文本(与 scene workspace 折叠进工具步骤的语义对齐)。
+  if (source?.steps_map) {
+    for (const s of execution) {
+      if (s.type !== 'tool_call' || s.narration) continue;
+      const sd = source.steps_map[s.id];
+      if (!sd) continue;
+      const narr = extractNarration(sd.outputs);
+      if (narr) s.narration = narr;
+    }
+  }
 
   // 交付文件按 file_id 去重:同一物理文件被多次修改/交付时,ts 会因来源不同
   // (增量 start_time 兜底 vs 全量 created_at)而变,按 file_id+ts 会把同一次交付

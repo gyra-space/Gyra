@@ -210,6 +210,95 @@ class SensitiveColumnDao(BaseDao):
         finally:
             session.close()
 
+    def delete_column(
+        self,
+        datasource_id: int,
+        table_name: str,
+        column_name: str,
+    ) -> bool:
+        """Delete a single sensitive column config (stops masking for it).
+
+        Unlike :meth:`set_enabled`, this removes the config entirely so the
+        column will never be masked again (even after re-detection), while
+        preserving manual or already-off configs during auto-detection.
+
+        Returns True if a config was deleted, False otherwise.
+        """
+        session = self.get_raw_session()
+        try:
+            deleted = (
+                session.query(SensitiveColumnEntity)
+                .filter(
+                    SensitiveColumnEntity.datasource_id == datasource_id,
+                    SensitiveColumnEntity.table_name == table_name,
+                    SensitiveColumnEntity.column_name == column_name,
+                )
+                .delete(synchronize_session=False)
+            )
+            session.commit()
+            return bool(deleted)
+        except Exception:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def upsert_auto_detected(
+        self,
+        datasource_id: int,
+        table_name: str,
+        column_name: str,
+        *,
+        sensitive_type: str,
+        masking_mode: str,
+        confidence: Optional[float],
+    ) -> Dict[str, Any]:
+        """Persist an auto-detected column without overriding manual/off state.
+
+        - New columns are created with ``source=auto`` and ``enabled=1``.
+        - Existing columns keep their current ``source`` and ``enabled``
+          (so toggling a column off is durable against re-detection), while
+          ``sensitive_type``/``masking_mode``/``confidence`` are refreshed.
+
+        This is the write path used by the auto-detector so that repeatedly
+        running detection/learning never re-enables columns a user disabled.
+        """
+        session = self.get_raw_session()
+        try:
+            entity = (
+                session.query(SensitiveColumnEntity)
+                .filter(
+                    SensitiveColumnEntity.datasource_id == datasource_id,
+                    SensitiveColumnEntity.table_name == table_name,
+                    SensitiveColumnEntity.column_name == column_name,
+                )
+                .first()
+            )
+            if entity:
+                entity.sensitive_type = sensitive_type
+                entity.masking_mode = masking_mode
+                entity.confidence = confidence
+                session.commit()
+                return self._to_dict(entity)
+            entity = SensitiveColumnEntity(
+                datasource_id=datasource_id,
+                table_name=table_name,
+                column_name=column_name,
+                sensitive_type=sensitive_type,
+                masking_mode=masking_mode,
+                confidence=confidence,
+                source="auto",
+                enabled=1,
+            )
+            session.add(entity)
+            session.commit()
+            return self._to_dict(entity)
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     @staticmethod
     def _to_dict(entity: SensitiveColumnEntity) -> Dict[str, Any]:
         return {

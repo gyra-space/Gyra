@@ -248,11 +248,18 @@ class RDBMSConnectorResource(DBResource[DBParameters]):
         masker = self._get_data_masker()
         if masker and columns and values:
             try:
-                from gyra_serve.sql_guard.masking import is_internal_catalog_sql
+                from gyra_serve.sql_guard.masking import (
+                    is_internal_catalog_sql,
+                    resolve_result_table,
+                )
 
                 internal = is_internal_catalog_sql(sql)
+                # 传解析出的业务表名,让脱敏走精确 table.column 匹配,避免列名兜底
+                # 把"其它表仍开启的同名列"误识别为敏感列。
+                table_name = resolve_result_table(sql)
             except Exception:  # noqa: BLE001
                 internal = False
+                table_name = None
             if not internal:
                 session_id = getattr(self, "_session_id", None)
                 datasource_id = getattr(self, "_datasource_id", None)
@@ -261,6 +268,7 @@ class RDBMSConnectorResource(DBResource[DBParameters]):
                     values,
                     datasource_id=datasource_id,
                     session_id=session_id,
+                    table_name=table_name,
                 )
 
         return columns, values

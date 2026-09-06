@@ -1473,20 +1473,17 @@ class SchemaLearningService:
 
             for table_name, columns in detections.items():
                 for col_info in columns:
-                    dao.upsert(
+                    # 保留已存在配置的 source/enabled(关闭或手动配置不会被重新开启)。
+                    dao.upsert_auto_detected(
                         datasource_id=datasource_id,
                         table_name=col_info.table_name,
                         column_name=col_info.column_name,
-                        data={
-                            "sensitive_type": col_info.sensitive_type,
-                            "masking_mode": (
-                                "mask" if col_info.masking_strategy == "full"
-                                else col_info.masking_strategy
-                            ),
-                            "confidence": col_info.confidence,
-                            "source": "auto",
-                            "enabled": 1,
-                        },
+                        sensitive_type=col_info.sensitive_type,
+                        masking_mode=(
+                            "mask" if col_info.masking_strategy == "full"
+                            else col_info.masking_strategy
+                        ),
+                        confidence=col_info.confidence,
                     )
                     count += 1
 

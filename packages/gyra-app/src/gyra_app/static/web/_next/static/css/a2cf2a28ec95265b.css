@@ -423,7 +423,7 @@
 
 .ws-preview {
   flex-direction: column;
-  flex: 1;
+  flex: 1 0 auto;
   gap: 10px;
   min-height: 0;
   display: flex;

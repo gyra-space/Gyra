@@ -4,6 +4,7 @@ from gyra_serve.sql_guard.masking.apply import (
     is_internal_catalog_sql,
     is_internal_catalog_table,
     mask_run_result,
+    resolve_result_table,
 )
 from gyra_serve.sql_guard.masking.masker import (
     ColumnMaskingConfig,
@@ -14,6 +15,7 @@ from gyra_serve.sql_guard.masking.masker import (
 
 __all__ = [
     "mask_run_result",
+    "resolve_result_table",
     "is_internal_catalog_sql",
     "is_internal_catalog_table",
     "get_data_masker",

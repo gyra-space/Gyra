@@ -102,6 +102,27 @@ _VALUE_PATTERNS: Dict[str, re.Pattern] = {
     ),
 }
 
+# 主键 / 标识符列名(代理键、外键、UUID 等) — 不做敏感检测,避免把递增主键、
+# UUID、数字 ID 误判为手机号/身份证等敏感字段。
+_PK_IDENTIFIER_NAME_RE = re.compile(
+    r"^(id|uuid|guid|rowid|oid|pk|serial|key)$", re.I
+)
+_FK_IDENTIFIER_NAME_RE = re.compile(r"^.+_id$", re.I)
+_ID_PREFIX_NAME_RE = re.compile(r"^id_\d+$", re.I)
+
+# 聚合 / 汇总输出列名(count/sum/avg/total...) — 不做敏感检测,避免把数字汇总误当敏感字段。
+_AGGREGATE_NAME_RE = re.compile(
+    r"^(count|cnt|total|sum|avg|average|max|min|qty|quantity)$"
+    r"|_(count|cnt|total|sum|avg|qty|quantity)$",
+    re.I,
+)
+
+# UUID / 十六进制标识符值,重名普通列时避免样本启发式误判。
+_UUID_VALUE_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
+_UUID_HEX_RE = re.compile(r"^[0-9a-f]{24,}$", re.I)
+
 
 class SensitiveColumnDetector:
     """Detects sensitive columns from table spec metadata.
@@ -149,6 +170,13 @@ class SensitiveColumnDetector:
             col_comment = col.get("comment", "") or ""
 
             if not col_name:
+                continue
+
+            # 主键 / 标识符 / 聚合列不参与敏感检测:避免把递增主键、UUID、
+            # 外键 ID、数字汇总(count/sum/avg/total)误判为手机号/身份证等敏感字段。
+            if col.get("pk") or self._is_identifier_column(col_name):
+                continue
+            if self._is_aggregate_column(col_name):
                 continue
 
             # Only check text-type columns
@@ -284,6 +312,9 @@ class SensitiveColumnDetector:
                 ]
 
                 if sample_values:
+                    # UUID / hex 标识符值不参与样本启发式,避免把 token 误判为敏感字段。
+                    if self._samples_look_like_identifier(sample_values):
+                        return candidates
                     # Check each value pattern type
                     for stype, vp in _VALUE_PATTERNS.items():
                         if stype == SensitiveType.BANK_CARD.value:
@@ -339,6 +370,45 @@ class SensitiveColumnDetector:
         if candidates:
             return max(candidates, key=lambda c: c.confidence)
         return None
+
+    @staticmethod
+    def _is_identifier_column(col_name: str) -> bool:
+        """Return True for surrogate/foreign-key/identifier column names.
+
+        These are keys (``id``, ``uuid``, ``<x>_id``, ``id_1`` ...) whose values
+        are identifiers rather than PII, so they should never be auto-masked.
+        """
+        if not col_name:
+            return False
+        return bool(
+            _PK_IDENTIFIER_NAME_RE.match(col_name.strip())
+            or _ID_PREFIX_NAME_RE.match(col_name.strip())
+            or _FK_IDENTIFIER_NAME_RE.match(col_name.strip())
+        )
+
+    @staticmethod
+    def _is_aggregate_column(col_name: str) -> bool:
+        """Return True for aggregate/summary output column names."""
+        if not col_name:
+            return False
+        return bool(_AGGREGATE_NAME_RE.search(col_name.strip()))
+
+    @staticmethod
+    def _samples_look_like_identifier(sample_values: List[str]) -> bool:
+        """Return True when most sample values are UUID / hex identifiers.
+
+        Guards the sample-data heuristic so a generic-named column holding
+        UUIDs or long hex tokens is not misclassified as phone/ID card.
+        """
+        if not sample_values:
+            return False
+        non_empty = [v for v in sample_values if v and v.strip()]
+        if not non_empty:
+            return False
+        matched = sum(
+            1 for v in non_empty if _UUID_VALUE_RE.match(v.strip()) or _UUID_HEX_RE.match(v.strip())
+        )
+        return matched / len(non_empty) >= 0.5
 
     @staticmethod
     def _is_text_type(col_type: str) -> bool:
