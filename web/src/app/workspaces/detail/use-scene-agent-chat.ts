@@ -680,9 +680,14 @@ export function useSceneAgentChat({
             }
             const mv = obj as Record<string, unknown>;
             if (mv.render_name === 'scene_agent_workspace' || Array.isArray(mv.execution)) {
-              // 全量视图帧同样代表 Agent 已启动 → 清除占位状态
-              console.log('[routeObject] clearing agentPreparing (view): render_name=', mv.render_name, 'execution_len=', (mv.execution as unknown[])?.length);
-              setAgentPreparing(false);
+              // 全量视图帧只有在"确实包含 Agent 产出步骤"时才代表 Agent 已启动。
+              // 首 token 前后端会先回推一个仅含用户消息回显的初始 scene_agent_workspace
+              // 帧(execution 只有 user 回显,无 thinking/工具等 Agent 步骤),此时必须
+              // 保留 agent_preparing 占位(否则占位被这个空帧提前清除,视觉优化失效)。
+              const execution = ((mv.execution as unknown[]) || []) as Record<string, unknown>[];
+              const hasAgentOutput = execution.some((s) => (s as any).type !== 'user');
+              console.log('[routeObject] view frame, hasAgentOutput=', hasAgentOutput, 'execution_len=', execution.length);
+              if (hasAgentOutput) setAgentPreparing(false);
               setWorkspaceView((prev) => {
                 const merged = parseWorkspaceView(obj, prev);
                 return { ...merged, execution: dedupOptimisticUser(merged.execution) };
