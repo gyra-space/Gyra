@@ -372,6 +372,7 @@ def _inject_workspace_context(
 # workspace 流式事件白名单
 WORKSPACE_EVENT_TYPES = frozenset(
     {
+        "agent_preparing",
         "task_created",
         "context_loaded",
         "loaded_skills",
@@ -1548,6 +1549,7 @@ class AgentChat(BaseComponent, ABC):
         #     f"agent_chat conv_id:{conv_id}, agent_conv_id:{agent_conv_id},gpts_name:{gpts_name},user_query:"
         #     f"{user_query}"
         # )
+        logger.info(f"[agent_preparing] aggregation_chat FUNCTION CALLED: conv={agent_conv_id}, stream={stream}")
         root_tracer.set_current_agent_id(gpts_name)  # 将当前agent app_code写入trace存储
         digest(
             CHAT_LOGGER,
@@ -1570,6 +1572,7 @@ class AgentChat(BaseComponent, ABC):
         is_retry_chat = False
         last_speaker_name = None
         history_messages = None
+        logger.info(f"[agent_preparing] aggregation_chat entered: conv={agent_conv_id}, stream={stream}")
 
         ########################################################
         app_config = self.system_app.config.configs.get("app_config")
@@ -2112,6 +2115,18 @@ class AgentChat(BaseComponent, ABC):
                     }
                 ).decode("utf-8")
                 yield task, f"data:{metadata_content}\n\n", agent_conv_id
+                logger.info(f"[agent_preparing] metadata frame sent: conv={agent_conv_id}")
+
+                # 感知优化：Agent 构建/沙箱创建/MCP 工具加载可能耗时数秒且期间无任何
+                # 可见输出（首 token 前的空白期），立即推送 agent_preparing 状态帧，
+                # 前端在底部 RunningIndicator 渲染"正在启动 Agent"文案，消除视觉空白。
+                preparing_frame = format_workspace_event(
+                    "agent_preparing", {"conv_uid": agent_conv_id}
+                )
+                logger.info(f"[agent_preparing] frame built: conv={agent_conv_id}, len={len(preparing_frame)}")
+                if preparing_frame:
+                    yield task, preparing_frame, agent_conv_id
+                    logger.info(f"[agent_preparing] frame sent: conv={agent_conv_id}")
 
                 # SSE heartbeat: if the agent is still running but no output has
                 # been produced for 30 seconds, send an SSE comment every 10 seconds
@@ -2526,10 +2541,21 @@ class AgentChat(BaseComponent, ABC):
             extra_dict = context.extra or {}
             real_all_resources = extra_dict.get("dynamic_resources", []) or kwargs.get("dynamic_resources", [])
 
-            # 使用全局缓存获取或创建 sandbox_manager，避免并行创建重复的沙箱
-            sandbox_manager = await self._get_or_create_sandbox_manager(
-                context, app, need_sandbox
+            # 使用全局缓存获取或创建 sandbox_manager，避免并行创建重复的沙箱。
+            # 沙箱创建（profile/venv 初始化等）与后续资源装配互不依赖，
+            # 此处以并发任务启动，重叠掉部分沙箱初始化耗时，在 bind 前完成等待。
+            sandbox_manager_task = asyncio.create_task(
+                self._get_or_create_sandbox_manager(context, app, need_sandbox)
             )
+
+            def _log_sandbox_task_error(t: asyncio.Task) -> None:
+                # 正常路径异常会在 await 处抛出；此处兜底记录未被 await 消费的异常
+                if not t.cancelled() and t.exception() is not None:
+                    logger.warning(
+                        f"sandbox manager creation failed: {t.exception()}"
+                    )
+
+            sandbox_manager_task.add_done_callback(_log_sandbox_task_error)
 
             # 统一治理：子 Agent 不再在此预构建/hire。子 Agent 一律以 AppResource
             # （type=app）注入 capability_pack/resource_map，派发时经 _resolve_app_code
@@ -2567,6 +2593,9 @@ class AgentChat(BaseComponent, ABC):
             real_all_resources = await self.add_duplicate_allow_tools(
                 real_all_resources
             )
+
+            # 等待并发启动的沙箱创建完成，供各 team_mode 分支 bind 使用
+            sandbox_manager = await sandbox_manager_task
 
             if team_mode == TeamMode.SINGLE_AGENT or TeamMode.NATIVE_APP == team_mode:
                 # 统一治理：主代理恒由 app.agent 构建，并承载全部能力包

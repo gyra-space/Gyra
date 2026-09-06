@@ -128,6 +128,8 @@ interface UseSceneAgentChatResult {
   usageMetrics: UsageMetrics | null;
   /** Composer Dock 协议:输入框上方固定区域 widget map(by id),由 SSE onDock/轮询 dock 帧合并而来 */
   dockWidgets: Record<string, DockWidget>;
+  /** Agent 准备中:SSE 建立后 Agent 尚未产出内容(沙箱/MCP 加载期间),底部显示"正在启动 Agent"文案 */
+  agentPreparing: boolean;
   /** 乐观上屏用户消息(发送/追问即插入视图,不等后端回显);纯文件消息可无文本仅有附件 */
   appendOptimisticUser: (text: string, attachments?: WorkspaceUserAttachment[]) => void;
   send: (payload: SceneAgentSendPayload, opts?: { forceNew?: boolean }) => void;
@@ -226,6 +228,10 @@ export function useSceneAgentChat({
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(EMPTY_WORKSPACE_VIEW);
   const [dockWidgets, setDockWidgets] = useState<Record<string, DockWidget>>({});
   const abortRef = useRef<AbortController | null>(null);
+  // agent_preparing 占位状态:SSE 建立后 Agent 尚未产出内容时的独立 UI 状态,
+  // 不注入 execution(避免被 parseWorkspaceView 排序/轮次切分影响),
+  // Agent 产出首条内容时自动清除,由 RunningIndicator 渲染。
+  const [agentPreparing, setAgentPreparing] = useState(false);
   // 流纪元:每次新 send / 会话切换时自增。SSE 回调据此判断是否仍属当前生效会话,
   // 避免切换会话后旧流迟到的消息、结束事件污染当前视图。
   const streamEpochRef = useRef(0);
@@ -345,6 +351,14 @@ export function useSceneAgentChat({
             ],
           };
         });
+      }
+      // Agent 准备中事件:SSE 建立后立即推送。Agent 构建/沙箱创建/MCP 工具
+      // 加载耗时期间无任何模型输出,用独立状态标记,由底部 RunningIndicator
+      // 渲染"正在启动 Agent"文案;不注入 execution(避免排序/轮次切分影响)。
+      // Agent 产出首条内容时由 routeObject 自动清除。
+      if (event.type === 'agent_preparing') {
+        console.log('[agent_preparing] received, setting agentPreparing=true');
+        setAgentPreparing(true);
       }
       // 预加载技能事件:把本次对话预加载的 SKILL.md 以"已预加载技能"步骤注入
       // execution 区域(工具步骤区),点开由 StepPreview 渲染 SkillContentRenderer。
@@ -656,6 +670,9 @@ export function useSceneAgentChat({
           // Route a parsed vis object: step-list → appendStep, else
           // scene_agent_workspace → parseWorkspaceView.
           const routeObject = (obj: object) => {
+            // Agent 产出首条内容(任何帧) → 清除 agent_preparing 占位状态
+            console.log('[agent_preparing] routeObject called, clearing agentPreparing');
+            setAgentPreparing(false);
             const step = parseAgentSteps(obj);
             if (step) {
               appendStep(step);
@@ -686,12 +703,14 @@ export function useSceneAgentChat({
         onDone: () => {
           if (streamEpochRef.current !== epoch) return;
           setLoading(false);
+          setAgentPreparing(false);
           setLastInput(null);
           settleRunningSteps('done');
         },
         onClose: () => {
           if (streamEpochRef.current !== epoch) return;
           setLoading(false);
+          setAgentPreparing(false);
           setLastInput(null);
           settleRunningSteps('done');
         },
@@ -699,6 +718,7 @@ export function useSceneAgentChat({
           if (streamEpochRef.current !== epoch) return;
           // 服务端 [ERROR] 帧:Agent 真实报错,直接展示(连接断开走 onStreamDrop)
           setError(content || 'Agent error');
+          setAgentPreparing(false);
           appendStep({
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
             type: 'unknown',
@@ -713,6 +733,7 @@ export function useSceneAgentChat({
         onStreamDrop: (content: string) => {
           if (streamEpochRef.current !== epoch) return;
           setLoading(false);
+          setAgentPreparing(false);
           setLastInput(null);
           lastDropErrorRef.current = content;
           void recover(content);
@@ -733,6 +754,7 @@ export function useSceneAgentChat({
   const abort = useCallback(() => {
     abortRef.current?.abort();
     setLoading(false);
+    setAgentPreparing(false);
     // 真正终止对话:取消后端 agent task。SSE 断开(abort)本身不终止 agent,
     // 主动停止需调 stop_chat 接口(状态置 INTERRUPTED)。
     const uid = effectiveConvUid;
@@ -743,5 +765,5 @@ export function useSceneAgentChat({
     }
   }, [effectiveConvUid]);
 
-  return { steps, workspaceView, loading, error, lastInput, modelName: lastInput?.model, recovering, retryRecover, convState, convUid: effectiveConvUid, convLoading: !!effectiveConvUid && convLoading, usageMetrics, dockWidgets, send, resetConv, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
+  return { steps, workspaceView, loading, error, lastInput, modelName: lastInput?.model, recovering, retryRecover, convState, convUid: effectiveConvUid, convLoading: !!effectiveConvUid && convLoading, usageMetrics, dockWidgets, agentPreparing, send, resetConv, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
 }

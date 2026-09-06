@@ -106,10 +106,9 @@ class ImprovedLocalSandboxSession(SandboxSession):
             # Ensure session directory exists
             os.makedirs(self.session_dir, exist_ok=True)
 
-            # Create virtual environment for isolated Python packages
-            venv_path = os.path.join(self.session_dir, ".venv")
-            if not os.path.exists(venv_path):
-                await self._create_venv(venv_path)
+            # venv 懒创建：仅在 install_dependencies 时按需创建（见该处 Ensure venv exists）。
+            # 会话启动路径不再同步执行 `python3 -m venv`（本地实测 1~2s），
+            # 避免拖慢每次沙箱创建；执行命令无 venv 时自动回退系统 python3。
 
             # Set up sandbox wrapper if on macOS
             if self._platform == "macos":

@@ -315,11 +315,13 @@ def mount_routers(app: FastAPI, param: Optional[ApplicationConfig] = None):
     from gyra_app.openapi.api_v2.model_api import router as model_api_router
     from gyra_app.openapi.api_v2.input_api import router as input_api_router
     from gyra_app.openapi.api_v2.tool_approval_api import router as tool_approval_router
+    from gyra_serve.agent.interaction_api import router as interaction_api_router
 
     app.include_router(api_v1, prefix="/api", tags=["Chat"])
     app.include_router(api_v2, prefix="/api", tags=["ChatV2"])
     app.include_router(input_api_router, prefix="/api", tags=["UserInput"])
     app.include_router(tool_approval_router, prefix="/api", tags=["ToolApproval"])
+    app.include_router(interaction_api_router, tags=["Interaction"])
     app.include_router(asr_router, prefix="/api", tags=["ASR"])
     app.include_router(api_fb_v1, prefix="/api", tags=["FeedBack"])
     if knowledge_router is not None:

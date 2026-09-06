@@ -10,6 +10,7 @@ import type { UsageMetrics } from '@/types/context-metrics';
 import type { DockFrame } from '@/components/chat/dock/dock-types';
 
 export type WorkspaceEventType =
+  | 'agent_preparing'
   | 'task_created'
   | 'context_loaded'
   | 'intervention_triggered'
@@ -207,6 +208,7 @@ const useChat = ({ queryAgentURL = '/api/v1/chat/completions', app_code }: Props
                   setUsageMetrics(vis.payload);
                   return;
                 } else if (
+                  vis.type === 'agent_preparing' ||
                   vis.type === 'task_created' ||
                   vis.type === 'context_loaded' ||
                   vis.type === 'intervention_triggered' ||

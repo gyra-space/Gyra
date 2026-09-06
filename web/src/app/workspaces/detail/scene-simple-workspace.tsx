@@ -71,6 +71,8 @@ export interface SceneSimpleWorkspaceProps {
   onExit?: () => void;
   /** 输入条:渲染在左侧对话 feed 底部(与对话同列) */
   inputSlot?: React.ReactNode;
+  /** Agent 准备中:SSE 建立后 Agent 尚未产出内容,底部显示"正在启动 Agent"文案 */
+  agentPreparing?: boolean;
 }
 
 type RightTabKey = 'execution' | 'task_files' | 'summary';
@@ -526,6 +528,7 @@ export function SceneSimpleWorkspace({
   onInteractionResume,
   onExit,
   inputSlot,
+  agentPreparing = false,
 }: SceneSimpleWorkspaceProps) {
   // viewer(业务用户)右侧默认落在「任务文件」,不进入执行过程
   const [rightTab, setRightTab] = useState<RightTabKey>(canViewProcess ? 'execution' : 'task_files');
@@ -770,6 +773,7 @@ export function SceneSimpleWorkspace({
               // 简洁模式全员折叠成单行「Agent 思考」(结果为主、过程随行);
               // 角色只控制步骤是否可点开详情,不影响折叠形态
               compactProcess
+              agentPreparing={agentPreparing}
             />
           )}
         </div>

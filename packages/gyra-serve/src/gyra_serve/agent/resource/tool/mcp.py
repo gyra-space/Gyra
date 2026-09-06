@@ -263,8 +263,8 @@ class MCPToolPack(ToolPack):
 
         else:
             self._tool_id = str(uuid.uuid4())
-            # TODO Get MCP Tool name, Temp solve
-            self._mcp_name = str(uuid.uuid4())
+            # 保留 __init__ 中的稳定名称作为缓存 key 的一部分；
+            # 若改成随机 uuid，(mcp_name, server) 缓存 key 每次都变，tools/list 永远无法命中缓存。
 
         for server in server_list:
             try:

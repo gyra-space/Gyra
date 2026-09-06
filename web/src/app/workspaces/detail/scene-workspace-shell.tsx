@@ -1054,6 +1054,7 @@ export function SceneWorkspaceShell({
                   modelName={simpleChat.modelName}
                   workspaceId={workspaceId}
                   canViewProcess={canViewProcess}
+                  agentPreparing={simpleChat.agentPreparing}
                   onInteractionResume={(msg) => simpleChat.send({ text: msg })}
                   onExit={() => {
                     // 退出任务回欢迎页:同样清掉懒创建的内部会话,保证首页提问新建

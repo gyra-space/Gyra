@@ -8,7 +8,7 @@ import { githubLightTheme } from '@uiw/react-json-view/githubLight';
 import { useRequest } from 'ahooks';
 import { Button, Form, Input, Spin, App, Tooltip } from 'antd';
 import { useSearchParams, useRouter } from 'next/navigation';
-import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useContext, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../index.css';
 
@@ -29,20 +29,6 @@ export default function McpDetail() {
     name: searchParams.get('name') || '',
   };
   const [form] = Form.useForm();
-  const leftPanelRef = useRef<HTMLDivElement>(null);
-  const [rightColumnHeight, setRightColumnHeight] = useState<number | undefined>(undefined);
-
-  useEffect(() => {
-    const el = leftPanelRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setRightColumnHeight(entry.target.clientHeight);
-      }
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
 
   const {
     loading: runLoading,
@@ -212,7 +198,7 @@ export default function McpDetail() {
           {/* Split panes: Tools | Params + Results */}
           <div className='mcp-detail-grid'>
             {/* Left: Tool List */}
-            <div className='mcp-panel' ref={leftPanelRef}>
+            <div className='mcp-panel'>
               <div className='mcp-panel-header'>
                 <span className='mcp-panel-title'>{t('mcp_tools')}</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -246,8 +232,8 @@ export default function McpDetail() {
               </div>
             </div>
 
-            {/* Right: Params + Results (sticky, 1:1 split, height matches left panel) */}
-            <div className='mcp-right-column' style={rightColumnHeight ? { maxHeight: rightColumnHeight } : undefined}>
+            {/* Right: Params + Results (sticky, params prioritized) */}
+            <div className='mcp-right-column'>
               {/* Parameters panel - 50% */}
               <div className='mcp-panel mcp-params-panel'>
                 <div className='mcp-panel-header'>

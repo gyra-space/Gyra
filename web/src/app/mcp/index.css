@@ -734,18 +734,18 @@
   overflow: hidden;
 }
 
-/* Right column - sticky, height synced to left panel, 1:1 split */
+/* Right column - sticky, params form prioritized, results fill the rest */
 .mcp-right-column {
   position: sticky;
   top: 28px;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: 0;
+  min-height: 560px;
 }
 
 .mcp-right-column .mcp-params-panel {
-  flex: 1;
+  flex: 0 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -753,10 +753,10 @@
 }
 
 .mcp-right-column .mcp-result-panel {
-  flex: 1;
+  flex: 1 1 0;
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  min-height: 200px;
   overflow: hidden;
   margin-top: 0;
 }
@@ -846,6 +846,7 @@
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+  max-height: 460px;
 }
 
 .mcp-form-section .ant-form-item {

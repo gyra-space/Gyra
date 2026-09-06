@@ -710,22 +710,27 @@
 .mcp-right-column {
   flex-direction: column;
   gap: 16px;
-  min-height: 0;
+  min-height: 560px;
   display: flex;
   position: sticky;
   top: 28px;
 }
 
-.mcp-right-column .mcp-params-panel, .mcp-right-column .mcp-result-panel {
+.mcp-right-column .mcp-params-panel {
   flex-direction: column;
-  flex: 1;
+  flex: 0 auto;
   min-height: 0;
   display: flex;
   overflow: hidden;
 }
 
 .mcp-right-column .mcp-result-panel {
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 200px;
   margin-top: 0;
+  display: flex;
+  overflow: hidden;
 }
 
 .mcp-panel-header {
@@ -809,6 +814,7 @@
 .mcp-form-section {
   flex: 1;
   min-height: 0;
+  max-height: 460px;
   padding: 20px;
   overflow-y: auto;
 }

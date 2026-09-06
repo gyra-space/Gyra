@@ -28,8 +28,13 @@ from gyra_serve.agent.db.gpts_tool_messages import (
 logger = logging.getLogger(__name__)
 # MCP tools/list 结果缓存：按 (mcp_name, server) 精确缓存，TTL 可调，避免每次会话
 # 启动都访问远程 MCP server。工具列表变更时通过 invalidate_mcp_tool_cache 主动失效。
-MCP_TOOL_CACHE_TTL = int(os.environ.get("GYRA_MCP_TOOL_CACHE_TTL", 600))
+# 工具列表几乎不变且远端 tools/list 实连代价高（可达数秒），默认 TTL 放宽到 24h。
+MCP_TOOL_CACHE_TTL = int(os.environ.get("GYRA_MCP_TOOL_CACHE_TTL", 86400))
 tool_cache = TTLCache(maxsize=200, ttl=MCP_TOOL_CACHE_TTL)
+# Stale-while-revalidate：TTL 过期后先返回旧值并后台刷新，用户请求不再同步等待远端 tools/list。
+_tool_cache_stale: dict = {}
+_refreshing_keys: set = set()
+_background_refresh_tasks: set = set()
 gpts_tool_messages_dao = GptsToolMessagesDao()
 gpts_tool_dao = GptsToolDao()
 
@@ -41,11 +46,19 @@ def _tool_cache_key(mcp_name: str, server: str) -> tuple:
     return mcp_name, server
 
 
+def _save_stale(cache_key: tuple, list_tools: Any) -> None:
+    """记录最近一次成功拉取的工具列表（无 TTL），供 stale-while-revalidate 使用。"""
+    _tool_cache_stale[cache_key] = deepcopy(list_tools)
+    if len(_tool_cache_stale) > 400:
+        _tool_cache_stale.pop(next(iter(_tool_cache_stale)), None)
+
+
 def invalidate_mcp_tool_cache(mcp_name: str, server: str) -> None:
     """主动失效某个 MCP server 的工具列表缓存（等价 tools/list_changed）。"""
     key = _tool_cache_key(mcp_name, server)
-    if key in tool_cache:
-        tool_cache.pop(key, None)
+    popped = tool_cache.pop(key, None)
+    stale_popped = _tool_cache_stale.pop(key, None)
+    if popped is not None or stale_popped is not None:
         logger.info(f"mcp_server:{mcp_name}, invalidated tool list cache, server:{server}")
 
 
@@ -201,9 +214,58 @@ async def get_mcp_tool_list(
     if headers is None:
         headers = {}
 
+    cache_key = _tool_cache_key(mcp_name, server)
+
+    async def _fetch_tool_list() -> Any:
+        """实连远端 MCP server 拉取 tools/list，成功后写入缓存与 stale 备份。"""
+        start_time = int(datetime.now().timestamp() * 1000)
+        fetch_headers = dict(headers)
+        (
+            fetch_headers["SOFA-TraceId"],
+            fetch_headers["SOFA-RpcId"],
+            fetch_headers["x-mcp-hash-key"],
+            fetch_headers["cookie"],
+        ) = trace_id, rpc_id, str(uuid.uuid4()), cookie
+        async with create_mcp_client(server, headers=fetch_headers) as (read, write, _http_diag):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                list_tools = await session.list_tools()
+                end_time = int(datetime.now().timestamp() * 1000)
+                LOGGER.info(
+                    f"mcp_server:{mcp_name},sse:{server},header:{fetch_headers},list_tools:[{list_tools}],costMs:[{end_time - start_time}]"
+                )
+                if use_cache:
+                    tool_cache[cache_key] = list_tools
+                    _save_stale(cache_key, list_tools)
+                return list_tools
+
+    def _schedule_background_refresh() -> None:
+        """stale-while-revalidate：后台刷新工具列表，失败不影响当前请求。"""
+        if cache_key in _refreshing_keys:
+            return
+        _refreshing_keys.add(cache_key)
+
+        async def _refresh():
+            try:
+                await _fetch_tool_list()
+                LOGGER.info(f"mcp_server:{mcp_name}, background tool list refresh done, server:{server}")
+            except Exception as e:  # noqa: BLE001
+                LOGGER.warning(
+                    f"mcp_server:{mcp_name}, background tool list refresh failed, server:{server}, err:{e}"
+                )
+            finally:
+                _refreshing_keys.discard(cache_key)
+
+        try:
+            task = asyncio.create_task(_refresh())
+            _background_refresh_tasks.add(task)
+            task.add_done_callback(_background_refresh_tasks.discard)
+        except RuntimeError:
+            # 无运行中的事件循环时放弃后台刷新，下次请求再同步拉取
+            _refreshing_keys.discard(cache_key)
+
     async def mcp_tool_list(server: str):
         try:
-            cache_key = _tool_cache_key(mcp_name, server)
             cache_result = (
                 None if not use_cache or refresh_cache else tool_cache.get(cache_key)
             )
@@ -212,25 +274,19 @@ async def get_mcp_tool_list(
                     f"mcp_server:{mcp_name}, hit tool list cache:{cache_result}"
                 )
                 result = cache_result
+            elif (
+                not refresh_cache
+                and use_cache
+                and (stale := _tool_cache_stale.get(cache_key))
+                and stale.tools
+            ):
+                LOGGER.info(
+                    f"mcp_server:{mcp_name}, hit stale tool list cache (refresh in background), server:{server}"
+                )
+                _schedule_background_refresh()
+                result = deepcopy(stale)
             else:
-                start_time = int(datetime.now().timestamp() * 1000)
-                (
-                    headers["SOFA-TraceId"],
-                    headers["SOFA-RpcId"],
-                    headers["x-mcp-hash-key"],
-                    headers["cookie"],
-                ) = trace_id, rpc_id, str(uuid.uuid4()), cookie
-                async with create_mcp_client(server, headers=headers) as (read, write, _http_diag):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        list_tools = await session.list_tools()
-                        end_time = int(datetime.now().timestamp() * 1000)
-                        LOGGER.info(
-                            f"mcp_server:{mcp_name},sse:{server},header:{headers},list_tools:[{list_tools}],costMs:[{end_time - start_time}]"
-                        )
-                        if use_cache:
-                            tool_cache[cache_key] = list_tools
-                        result = deepcopy(list_tools)
+                result = deepcopy(await _fetch_tool_list())
             if allow_tools and len(allow_tools) > 0:
                 tools = [tool for tool in result.tools if tool.name in allow_tools]
                 result.tools = tools

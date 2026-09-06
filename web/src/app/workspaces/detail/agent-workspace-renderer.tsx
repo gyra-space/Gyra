@@ -542,6 +542,8 @@ export interface AgentWorkspaceRendererProps {
   modelName?: string | null;
   /** compactProcess:执行过程折叠成单行「Agent 思考」(简洁模式全员启用,结果为主、过程随行) */
   compactProcess?: boolean;
+  /** Agent 准备中:SSE 建立后 Agent 尚未产出内容(沙箱/MCP 加载期间),底部显示"正在启动 Agent"文案 */
+  agentPreparing?: boolean;
 }
 
 /** 交付文件分组块:标题 + 文件卡片列表(点击在中间容器渲染文件内容) */
@@ -603,16 +605,17 @@ function DeliverablesBlock({ files, onDeliverableClick }: { files: WorkspaceDeli
   );
 }
 
-export function AgentWorkspaceRenderer({ view, running = false, onStepClick, selectedStepId, onDeliverableClick, onTaskClick, onSubagentClick, onAttachmentsClick, onInteractionResume, agentIcon, agentName, modelName, compactProcess = false }: AgentWorkspaceRendererProps) {
+export function AgentWorkspaceRenderer({ view, running = false, onStepClick, selectedStepId, onDeliverableClick, onTaskClick, onSubagentClick, onAttachmentsClick, onInteractionResume, agentIcon, agentName, modelName, compactProcess = false, agentPreparing = false }: AgentWorkspaceRendererProps) {
   // 单次调用还原（排查定位）：深层组件通过 context 打开抽屉，未挂 Provider 时为 no-op
   const { openCallDetail, enabled: callDetailEnabled } = useCallDetail();
   const deliverable_files = useMemo(() => view.deliverable_files ?? [], [view.deliverable_files]);
   const task_files = useMemo(() => view.task_files ?? [], [view.task_files]);
-  // 运行中置底文案:按当前产出动态推导(工具执行 / 模型思考 / todo 阶段)
-  const runningLabel = useMemo(
-    () => deriveRunningLabel(view, agentName, modelName),
-    [view, agentName, modelName],
-  );
+  // 运行中置底文案:agent_preparing 期间优先显示"正在启动 Agent",
+  // Agent 产出内容后按当前产出动态推导(工具执行 / 模型思考 / todo 阶段)
+  const runningLabel = useMemo(() => {
+    if (agentPreparing) return '正在启动 Agent…';
+    return deriveRunningLabel(view, agentName, modelName);
+  }, [agentPreparing, view, agentName, modelName]);
   // 用户头像数据:localStorage 一次性读取(全 feed 共享,避免每个 UserBubble 重复 parse)
   const userInfo = useMemo(() => {
     try {

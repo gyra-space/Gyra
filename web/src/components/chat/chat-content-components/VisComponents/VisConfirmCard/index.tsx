@@ -213,17 +213,36 @@ const getCurrentUser = () => {
   }
 };
 
+// 本地已确认标记:按 request_id 记录,避免服务端确认记录缺失/未落库时,
+// 同一张确认卡片在刷新/重渲染后重新变回可交互态(「反复出来」)。
+// 每个新的 ask_user 都有新的 request_id,不会误伤新确认。
+const ANSWERED_STORAGE_KEY = 'drsk-confirm-answered';
+
+const getAnsweredSet = (): Set<string> => {
+  try {
+    const raw = localStorage.getItem(ANSWERED_STORAGE_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+};
+
+const markAnswered = (requestId?: string) => {
+  if (!requestId) return;
+  try {
+    const set = getAnsweredSet();
+    set.add(requestId);
+    localStorage.setItem(ANSWERED_STORAGE_KEY, JSON.stringify(Array.from(set)));
+  } catch {
+    /* ignore */
+  }
+};
+
+const isAnsweredLocally = (requestId?: string) =>
+  !!requestId && getAnsweredSet().has(requestId);
+
 const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onConfirm }) => {
   const { message } = App.useApp();
-  const [disabled, setDisabled] = useState<boolean>(!!data.disabled);
-  const [selectedOption, setSelectedOption] = useState<string | null>(null);
-  const [inputValue, setInputValue] = useState<string>('');
-  const [optionInputValue, setOptionInputValue] = useState<string>('');
-  const [submitting, setSubmitting] = useState(false);
-  const [isCustomInputMode, setIsCustomInputMode] = useState<boolean>(false);
-  const [confirmRecord, setConfirmRecord] = useState<ConfirmRecordData | null>(null);
-  const [statusLoaded, setStatusLoaded] = useState<boolean>(false);
-
   const { handleChat, appInfo, scrollRef } = useContext(ChatContentContext);
 
   const extra = data.extra || {};
@@ -233,9 +252,22 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
     extra.approval_message_id ||
     extra.message_id;
 
+  const [disabled, setDisabled] = useState<boolean>(!!data.disabled);
+  const [selectedOption, setSelectedOption] = useState<string | null>(null);
+  const [inputValue, setInputValue] = useState<string>('');
+  const [optionInputValue, setOptionInputValue] = useState<string>('');
+  const [submitting, setSubmitting] = useState(false);
+  const [isCustomInputMode, setIsCustomInputMode] = useState<boolean>(false);
+  const [confirmRecord, setConfirmRecord] = useState<ConfirmRecordData | null>(null);
+  const [statusLoaded, setStatusLoaded] = useState<boolean>(false);
+  const [answeredLocally, setAnsweredLocally] = useState<boolean>(
+    () => !!requestId && isAnsweredLocally(requestId),
+  );
+
   // 服务端已确认记录作为唯一事实源：一旦确认（本组件提交或历史回放），卡片即只读，
   // 不能再次交互 —— 解决"反复刷新渲染仍可重复确认"的问题。
-  const isConfirmedState = disabled || !!confirmRecord;
+  // 本地 answeredLocally 作为兜底：服务端记录缺失/未落库时，同一 request_id 仍保持只读。
+  const isConfirmedState = disabled || !!confirmRecord || answeredLocally;
   const interactionDisabled = isConfirmedState || (!!requestId && !statusLoaded);
 
   useEffect(() => {
@@ -361,6 +393,11 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
 
     setSubmitting(true);
 
+    // 用户已确认：立即在本地标记为已确认，避免后续 respond/handleChat 失败时
+    // 卡片重新变回可交互态（刷新后反复出现）。
+    markAnswered(requestId);
+    setAnsweredLocally(true);
+
     const user = getCurrentUser();
     const responder = {
       user_no: user?.user_no || '',
@@ -414,6 +451,8 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
             const json = await res.json().catch(() => null);
             if (json?.record) setConfirmRecord(json.record);
             setDisabled(true);
+            markAnswered(requestId);
+            setAnsweredLocally(true);
             message.info('This confirmation has already been submitted.');
             return;
           }
