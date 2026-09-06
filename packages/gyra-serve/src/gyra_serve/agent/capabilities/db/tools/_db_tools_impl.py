@@ -183,6 +183,206 @@ def _auto_resolve_datasource(agent: Any, context: Any = None) -> Tuple[Any, Opti
     return None, None
 
 
+_VIEW_PROBE_LIMIT = 5
+
+
+def _col_name(col) -> str:
+    """从列元数据对象中取列名（兼容 dict 与 sqlalchemy Column）。"""
+    if isinstance(col, dict):
+        return str(col.get("name", ""))
+    return str(col)
+
+
+def _quote_table_name(connector, name: str) -> str:
+    """按段引用表名，兼容多 schema（owner.table）前缀与已引号标识符。"""
+    s = str(name).strip()
+    if not s:
+        return s
+    if (
+        (s.startswith('"') and s.endswith('"'))
+        or (s.startswith("`") and s.endswith("`"))
+        or (s.startswith("[") and s.endswith("]"))
+    ):
+        return s
+    parts = [p for p in s.split(".") if p]
+    return ".".join(connector.quote_identifier(p) for p in parts)
+
+
+def _get_view_names(connector) -> set:
+    """尽力枚举数据库视图名（无能力或失败时返回空集）。"""
+    inspector = getattr(connector, "_inspector", None)
+    if inspector is None:
+        return set()
+    schema = getattr(connector, "_schema", None)
+    if not schema:
+        try:
+            schema = connector._get_schema_for_inspection()
+        except Exception:  # noqa: BLE001
+            schema = None
+    fn = getattr(inspector, "get_view_names", None)
+    if fn is None:
+        return set()
+    try:
+        return set(str(v) for v in (fn(schema=schema) or []) if v)
+    except TypeError:
+        try:
+            return set(str(v) for v in (fn() or []) if v)
+        except Exception:  # noqa: BLE001
+            return set()
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _get_view_definition(connector, name: str) -> str:
+    """尽力获取视图定义 SQL（无能力或失败时返回空串）。"""
+    inspector = getattr(connector, "_inspector", None)
+    if inspector is None:
+        return ""
+    fn = getattr(inspector, "get_view_definition", None)
+    if fn is None:
+        return ""
+    try:
+        return str(fn(name) or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _extract_base_tables(definition: str) -> List[str]:
+    """从视图定义 SQL 中粗略提取底层的基表名（去重，最多 8 个）。"""
+    if not definition:
+        return []
+    found = re.findall(
+        r"\b(?:from|join)\s+([A-Za-z_][\w.]*)", definition, re.IGNORECASE
+    )
+    seen: List[str] = []
+    for t in found:
+        c = t.strip()
+        low = c.lower()
+        if c and low not in {"select", "where", "dual", "union"}:
+            if c not in seen:
+                seen.append(c)
+    return seen[:8]
+
+
+def _probe_view_spec(connector, names: List[str]) -> str:
+    """对 get_table_spec 覆盖不到的对象（主要是视图）做低成本 LIMIT 采样探查。
+
+    视图/未收录对象不在 spec 文档中，也不在 metadata.reflect 的 sorted_tables 里，
+    ``connector.get_table_info`` 会返回空或抛「not found in database」。这里是兜底：
+    用 ``SELECT * ... LIMIT n`` 采样列结构（带超时与行数上限）；采样失败时返回可读的
+    降级提示，若确认是视图则尝试推荐底层基表，供 Agent 改用基表重建语义资产。
+    """
+    from gyra._private.config import Config
+    from gyra_serve.sql_guard.safe_exec import (
+        apply_select_limit,
+        run_select_with_limits,
+    )
+
+    CFG = Config()
+    dialect = getattr(connector, "dialect", "") or ""
+    view_names = _get_view_names(connector)
+    limit = min(CFG.SQL_MAX_ROWS or _VIEW_PROBE_LIMIT, _VIEW_PROBE_LIMIT)
+
+    parts: List[str] = []
+    for name in names:
+        quoted = _quote_table_name(connector, name)
+        base = str(name).split(".")[-1]
+        is_view = base in view_names
+
+        columns_meta: List = []
+        try:
+            columns_meta = list(connector.get_columns(name) or [])
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[get_table_spec] get_columns({name}) failed: {e}")
+
+        result = []
+        truncated = False
+        error = None
+        try:
+            sample_sql = f"SELECT * FROM {quoted}"
+            sample_sql = apply_select_limit(sample_sql, dialect, limit)
+            result, truncated = run_select_with_limits(
+                connector, sample_sql, timeout=CFG.SQL_QUERY_TIMEOUT, max_rows=limit
+            )
+        except TimeoutError:
+            error = f"查询超时({CFG.SQL_QUERY_TIMEOUT}s)"
+        except Exception as e:  # noqa: BLE001
+            error = str(e)
+
+        cols = (
+            list(result[0])
+            if result and len(result) > 0 and result[0]
+            else []
+        )
+        if not cols and columns_meta:
+            cols = [_col_name(c) for c in columns_meta]
+        rows = (
+            [list(r) for r in result[1:]]
+            if result and len(result) > 1
+            else []
+        )
+
+        if error is None and cols:
+            lines = [f"## Object: {name}"]
+            if is_view:
+                lines.append("Type: VIEW")
+            if truncated:
+                lines.append("Note: 采样已按上限截断（仅用于探查结构）")
+            if columns_meta:
+                col_lines = []
+                for c in columns_meta[:50]:
+                    cn = _col_name(c)
+                    ct = str(c.get("type", "")) if isinstance(c, dict) else ""
+                    cm = c.get("comment", "") if isinstance(c, dict) else ""
+                    suffix = f"  -- {cm}" if cm else ""
+                    col_lines.append(f"  - {cn}: {ct}{suffix}")
+                if col_lines:
+                    lines.append("Columns:")
+                    lines.extend(col_lines)
+            else:
+                lines.append(
+                    "Columns: " + ", ".join(str(c) for c in cols[:50])
+                )
+            if rows:
+                lines.append(f"Sample data ({len(rows)} rows):")
+                if cols:
+                    lines.append(" | ".join(str(c) for c in cols[:30]))
+                for row in rows[:5]:
+                    lines.append(
+                        " | ".join(str(v)[:60] for v in row[:30])
+                    )
+            parts.append("\n".join(lines))
+            continue
+
+        lines = [f"## Object: {name}"]
+        if is_view:
+            lines.append("Type: VIEW")
+            definition = _get_view_definition(connector, name)
+            base_tables = _extract_base_tables(definition)
+            reason = error or "无法查询"
+            lines.append(
+                f"⚠ 该视图无法查询（{reason}），可能底层基表缺失/无权限/定义无效。"
+            )
+            if base_tables:
+                lines.append(
+                    "建议改用底层基表: " + ", ".join(base_tables)
+                    + "，或直接对基表用 get_table_spec 读取结构。"
+                )
+            else:
+                lines.append(
+                    "建议改用其底层基表重建语义资产，或联系数据库管理员核对视图定义。"
+                )
+        else:
+            lines.append(
+                f"⚠ 对象 {name} 无法探查（{error or '未获取到列信息'}），"
+                "可能不存在或无权限，或不在当前 schema 下。"
+            )
+            lines.append("请用 list_tables 确认正确对象名后重试。")
+        parts.append("\n".join(lines))
+
+    return "\n\n".join(parts)
+
+
 @tool(
     "get_table_spec",
     description=(
@@ -383,8 +583,26 @@ async def get_table_spec(
                             return rec_header + specs
                     # Fallback
                     connector = _get_connector()
+                    if connector is None:
+                        return (
+                            rec_header
+                            + "Error: Cannot get database connector for "
+                            f"datasource_id={ds_id}, db_name={db_name}."
+                        )
+                    try:
+                        spec_text = await asyncio.to_thread(
+                            connector.get_table_info, rec_names
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            f"[get_table_spec] get_table_info failed "
+                            f"for {rec_names}: {e}"
+                        )
+                        spec_text = ""
+                    if spec_text:
+                        return rec_header + spec_text
                     return rec_header + await asyncio.to_thread(
-                        connector.get_table_info, rec_names
+                        _probe_view_spec, connector, rec_names
                     )
             except ImportError:
                 pass
@@ -464,7 +682,17 @@ async def get_table_spec(
         connector = _get_connector()
         if connector is None:
             return f"Error: Cannot get database connector for datasource_id={ds_id}, db_name={resolved_db_name}"
-        return await asyncio.to_thread(connector.get_table_info, names)
+        try:
+            spec_text = await asyncio.to_thread(connector.get_table_info, names)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[get_table_spec] get_table_info failed for {names}: {e}"
+            )
+            spec_text = ""
+        if spec_text:
+            return spec_text
+        # 视图/未收录对象:低成本探查列结构 + 失败降级提示
+        return await asyncio.to_thread(_probe_view_spec, connector, names)
 
     except Exception as e:
         logger.error(f"Error getting table spec: {e}")

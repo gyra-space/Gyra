@@ -365,6 +365,7 @@ class AlignmentDecideRequest(BaseModel):
     model_config = ConfigDict(title="EcpAlignmentDecideRequest")
 
     user_id: Optional[str] = None
+    workspace_id: Optional[str] = None
 
 
 class MissRecordVO(BaseModel):

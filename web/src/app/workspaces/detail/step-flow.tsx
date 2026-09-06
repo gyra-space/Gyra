@@ -13,7 +13,7 @@
  * - 交付文件 / 回答由 feed 主视觉渲染,不在本组件职责内。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   CodeOutlined,
   CompassOutlined,
@@ -107,6 +107,23 @@ function buildDurations(phases: ExecutionPhase[]): Map<string, number> {
     }
     const next = i < flat.length - 1 ? tsToMs(flat[i + 1].ts) : null;
     if (next !== null && next > cur) map.set(flat[i].id, next - cur);
+  }
+  return map;
+}
+
+/** 直接对扁平步骤数组计算耗时(供 RoundProcessBar 整轮合并场景,无需包装成 phase) */
+function buildStepDurations(steps: WorkspaceExecutionStep[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (let i = 0; i < steps.length; i++) {
+    const cur = tsToMs(steps[i].ts);
+    if (cur === null) continue;
+    const prev = i > 0 ? tsToMs(steps[i - 1].ts) : null;
+    if (prev !== null && cur > prev) {
+      map.set(steps[i].id, cur - prev);
+      continue;
+    }
+    const next = i < steps.length - 1 ? tsToMs(steps[i + 1].ts) : null;
+    if (next !== null && next > cur) map.set(steps[i].id, next - cur);
   }
   return map;
 }
@@ -340,6 +357,120 @@ function PhaseGroup({
       {open && !empty && (
         <div className="ws-flow-group__steps">
           <PhaseSteps steps={phase.steps} durations={durations} onStepClick={onStepClick} selectedStepId={selectedStepId} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * RoundProcessBar —— 简洁模式「整轮过程合并成一行」折叠条。
+ *
+ * 与按批次攒 StepFlow 的区别:一轮问答里过程步骤可能被中途文本/回复打断,
+ * 逐批渲染会出现多个「Agent 思考」碎块。本组件把整轮过程合并成一行折叠壳:
+ * - 折叠态:一行「Agent 思考 · 最后一步标题/共 N 步 · 耗时」;
+ * - 展开态:与原平铺 StepFlow 完全一致 —— 旁白(narration)、深度思考(thinking)、
+ *   工具步骤按真实时序全部保留,只是默认折叠、点击展开;
+ * - 步骤详情查看由 onStepClick 决定(仅 owner/contributor 传入,viewer 只读)。
+ */
+export function RoundProcessBar({
+  steps,
+  running,
+  onStepClick,
+  selectedStepId,
+}: {
+  steps: WorkspaceExecutionStep[];
+  running: boolean;
+  onStepClick?: (s: WorkspaceExecutionStep) => void;
+  selectedStepId?: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const durations = useMemo(() => buildStepDurations(steps), [steps]);
+  // 步数统计只算工具步骤(过滤 thinking 与过程性 answer 旁白,它们不算执行步骤)
+  const toolSteps = useMemo(
+    () => steps.filter((s) => s.type !== 'thinking' && s.type !== 'answer'),
+    [steps],
+  );
+  const last = useMemo(() => {
+    // 实时动作只从工具/思考里取,过程性 answer 旁白不作为「正在执行」的动作
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (steps[i].type === 'answer') continue;
+      if (steps[i].status === 'running') return steps[i];
+    }
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (steps[i].type !== 'answer') return steps[i];
+    }
+    return null;
+  }, [steps]);
+  const failed = steps.some((s) => s.status === 'failed');
+  const totalDur = toolSteps.reduce((sum, s) => sum + (durations.get(s.id) ?? 0), 0);
+
+  // TEMP-DEBUG:定位运行中折叠条为何不滚动
+  if (typeof window !== 'undefined') {
+    // eslint-disable-next-line no-console
+    console.log('[RoundProcessBar]', { running, steps: steps.length, runningCount: steps.filter((s) => s.status === 'running').length, lastIsRunning: last?.status === 'running', lastTitle: last?.title });
+  }
+
+  // 运行中每秒跳动的耗时计时:长步骤(如 SubAgent 重试 35s+)期间标题不变,
+  // 计时秒数持续增长给用户明确的「正在执行」活信号。
+  const [nowTs, setNowTs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    setNowTs(Date.now());
+    const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  // 计时起点:首个带 ts 的步骤(本轮开始执行的时刻)
+  const elapsedMs = useMemo(() => {
+    if (!running) return 0;
+    for (const s of steps) {
+      const m = s.ts ? tsToMs(s.ts) : null;
+      if (m !== null) return Math.max(0, nowTs - m);
+    }
+    return 0;
+  }, [running, steps, nowTs]);
+
+  // 运行中实时滚动当前动作:优先最后一个 running 步骤;否则取最后一项动作(thinking 用末行摘要),
+  // 保证执行过程始终有「正在做 xx」的活信号,而不是停在静态计数。
+  const preview = useMemo(() => {
+    if (!running) return null;
+    if (last && last.status === 'running') {
+      if (last.type === 'thinking') {
+        const lines = (last.output || '').split('\n').map((l) => l.trim()).filter(Boolean);
+        return lines.length ? lines[lines.length - 1] : last.title;
+      }
+      return last.title;
+    }
+    return last ? last.title : null;
+  }, [running, last]);
+  const meta = running
+    ? `${toolSteps.length} 步`
+    : `共 ${toolSteps.length} 步${totalDur > 0 ? ` · ${fmtDuration(totalDur)}` : ''}`;
+
+  if (!steps.length) return null;
+
+  return (
+    <div className={`ws-flowline${running ? ' ws-flowline--running' : ''}${failed ? ' ws-flowline--failed' : ''}`}>
+      <button
+        type="button"
+        className="ws-flowline__head"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <img src="/icons/thinking.svg" className="ws-flowline__icon" alt="" />
+        <span className="ws-flowline__name">Agent 思考</span>
+        {preview && <span className="ws-flowline__preview">· {preview}</span>}
+        {!running && <span className="ws-flowline__meta">{meta}</span>}
+        {running && <span className="ws-capsule-step__spin" aria-label="运行中" />}
+        {running && elapsedMs > 0 && <span className="ws-flowline__meta">{fmtDuration(elapsedMs)}</span>}
+        {failed && !running && <span className="ws-capsule-step__failed-label">失败</span>}
+        <span className={`ws-cchev ws-cchev--sm${open ? ' ws-cchev--up' : ''}`} aria-hidden />
+      </button>
+      {open && (
+        <div className={`ws-flowline__steps${onStepClick ? '' : ' ws-flowline__steps--readonly'}`}>
+          {/* 展开态与原平铺 StepFlow 一致:旁白/深度思考/工具步骤按时序全保留。
+              answer 由后端保证只含「发给 human 的最终答复」,不进折叠条,正文渲染。 */}
+          <PhaseSteps steps={steps} durations={durations} onStepClick={onStepClick} selectedStepId={selectedStepId} />
         </div>
       )}
     </div>

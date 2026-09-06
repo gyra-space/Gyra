@@ -11,13 +11,29 @@ skill_publish agent tool 的共享实现,与 REST ``/upload`` / ``/upload_folder
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# 技能目录根部不应出现的归档类杂物(skill-creator 打包产物等),
+# 出现即提示"发布范围可能过大"(agent 常把技能散写在工作目录根部)
+_ARCHIVE_EXTS = (".zip", ".tar", ".gz", ".tgz", ".7z", ".rar")
 
 
 def _deny(error: str, code: str) -> Dict[str, Any]:
     return {"success": False, "error": error, "code": code}
+
+
+def _scan_root_archives(skill_path: str) -> List[str]:
+    """扫描技能目录根部的归档文件,作为发布范围体检信号。"""
+    try:
+        return [
+            entry.name
+            for entry in os.scandir(skill_path)
+            if entry.is_file() and entry.name.lower().endswith(_ARCHIVE_EXTS)
+        ]
+    except OSError:
+        return []
 
 
 def publish_skill_from_dir(
@@ -122,6 +138,20 @@ def publish_skill_from_dir(
         operator or "unknown", skill_code, action, skill_path,
     )
 
+    warnings: list = []
+    root_archives = _scan_root_archives(skill_path)
+    if root_archives:
+        warnings.append(
+            "技能目录根部混入归档文件({}),已一并发布。若它们不是技能内容,"
+            "请把技能收拢到独立子目录 <skill-name>/ 后仅发布该子目录".format(
+                ", ".join(root_archives[:5])
+            )
+        )
+        logger.warning(
+            "[skill_publish] skill_code=%s 根部混入归档: %s",
+            skill_code, root_archives,
+        )
+
     if workspace_id:
         try:
             emit_workspace_event(
@@ -140,7 +170,7 @@ def publish_skill_from_dir(
                 exc_info=True,
             )
 
-    return {
+    result = {
         "success": True,
         "skill_code": skill_code,
         "name": skill_name,
@@ -153,3 +183,7 @@ def publish_skill_from_dir(
             f"(code={skill_code}),可在技能资源库查看"
         ),
     }
+    if warnings:
+        result["warnings"] = warnings
+        result["message"] += ";注意:" + ";".join(warnings)
+    return result

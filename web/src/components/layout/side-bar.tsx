@@ -10,7 +10,6 @@ import Icon, {
   DesktopOutlined,
   FileTextOutlined,
   GlobalOutlined,
-  HistoryOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   MessageOutlined,
@@ -33,12 +32,11 @@ import 'moment/locale/zh-cn';
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ModelSvg from '../icons/model-svg';
 import UserBar from './user-bar';
 import { useUserPermissions } from '@/hooks/use-user-permissions';
-import HistoryArchivePanel from './history-archive-panel';
 
 type SettingItem = {
   key: string;
@@ -71,23 +69,7 @@ function SideBar() {
   const { t, i18n } = useTranslation();
   const [logo, setLogo] = useState<string>('/logo_zh_latest.png');
   const [closedSections, setClosedSections] = useState<Record<string, boolean>>({});
-  // 历史记录浮层档案面板开关
-  const [historyOpen, setHistoryOpen] = useState(false);
-  // 打开历史面板前的菜单展开态:打开时折叠主菜单腾出空间,关闭时恢复
-  const prevMenuExpandRef = useRef<boolean | null>(null);
   const { hasResourceRead, hasPermission } = useUserPermissions();
-
-  const handleOpenHistory = useCallback(() => {
-    prevMenuExpandRef.current = !!isMenuExpand;
-    if (isMenuExpand) setIsMenuExpand(false);
-    setHistoryOpen(true);
-  }, [isMenuExpand, setIsMenuExpand]);
-
-  const handleCloseHistory = useCallback(() => {
-    setHistoryOpen(false);
-    if (prevMenuExpandRef.current) setIsMenuExpand(true);
-    prevMenuExpandRef.current = null;
-  }, [setIsMenuExpand]);
 
   const handleToggleMenu = useCallback(() => {
     setIsMenuExpand(!isMenuExpand);
@@ -187,7 +169,7 @@ function SideBar() {
   );
 
   const navSections = useMemo(() => {
-    // ── 核心入口:场景空间 / 历史记录 ──
+    // ── 核心入口:场景空间 ──
     const mainItems: RouteItem[] = [
       {
         key: 'workspaces',
@@ -195,13 +177,6 @@ function SideBar() {
         isActive: pathname.startsWith('/workspaces'),
         icon: navIcon(<TeamOutlined />),
         path: '/workspaces',
-      },
-      {
-        key: 'history',
-        name: t('chat_history'),
-        isActive: historyOpen,
-        icon: navIcon(<HistoryOutlined />),
-        onClick: handleOpenHistory,
       },
     ];
 
@@ -265,13 +240,13 @@ function SideBar() {
         icon: navIcon(<BookOutlined />),
         path: '/knowledge-vault',
       }] : []),
-      {
+      ...(hasResourceRead('ecp') ? [{
         key: 'ecp',
         name: t('ecp_page_title'),
         isActive: pathname.startsWith('/ecp'),
         icon: navIcon(<DeploymentUnitOutlined />),
         path: '/ecp',
-      },
+      }] : []),
       ...(hasResourceRead('database') || hasResourceRead('tool') ? [{
         key: 'database',
         name: t('Database'),
@@ -340,7 +315,7 @@ function SideBar() {
       { key: 'assets', label: t('assets'), icon: navIcon(<DatabaseOutlined />), items: assetItems, defaultOpen: false },
       { key: 'settings', label: t('settings_group'), icon: navIcon(<SettingOutlined />), items: settingItems, defaultOpen: false },
     ].filter(s => s.items.length > 0);
-  }, [t, i18n.language, pathname, hasResourceRead, hasPermission, historyOpen, handleOpenHistory]);
+  }, [t, i18n.language, pathname, hasResourceRead, hasPermission]);
 
   useEffect(() => {
     const language = i18n.language;
@@ -463,7 +438,6 @@ function SideBar() {
             ))}
         </div>
         {/* 历史记录浮层档案面板(折叠态锚定 64px 图标栏右侧) */}
-        <HistoryArchivePanel open={historyOpen} onClose={handleCloseHistory} anchorLeft={64} />
       </div>
     );
   }
@@ -581,8 +555,6 @@ function SideBar() {
           ))}
         </div>
       </div>
-      {/* 历史记录浮层档案面板(展开态锚定 260px 侧边栏右侧) */}
-      <HistoryArchivePanel open={historyOpen} onClose={handleCloseHistory} anchorLeft={260} />
     </div>
   );
 }

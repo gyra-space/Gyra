@@ -4,7 +4,7 @@ export const VisConfirmCardWrap = styled.div`
   @keyframes confirmOptionIn {
     from {
       opacity: 0;
-      transform: translateY(4px);
+      transform: translateY(6px);
     }
     to {
       opacity: 1;
@@ -14,90 +14,108 @@ export const VisConfirmCardWrap = styled.div`
 
   width: 100%;
   min-width: 100px;
-  padding: 6px;
+  padding: 4px 0;
 
   .card-content {
     width: 100%;
     min-width: 100px;
-    white-space: pre-wrap;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    align-items: flex-start;
-    background-color: var(--bg-elev);
-    padding: 16px;
+    align-items: stretch;
+    background: var(--bg-elev);
     border: 1px solid var(--line-soft);
     border-radius: var(--r-lg);
     box-shadow: var(--sh-card);
+    padding: 16px 18px;
+    transition: border-color var(--transition), box-shadow var(--transition);
   }
 
-  /* ===== Header: icon chip + title + status pill ===== */
+  /* 待处理态:左侧品牌色指示条,一眼识别「需要我操作」 */
+  &:not(.is-confirmed) .card-content {
+    border-left: 3px solid var(--brand);
+  }
+
+  &.is-confirmed .card-content {
+    border-left: 3px solid rgba(var(--mcp-success-rgb), 0.55);
+  }
+
+  /* ===== Header:标题 + 状态 pill(去掉图标徽章与分割线,更克制) ===== */
   .confirm-header {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    align-items: flex-start;
+    gap: 12px;
     width: 100%;
+    margin-bottom: 4px;
   }
 
-  .confirm-header-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: 10px;
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 15px;
-    color: var(--brand);
-    background: var(--brand-soft);
-    transition:
-      background-color var(--transition),
-      color var(--transition);
-
-    &.is-confirmed {
-      color: var(--success);
-      background: rgba(var(--mcp-success-rgb), 0.12);
-    }
+  .confirm-header-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
   }
 
   .confirm-title {
     font-size: var(--fs-title);
     color: var(--ink-900);
-    line-height: 24px;
+    line-height: 1.4;
     font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .confirm-subtitle {
+    font-size: var(--fs-aux);
+    color: var(--ink-400);
+    line-height: 1.4;
   }
 
   .confirm-pill {
     margin-left: auto;
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font-size: var(--fs-aux);
     font-weight: 500;
     color: var(--brand);
     background: var(--brand-soft);
+    border: 1px solid rgba(var(--brand-rgb), 0.16);
     padding: 3px 10px;
     border-radius: 999px;
     white-space: nowrap;
+    line-height: 1.4;
+
+    .anticon {
+      font-size: 12px;
+    }
   }
 
   .confirm-markdown {
     width: 100%;
+    font-size: var(--fs-body);
+    color: var(--ink-700);
+    line-height: 1.6;
+
+    &:empty {
+      display: none;
+    }
   }
 
   .option-section {
     width: 100%;
-    margin-top: 2px;
+    margin-top: 12px;
   }
 
   .confirm-question {
     width: 100%;
-    font-size: var(--fs-title);
+    font-size: var(--fs-body);
     font-weight: 600;
     color: var(--ink-900);
     line-height: 1.5;
     margin-bottom: 12px;
   }
 
-  /* ===== Options: radio-affordance cards ===== */
+  /* ===== 选项列表:卡片式单选,左侧选中圆点 + 右侧对勾 ===== */
   .option-list {
     width: 100%;
     display: flex;
@@ -105,17 +123,24 @@ export const VisConfirmCardWrap = styled.div`
     gap: 8px;
   }
 
+  .option-row {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
   .option-item {
+    position: relative;
     width: 100%;
     display: flex;
     align-items: flex-start;
-    gap: 10px;
+    gap: 12px;
     padding: 12px 14px;
     text-align: left;
     font-size: var(--fs-body);
     line-height: 1.5;
     color: var(--ink-700);
-    background-color: var(--bg-elev);
+    background: var(--bg-elev);
     border: 1px solid var(--line);
     border-radius: var(--r-md);
     cursor: pointer;
@@ -127,8 +152,8 @@ export const VisConfirmCardWrap = styled.div`
       transform var(--transition);
 
     &:hover:not(:disabled) {
-      border-color: var(--brand);
-      background-color: var(--brand-soft);
+      border-color: rgba(var(--brand-rgb), 0.55);
+      background: var(--brand-soft);
       transform: translateY(-1px);
       box-shadow: var(--sh-glow);
     }
@@ -140,8 +165,9 @@ export const VisConfirmCardWrap = styled.div`
 
     &.is-selected {
       border-color: var(--brand);
-      background-color: var(--brand-soft);
+      background: var(--brand-soft);
       color: var(--ink-900);
+      box-shadow: inset 0 0 0 1px var(--brand);
 
       .option-label {
         color: var(--ink-900);
@@ -153,33 +179,86 @@ export const VisConfirmCardWrap = styled.div`
     }
 
     &:disabled:not(.is-selected) {
-      opacity: 0.5;
+      opacity: 0.55;
     }
   }
 
   .option-item.custom-input-item {
     border-style: dashed;
+    border-color: var(--line);
+
+    &:hover:not(:disabled),
+    &.is-selected {
+      border-style: solid;
+    }
   }
 
-  /* hollow radio; fills with the brand check when selected */
+  /* 单选圆点:空心圈,选中时内填品牌色圆点(替代原本突兀的大对勾) */
   .option-radio {
     flex-shrink: 0;
-    margin-top: 1px;
-    width: 18px;
-    height: 18px;
+    margin-top: 2px;
+    width: 16px;
+    height: 16px;
     border-radius: 999px;
     border: 1.5px solid var(--ink-300);
-    color: var(--brand);
-    font-size: 15px;
-    line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     transition: border-color var(--transition);
   }
 
+  .option-radio-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--brand);
+    transform: scale(0);
+    transition: transform 0.18s var(--ease-expo);
+  }
+
   .option-item.is-selected .option-radio {
-    border-color: transparent;
+    border-color: var(--brand);
+  }
+
+  .option-item.is-selected .option-radio-dot {
+    transform: scale(1);
+  }
+
+  /* 自定义回复项左侧用铅笔图标替代圆点,语义更准 */
+  .option-custom-icon {
+    flex-shrink: 0;
+    margin-top: 2px;
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--ink-400);
+    transition: color var(--transition);
+  }
+
+  .option-item.is-selected .option-custom-icon {
+    color: var(--brand);
+  }
+
+  /* 选中对勾:右侧收尾,默认隐藏,选中淡入 */
+  .option-check {
+    margin-left: auto;
+    flex-shrink: 0;
+    margin-top: 1px;
+    font-size: 15px;
+    color: var(--brand);
+    opacity: 0;
+    transform: scale(0.6);
+    transition:
+      opacity 0.18s var(--ease-expo),
+      transform 0.18s var(--ease-expo);
+  }
+
+  .option-item.is-selected .option-check {
+    opacity: 1;
+    transform: scale(1);
   }
 
   .option-label-wrap {
@@ -187,6 +266,7 @@ export const VisConfirmCardWrap = styled.div`
     flex-direction: column;
     gap: 2px;
     min-width: 0;
+    flex: 1;
   }
 
   .option-label {
@@ -197,6 +277,7 @@ export const VisConfirmCardWrap = styled.div`
   .option-desc {
     font-size: var(--fs-aux);
     color: var(--ink-400);
+    line-height: 1.45;
   }
 
   .option-hint {
@@ -204,30 +285,24 @@ export const VisConfirmCardWrap = styled.div`
     color: var(--brand);
   }
 
+  /* 选中项下方展开的补充输入区,与选项卡片视觉成组 */
   .option-input {
-    margin-top: 8px;
-    padding-left: 4px;
+    margin: 6px 0 2px 28px;
+    animation: confirmOptionIn 0.22s var(--ease-expo) both;
 
     .ant-input {
       font-size: var(--fs-body);
+      border-radius: var(--r-sm);
     }
   }
 
-  .custom-input-area {
-    margin-top: 12px;
-
-    .ant-input {
-      font-size: var(--fs-body);
-    }
-  }
-
-  /* ===== Confirmed record: layered, trust-elevated ===== */
+  /* ===== 已确认记录:分层、可信赖的收尾态 ===== */
   .confirm-record {
     width: 100%;
     display: flex;
     flex-direction: column;
     border: 1px solid rgba(var(--mcp-success-rgb), 0.28);
-    border-radius: var(--r-lg);
+    border-radius: var(--r-md);
     background: linear-gradient(
       180deg,
       rgba(var(--mcp-success-rgb), 0.06),
@@ -313,13 +388,14 @@ export const VisConfirmCardWrap = styled.div`
     }
   }
 
-  /* ===== Footer ===== */
+  /* ===== Footer:无边框分隔,呼吸感留白 + 主按钮 ===== */
   .confirm-footer {
     width: 100%;
     min-height: 36px;
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    margin-top: 16px;
   }
 
   .confirm-button {

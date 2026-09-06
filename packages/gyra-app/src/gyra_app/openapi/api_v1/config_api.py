@@ -314,7 +314,9 @@ def register_embedding_model(
 
 
 @router.get("/current")
-async def get_current_config():
+async def get_current_config(
+    user: UserRequest = Depends(require_permission("system", "read")),
+):
     try:
         from gyra_app.config_storage.agent_llm_db_storage import load_agent_llm_dict
 
@@ -338,7 +340,9 @@ async def get_current_config():
 
 
 @router.get("/path")
-async def get_config_path():
+async def get_config_path(
+    user: UserRequest = Depends(require_permission("system", "read")),
+):
     """获取当前配置文件路径"""
     manager = get_config_manager()
     path = manager.get_config_path()
@@ -446,7 +450,9 @@ async def update_agent_llm_config(
 
 
 @router.get("/schema")
-async def get_config_schema():
+async def get_config_schema(
+    user: UserRequest = Depends(require_permission("system", "read")),
+):
     """获取配置 Schema（用于前端表单生成）"""
     from gyra_core.config import AppConfig, AgentConfig, ModelConfig, SandboxConfig
 
@@ -676,7 +682,9 @@ async def delete_agent(
 
 
 @router.get("/sandbox")
-async def get_sandbox_config():
+async def get_sandbox_config(
+    user: UserRequest = Depends(require_permission("system", "read")),
+):
     """获取沙箱配置"""
     manager = get_config_manager()
     config = manager.get()
@@ -684,7 +692,10 @@ async def get_sandbox_config():
 
 
 @router.post("/sandbox")
-async def update_sandbox_config(request: SandboxConfigRequest):
+async def update_sandbox_config(
+    request: SandboxConfigRequest,
+    user: UserRequest = Depends(require_permission("system", "write")),
+):
     """更新沙箱配置"""
     try:
         manager = get_config_manager()
@@ -728,7 +739,9 @@ async def update_sandbox_config(request: SandboxConfigRequest):
 
 
 @router.post("/validate")
-async def validate_config():
+async def validate_config(
+    user: UserRequest = Depends(require_permission("system", "read")),
+):
     """验证当前配置"""
     try:
         manager = get_config_manager()
@@ -752,7 +765,9 @@ async def validate_config():
 
 
 @router.post("/reload")
-async def reload_config():
+async def reload_config(
+    user: UserRequest = Depends(require_permission("system", "admin")),
+):
     """重新加载配置（从文件重新读取）"""
     try:
         manager = get_config_manager()
@@ -777,7 +792,9 @@ async def reload_config():
 
 
 @router.post("/refresh-model-cache")
-async def refresh_model_cache():
+async def refresh_model_cache(
+    user: UserRequest = Depends(require_permission("model", "manage")),
+):
     """手动刷新 ModelConfigCache
 
     将当前配置中的模型注册到全局缓存，使新配置的模型立即可用

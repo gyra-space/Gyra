@@ -116,7 +116,7 @@ export default function GrantManagement() {
       return;
     }
     if (!resourceIds.length) {
-      message.error('请选择资源实例');
+      message.error('请选择资源范围');
       return;
     }
     setCreating(true);
@@ -163,12 +163,12 @@ export default function GrantManagement() {
       render: (v: string) => <Tag color="purple">{v}</Tag>,
     },
     {
-      title: '资源实例',
+      title: '资源范围',
       dataIndex: 'resource_id',
       render: (v: string, g: ResourceGrant) => (
         <Text>
           <Tag>{g.resource_type}</Tag>
-          {v}
+          {v === '*' ? '全部资源(模块级)' : v}
         </Text>
       ),
     },
@@ -233,7 +233,7 @@ export default function GrantManagement() {
 
       <Modal
         open={createOpen}
-        title="新建实例级授权"
+        title="新建授权"
         onOk={submitCreate}
         onCancel={() => setCreateOpen(false)}
         confirmLoading={creating}
@@ -254,7 +254,7 @@ export default function GrantManagement() {
             name="permission_def_id"
             label="权限"
             rules={[{ required: true, message: '请选择权限' }]}
-            extra="仅列出支持实例级授权(grantable)的权限"
+            extra="仅列出支持授权(grantable)的权限"
           >
             <Select
               showSearch
@@ -266,12 +266,16 @@ export default function GrantManagement() {
               }))}
             />
           </Form.Item>
-          <Form.Item label="资源实例" required>
+          <Form.Item
+            label="资源范围"
+            required
+            extra="选「全部资源」为模块级授权(resource_id=*),用户将获得该模块完整菜单入口"
+          >
             <ResourceSelector
               resourceType={selectedDef?.resource_type || 'agent'}
               selectedResourceIds={resourceIds}
               onChange={(ids) => setResourceIds(ids.slice(-1))}
-              allowWildcard={false}
+              allowWildcard
             />
           </Form.Item>
           <Form.Item name="expires_at" label="过期时间" extra="留空为永久授权">

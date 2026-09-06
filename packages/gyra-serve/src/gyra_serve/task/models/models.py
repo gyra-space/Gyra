@@ -59,6 +59,13 @@ class TaskEntity(Model):
     trigger_ref = Column(String(128), nullable=True)
     playbook_id = Column(Integer, nullable=True, index=True)
     playbook_version_id = Column(Integer, nullable=True)
+    # Agent Team 空间重构（Phase 1.3）：任务的执行专家（gpts_app.app_code）与
+    # 交付合约（收窄后的 playbook 表 id）。过渡期与 playbook_id 双写，
+    # playbook_id 保留一个版本周期后下线。
+    expert_app_code = Column(String(128), nullable=True, index=True,
+                             comment="执行专家（gpts_app.app_code）")
+    contract_id = Column(Integer, nullable=True, index=True,
+                         comment="交付合约 id（playbook 表收窄语义）")
     conv_session_id = Column(String(64), nullable=True, unique=True, index=True, comment="conversation session id bound to this task")
     created_by_user_id = Column(Integer, nullable=True, index=True)
     assignee_user_id = Column(Integer, nullable=True, index=True, comment="任务负责人(归属,≠待办)")
@@ -116,6 +123,8 @@ class TaskDao(BaseDao[TaskEntity, TaskRequest, TaskResponse]):
             playbook_id=entity.playbook_id,
             playbook_version_id=entity.playbook_version_id,
             conv_session_id=entity.conv_session_id,
+            expert_app_code=entity.expert_app_code,
+            contract_id=entity.contract_id,
             created_by_user_id=entity.created_by_user_id,
             assignee_user_id=entity.assignee_user_id,
             assigned_agents=_load_json(entity.assigned_agents_json) or [],
@@ -138,6 +147,8 @@ class TaskDao(BaseDao[TaskEntity, TaskRequest, TaskResponse]):
             playbook_id=entity.playbook_id,
             playbook_version_id=entity.playbook_version_id,
             conv_session_id=entity.conv_session_id,
+            expert_app_code=entity.expert_app_code,
+            contract_id=entity.contract_id,
             created_by_user_id=entity.created_by_user_id,
             assignee_user_id=entity.assignee_user_id,
             assigned_agents=_load_json(entity.assigned_agents_json) or [],
@@ -185,6 +196,12 @@ class TaskDao(BaseDao[TaskEntity, TaskRequest, TaskResponse]):
                 query = query.filter(TaskEntity.status == f.status)
             if f.type:
                 query = query.filter(TaskEntity.type == f.type)
+            if getattr(f, "triggered_by", None):
+                values = [v.strip() for v in str(f.triggered_by).split(",") if v.strip()]
+                if values:
+                    query = query.filter(TaskEntity.triggered_by.in_(values))
+            if getattr(f, "trigger_ref", None):
+                query = query.filter(TaskEntity.trigger_ref == str(f.trigger_ref))
             if getattr(f, "own_and_public_only", False):
                 # 简单页面模式可见性:自己提交的任务(created_by=本人) + 空间公共任务
                 # (订阅/触发源产生的任务);别人的对话任务(page/manual)不可见。

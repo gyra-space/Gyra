@@ -20,9 +20,9 @@ from ..api.schemas import (
     AssetRefRegisterRequest,
     AssetRefVO,
     CatalogEntryVO,
-    ConfirmRequest,
     ConfirmerCreateRequest,
     ConfirmerVO,
+    ConfirmRequest,
     DebugPreviewRequest,
     DebugPreviewVO,
     DeprecateRequest,
@@ -49,9 +49,15 @@ from ..api.schemas import (
 )
 from ..config import SERVE_SERVICE_COMPONENT_NAME, ServeConfig
 from ..service.service import Service
+from .guard import require_ecp
 
 logger = logging.getLogger(__name__)
 
+# 空间成员流程(inbox/objects/confirm)不挂 ecp 域——写操作由 service 层
+# confirmer 名单守护；控制台治理类端点逐个挂 ecp.read/ecp.manage。
+# 治理端点统一走 require_ecp:全局 ecp 域之外,派生 ECP 空间(ecp_<code>)
+# 投影到场景空间域判定(空间成员可浏览/空间管理可治理),否则空间用户打开
+# 场景空间的语义资产控制台必 403(全局角色默认不含 ecp.*)。
 router = APIRouter()
 
 global_system_app: Optional[SystemApp] = None
@@ -63,7 +69,7 @@ def get_service() -> Service:
 
 
 # ------------------------------------------------------------------ proposals
-@router.post("/objects/propose", response_model=Result[SemanticObjectVO])
+@router.post("/objects/propose", dependencies=[Depends(require_ecp("manage"))], response_model=Result[SemanticObjectVO])
 async def propose_object(
     request: ProposeRequest,
     service: Service = Depends(get_service),
@@ -86,7 +92,7 @@ async def propose_object(
         return Result.failed(msg=str(e))
 
 
-@router.post("/objects/manual", response_model=Result[SqlAddVO])
+@router.post("/objects/manual", dependencies=[Depends(require_ecp("manage"))], response_model=Result[SqlAddVO])
 async def add_from_sql(
     request: SqlAddRequest,
     service: Service = Depends(get_service),
@@ -114,7 +120,7 @@ async def add_from_sql(
 _MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024
 
 
-@router.post("/objects/manual/file", response_model=Result[GenerateProposalsTaskVO])
+@router.post("/objects/manual/file", dependencies=[Depends(require_ecp("manage"))], response_model=Result[GenerateProposalsTaskVO])
 async def import_from_file(
     file: UploadFile = File(...),
     workspace_id: Optional[str] = Form(default=None),
@@ -190,7 +196,7 @@ def _silent_unlink(path: str) -> None:
         pass
 
 
-@router.post("/proposals/generate", response_model=Result[GenerateProposalsTaskVO])
+@router.post("/proposals/generate", dependencies=[Depends(require_ecp("manage"))], response_model=Result[GenerateProposalsTaskVO])
 async def generate_proposals(
     request: GenerateProposalsRequest,
     service: Service = Depends(get_service),
@@ -212,8 +218,14 @@ async def generate_proposals(
     return Result.succ(GenerateProposalsTaskVO(task_id=task_id))
 
 
-@router.get("/proposals/tasks/{task_id}")
-async def get_proposal_task(task_id: str) -> Result[dict]:
+@router.get("/proposals/tasks/{task_id}", dependencies=[Depends(require_ecp("read"))])
+async def get_proposal_task(
+    task_id: str,
+    workspace_id: Optional[str] = Query(
+        default=None,
+        description="派生 ECP 空间 id(ecp_<code>):供 require_ecp 空间投影判定",
+    ),
+) -> Result[dict]:
     """查询一个异步提案生成任务的状态与结果(投递物在 artifact 中)。"""
     try:
         from gyra_serve.agent.db.async_task_db import AsyncTaskDao
@@ -303,7 +315,7 @@ async def reject_object(
         return Result.failed(msg=str(e))
 
 
-@router.post("/objects/{object_id}/deprecate", response_model=Result[SemanticObjectVO])
+@router.post("/objects/{object_id}/deprecate", dependencies=[Depends(require_ecp("manage"))], response_model=Result[SemanticObjectVO])
 async def deprecate_object(
     object_id: str,
     request: DeprecateRequest,
@@ -394,7 +406,7 @@ async def proposal_view(
         return Result.failed(msg=str(e))
 
 
-@router.get("/contracts", response_model=Result[dict])
+@router.get("/contracts", dependencies=[Depends(require_ecp("read"))], response_model=Result[dict])
 async def payload_contracts() -> Result[dict]:
     """各对象类型的 payload 契约清单(前端编辑表单的单一事实来源)。"""
     from ..service.contracts import contract_spec
@@ -448,7 +460,7 @@ async def debug_preview(
         return Result.failed(msg=f"试跑失败: {e}")
 
 
-@router.get("/catalog", response_model=Result[List[CatalogEntryVO]])
+@router.get("/catalog", dependencies=[Depends(require_ecp("read"))], response_model=Result[List[CatalogEntryVO]])
 async def catalog(
     workspace_id: Optional[str] = Query(default=None),
     keyword: Optional[str] = Query(default=None),
@@ -459,7 +471,7 @@ async def catalog(
 
 
 # --------------------------------------------------------------------- admin
-@router.get("/admin/contract_check", response_model=Result[dict])
+@router.get("/admin/contract_check", dependencies=[Depends(require_ecp("read"))], response_model=Result[dict])
 async def contract_check(
     workspace_id: Optional[str] = Query(default=None),
     service: Service = Depends(get_service),
@@ -472,7 +484,7 @@ async def contract_check(
     return Result.succ(service.contract_check(workspace_id=workspace_id))
 
 
-@router.post("/admin/normalize", response_model=Result[dict])
+@router.post("/admin/normalize", dependencies=[Depends(require_ecp("manage"))], response_model=Result[dict])
 async def normalize_confirmed(
     workspace_id: Optional[str] = Query(default=None),
     user_id: str = Query(default="system"),
@@ -489,7 +501,7 @@ async def normalize_confirmed(
     )
 
 
-@router.get("/admin/duplicate_concepts", response_model=Result[dict])
+@router.get("/admin/duplicate_concepts", dependencies=[Depends(require_ecp("read"))], response_model=Result[dict])
 async def list_duplicate_concepts(
     workspace_id: Optional[str] = Query(default=None),
     service: Service = Depends(get_service),
@@ -502,7 +514,7 @@ async def list_duplicate_concepts(
     return Result.succ(service.list_duplicate_concepts(workspace_id=workspace_id))
 
 
-@router.post("/admin/merge_concepts", response_model=Result[dict])
+@router.post("/admin/merge_concepts", dependencies=[Depends(require_ecp("manage"))], response_model=Result[dict])
 async def merge_duplicate_concepts(
     workspace_id: Optional[str] = Query(default=None),
     target_id: str = Query(..., description="保留的规范 id"),
@@ -535,7 +547,7 @@ async def merge_duplicate_concepts(
         return Result.failed(msg=str(e))
 
 
-@router.get("/admin/miss_report", response_model=Result[dict])
+@router.get("/admin/miss_report", dependencies=[Depends(require_ecp("read"))], response_model=Result[dict])
 async def miss_report(
     workspace_id: Optional[str] = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
@@ -549,7 +561,7 @@ async def miss_report(
     return Result.succ(service.miss_report(workspace_id=workspace_id, limit=limit))
 
 
-@router.get("/admin/miss_detail", response_model=Result[MissDetailVO])
+@router.get("/admin/miss_detail", dependencies=[Depends(require_ecp("read"))], response_model=Result[MissDetailVO])
 async def miss_detail(
     kind: str = Query(...),
     pattern: str = Query(...),
@@ -572,7 +584,7 @@ async def miss_detail(
     )
 
 
-@router.get("/admin/miss_learned", response_model=Result[list])
+@router.get("/admin/miss_learned", dependencies=[Depends(require_ecp("read"))], response_model=Result[list])
 async def miss_learned(
     workspace_id: Optional[str] = Query(default=None),
     kind: Optional[str] = Query(default=None),
@@ -601,7 +613,7 @@ async def miss_learned(
     )
 
 
-@router.delete("/admin/miss_learned", response_model=Result[int])
+@router.delete("/admin/miss_learned", dependencies=[Depends(require_ecp("manage"))], response_model=Result[int])
 async def clear_miss_learned(
     workspace_id: Optional[str] = Query(default=None),
     kind: Optional[str] = Query(default=None),
@@ -617,7 +629,7 @@ async def clear_miss_learned(
     return Result.succ(removed)
 
 
-@router.post("/admin/learn_from_misses", response_model=Result[GenerateProposalsVO])
+@router.post("/admin/learn_from_misses", dependencies=[Depends(require_ecp("manage"))], response_model=Result[GenerateProposalsVO])
 async def learn_from_misses(
     workspace_id: Optional[str] = Query(default=None),
     top: int = Query(default=10, ge=1, le=50),
@@ -697,7 +709,7 @@ async def remove_confirmer(
 
 
 # -------------------------------------------------------------------- op log
-@router.get("/op-log", response_model=Result[List[OpLogVO]])
+@router.get("/op-log", dependencies=[Depends(require_ecp("read"))], response_model=Result[List[OpLogVO]])
 async def op_log(
     workspace_id: Optional[str] = Query(default=None),
     op: Optional[str] = Query(default=None),
@@ -713,7 +725,7 @@ async def op_log(
 
 
 # -------------------------------------------------------------- asset refs
-@router.post("/assets", response_model=Result[AssetRefVO])
+@router.post("/assets", dependencies=[Depends(require_ecp("manage"))], response_model=Result[AssetRefVO])
 async def register_asset(
     request: AssetRefRegisterRequest,
     service: Service = Depends(get_service),
@@ -732,6 +744,19 @@ async def register_asset(
         return Result.failed(msg=str(e))
 
 
+@router.get("/assets/overview", response_model=Result[List[AssetRefVO]])
+async def list_assets_overview(
+    kind: Optional[str] = Query(default=None),
+    service: Service = Depends(get_service),
+) -> Result[List[AssetRefVO]]:
+    """全局资产视图:跨所有 ECP workspace 聚合登记资产(P2)。
+
+    将各场景空间(派生 ecp_<code>)与 default/legacy 工作空间登记的原资产
+    (db/space/document)聚合成一张统一资产视图,供前端全局资源视图消费。
+    """
+    return Result.succ(service.list_assets_overview(kind=kind))
+
+
 @router.get("/assets", response_model=Result[List[AssetRefVO]])
 async def list_assets(
     workspace_id: Optional[str] = Query(default=None),
@@ -741,7 +766,7 @@ async def list_assets(
     return Result.succ(service.list_assets(workspace_id=workspace_id, kind=kind))
 
 
-@router.delete("/assets/{asset_id}", response_model=Result[bool])
+@router.delete("/assets/{asset_id}", dependencies=[Depends(require_ecp("manage"))], response_model=Result[bool])
 async def remove_asset(
     asset_id: int,
     workspace_id: Optional[str] = Query(default=None),
@@ -762,7 +787,7 @@ async def remove_asset(
         return Result.failed(msg=str(e))
 
 
-@router.get("/readiness", response_model=Result[ReadinessVO])
+@router.get("/readiness", dependencies=[Depends(require_ecp("read"))], response_model=Result[ReadinessVO])
 async def readiness(
     datasource_id: int = Query(...),
     workspace_id: Optional[str] = Query(default=None),
@@ -775,7 +800,7 @@ async def readiness(
 
 
 # --------------------------------------------------------------------- graph
-@router.get("/graph", response_model=Result[GraphVO])
+@router.get("/graph", dependencies=[Depends(require_ecp("read"))], response_model=Result[GraphVO])
 async def graph(
     workspace_id: Optional[str] = Query(default=None),
     entity: Optional[str] = Query(
@@ -798,7 +823,7 @@ async def graph(
     )
 
 
-@router.post("/graph/rebuild", response_model=Result[dict])
+@router.post("/graph/rebuild", dependencies=[Depends(require_ecp("manage"))], response_model=Result[dict])
 async def rebuild_graph(
     workspace_id: Optional[str] = Query(default=None),
     service: Service = Depends(get_service),
@@ -816,7 +841,7 @@ async def rebuild_graph(
 
 
 # ------------------------------------------------- semantic alignment
-@router.post("/graph/alignments/run", response_model=Result[dict])
+@router.post("/graph/alignments/run", dependencies=[Depends(require_ecp("manage"))], response_model=Result[dict])
 async def run_alignment(
     workspace_id: Optional[str] = Query(default=None),
     user_id: Optional[str] = Query(default=None),
@@ -838,7 +863,7 @@ async def run_alignment(
         return Result.failed(msg=f"语义对齐执行失败: {e}")
 
 
-@router.get("/graph/alignments", response_model=Result[List[SemanticAlignmentVO]])
+@router.get("/graph/alignments", dependencies=[Depends(require_ecp("read"))], response_model=Result[List[SemanticAlignmentVO]])
 async def list_alignments(
     workspace_id: Optional[str] = Query(default=None),
     status: Optional[str] = Query(
@@ -853,7 +878,7 @@ async def list_alignments(
     )
 
 
-@router.post("/graph/alignments", response_model=Result[SemanticAlignmentVO])
+@router.post("/graph/alignments", dependencies=[Depends(require_ecp("manage"))], response_model=Result[SemanticAlignmentVO])
 async def add_alignment(
     request: AlignmentManualRequest,
     service: Service = Depends(get_service),
@@ -874,6 +899,7 @@ async def add_alignment(
 
 @router.post(
     "/graph/alignments/{alignment_id}/confirm",
+    dependencies=[Depends(require_ecp("manage"))],
     response_model=Result[SemanticAlignmentVO],
 )
 async def confirm_alignment(
@@ -892,6 +918,7 @@ async def confirm_alignment(
 
 @router.post(
     "/graph/alignments/{alignment_id}/reject",
+    dependencies=[Depends(require_ecp("manage"))],
     response_model=Result[SemanticAlignmentVO],
 )
 async def reject_alignment(
@@ -908,9 +935,13 @@ async def reject_alignment(
         return Result.failed(msg=str(e))
 
 
-@router.delete("/graph/alignments/{alignment_id}", response_model=Result[bool])
+@router.delete("/graph/alignments/{alignment_id}", dependencies=[Depends(require_ecp("manage"))], response_model=Result[bool])
 async def remove_alignment(
     alignment_id: int,
+    workspace_id: Optional[str] = Query(
+        default=None,
+        description="派生 ECP 空间 id(ecp_<code>):供 require_ecp 空间投影判定",
+    ),
     service: Service = Depends(get_service),
 ) -> Result[bool]:
     """删除一条对齐记录(手工纠错)。"""
@@ -918,7 +949,7 @@ async def remove_alignment(
 
 
 # --------------------------------------------------------------------- space
-@router.post("/space", response_model=Result[SpaceInfoVO])
+@router.post("/space", dependencies=[Depends(require_ecp("manage"))], response_model=Result[SpaceInfoVO])
 async def get_or_create_space(
     workspace_id: Optional[str] = Query(default=None),
     service: Service = Depends(get_service),
@@ -931,7 +962,7 @@ async def get_or_create_space(
 
 
 # -------------------------------------------------------- workspace config
-@router.get("/workspace-config", response_model=Result[WorkspaceConfigVO])
+@router.get("/workspace-config", dependencies=[Depends(require_ecp("read"))], response_model=Result[WorkspaceConfigVO])
 async def get_workspace_config(
     workspace_id: Optional[str] = Query(default=None),
     service: Service = Depends(get_service),
@@ -940,7 +971,7 @@ async def get_workspace_config(
     return Result.succ(service.get_workspace_config(workspace_id))
 
 
-@router.put("/workspace-config", response_model=Result[WorkspaceConfigVO])
+@router.put("/workspace-config", dependencies=[Depends(require_ecp("manage"))], response_model=Result[WorkspaceConfigVO])
 async def save_workspace_config(
     request: WorkspaceConfigUpdateRequest,
     service: Service = Depends(get_service),
@@ -954,7 +985,7 @@ async def save_workspace_config(
 
 
 # ---------------------------------------------------------------- 资产迁移
-@router.get("/export", response_model=Result[dict])
+@router.get("/export", dependencies=[Depends(require_ecp("read"))], response_model=Result[dict])
 async def export_workspace(
     workspace_id: Optional[str] = Query(default=None),
     service: Service = Depends(get_service),
@@ -971,7 +1002,7 @@ async def export_workspace(
         return Result.failed(msg=str(e))
 
 
-@router.post("/import", response_model=Result[EcpImportResultVO])
+@router.post("/import", dependencies=[Depends(require_ecp("manage"))], response_model=Result[EcpImportResultVO])
 async def import_workspace(
     request: EcpImportRequest,
     service: Service = Depends(get_service),

@@ -39,9 +39,14 @@ def test_build_scene_management_tools_full_set():
     from gyra_serve.workspace.scene_resource import build_scene_management_tools
     tools = build_scene_management_tools(1, "c1")
     names = {t.name for t in tools}
+    # 读:任务/交付/资产/合约/专家详情/触发/介入;写:任务/触发/干预/资产
+    # (专家协作走标准 SubAgent 工具,不在场景管理工具集内)
     for must in ("list_tasks", "get_task_info", "list_artifacts", "list_deliveries",
-                 "list_assets", "list_playbooks", "get_playbook_detail", "list_interventions",
-                 "start_task", "close_task", "create_playbook", "update_playbook",
-                 "delete_playbook", "resolve_intervention", "abort_intervention",
-                 "publish_asset", "create_delivery", "update_workspace"):
+                 "list_assets", "list_contracts", "get_contract_detail",
+                 "get_expert_detail", "list_interventions", "start_task",
+                 "resolve_intervention", "abort_intervention", "update_trigger",
+                 "delete_trigger", "fire_trigger", "publish_asset", "create_delivery",
+                 "update_workspace"):
         assert must in names, f"missing {must}"
+    assert "list_team_experts" not in names
+    assert "dispatch_to_expert" not in names

@@ -1291,7 +1291,9 @@ class ConversableAgent(Role, Agent):
                             action_output=act_outs,
                             check_pass=check_pass,
                             check_fail_reason=fail_reason,
-                            agent_id=self.not_null_agent_context.agent_app_code,
+                            agent_id=self.not_null_agent_context.agent_app_code
+                            or self.not_null_agent_context.gpts_app_code
+                            or self.name,
                             reply_message=reply_message,
                             terminate=any([act_out.terminate for act_out in act_outs]),
                             extra_context=extra_context,

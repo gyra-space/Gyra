@@ -63,6 +63,9 @@ export interface SceneSimpleWorkspaceProps {
   modelName?: string | null;
   /** 工作空间 id:用于在文件预览里一键导入 App Card 等空间级能力 */
   workspaceId?: number;
+  /** 过程洞察:owner/contributor 可查看执行步骤详情;viewer(业务用户)执行过程
+   * 折叠成单行、步骤不可点开、右侧隐藏「执行过程」tab(本期仅前端隐藏) */
+  canViewProcess?: boolean;
   onInteractionResume?: (userMessage: string) => void;
   /** 返回欢迎态(退出任务/会话详情) */
   onExit?: () => void;
@@ -519,11 +522,13 @@ export function SceneSimpleWorkspace({
   agentName,
   modelName,
   workspaceId,
+  canViewProcess = true,
   onInteractionResume,
   onExit,
   inputSlot,
 }: SceneSimpleWorkspaceProps) {
-  const [rightTab, setRightTab] = useState<RightTabKey>('execution');
+  // viewer(业务用户)右侧默认落在「任务文件」,不进入执行过程
+  const [rightTab, setRightTab] = useState<RightTabKey>(canViewProcess ? 'execution' : 'task_files');
   // 已打开的文件 tab(一个文件一个 tab,窗口共享)
   const [openedFiles, setOpenedFiles] = useState<FileTabItem[]>([]);
   const [activeFileKey, setActiveFileKey] = useState<string | null>(null);
@@ -654,7 +659,9 @@ export function SceneSimpleWorkspace({
   };
 
   // 点击胶囊内步骤 → 触发展开右侧,展示该步骤的执行结果(专用渲染器优先)
+  // viewer(业务用户)不开放步骤详情,点击不响应
   const handleStepClick = (step: WorkspaceExecutionStep) => {
+    if (!canViewProcess) return;
     setActiveFileKey(null);
     setSelectedStep(step);
     setRightTab('execution');
@@ -678,7 +685,8 @@ export function SceneSimpleWorkspace({
   };
 
   const tabs: { key: RightTabKey; icon: React.ReactNode; label: string }[] = [
-    { key: 'execution', icon: <CodeOutlined />, label: '执行过程' },
+    // viewer(业务用户)隐藏「执行过程」tab,只保留结果相关的任务文件/总结
+    ...(canViewProcess ? [{ key: 'execution' as RightTabKey, icon: <CodeOutlined />, label: '执行过程' }] : []),
     { key: 'task_files', icon: <FolderOpenOutlined />, label: `任务文件${taskFiles.length ? ` ${taskFiles.length}` : ''}` },
     { key: 'summary', icon: <FileTextOutlined />, label: '总结' },
   ];
@@ -750,7 +758,8 @@ export function SceneSimpleWorkspace({
             <AgentWorkspaceRenderer
               view={view}
               running={running}
-              onStepClick={handleStepClick}
+              // 步骤详情查看:仅 owner/contributor 可点开,viewer 只读(undefined → 步骤不可点)
+              onStepClick={canViewProcess ? handleStepClick : undefined}
               selectedStepId={selectedStep?.id ?? null}
               onDeliverableClick={handleOpenDeliverable}
               onAttachmentsClick={handleOpenAttachments}
@@ -758,6 +767,9 @@ export function SceneSimpleWorkspace({
               agentIcon={agentIcon}
               agentName={agentName}
               modelName={modelName}
+              // 简洁模式全员折叠成单行「Agent 思考」(结果为主、过程随行);
+              // 角色只控制步骤是否可点开详情,不影响折叠形态
+              compactProcess
             />
           )}
         </div>

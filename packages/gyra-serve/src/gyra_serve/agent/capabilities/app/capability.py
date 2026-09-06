@@ -204,11 +204,24 @@ class AppCapability(Capability):
                 )
                 if "workspace_id" in parent_extra:
                     child_extra["workspace_id"] = parent_extra["workspace_id"]
+                # 透传操作者身份 user_request：RBAC / 技能发布等 fail-closed 工具
+                # 依赖它断言管理员身份，缺失会让子会话报"无权限"。
+                if "user_request" in parent_extra:
+                    child_extra["user_request"] = parent_extra["user_request"]
             child_context = AgentContext(
                 conv_id=conv_uid,
                 conv_session_id=conv_uid,
                 gpts_app_code=gpts_app.app_code,
                 gpts_app_name=gpts_app.app_name,
+                # agent_app_code 是当前子 Agent 的应用 ID：V2 引擎构造 StepEvent/
+                # ToolContext/PermissionGate 时严格要求非空字符串，缺省 None 会在
+                # 子会话发射事件时报 "agent_id Input should be a valid string"。
+                agent_app_code=gpts_app.app_code,
+                # 透传父 Agent 的身份/权限字段：子 Agent 沿用发起者的用户身份，
+                # 避免子会话因 user_id/staff_no 缺失被判“无权限”。
+                user_id=getattr(parent_ctx, "user_id", None),
+                user_name=getattr(parent_ctx, "user_name", None),
+                staff_no=getattr(parent_ctx, "staff_no", None),
                 language=gpts_app.language,
                 enable_vis_message=False,
                 extra=child_extra,

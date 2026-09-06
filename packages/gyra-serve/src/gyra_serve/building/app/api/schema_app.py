@@ -195,6 +195,8 @@ class GptsApp(BaseModel):
 
     creator: Optional[str] = None
     editor: Optional[str] = None
+    # 空间归属：NULL = 全局专家；非空 = 该空间内创建/归属的专家（Agent Team 空间重构）。
+    owner_workspace_id: Optional[int] = None
 
     # By default, keep the last two rounds of conversation records as the context
     keep_start_rounds: int = 1

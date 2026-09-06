@@ -198,7 +198,7 @@ export function GrowthCard({ workspaceId, workspaceCode, onEnterFlywheel, growth
 
   const metrics = [
     { label: '已沉淀成果', value: growth.assets_count },
-    { label: '剧本演化建议', value: growth.evolution_proposals_count },
+    { label: '专家演化建议', value: growth.evolution_proposals_count },
     { label: '知识图谱节点', value: growth.knowledge_graph_nodes },
     ...(ecpWsId ? [{ label: '语义口径', value: confirmed }] : []),
   ];

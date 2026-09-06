@@ -79,7 +79,24 @@ export function useUserPermissions() {
       // RBAC 插件关闭(permissions 为 null):不做限制
       if (permissions.permissions == null) return true;
       const actions = permissions.permissions[resourceType] || [];
-      return actions.includes('*') || actions.includes(action);
+      if (actions.includes('*') || actions.includes(action)) return true;
+      // 资源授权(resource_grant):permission_key 形如 "model.read"。
+      // 模块级授权(resource_id='*')亮起菜单;实例级授权不亮菜单(与角色
+      // scoped 权限口径一致,避免"仅授权单个实例"泄漏成全模块入口);
+      // 已过期的 grant 不放行
+      const now = Date.now();
+      return (permissions.grants ?? []).some((g) => {
+        const grant = g as {
+          permission_key?: string;
+          resource_id?: string | null;
+          expires_at?: string | null;
+        };
+        return (
+          grant.permission_key === `${resourceType}.${action}` &&
+          (grant.resource_id == null || grant.resource_id === '*') &&
+          (!grant.expires_at || new Date(grant.expires_at).getTime() > now)
+        );
+      });
     },
     [permissions, oauthEnabled]
   );

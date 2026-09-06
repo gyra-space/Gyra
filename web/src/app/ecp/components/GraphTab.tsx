@@ -383,8 +383,8 @@ export default function GraphTab({ workspaceId }: { workspaceId: string }) {
       const userId = getUserId() ?? 'unknown';
       const [err] = await apiInterceptors(
         payload.action === 'confirm'
-          ? confirmEcpAlignment(payload.id, { user_id: userId })
-          : rejectEcpAlignment(payload.id, { user_id: userId }),
+          ? confirmEcpAlignment(payload.id, { user_id: userId, workspace_id: workspaceId })
+          : rejectEcpAlignment(payload.id, { user_id: userId, workspace_id: workspaceId }),
       );
       if (err) throw err;
       return payload.action;
@@ -407,7 +407,7 @@ export default function GraphTab({ workspaceId }: { workspaceId: string }) {
   // 删除对齐记录(手工纠错;删除后 LLM 复跑可能再次提案)
   const { run: removeAlign } = useRequest(
     async (id: number) => {
-      const [err] = await apiInterceptors(removeEcpAlignment(id));
+      const [err] = await apiInterceptors(removeEcpAlignment(id, workspaceId));
       if (err) throw err;
       return id;
     },

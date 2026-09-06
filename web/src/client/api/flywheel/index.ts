@@ -9,7 +9,7 @@
  *   - 职能角色:   /api/v1/serve_workspace_service/agent_roles/*
  *   - 场景模式:   /api/v1/serve_workspace_service/scene_modes/*
  *   - 评委动作:   /api/v1/serve_intervention_service/interventions/*
- *   - 剧本演化:   /api/v1/serve_playbook_service/evolution/*
+ *   - 合约演化:   /api/v1/serve_playbook_service/evolution/*
  */
 import { GET, POST } from '..';
 
@@ -101,7 +101,7 @@ export interface AgentMaturityRecord {
   gmt_modified: string;
 }
 
-/** 剧本演化提议 */
+/** 合约演化提议 */
 export interface EvolutionProposal {
   proposal_id: string;
   playbook_id: number;
@@ -441,7 +441,7 @@ export const listInterventions = (data: {
   );
 
 // ---------------------------------------------------------------------------
-// 剧本演化 API
+// 合约演化 API
 // ---------------------------------------------------------------------------
 
 /** 手动触发演化分析 */

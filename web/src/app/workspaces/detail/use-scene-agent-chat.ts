@@ -93,7 +93,7 @@ interface UseSceneAgentChatOptions {
   focusArtifactId?: number | string;
   /** 工作空间全量任务列表:用于恢复视图时重注入绑定到当前会话的任务卡片 */
   tasks?: any[];
-  /** 剧本 id→名称映射:任务卡片展示剧本名 */
+  /** 合约 id→名称映射:任务卡片展示合约名 */
   playbooks?: { playbook_id: number; playbook_name: string }[];
   onWorkspaceEvent?: (event: WorkspaceEvent) => void;
   /** 用户在 Agent 空间提交任务、开始一轮对话时触发(用于折叠中间内容区) */
@@ -118,6 +118,10 @@ interface UseSceneAgentChatResult {
   retryRecover: () => void;
   /** 后端会话运行状态:RUNNING 表示后台仍在执行(可关闭页面后恢复) */
   convState: ConversationState;
+  /** 当前生效的会话 id(外部 conversationId ?? 懒创建的 internalConvUid)。
+   *  「新任务」流不触发 onConvChanged,父层 conversationId 保持空串,
+   *  调用详情抽屉等消费方需用本字段兜底,否则拿不到会话 id。 */
+  convUid?: string;
   /** 会话切换后首次历史(vis_final)拉取中,供 UI 显示"会话加载中…" */
   convLoading: boolean;
   /** SSE usage_metric 事件推送的上下文消耗(实时) */
@@ -126,7 +130,9 @@ interface UseSceneAgentChatResult {
   dockWidgets: Record<string, DockWidget>;
   /** 乐观上屏用户消息(发送/追问即插入视图,不等后端回显);纯文件消息可无文本仅有附件 */
   appendOptimisticUser: (text: string, attachments?: WorkspaceUserAttachment[]) => void;
-  send: (payload: SceneAgentSendPayload) => void;
+  send: (payload: SceneAgentSendPayload, opts?: { forceNew?: boolean }) => void;
+  /** 回到无会话态(新任务/退出任务):清掉懒创建的内部会话并断开其流/轮询 */
+  resetConv: () => void;
   abort: () => void;
   clearSteps: () => void;
   clearWorkspaceView: () => void;
@@ -227,11 +233,19 @@ export function useSceneAgentChat({
   // conversationId 内部态:外部未提供时(简洁模式延迟创建会话)由 ensureConvUid 填充,
   // 提供时跟随外部 prop;这样 send 不依赖外层 re-render。
   const [internalConvUid, setInternalConvUid] = useState<string | undefined>(undefined);
-  const effectiveConvUid = conversationId ?? internalConvUid;
+  // `||` 而非 `??`:conversationId 为空串(会话未写回)时回落 internalConvUid,
+  // 避免空串劫持 effectiveConvUid 触发会话切换 effect 误 abort 进行中的 SSE 流。
+  const effectiveConvUid = conversationId || internalConvUid;
 
-  const ensureConvUid = useCallback(async (): Promise<string | null> => {
-    if (conversationId) return conversationId;
-    if (internalConvUid) return internalConvUid;
+  const ensureConvUid = useCallback(async (opts?: { forceNew?: boolean }): Promise<string | null> => {
+    // forceNew(欢迎态/新任务首页发送):跳过一切已有会话,强制懒创建新会话。
+    // internalConvUid 可能残留上一轮「新任务」流创建的会话(manualNew 流父层
+    // conversationId 保持空串,清空 effect 因 prop 未变化而不会重跑),
+    // 直接复用会把首页提问发进最后一个会话。
+    if (!opts?.forceNew) {
+      if (conversationId) return conversationId;
+      if (internalConvUid) return internalConvUid;
+    }
     if (onConvCreated) {
       const newUid = await onConvCreated('');
       if (newUid) {
@@ -241,6 +255,13 @@ export function useSceneAgentChat({
     }
     return null;
   }, [conversationId, internalConvUid, onConvCreated]);
+
+  // 显式回到无会话态(新任务/退出任务):清掉懒创建的内部会话。
+  // 生效会话随之 undefined → 会话切换 effect 自动中断旧流、清空视图;
+  // 后端任务继续运行,重新打开该会话时由轮询恢复渲染。
+  const resetConv = useCallback(() => {
+    setInternalConvUid(undefined);
+  }, []);
 
   // 外部 conversationId 回到 undefined(简洁模式返回欢迎态)时清掉内部会话:
   // 否则下次发送会复用上一轮 ensureConvUid 创建的旧会话,而不是新建。
@@ -260,6 +281,9 @@ export function useSceneAgentChat({
     const prev = prevConvUidRef.current;
     prevConvUidRef.current = effectiveConvUid;
     if (prev === undefined || prev === effectiveConvUid) return;
+    // 诊断:此处 abort 会掐断进行中的 SSE(表现为对话直接被中断)。
+    // 若复现「对话发不出去」,先看这行——prev→current 的翻转来源即根因。
+    console.warn(`[scene-chat] conv switch, abort in-flight stream: ${prev} -> ${effectiveConvUid}`);
     // 会话切换:中断旧 SSE 连接(只断前端,后端 agent 继续后台运行,切回时由轮询恢复渲染),
     // 使旧流回调全部失效(streamEpochRef 自增),并解除 loading 对轮询的阻塞 ——
     // 新会话自动降级为轮询渲染,checkStatus 拉取 vis_final 重建历史视图。
@@ -375,6 +399,36 @@ export function useSceneAgentChat({
                 output: p.description
                   ? `${p.description}(已发布到技能资源库)`
                   : '已发布到技能资源库',
+              },
+            ],
+          };
+        });
+      }
+      // 专家完成事件:专家任务(start_task 链路)delivered 时插入完成卡片。
+      // 派单侧没有专用事件:协作调用走标准 SubAgent(工具调用渲染/子会话看板),
+      // 任务化派单由 start_task 自身渲染任务卡片,这里只承接完成回执。
+      if (event.type === 'expert_completed' && event.payload?.task_id) {
+        const p = event.payload;
+        setWorkspaceView((prev) => {
+          // 如果没有派单卡片（页面刷新后），插入完成卡片
+          const completedStepId = `expert-completed-${p.task_id}`;
+          if (prev.execution.some((s) => s.id === completedStepId)) return prev;
+          return {
+            ...prev,
+            execution: [
+              ...prev.execution,
+              {
+                id: completedStepId,
+                type: 'expert_completed' as const,
+                title: p.title || `任务 #${p.task_id}`,
+                status: p.status === 'delivered' ? 'done' as const : 'failed' as const,
+                ts: new Date().toISOString(),
+                task_id: p.task_id,
+                task_title: p.title,
+                expert_app_code: p.expert_app_code,
+                expert_name: p.expert_name,
+                expert_avatar: p.expert_avatar,
+                output: p.status === 'delivered' ? '已完成交付' : '执行失败',
               },
             ],
           };
@@ -553,12 +607,12 @@ export function useSceneAgentChat({
   }, [recover]);
 
   const send = useCallback(
-    async (payload: SceneAgentSendPayload) => {
+    async (payload: SceneAgentSendPayload, opts?: { forceNew?: boolean }) => {
       const { text, resources } = payload;
       const hasResources = Array.isArray(resources) && resources.length > 0;
       if (!text.trim() && !hasResources) return;
-      // 简洁模式:无 conversationId 时先创建会话再发送
-      const uid = await ensureConvUid();
+      // 简洁模式:无 conversationId 时先创建会话再发送;forceNew 强制新建(欢迎态首页)
+      const uid = await ensureConvUid(opts);
       if (!uid) return;
       abortRef.current?.abort();
       const ctrl = new AbortController();
@@ -689,5 +743,5 @@ export function useSceneAgentChat({
     }
   }, [effectiveConvUid]);
 
-  return { steps, workspaceView, loading, error, lastInput, modelName: lastInput?.model, recovering, retryRecover, convState, convLoading: !!effectiveConvUid && convLoading, usageMetrics, dockWidgets, send, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
+  return { steps, workspaceView, loading, error, lastInput, modelName: lastInput?.model, recovering, retryRecover, convState, convUid: effectiveConvUid, convLoading: !!effectiveConvUid && convLoading, usageMetrics, dockWidgets, send, resetConv, abort, appendOptimisticUser, clearSteps, clearWorkspaceView };
 }

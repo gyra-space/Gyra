@@ -919,7 +919,7 @@
   100% { background-position: 0 50%; }
 }
 
-/* 开始工作区:推荐问题 + 可跑剧本 */
+/* 开始工作区:推荐问题 + 发起任务 */
 .ws-guide__work {
   display: flex;
   flex-direction: column;

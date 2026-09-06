@@ -45,8 +45,9 @@ def test_read_tools_count(fake_system_app):
         "list_assets",
         "get_workspace_memory",
         "list_workspace_members",
-        "list_playbooks",
-        "get_playbook_detail",
+        "list_contracts",
+        "get_contract_detail",
+        "get_expert_detail",
         "list_interventions",
         "list_triggers",
     }
@@ -139,7 +140,7 @@ def test_list_assets_tool_returns_list(fake_system_app):
     gas.return_value.list_assets.assert_called_once()
 
 
-def test_list_playbooks_tool_returns_list(fake_system_app):
+def test_list_contracts_tool_returns_list(fake_system_app):
     from gyra_serve.workspace.agent_tools.read_tools import build_read_tools
 
     with patch(
@@ -149,14 +150,14 @@ def test_list_playbooks_tool_returns_list(fake_system_app):
             MagicMock(to_response=lambda: {"id": 5, "name": "pb"})
         ]
         tools = build_read_tools(fake_system_app, workspace_id=1)
-        tool = _find_tool(tools, "list_playbooks")
+        tool = _find_tool(tools, "list_contracts")
         result = tool._func(workspace_id=1)
 
     assert isinstance(result, list)
     gps.return_value.list_playbooks.assert_called_once()
 
 
-def test_get_playbook_detail_tool_returns_dict(fake_system_app):
+def test_get_contract_detail_tool_returns_dict(fake_system_app):
     from gyra_serve.workspace.agent_tools.read_tools import build_read_tools
 
     with patch(
@@ -166,8 +167,8 @@ def test_get_playbook_detail_tool_returns_dict(fake_system_app):
             to_response=lambda: {"id": 5, "name": "pb"}
         )
         tools = build_read_tools(fake_system_app, workspace_id=1)
-        tool = _find_tool(tools, "get_playbook_detail")
-        result = tool._func(workspace_id=1, playbook_id=5)
+        tool = _find_tool(tools, "get_contract_detail")
+        result = tool._func(workspace_id=1, contract_id=5)
 
     assert isinstance(result, dict)
     gps.return_value.get_by_id.assert_called_once_with(5)
@@ -304,78 +305,3 @@ def test_each_write_tool_uses_its_own_name_in_question(fake_system_app):
             request = gis.return_value.create.call_args.kwargs["request"]
             assert request.question["tool"] == tool.name
 
-
-def test_playbook_tools_count(fake_system_app):
-    """build_playbook_tools returns exactly the 3 expected Layer-3 write tools."""
-    from gyra_serve.workspace.agent_tools.playbook_tools import build_playbook_tools
-
-    with patch(
-        "gyra_serve.workspace.agent_tools.playbook_tools.get_intervention_service"
-    ):
-        tools = build_playbook_tools(
-            fake_system_app,
-            workspace_id=1,
-            user_id="u1",
-            conv_uid="conv-1",
-            task_id=5,
-        )
-
-    names = {t.name for t in tools}
-    assert names == {
-        "launch_playbook",
-        "update_playbook",
-        "archive_playbook",
-    }
-
-
-def test_playbook_write_tool_creates_intervention(fake_system_app):
-    from gyra_serve.intervention.api.schemas import InterventionRequest
-    from gyra_serve.workspace.agent_tools.playbook_tools import build_playbook_tools
-
-    with patch(
-        "gyra_serve.workspace.agent_tools.playbook_tools.get_intervention_service"
-    ) as gis:
-        gis.return_value.create.return_value = MagicMock(id=7)
-        tools = build_playbook_tools(
-            fake_system_app,
-            workspace_id=1,
-            user_id="u1",
-            conv_uid="conv-1",
-            task_id=5,
-        )
-        launch = _find_tool(tools, "launch_playbook")
-        result = launch._func(workspace_id=1, playbook_id=10)
-
-    assert result == {"intervention_id": 7, "status": "awaiting_human"}
-    request = gis.return_value.create.call_args.kwargs["request"]
-    assert isinstance(request, InterventionRequest)
-    assert request.task_id == 5
-    assert request.conv_uid == "conv-1"
-    assert request.workspace_id == 1
-    assert request.requested_by == "u1"
-    assert request.question == {
-        "tool": "launch_playbook",
-        "args": {"workspace_id": 1, "playbook_id": 10},
-    }
-
-
-def test_each_playbook_tool_uses_its_own_name_in_question(fake_system_app):
-    from gyra_serve.workspace.agent_tools.playbook_tools import build_playbook_tools
-
-    with patch(
-        "gyra_serve.workspace.agent_tools.playbook_tools.get_intervention_service"
-    ) as gis:
-        gis.return_value.create.return_value = MagicMock(id=2)
-        tools = build_playbook_tools(
-            fake_system_app,
-            workspace_id=3,
-            user_id="u3",
-            conv_uid="conv-3",
-            task_id=9,
-        )
-        for tool in tools:
-            gis.return_value.create.reset_mock()
-            tool._func(workspace_id=3)
-            request = gis.return_value.create.call_args.kwargs["request"]
-            assert request.question["tool"] == tool.name
-            assert request.task_id == 9

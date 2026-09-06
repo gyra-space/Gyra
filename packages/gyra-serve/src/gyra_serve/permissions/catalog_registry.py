@@ -57,6 +57,7 @@ def _register_builtin_providers() -> None:
     from gyra_serve.channel.catalog_provider import ChannelCatalogProvider
     from gyra_serve.cron.catalog_provider import CronCatalogProvider
     from gyra_serve.datasource.catalog_provider import DatabaseCatalogProvider
+    from gyra_serve.ecp.catalog_provider import EcpCatalogProvider
     from gyra_serve.knowledge.catalog_provider import KnowledgeCatalogProvider
     from gyra_serve.model.catalog_provider import ModelCatalogProvider
     from gyra_serve.tool.catalog_provider import ToolCatalogProvider
@@ -65,6 +66,7 @@ def _register_builtin_providers() -> None:
     ResourceCatalogRegistry.register(ChannelCatalogProvider())
     ResourceCatalogRegistry.register(CronCatalogProvider())
     ResourceCatalogRegistry.register(DatabaseCatalogProvider())
+    ResourceCatalogRegistry.register(EcpCatalogProvider())
     ResourceCatalogRegistry.register(KnowledgeCatalogProvider())
     ResourceCatalogRegistry.register(ModelCatalogProvider())
     ResourceCatalogRegistry.register(ToolCatalogProvider())

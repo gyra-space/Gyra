@@ -95,23 +95,30 @@ async def run_task(
     task = task_service.get_by_id(task_id)
     if not task:
         raise ValueError(f"task {task_id} not found")
-    if not task.playbook_id:
-        raise ValueError(f"task {task_id} has no playbook")
-    playbook = playbook_service.get_by_id(task.playbook_id)
-    if not playbook:
-        raise ValueError(f"playbook {task.playbook_id} not found")
+    if not task.playbook_id and not task.expert_app_code:
+        raise ValueError(f"task {task_id} has no playbook and no expert")
+    playbook = None
+    if task.playbook_id:
+        playbook = playbook_service.get_by_id(task.playbook_id)
+        if not playbook:
+            raise ValueError(f"playbook {task.playbook_id} not found")
     workspace = workspace_service.get_by_id(task.workspace_id)
     if not workspace:
         raise ValueError(f"workspace {task.workspace_id} not found")
 
-    declaration = playbook.declaration or {}
-    app_code = workspace.default_agent_app_code or "chat_normal"
+    declaration = (playbook.declaration or {}) if playbook else {}
+    # 执行体 = 专家（expert_app_code），缺省兼容旧链路（workspace 默认 agent）。
+    # Agent Team 空间重构 Phase 2.1：任务绑定专家后即以专家自身身份执行。
+    app_code = task.expert_app_code or workspace.default_agent_app_code or "chat_normal"
 
     # 创建执行轨迹采集器——采集失败仅 log warning,不阻断主流程
     trace_collector = None
     try:
+        # 维度切换（Phase 2.8）：agent_id=执行专家/执行体 app_code；
+        # playbook_id=交付合约 id（专家无合约为 0，双写兼容 contract_id 语义）。
+        _contract_id = playbook.id if playbook else (task.contract_id or 0)
         trace_context = TraceContext(
-            playbook_id=playbook.id,
+            playbook_id=_contract_id,
             playbook_version_id=getattr(playbook, "current_version", None) or 0,
             task_id=task.id,
             workspace_id=task.workspace_id,
@@ -189,24 +196,9 @@ async def run_task(
             conv_uid=task.conv_session_id,
         )
 
-        # 飞轮体系: 按 Playbook declaration 的 roles 块装配职能角色团队。
-        # 产出角色蓝图(role/skills/maturity_min/prompt/resources),供运行时
-        # 按角色装配不同 skill 集与 prompt。装配失败仅 log,不阻断主流程。
-        try:
-            from gyra_serve.workspace.materializer import materialize_playbook_roles
-            role_team = materialize_playbook_roles(
-                system_app, declaration, task.workspace_id
-            )
-            if role_team:
-                logger.info(
-                    f"[playbook runtime] task={task_id} assembled "
-                    f"{len(role_team)} roles: "
-                    f"{[r.get('role') for r in role_team]}"
-                )
-        except Exception as e:
-            logger.warning(
-                f"[playbook runtime] materialize_playbook_roles failed: {e}"
-            )
+        # 飞轮体系: 专家执行链路的技能/外挂装配由 SceneResourceAssembler 完成
+        # （见 _assemble_workbench 的专家外挂注入）。原 playbook roles 职能角色
+        # 团队装配（断头路）已下线——Phase 3 以「编队模板」回归。
 
         # Launch agent in the task's conversation session
         logger.info(
@@ -301,7 +293,8 @@ def _build_user_query(
         lines.append(task.description)
     if not lines:
         # 兜底(不应发生:TaskRequest.title 必填)
-        lines.append(f"Execute playbook {playbook.name}")
+        pb_name = playbook.name if playbook else (task.expert_app_code or "任务")
+        lines.append(f"执行专家任务: {pb_name}")
     return "\n".join(lines)
 
 

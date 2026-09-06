@@ -1854,6 +1854,16 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[define-app] Failed to import skill agent_tools: {e}")
 
+        # 注册用户自助工具(普通用户对自己的账号操作,仅需登录,不需 system.admin)。
+        try:
+            from gyra_app.feature_plugins.self_service import agent_tools as _self_tools  # noqa: F401
+            logger.info(
+                "[define-app] self-service tools registered via "
+                "gyra_app.feature_plugins.self_service.agent_tools"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[define-app] Failed to import self-service agent_tools: {e}")
+
         # 1. 获取当前脚本所在目录
         import os
 
@@ -1927,6 +1937,21 @@ class Service(BaseService[ServeEntity, ServeRequest, ServerResponse]):
         logger.info(
             f"内置应用初始化完成: 新初始化 {initialized_count} 个, 跳过 {skipped_count} 个"
         )
+
+        # 内置平台手册同步:文档随代码版本发布,启动时检测并增量合并进知识空间,
+        # 使系统助手的使用帮助能力随文档更新而更新。失败不阻断启动。
+        try:
+            from gyra_serve.building.app.service.platform_manual_sync import (
+                sync_platform_manual,
+            )
+
+            await sync_platform_manual(self._system_app)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[define-app] 平台手册同步失败(已忽略): {e}")
+
+        # 注:内置引导技能由技能服务的官方内置同步机制接管
+        # (skill/serve.py 启动时调用 sync_from_builtin_dir,扫描仓库根目录 skill/),
+        # 无需在此重复接线。
 
     # 保持向后兼容的别名
     async def looad_define_app(self):

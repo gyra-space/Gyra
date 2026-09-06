@@ -11,12 +11,13 @@ import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getUserId } from '@/utils';
 import {
-  ScheduleOutlined,
+  BellOutlined,
   SettingOutlined,
-  BookOutlined,
+  TeamOutlined,
   AppstoreOutlined,
-  HomeOutlined,
-  DatabaseOutlined,
+  RobotOutlined,
+  SendOutlined,
+  DeploymentUnitOutlined,
 } from '@ant-design/icons';
 import { SceneWorkspaceShell } from './scene-workspace-shell';
 import { CallDetailProvider } from '@/components/chat/call-detail/CallDetailProvider';
@@ -51,8 +52,6 @@ export default function WorkspaceDetailPage() {
   // 当前子页面导航激活态(分段控件高亮)
   const navActive = (segment: string) =>
     pathname?.includes(`/workspaces/detail/${segment}`) ? ' ws-console-nav-link--active' : '';
-  // 资产页内部 tab:数据/能力/交付统一在「资产」导航下切换
-  const isAssetsPage = !!pathname?.includes('/workspaces/detail/assets');
   const { t } = useTranslation();
   const [conversationId, setConvUid] = useState<string>('');
   const [convLoadError, setConvLoadError] = useState<string | null>(null);
@@ -143,14 +142,16 @@ export default function WorkspaceDetailPage() {
   // 视图模式:按角色决定默认(owner 管理成员→运维,普通成员→简洁);
   // 用户手动选择(localStorage)与 URL ?mode= 优先于角色默认
   const defaultViewMode: WorkspaceViewMode = role === 'owner' ? 'ops' : 'simple';
-  const { mode: viewMode, setMode: setViewMode } = useWorkspaceViewMode(workspaceId, defaultViewMode);
+  const { mode: rawViewMode, setMode: setViewMode } = useWorkspaceViewMode(workspaceId, defaultViewMode);
+  // viewer(业务用户)锁定简洁模式:不开放运维模式(含完整执行过程),忽略手动/深链切换
+  const viewMode: WorkspaceViewMode = role === 'viewer' ? 'simple' : rawViewMode;
 
   // 会话装载:仅两类入口会打开具体会话 ——
   // 深链(URL 带 conv_uid/task_id)与列表/新建动作(onConvChanged 主动 set)。
   // 非深链直接进入空间(新 tab、地址栏裸访问)一律停在无会话欢迎态:
   // 后端「当前会话」是跨 tab 的全局状态,自动恢复会让多个 tab 互相抢占、
   // 无法并行开多个对话;首个会话由欢迎页发送时懒创建(shell ensureConversation),
-  // 「继续上次会话」走欢迎页/左侧列表入口。
+  // 「继续上次会话」走左侧列表入口。
   useRequest(
     async () => {
       setConvLoadError(null);
@@ -253,17 +254,20 @@ export default function WorkspaceDetailPage() {
             </div>
           </div>
           <nav className="ws-console-nav" aria-label="Workspace navigation">
-            <Link href={`/workspaces/detail?id=${workspaceCode}`} className={`ws-console-nav-link${pathname === '/workspaces/detail' ? ' ws-console-nav-link--active' : ''}`}>
-              <HomeOutlined />{t('workspaces.lobby') || '工作台'}
-            </Link>
             <Link href={`/workspaces/detail/tasks?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('tasks')}`}>
-              <ScheduleOutlined />{t('workspaces.tasks') || '任务'}
+              <BellOutlined />{t('workspaces.subscriptions') || '订阅'}
             </Link>
-            <Link href={`/workspaces/detail/playbooks?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('playbooks')}`}>
-              <BookOutlined />{t('workspaces.playbooks') || '剧本'}
+            <Link href={`/workspaces/detail/members?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('members')}`}>
+              <TeamOutlined />{t('workspaces.team') || '团队'}
             </Link>
-            <Link href={`/workspaces/detail/assets?id=${workspaceCode}&tab=semantic`} className={`ws-console-nav-link${isAssetsPage ? ' ws-console-nav-link--active' : ''}`}>
-              <DatabaseOutlined />{t('workspaces.assets') || '资产'}
+            <Link href={`/workspaces/detail/capability?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('capability')}`}>
+              <RobotOutlined />{t('workspaces.capability') || '能力'}
+            </Link>
+            <Link href={`/workspaces/detail/assets?id=${workspaceCode}&view=semantic`} className={`ws-console-nav-link${navActive('assets')}`}>
+              <DeploymentUnitOutlined />{t('assets.tab_semantic') || '语义资产'}
+            </Link>
+            <Link href={`/workspaces/detail/deliveries?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('deliveries')}`}>
+              <SendOutlined />{t('assets.tab_delivery') || '交付'}
             </Link>
             {can('space.workspace.manage') && (
               <Link href={`/workspaces/detail/settings?id=${workspaceCode}`} className={`ws-console-nav-link${navActive('settings')}`}>
@@ -271,25 +275,27 @@ export default function WorkspaceDetailPage() {
               </Link>
             )}
           </nav>
-          {/* 视图模式切换:简洁 / 运维(常驻 header 右侧) */}
-          <div className="ws-console-viewmode" role="tablist" aria-label="视图模式">
-            <span
-              role="tab"
-              aria-selected={viewMode === 'simple'}
-              className={`ws-console-viewmode__tab${viewMode === 'simple' ? ' ws-console-viewmode__tab--on' : ''}`}
-              onClick={() => setViewMode('simple')}
-            >
-              简洁
-            </span>
-            <span
-              role="tab"
-              aria-selected={viewMode === 'ops'}
-              className={`ws-console-viewmode__tab${viewMode === 'ops' ? ' ws-console-viewmode__tab--on' : ''}`}
-              onClick={() => setViewMode('ops')}
-            >
-              运维
-            </span>
-          </div>
+          {/* 视图模式切换:简洁 / 运维(常驻 header 右侧);viewer 锁定简洁模式,不展示切换 */}
+          {role !== 'viewer' && (
+            <div className="ws-console-viewmode" role="tablist" aria-label="视图模式">
+              <span
+                role="tab"
+                aria-selected={viewMode === 'simple'}
+                className={`ws-console-viewmode__tab${viewMode === 'simple' ? ' ws-console-viewmode__tab--on' : ''}`}
+                onClick={() => setViewMode('simple')}
+              >
+                简洁
+              </span>
+              <span
+                role="tab"
+                aria-selected={viewMode === 'ops'}
+                className={`ws-console-viewmode__tab${viewMode === 'ops' ? ' ws-console-viewmode__tab--on' : ''}`}
+                onClick={() => setViewMode('ops')}
+              >
+                运维
+              </span>
+            </div>
+          )}
         </div>
 
         <SceneWorkspaceShell

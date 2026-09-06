@@ -44,7 +44,11 @@ class TriggerSourceEntity(Model):
     type = Column(String(32), nullable=False)
     name = Column(String(256), nullable=False)
     config_json = Column(Text, nullable=True)
-    target_playbook_id = Column(Integer, nullable=False, index=True)
+    target_playbook_id = Column(Integer, nullable=True, index=True)
+    # Agent Team 空间重构（Phase 1.3）：触发器直接唤醒专家（gpts_app.app_code）。
+    # 过渡期与 target_playbook_id 双写，后者保留一个版本周期后下线。
+    target_app_code = Column(String(128), nullable=True, index=True,
+                             comment="触发目标专家（gpts_app.app_code）")
     instruction = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     last_fired_at = Column(DateTime, nullable=True)
@@ -73,6 +77,7 @@ class TriggerSourceDao(BaseDao[TriggerSourceEntity, TriggerSourceRequest, Trigge
             name=entity.name,
             config=_load_json(entity.config_json),
             target_playbook_id=entity.target_playbook_id,
+            target_app_code=entity.target_app_code,
             instruction=entity.instruction,
             is_active=entity.is_active,
         )
@@ -85,6 +90,7 @@ class TriggerSourceDao(BaseDao[TriggerSourceEntity, TriggerSourceRequest, Trigge
             name=entity.name,
             config=_load_json(entity.config_json),
             target_playbook_id=entity.target_playbook_id,
+            target_app_code=entity.target_app_code,
             instruction=entity.instruction,
             is_active=entity.is_active,
             last_fired_at=entity.last_fired_at.isoformat() if entity.last_fired_at else None,

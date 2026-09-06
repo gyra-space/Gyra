@@ -73,6 +73,14 @@ class Serve(BaseServe):
             prefix=self._api_prefix,
             tags=[*self._api_tags, "AgentRole"],
         )
+        # 专家团队路由（Agent Team 空间重构 Phase 1.4）
+        from .expert.expert_api import router as expert_router
+
+        self._system_app.app.include_router(
+            expert_router,
+            prefix=self._api_prefix,
+            tags=[*self._api_tags, "Expert"],
+        )
         self._config = self._config or ServeConfig.from_app_config(
             system_app.config, SERVE_CONFIG_KEY_PREFIX
         )
@@ -81,12 +89,20 @@ class Serve(BaseServe):
         init_agent_maturity_endpoints(self._system_app, self._config)
         # 注册 AgentRoleService(职能角色分配/查询/团队装配)
         init_agent_roles_endpoints(self._system_app, self._config)
+        # 专家团队端点（Agent Team 空间重构 Phase 1.4）
+        from .expert.expert_api import init_expert_endpoints
+
+        init_expert_endpoints(self._system_app)
         self._app_has_initiated = True
 
     def on_init(self):
         """Import models so SQLAlchemy registers them."""
         from .agent_maturity.models import AgentMaturityEntity  # noqa: F401
         from .agent_roles import WorkspaceAgentRoleEntity  # noqa: F401
+        from .expert.expert_models import (  # noqa: F401
+            WorkspaceExpertEntity,
+            WorkspaceExpertEquipmentEntity,
+        )
         from .inbox.models import InboxItemEntity  # noqa: F401
         from .models.models import (  # noqa: F401
             WorkspaceEntity,
@@ -102,12 +118,18 @@ class Serve(BaseServe):
             InboxItemEntity.__tablename__,
             AgentMaturityEntity.__tablename__,
             WorkspaceAgentRoleEntity.__tablename__,
+            WorkspaceExpertEntity.__tablename__,
+            WorkspaceExpertEquipmentEntity.__tablename__,
         ]))
 
     def before_start(self):
         """Create tables on startup."""
         from .agent_maturity.models import AgentMaturityEntity  # noqa: F401
         from .agent_roles import WorkspaceAgentRoleEntity  # noqa: F401
+        from .expert.expert_models import (  # noqa: F401
+            WorkspaceExpertEntity,
+            WorkspaceExpertEquipmentEntity,
+        )
         from .inbox.models import InboxItemEntity  # noqa: F401
         from .models.models import (  # noqa: F401
             WorkspaceEntity,

@@ -383,6 +383,7 @@ WORKSPACE_EVENT_TYPES = frozenset(
         "asset_referenced",
         "inbox_created",
         "inbox_resolved",
+        "expert_completed",
     }
 )
 
@@ -1400,6 +1401,24 @@ class AgentChat(BaseComponent, ABC):
         return None
 
     @staticmethod
+    def _extract_expert_command(chat_in_params):
+        """从 chat_in_params 抽取 expert_command（/专家名 前缀/显式选择），
+
+        返回 {app_code, app_name, title} 或 None。Agent Team 空间重构 Phase 2.6。
+        """
+        if not chat_in_params:
+            return None
+        for p in chat_in_params:
+            if getattr(p, "param_type", None) == "expert_command":
+                try:
+                    data = json.loads(p.param_value)
+                except (TypeError, ValueError, AttributeError):
+                    return None
+                if isinstance(data, dict) and data.get("app_code"):
+                    return data
+        return None
+
+    @staticmethod
     def _extract_model(chat_in_params):
         """从 chat_in_params 抽取 model 参数,返回 model 名字符串或 None。"""
         if not chat_in_params:
@@ -1580,6 +1599,25 @@ class AgentChat(BaseComponent, ABC):
             logger.info(
                 f"[SubAgentTakeover] main={_origin_gpts_name} -> active={gpts_name} conv={conv_id}"
             )
+            # 专家接管:若被接管 app_code 是空间专家成员,注入其空间外挂
+            # (materialize_expert_equipment),使专家以其空间装备直接工作。
+            _ws_id = ext_info.get("workspace_id")
+            if _ws_id:
+                try:
+                    from gyra_serve.workspace.materializer import (
+                        materialize_expert_equipment,
+                    )
+                    equip_resources = materialize_expert_equipment(
+                        self.system_app, int(_ws_id), gpts_name,
+                    )
+                    if equip_resources:
+                        _dyn = ext_info.get("dynamic_resources") or []
+                        _dyn.extend(equip_resources)
+                        ext_info["dynamic_resources"] = _dyn
+                except Exception as e:
+                    logger.warning(
+                        f"[SubAgentTakeover] expert equipment inject failed: {e}"
+                    )
 
         gpt_app: GptsApp = await app_service.app_detail(
             gpts_name, specify_config_code, building_mode=False
@@ -1815,6 +1853,64 @@ class AgentChat(BaseComponent, ABC):
                         "playbook_id": result["playbook_id"],
                         "playbook_name": result["playbook_name"],
                         "triggered_by": result["triggered_by"],
+                        "workspace_id": int(ext_info["workspace_id"]),
+                    },
+                ),
+                agent_conv_id,
+            )
+            yield None, _format_vis_msg("[DONE]"), agent_conv_id
+            return
+
+        # 专家命令模式（/专家名 前缀/显式选择）：创建带 expert_app_code 的任务，
+        # 跳过 LLM 回合由专家执行。Agent Team 空间重构 Phase 2.6。
+        expert_command = self._extract_expert_command(chat_in_params)
+        if expert_command and ext_info.get("workspace_id"):
+            from gyra_serve.task.api.schemas import TaskRequest
+            from gyra_serve.task.service.service import (
+                TASK_SERVICE_COMPONENT_NAME, TaskService,
+            )
+
+            _content = getattr(user_query, "content", None)
+            _user_text = ""
+            if isinstance(_content, str):
+                _user_text = _content
+            elif isinstance(_content, list):
+                _user_text = " ".join(
+                    p.get("text", "")
+                    for p in _content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            if not _user_text.strip():
+                yield (
+                    None,
+                    _format_vis_msg("选择专家后请输入本次任务目标。"),
+                    agent_conv_id,
+                )
+                yield None, _format_vis_msg("[DONE]"), agent_conv_id
+                return
+            task_service: TaskService = self.system_app.get_component(
+                TASK_SERVICE_COMPONENT_NAME, TaskService,
+            )
+            task = task_service.create(TaskRequest(
+                workspace_id=int(ext_info["workspace_id"]),
+                type="routine",
+                title=_user_text,
+                status="running",
+                triggered_by="page",
+                expert_app_code=expert_command.get("app_code"),
+            ))
+            yield (
+                None,
+                format_workspace_event(
+                    "task_created",
+                    {
+                        "task_id": task.id,
+                        "title": task.title,
+                        "status": task.status,
+                        "playbook_id": None,
+                        "playbook_name": expert_command.get("app_name"),
+                        "expert_app_code": expert_command.get("app_code"),
+                        "triggered_by": "page",
                         "workspace_id": int(ext_info["workspace_id"]),
                     },
                 ),
@@ -2835,6 +2931,48 @@ class AgentChat(BaseComponent, ABC):
                 unique_resources.append(resource)
         return unique_resources
 
+    def _build_user_request(
+        self, user_code: Optional[str], staff_no: Optional[str]
+    ):
+        """构造带身份+权限快照的 UserRequest，供 V2 ToolContext 注入。
+
+        RBAC / 技能发布等 fail-closed 工具从 ``ToolContext.user_request`` 断言操作者
+        身份，缺失即拒绝。此处复用 rbac.py 同款逻辑：user_id + 权限快照，admin /
+        superadmin 自然命中。权限插件关闭时 permissions=None（开发模式，has() 放行）。
+        """
+        from gyra_serve.utils.auth import UserRequest
+
+        uid = user_code or staff_no
+        if not uid:
+            return None
+        user = UserRequest(user_id=str(uid), user_no=str(uid), user_name=str(uid))
+        try:
+            from gyra_serve.utils.auth import _is_permissions_enabled
+
+            if _is_permissions_enabled():
+                from gyra_app.feature_plugins.permissions.service import (
+                    PermissionService,
+                )
+
+                uid_int = int(uid) if str(uid).isdigit() else None
+                if uid_int is None:
+                    # uid 非数字（如默认 "gyra"）：无法拉权限快照，退回仅身份，
+                    # permissions=None 使 RBAC has() 走开发模式放行，避免误拦。
+                    return user
+                perms = PermissionService().get_user_permissions(uid_int)
+                user = UserRequest(
+                    user_id=str(uid),
+                    user_no=str(uid),
+                    user_name=str(uid),
+                    permissions=perms.permissions_map,
+                    deny_permissions=perms.deny_map,
+                    roles=perms.role_names,
+                    grants=perms.grants,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"_build_user_request: load permissions failed for {uid}: {e}")
+        return user
+
     @staticmethod
     def _preserve_scene_resources(
         scene_resources: List[AgentResource],
@@ -3576,6 +3714,15 @@ class AgentChat(BaseComponent, ABC):
 
             if ext_info.get(ENV_CONTEXT_KEY):
                 env_context.update(ext_info.get(ENV_CONTEXT_KEY))
+
+            # 构造并注入请求方身份上下文 user_request（RBAC 等 fail-closed 工具依赖）：
+            # V2 引擎的 ToolContextFactory 从 agent_ctx.extra["user_request"] 读取，
+            # 缺省为 None 会让 rbac_* / 技能发布等工具直接报
+            # "无法确认操作者身份(缺少用户上下文)"。此处按 rbac.py 同款方式，
+            # 用 user_id + PermissionService 权限快照填充 UserRequest。
+            user_request = self._build_user_request(user_code, staff_no)
+            ext_info["user_request"] = user_request
+
             context: AgentContext = AgentContext(
                 user_id=user_code,
                 # user_name 缺失会让 memory hook 的 verbat metadata.author 为
@@ -3594,6 +3741,12 @@ class AgentChat(BaseComponent, ABC):
                 rpc_id=ext_info.get("rpc_id", "0.1"),
                 gpts_app_code=gpts_app.app_code,
                 gpts_app_name=gpts_app.app_name,
+                # agent_app_code 是当前 Agent 的应用 ID，V2 引擎构造 StepEvent/
+                # ToolContext/PermissionGate 时严格要求非空字符串。此处即主 Agent
+                # 自身，直接等于 gpts_app.app_code，避免后续链路读到的恒为 None
+                # （否则 SubAgent / Leader 派单会在发射事件时报
+                # "agent_id Input should be a valid string"）。
+                agent_app_code=gpts_app.app_code,
                 language=gpts_app.language,
                 incremental=ext_info.get("incremental", False),
                 env_context=env_context,

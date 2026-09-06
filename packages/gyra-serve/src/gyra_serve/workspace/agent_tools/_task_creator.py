@@ -77,14 +77,15 @@ async def _summarize_task_title(
 
 
 async def _run_task_detached(
-    system_app, task_id: int, user_code: Optional[str], playbook_id: Optional[int] = None,
+    system_app, task_id: int, user_code: Optional[str],
+    playbook_id: Optional[int] = None,
+    expert_app_code: Optional[str] = None,
 ) -> None:
     """detached 跑 start + run_task，任何异常只记日志并把任务转成 failed。
 
-    无 playbook 的任务跳过 run_task(对齐 /tasks/start 的 `if result.playbook_id`
-    守卫):runtime 对无 playbook 任务会 raise,导致任务在产出任何 agent 消息前
-    就转 failed、无 vis_final 可恢复。这类任务留给用户进入对话后手动发消息
-    (走 SSE chat)产出。
+    无 playbook 但绑定专家的任务可放行(runtime 以 expert_app_code 为执行体);
+    两者皆无的任务跳过 run_task(对齐 /tasks/start 的 `if result.playbook_id`
+    守卫),留给用户进入对话后手动发消息(走 SSE chat)产出。
     """
     task_service = None
     try:
@@ -96,12 +97,15 @@ async def _run_task_detached(
 
         task_service = system_app.get_component(TASK_SERVICE_COMPONENT_NAME, TaskService)
         task_service.start(task_id)
-        if not playbook_id:
+        if not playbook_id and not expert_app_code:
             logger.info(
-                "task %s has no playbook; skip run_task, leave for manual chat", task_id
+                "task %s has no playbook and no expert; skip run_task, leave for manual chat",
+                task_id,
             )
             return
-        await playbook_runtime.run_task(system_app, task_id, user_code=user_code)
+        await playbook_runtime.run_task(
+            system_app, task_id, user_code=user_code,
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("detached run_task for task %s failed: %s", task_id, e)
         # best-effort: 标记为 failed，避免任务永久停在 running。
@@ -217,10 +221,14 @@ def create_task_from_tool(
     title: Optional[str] = None,
     description: Optional[str] = None,
     model_name: Optional[str] = None,
+    expert_app_code: Optional[str] = None,
+    contract_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Create a real Task via TaskService, return task metadata.
 
     创建后:(1) detached 启动 run_task 让 Agent 真跑;(2) detached 总结短标题写回。
+    支持绑定专家(expert_app_code)与交付合约(contract_id)：无合约时以
+    contract_id 回落到 playbook_id 迁移字段(双写过渡)。
     """
     from gyra_serve.task.api.schemas import TaskRequest
     from gyra_serve.task.service.service import (
@@ -246,7 +254,9 @@ def create_task_from_tool(
 
     request = TaskRequest(
         workspace_id=workspace_id,
-        playbook_id=playbook_id,
+        playbook_id=playbook_id or contract_id,
+        contract_id=contract_id,
+        expert_app_code=expert_app_code,
         title=title or (playbook.name if playbook else "手动创建任务"),
         description=description or "",
         type="adhoc",
@@ -257,7 +267,10 @@ def create_task_from_tool(
 
     # 分离模式:detached 启动真实运行(不阻塞当前 SSE 流)
     run_t = asyncio.create_task(
-        _run_task_detached(system_app, entity.id, user_id, entity.playbook_id)
+        _run_task_detached(
+            system_app, entity.id, user_id,
+            entity.playbook_id, entity.expert_app_code,
+        )
     )
     _pending_detached_tasks.add(run_t)
     run_t.add_done_callback(_pending_detached_tasks.discard)
@@ -277,6 +290,8 @@ def create_task_from_tool(
         "title": entity.title,
         "status": entity.status,
         "playbook_id": entity.playbook_id,
+        "contract_id": entity.contract_id,
+        "expert_app_code": entity.expert_app_code,
         "playbook_name": playbook.name if playbook else None,
         "triggered_by": entity.triggered_by,
         "inline": False,

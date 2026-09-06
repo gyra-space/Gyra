@@ -13,7 +13,7 @@ import type {
   GrantScope,
 } from '@/types/interaction';
 import { InteractionStatus as InteractionStatusEnum, GrantScope as GrantScopeEnum } from '@/types/interaction';
-import { STORAGE_USERINFO_KEY } from '@/utils/constants';
+import { STORAGE_USERINFO_KEY } from '@/utils/constants/index';
 
 function getCurrentUserMeta(): Record<string, string | undefined> {
   try {

@@ -69,6 +69,11 @@ class ServeEntity(Model):
     agent_version = Column(
         String(32), nullable=True, default="v1", comment="agent version: v1 or v2"
     )
+    # 空间归属：NULL = 全局专家；非空 = 该空间内创建/归属的专家（Agent Team 空间重构）。
+    owner_workspace_id = Column(
+        Integer, nullable=True, index=True,
+        comment="owner workspace id; NULL = global agent/expert",
+    )
 
     __table_args__ = (
         UniqueConstraint("app_name", name="uk_gpts_app"),
@@ -76,6 +81,7 @@ class ServeEntity(Model):
         Index("idx_gpts_app_published", "published"),
         Index("idx_gpts_app_user_published", "user_code", "published"),
         Index("idx_gpts_app_team_mode", "team_mode"),
+        Index("idx_gpts_app_owner_workspace", "owner_workspace_id"),
     )
 
     def __repr__(self):
@@ -126,6 +132,7 @@ class ServeDao(BaseDao[ServeEntity, ServeRequest, ServerResponse]):
                 icon=request.icon,
                 published=request.published,
                 agent_version=getattr(request, "agent_version", "v1") or "v1",
+                owner_workspace_id=getattr(request, "owner_workspace_id", None),
             )  # type: ignore
         else:
             request_dict = {
@@ -143,6 +150,7 @@ class ServeDao(BaseDao[ServeEntity, ServeRequest, ServerResponse]):
                 "icon": request.get("icon"),
                 "published": request.get("published", False),
                 "agent_version": request.get("agent_version", "v1"),
+                "owner_workspace_id": request.get("owner_workspace_id"),
             }
             entity = ServeEntity(**request_dict)
         return entity
@@ -191,6 +199,7 @@ class ServeDao(BaseDao[ServeEntity, ServeRequest, ServerResponse]):
                 "owner_name": entity.user_code,
                 "admins": [],
                 "agent_version": getattr(entity, "agent_version", "v1") or "v1",
+                "owner_workspace_id": getattr(entity, "owner_workspace_id", None),
                 # "keep_start_rounds": app_info.keep_start_rounds,
                 # "keep_end_rounds": app_info.keep_end_rounds,
             }

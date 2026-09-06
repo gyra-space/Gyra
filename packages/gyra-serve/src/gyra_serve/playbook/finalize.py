@@ -354,6 +354,24 @@ async def finalize_task(
 
     # 5) 正常路径:delivered
     task_service.transition(task_id, "delivered")
+
+    # 多 Agent 群聊：专家完成事件推送到主流（Phase 1 方案 B）
+    if task.expert_app_code:
+        try:
+            from gyra_serve.workspace.expert.expert_api import _get_app_info
+            app_info = _get_app_info(task.expert_app_code)
+            emit_workspace_event(workspace_id, "expert_completed", {
+                "task_id": task_id,
+                "expert_app_code": task.expert_app_code,
+                "expert_name": getattr(app_info, "app_name", None) or task.expert_app_code,
+                "expert_avatar": getattr(app_info, "icon", None),
+                "title": task.title,
+                "status": "delivered",
+                "artifact_ids": artifact_ids,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[playbook finalize] emit expert_completed failed: {e}")
+
     return {
         "task_id": task_id,
         "status": "delivered",

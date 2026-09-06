@@ -47,6 +47,10 @@ class PlaybookEntity(Model):
     task_type = Column(String(32), nullable=False, default="routine")
     trigger_json = Column(Text, nullable=True)
     declaration_dsl_json = Column(Text, nullable=True)
+    # Agent Team 空间重构（Phase 1.3）：本表语义收窄为「交付合约」，
+    # target_app_code 指向执行专家（gpts_app.app_code）。
+    target_app_code = Column(String(128), nullable=True, index=True,
+                             comment="合约目标专家（gpts_app.app_code）")
     current_version = Column(Integer, nullable=False, default=1)
     is_active = Column(Boolean, nullable=False, default=True)
     created_by_user_id = Column(Integer, nullable=True)
@@ -80,6 +84,7 @@ class PlaybookDao(BaseDao[PlaybookEntity, PlaybookRequest, PlaybookResponse]):
         data.pop("gmt_modified", None)
         data.pop("current_version", None)
         data.pop("created_by_user_id", None)
+        data.pop("target_app_code", None)  # 合约收窄语义，由迁移/合约编排写入，不走请求直传
         trigger = data.pop("trigger", None) or {}
         declaration = data.pop("declaration", None) or {}
         entity = PlaybookEntity(**data)
@@ -96,6 +101,7 @@ class PlaybookDao(BaseDao[PlaybookEntity, PlaybookRequest, PlaybookResponse]):
             task_type=entity.task_type,
             trigger=_load_json(entity.trigger_json),
             declaration=_load_json(entity.declaration_dsl_json),
+            target_app_code=entity.target_app_code,
             is_active=entity.is_active,
         )
 
@@ -108,6 +114,7 @@ class PlaybookDao(BaseDao[PlaybookEntity, PlaybookRequest, PlaybookResponse]):
             task_type=entity.task_type,
             trigger=_load_json(entity.trigger_json),
             declaration=_load_json(entity.declaration_dsl_json),
+            target_app_code=entity.target_app_code,
             current_version=entity.current_version,
             is_active=entity.is_active,
             created_by_user_id=entity.created_by_user_id,

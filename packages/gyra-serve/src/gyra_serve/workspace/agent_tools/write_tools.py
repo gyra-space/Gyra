@@ -66,7 +66,7 @@ def build_write_tools(
         description = kwargs.get("description")
         trigger_type = kwargs.get("trigger_type")
         if trigger_type:
-            # 定时/条件触发路径:创建触发源(规则),到点/事件发生时自动按剧本创建任务
+            # 定时/条件触发路径:创建触发源(规则),到点/事件发生时自动按专家/合约创建任务
             return _create_trigger_rule(
                 trigger_type=trigger_type,
                 playbook_id=playbook_id,
@@ -74,6 +74,7 @@ def build_write_tools(
                 description=description,
                 cron=kwargs.get("cron"),
                 trigger_config=kwargs.get("trigger_config"),
+                app_code=kwargs.get("app_code"),
             )
         # 任务走分离(异步)模式:创建任务后 detached 启动 run_task,让任务在后台
         # 独立执行并正确完成(产出 artifact/交付物)。不再支持内联模式——分析类
@@ -86,6 +87,8 @@ def build_write_tools(
             playbook_id=playbook_id,
             title=title,
             description=description,
+            expert_app_code=kwargs.get("app_code"),
+            contract_id=kwargs.get("contract_id"),
         )
         if on_event:
             on_event("task_created", {
@@ -100,14 +103,14 @@ def build_write_tools(
         return result
 
     def _create_trigger_rule(
-        *, trigger_type, playbook_id, title, description, cron, trigger_config
+        *, trigger_type, playbook_id, title, description, cron, trigger_config, app_code=None
     ):
         from gyra_serve.trigger.api.schemas import TriggerSourceRequest
 
         if trigger_type not in ("timer", "webhook", "alert"):
             return {"error": f"不支持的 trigger_type: {trigger_type},应为 timer/webhook/alert"}
-        if not playbook_id:
-            return {"error": "创建触发规则必须指定 playbook_id(用哪个剧本执行)"}
+        if not playbook_id and not app_code:
+            return {"error": "创建触发规则必须指定 app_code(专家)或 playbook_id(合约)"}
         if trigger_type == "timer" and not cron:
             return {"error": "trigger_type=timer 时必须提供 cron 表达式,如 '0 20 * * 5'"}
         config = _coerce_declaration(trigger_config)
@@ -118,7 +121,8 @@ def build_write_tools(
             workspace_id=workspace_id,
             type=trigger_type,
             name=title or description or "未命名触发规则",
-            target_playbook_id=int(playbook_id),
+            target_playbook_id=int(playbook_id) if playbook_id else None,
+            target_app_code=app_code,
             instruction=description or title,
             config=config,
         ))
@@ -126,7 +130,7 @@ def build_write_tools(
             "trigger_id": entity.id,
             "type": entity.type,
             "cron": (entity.config or {}).get("cron"),
-            "note": "触发规则已创建;timer 类型已注册调度,到点自动按剧本创建任务",
+            "note": "触发规则已创建;timer 类型已注册调度,到点自动按专家/合约创建任务",
         }
 
     def _make_close_task_tool(**kwargs):
@@ -179,9 +183,11 @@ def build_write_tools(
 
     specs = [
         ("start_task", "发起异步任务并后台执行:创建任务后立即后台运行,完成时产出 artifact/交付物。仅当用户明确要求异步/后台执行或属于订阅/触发类流程时才使用;普通分析类请求应直接在当前会话完成,不要调用本工具", start_task, {
-            "playbook_id": _p("playbook_id", "integer", "剧本 ID,不传则为 ad-hoc 任务;创建触发规则时必传"),
+            "playbook_id": _p("playbook_id", "integer", "交付合约 ID,不传则为 ad-hoc 任务;创建触发规则时可选(有 app_code 时可不传)"),
+            "app_code": _p("app_code", "string", "执行专家 app_code(专家清单见系统上下文【本空间专家团队】),绑定专家执行;创建触发规则时作为唤醒目标"),
+            "contract_id": _p("contract_id", "integer", "交付合约 id(不传用 playbook_id 回落)"),
             "title": _p("title", "string", "任务/规则名称(简短标识)"),
-            "description": _p("description", "string", "任务目标指令:写给执行者的具体目标——分析什么方向、产出什么(剧本是通用能力,指令使其具体化);创建触发规则时作为每次任务的指令。调度时间不要写在这里,用 cron 表达"),
+            "description": _p("description", "string", "任务目标指令:写给执行者的具体目标——分析什么方向、产出什么(合约/专家是通用能力,指令使其具体化);创建触发规则时作为每次任务的指令。调度时间不要写在这里,用 cron 表达"),
             "trigger_type": _p("trigger_type", "string", "定时/条件触发时传 timer/webhook/alert;不传=立即执行"),
             "cron": _p("cron", "string", "trigger_type=timer 时必填,标准 cron 表达式,如 '0 20 * * 5'(每周五20点)"),
             "trigger_config": _p("trigger_config", "string", "JSON 字符串;webhook 传 {\"secret\":\"...\"},alert 传 {\"alert_name\":\"...\"}"),
@@ -246,38 +252,9 @@ def build_scene_write_tools(
     追加直接写工具:create/update/delete_playbook + resolve/abort_intervention
     + update/delete/fire_trigger。
     """
-    from gyra_serve.playbook.api.schemas import PlaybookRequest
     from gyra_serve.intervention.api.schemas import InterventionResolveRequest
 
     base = build_write_tools(system_app, workspace_id, user_id, conv_uid, task_id, on_event)
-
-    def create_playbook(**kwargs):
-        svc = get_playbook_service(system_app)
-        req = PlaybookRequest(
-            workspace_id=kwargs.get("workspace_id") or workspace_id,
-            name=kwargs.get("name"),
-            declaration=_coerce_declaration(kwargs.get("declaration_dsl")),
-        )
-        entity = svc.create(req)
-        return {"playbook_id": entity.id}
-
-    def update_playbook(**kwargs):
-        svc = get_playbook_service(system_app)
-        playbook_id = int(kwargs.get("playbook_id"))
-        req = PlaybookRequest(
-            id=playbook_id,
-            workspace_id=kwargs.get("workspace_id") or workspace_id,
-            name=kwargs.get("name"),
-            declaration=_coerce_declaration(kwargs.get("declaration_dsl")),
-        )
-        entity = svc.update(req)
-        return {"playbook_id": entity.id}
-
-    def delete_playbook(**kwargs):
-        svc = get_playbook_service(system_app)
-        playbook_id = int(kwargs.get("playbook_id"))
-        svc.delete(playbook_id)
-        return {"playbook_id": playbook_id, "deleted": True}
 
     def resolve_intervention(**kwargs):
         svc = get_intervention_service(system_app)
@@ -319,6 +296,7 @@ def build_scene_write_tools(
             type=kwargs.get("type") or existing.type,
             name=kwargs.get("name") or existing.name,
             target_playbook_id=int(kwargs.get("playbook_id") or existing.target_playbook_id),
+            target_app_code=kwargs.get("app_code") or getattr(existing, "target_app_code", None),
             instruction=kwargs.get("instruction") or existing.instruction,
             config=config,
             is_active=kwargs.get("is_active") if kwargs.get("is_active") is not None else existing.is_active,
@@ -414,18 +392,6 @@ def build_scene_write_tools(
         }
 
     extra_specs = [
-        ("create_playbook", "在当前空间下创建一个剧本", create_playbook, {
-            "name": _p("name", "string", "剧本名称", required=True),
-            "declaration_dsl": _p("declaration_dsl", "string", "剧本声明 DSL(JSON 字符串)"),
-        }),
-        ("update_playbook", "更新指定剧本的声明", update_playbook, {
-            "playbook_id": _p("playbook_id", "integer", "剧本 ID", required=True),
-            "name": _p("name", "string", "剧本名称"),
-            "declaration_dsl": _p("declaration_dsl", "string", "剧本声明 DSL(JSON 字符串)"),
-        }),
-        ("delete_playbook", "删除指定剧本", delete_playbook, {
-            "playbook_id": _p("playbook_id", "integer", "剧本 ID", required=True),
-        }),
         ("resolve_intervention", "批准一个待介入请求(记录决策并流转状态)", resolve_intervention, {
             "intervention_id": _p("intervention_id", "integer", "介入 ID", required=True),
             "decision": _p("decision", "string", '决策 JSON,如 {"action":"approved"}'),

@@ -3,7 +3,7 @@
 import './scene-workspace.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Input, Modal, Drawer } from 'antd';
-import { CloseOutlined, LeftOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MessageOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
+import { CloseOutlined, LeftOutlined, MenuFoldOutlined, MenuUnfoldOutlined, RightOutlined, ScheduleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { apiInterceptors, createConversation, getTaskInfo, linkConversation, listConversations, listPlaybooks, setCurrentConversation, getAppInfo, listResources, deleteTask, deleteConversation, favoriteConversation, renameConversation } from '@/client/api';
 import { getUsageConversationSummary, type ConversationUsageSummary } from '@/client/api/usage';
@@ -27,17 +27,13 @@ import { SceneSimpleWorkspace } from './scene-simple-workspace';
 import { SimpleAppCardLauncher } from './app-card/SimpleAppCardLauncher';
 import { AppCardPage } from './app-card/AppCardPage';
 import type { AgentWorkspaceInputHandle } from './agent-workspace-types';
+import type { SubAgentRef } from '@/components/chat/input/trigger-types';
 import { useSceneAgentChat } from './use-scene-agent-chat';
+import { hasActiveTask } from './scene-workspace-utils';
 import type { WorkspaceViewMode } from './use-view-mode';
 
 /** 欢迎态「试试这些」预设问题的兜底默认值;工作空间 settings 未配置时使用 */
 const DEFAULT_SUGGEST_QUESTIONS = ['帮我看看这周的数据情况'];
-
-/** 判断当前任务列表里是否有活跃任务(running 等会变化的状态),决定是否开轮询。 */
-export function hasActiveTask(tasks: any[]): boolean {
-  const active = new Set(['running', 'pending_trigger', 'blocked', 'awaiting_human', 'draft']);
-  return (tasks || []).some((t) => active.has(t?.status));
-}
 
 interface SceneWorkspaceShellProps {
   workspace: any;
@@ -95,10 +91,13 @@ export function SceneWorkspaceShell({
 }: SceneWorkspaceShellProps) {
   const workspaceId = workspace?.id;
   // 权限门控:对话输入区需 space.chat.use(查看角色只读,不发对话)
-  const { can } = useSpaceRole(workspaceId);
+  const { can, role } = useSpaceRole(workspaceId);
   const chatReadOnly = !can('space.chat.use');
   const canManageTask = can('space.task.manage');
   const canUseChat = can('space.chat.use');
+  // 过程洞察:owner/contributor 可查看执行步骤详情;viewer(业务用户)只看结果,
+  // 执行过程折叠成单行且步骤不可点开(本期仅前端隐藏,接口数据仍下发)
+  const canViewProcess = role === 'owner' || role === 'contributor';
   const [previewItem, setPreviewItem] = useState<any>(null);
   const [detailContext, setDetailContext] = useState<DetailContext>('dashboard');
   const [activeTaskId, setActiveTaskId] = useState<number | null>(null);
@@ -250,7 +249,14 @@ export function SceneWorkspaceShell({
   );
   const appInfo = appInfoTuple?.[1];
 
-  // 会话维度列表:剧本任务会话 + 大厅会话统一按 conv 维度展示。
+  // `@` 接管态(会话级):提升到本层持有,供会话头部/轮次头部显示实际执行的子 Agent。
+  // 仅当前会话生效(刷新后回退默认主 Agent),不做持久化。
+  const [simpleSubAgent, setSimpleSubAgent] = useState<SubAgentRef | null>(null);
+  // 界面归属:被 @ 的子 Agent 接管时显示子 Agent 名/头像,否则显示空间默认主 Agent。
+  const simpleDisplayAgentName = simpleSubAgent?.name || appInfo?.app_name || 'Agent';
+  const simpleDisplayAgentIcon = simpleSubAgent?.physical_ref ? null : appInfo?.icon;
+
+  // 会话维度列表:合约任务会话 + 大厅会话统一按 conv 维度展示。
   // refreshDeps 含 workspaceConvUid/taskConvUid:清理(新开会话)/切换会话/进入任务对话后自动刷新,
   // 新会话按 gmt_modified 倒序自然置顶。listsRefreshKey:对话开始(onConversationStart)即刷新,
   // 让后端兜底 link 的新会话/出错对话第一时间进入任务列表。
@@ -372,7 +378,7 @@ export function SceneWorkspaceShell({
     setMobilePane('space');
   };
 
-  // 剧本快捷启动:选择剧本后以 @引用 带入输入框并聚焦,复用输入框的剧本执行链路
+  // 合约快捷启动:选择后以 @引用 带入输入框并聚焦,复用输入框的合约执行链路
   const [quickPbOpen, setQuickPbOpen] = useState(false);
   const handleQuickRun = (pb: { playbook_id: number; playbook_name: string }) => {
     agentInputRef.current?.insertText(`@剧本#${pb.playbook_id}「${pb.playbook_name}」 `);
@@ -380,6 +386,25 @@ export function SceneWorkspaceShell({
     agentInputRef.current?.focus();
     setMobilePane('agent');
   };
+
+  // 专家团队卡动作(Agent Team 空间重构 Phase 2.3):
+  // 对话 → @专家 带入输入框;编辑 → 空间内专家编辑器;派单 → 专家 dispatch。
+  const handleTalkExpert = (expert: any) => {
+    const name = expert?.app_name || expert?.app_code;
+    agentInputRef.current?.insertText(`@${name} `);
+    agentInputRef.current?.focus();
+    setMobilePane('agent');
+  };
+  const handleEditExpert = (expert: any) => {
+    window.location.href = `/workspaces/detail/${workspaceId}/experts`;
+  };
+  const handleDispatchExpert = async (expert: any) => {
+    handleTalkExpert(expert);
+    setMobilePane('agent');
+  };
+
+  // 能力管理权限(空间 owner):能力绑定 tab 的编辑/移除是否可用。
+  const canManageCapability = can('space.capability.manage');
 
   // 推荐问题/随便问问:可带文本填入输入框并聚焦(带文本时作为问题预填)
   const handleAsk = (text?: string) => {
@@ -436,7 +461,7 @@ export function SceneWorkspaceShell({
     setMobilePane('space');
   };
 
-  // 从「会话」视图进入对应对话:剧本任务会话(有 task_id)进任务对话,
+  // 从「会话」视图进入对应对话:合约任务会话(有 task_id)进任务对话,
   // 大厅会话(无 task_id)切回 workspace 级会话并回到 dashboard。
   const handleOpenConversation = async (conversationId: string, taskId: number | null) => {
     if (taskId) {
@@ -549,7 +574,11 @@ export function SceneWorkspaceShell({
   // 欢迎态不传 conversationId:首页输入框提交即新建会话(onConvCreated -> ensureConversation),
   // 而不是续写历史会话。
   const simpleChat = useSceneAgentChat({
-    conversationId: simpleWelcome ? undefined : rightConvUid,
+    // rightConvUid 为 ''(会话未创建/未写回)时归一化为 undefined:
+    // 空串会绕过 hook 里 `conversationId ?? internalConvUid` 的空值合并,
+    // 把 effectiveConvUid 从刚创建的会话劫持成 '' → 会话切换 effect 误判
+    // 为切换会话而 abort 刚发出的 SSE(表现为对话直接被中断)。
+    conversationId: simpleWelcome ? undefined : rightConvUid || undefined,
     appCode,
     workspaceId,
     taskId: rightTaskId,
@@ -637,12 +666,6 @@ export function SceneWorkspaceShell({
     });
   }, [tasks, conversations, runningConvIds]);
 
-  // 欢迎态「继续上次会话」入口:最近一条大厅会话(simpleItems 已按更新时间倒序)
-  const lastLobbyItem = useMemo<SimpleHistoryItem | undefined>(
-    () => simpleItems.find((it) => it.kind === 'lobby' && it.conversationId),
-    [simpleItems],
-  );
-
   // 批量拉取会话级用量（模型 + token），供左栏历史列表 chip 展示，避免 N+1
   const simpleConvUids = useMemo(
     () => simpleItems.map((it) => it.conversationId).filter(Boolean) as string[],
@@ -688,6 +711,10 @@ export function SceneWorkspaceShell({
   const handleSimpleNew = () => {
     // eslint-disable-next-line no-console
     console.log('[DEBUG handleSimpleNew] onNewTask?', typeof onNewTask);
+    // 清掉 chat hook 懒创建的内部会话:上一轮「新任务」流里父层 conversationId
+    // 保持空串,prop 无变化时 hook 内部的清空 effect 不会重跑,不显式清掉的话
+    // 下次首页发送会复用上一轮懒创建的会话(首页提问跑进最后一个会话)。
+    simpleChat.resetConv();
     setSimpleShowWelcome(true);
     setActiveTaskId(null);
     setDetailContext('dashboard');
@@ -863,11 +890,11 @@ export function SceneWorkspaceShell({
   };
   const handleSimpleSend = async (payload: any) => {
     // 欢迎态首页提交:无论上一轮会话是否仍在运行(loading/RUNNING 残留态),
-    // 一律新建会话,不与任何已存在/运行中的会话纠缠。否则上一轮会话的残留态
-    // 会让本次请求被当作「补充输入」投递到旧会话队列,追问承接在旧对话里,
-    // 而不是真正新开会话。
+    // 一律 forceNew 新建会话,不与任何已存在/运行中的会话纠缠。否则上一轮会话
+    // 的残留态(含懒创建残留的 internalConvUid)会让本次请求被当作「补充输入」
+    // 投递到旧会话队列,追问承接在旧对话里,而不是真正新开会话。
     if (simpleWelcome) {
-      await simpleChat.send(payload);
+      await simpleChat.send(payload, { forceNew: true });
       return;
     }
     if (simpleChat.loading || simpleChat.convState === 'RUNNING') {
@@ -895,7 +922,10 @@ export function SceneWorkspaceShell({
   // ── 渲染 ────────────────────────────────────────────────────────────
 
   return (
-    <CallDetailProvider conversationId={rightConvUid}>
+    // 调用详情抽屉的会话 id:优先父层写回的 rightConvUid;「新任务」流父层保持空串
+    //(懒创建不触发 onConvChanged,避免翻转 conversationId 打断 SSE),此时用
+    // chat hook 内部生效的 convUid 兜底,否则抽屉因 conversationId 为空而不发请求。
+    <CallDetailProvider conversationId={rightConvUid || simpleChat.convUid || undefined}>
       <div
         className={`ws-scene-shell${railOpen ? '' : ' ws-scene-shell--rail-closed'}${spaceCollapsed ? ' ws-scene-shell--space-collapsed' : ''}${spaceMaximized ? ' ws-scene-shell--space-maximized' : ''}${isSimple ? ' ws-scene-shell--simple' : ''}`}
         data-pane={mobilePane}
@@ -966,6 +996,8 @@ export function SceneWorkspaceShell({
                     model={simpleInputModel}
                     defaultModel={spaceDefaultModel}
                     onModelChange={setSimpleInputModel}
+                    subAgent={simpleSubAgent ?? undefined}
+                    onSubAgentChange={setSimpleSubAgent}
                     onSend={handleSimpleSend}
                     loading={isRunning}
                     onStop={simpleChat.abort}
@@ -977,19 +1009,6 @@ export function SceneWorkspaceShell({
                     usageMetrics={simpleChat.usageMetrics}
                   />
                 </div>
-                {lastLobbyItem && (
-                  <div className="ws-simple-welcome__resume">
-                    <button
-                      type="button"
-                      className="ws-simple-welcome__resume-btn"
-                      onClick={() => handleSimpleOpenItem(lastLobbyItem)}
-                    >
-                      <MessageOutlined />
-                      <span>继续上次会话</span>
-                      <em>{lastLobbyItem.title}</em>
-                    </button>
-                  </div>
-                )}
                 <div className="ws-simple-welcome__sugg">
                   <div className="ws-simple-welcome__sugg-label">试试这些</div>
                   <div className="ws-simple-welcome__sugg-row">
@@ -1030,12 +1049,15 @@ export function SceneWorkspaceShell({
                   convLoading={simpleChat.convLoading}
                   convLoadError={convLoadError}
                   retryLoadConv={retryLoadConv}
-                  agentIcon={appInfo?.icon}
-                  agentName={appInfo?.app_name}
+                  agentIcon={simpleDisplayAgentIcon}
+                  agentName={simpleDisplayAgentName}
                   modelName={simpleChat.modelName}
                   workspaceId={workspaceId}
+                  canViewProcess={canViewProcess}
                   onInteractionResume={(msg) => simpleChat.send({ text: msg })}
                   onExit={() => {
+                    // 退出任务回欢迎页:同样清掉懒创建的内部会话,保证首页提问新建
+                    simpleChat.resetConv();
                     setSimpleShowWelcome(true);
                     setActiveTaskId(null);
                   }}
@@ -1054,6 +1076,8 @@ export function SceneWorkspaceShell({
                         model={simpleInputModel}
                         defaultModel={spaceDefaultModel}
                         onModelChange={setSimpleInputModel}
+                        subAgent={simpleSubAgent ?? undefined}
+                        onSubAgentChange={setSimpleSubAgent}
                         onSend={handleSimpleSend}
                         loading={isRunning}
                         onStop={simpleChat.abort}
@@ -1185,7 +1209,10 @@ export function SceneWorkspaceShell({
               onGuide={handleGuideAction}
               onSelectInbox={handleSelectInbox}
               onAsk={handleAsk}
-              onRunPlaybook={handleQuickRun}
+              onTalkExpert={handleTalkExpert}
+              onEditExpert={handleEditExpert}
+              onDispatchExpert={handleDispatchExpert}
+              canManage={canManageCapability}
               listsRefreshKey={listsRefreshKey}
               onSelectTask={(taskId) => {
                 const task = tasks.find((t) => t.id === taskId);
@@ -1245,7 +1272,7 @@ export function SceneWorkspaceShell({
               onWorkspaceEvent={handleWorkspaceEvent}
               onConversationStart={() => {
                 setSpaceCollapsed(true);
-                // 会话开始即刷新任务列表:回合前路由预建的会话内任务(页面输入命中剧本)
+                // 会话开始即刷新任务列表:回合前路由预建的会话内任务(页面输入命中合约)
                 // 在 chat 流里创建,不产生 task_created SSE 事件,靠这里第一时间入列表。
                 onRefreshLists?.();
               }}
@@ -1262,21 +1289,21 @@ export function SceneWorkspaceShell({
         </>
       )}
 
-      {/* 剧本快捷启动:选择后 @引用 带入输入框(壳内执行,不跳转剧本页) */}
+      {/* 合约快捷启动:选择后 @引用 带入输入框(壳内执行,不跳转合约页) */}
       <Modal
         open={quickPbOpen}
         onCancel={() => setQuickPbOpen(false)}
         footer={null}
-        title="跑一个剧本"
+        title="发起专家任务"
         width={440}
       >
         <p style={{ fontSize: 13, color: 'var(--ws-ink-2)', margin: '12px 0 16px', lineHeight: 1.6 }}>
-          选择一个剧本,将自动带入右侧输入框并聚焦。补充执行意图后回车即可运行,全程不出空间。
+          选择一个合约,将自动带入右侧输入框并聚焦。补充执行意图后回车即可运行,全程不出空间。
         </p>
         {(!playbooks || playbooks.length === 0) && (
           <div className="ws-rail-empty">
-            <div className="ws-rail-empty-t">暂无剧本</div>
-            <div className="ws-rail-empty-h">可在「剧本」页创建剧本后再回来运行。</div>
+            <div className="ws-rail-empty-t">暂无专家</div>
+            <div className="ws-rail-empty-h">可在「专家团队」页创建专家并挂载合约后再回来运行。</div>
           </div>
         )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>

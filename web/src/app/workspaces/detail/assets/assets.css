@@ -301,6 +301,19 @@
 
 /* === 交付沉淀时间线 .ws-feed-* === */
 
+.ws-feed-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.ws-feed-toolbar .ws-feed-chips {
+  margin-bottom: 0;
+}
+
 .ws-feed-chips {
   display: flex;
   flex-wrap: wrap;
@@ -406,4 +419,53 @@
 
 .ws-feed-more:hover {
   text-decoration: underline;
+}
+
+/* ---- 分组视图:按时间 / 按分类 ---- */
+.ws-feed-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ws-feed-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ws-feed-group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.ws-feed-group__icon {
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.ws-feed-group__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ws-ink);
+  white-space: nowrap;
+}
+
+.ws-feed-group__count {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--ws-ink-2);
+  background: var(--ws-surface);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 999px;
+  padding: 0 8px;
+}
+
+.ws-feed-group__line {
+  flex: 1;
+  height: 1px;
+  background: var(--ws-border-subtle);
 }

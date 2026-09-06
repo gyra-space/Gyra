@@ -1,10 +1,10 @@
 'use client';
 
-import { apiInterceptors, listResources, listPlaybooks, listTriggers, getWorkspaceInfo } from '@/client/api';
+import { apiInterceptors, listResources, listTriggers, getWorkspaceInfo, listExperts } from '@/client/api';
+import { ExpertInfo } from '@/client/api/expert';
 import {
   DatabaseOutlined,
   ToolOutlined,
-  BookOutlined,
   MessageOutlined,
   PlayCircleOutlined,
   ScheduleOutlined,
@@ -12,6 +12,7 @@ import {
   DownOutlined,
   RightOutlined,
   InboxOutlined,
+  TeamOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useMemo, useState } from 'react';
@@ -27,12 +28,15 @@ interface SpaceGuideCardProps {
   onGuide?: (action: 'ask' | 'run_playbook' | 'triggers' | 'data_assets') => void;
   /** 推荐问题:填入输入框并聚焦 */
   onAsk?: (text?: string) => void;
-  /** 剧本快捷执行:@引用 带入输入框并聚焦 */
-  onRunPlaybook?: (pb: { playbook_id: number; playbook_name: string }) => void;
+  /** 专家对话:@引用 带入输入框 */
+  onTalkExpert?: (expert: ExpertInfo) => void;
+  /** 专家编辑:进入空间内专家编辑器 */
+  onEditExpert?: (expert: ExpertInfo) => void;
+  /** 专家派单:为该专家创建任务 */
+  onDispatchExpert?: (expert: ExpertInfo) => void;
   /** 以下数据由 Lobby 聚合端点一次性下发,省略时回退到内部拉取(兼容独立使用) */
   workspace?: any;
   resources?: any[];
-  playbooks?: any[];
   triggers?: any[];
   /** 聚合数据加载中:显示骨架,避免数字从 0 跳变 */
   loading?: boolean;
@@ -43,7 +47,7 @@ const CAPABILITY_TYPES = ['skill', 'mcp', 'app', 'llm_model'];
 
 /**
  * 空间问候条 + 开始工作区:
- * 顶部问候(待办/空间状态) + 计数 + 动作胶囊;下方推荐问题与可跑剧本 —— 让用户不用想"问什么",
+ * 顶部问候(待办/空间状态) + 计数 + 动作胶囊;下方推荐问题与发起任务 —— 让用户不用想"问什么",
  * 一键即可进入执行。导览卡被吸收为本卡,不再单独占用一行。
  */
 export function SpaceGuideCard({
@@ -53,10 +57,11 @@ export function SpaceGuideCard({
   semanticNames = [],
   onGuide,
   onAsk,
-  onRunPlaybook,
+  onTalkExpert,
+  onEditExpert,
+  onDispatchExpert,
   workspace: workspaceProp,
   resources: resourcesProp,
-  playbooks: playbooksProp,
   triggers: triggersProp,
   loading = false,
 }: SpaceGuideCardProps) {
@@ -81,12 +86,12 @@ export function SpaceGuideCard({
   }, { refreshDeps: [workspaceId, resourcesProp] });
   const resources = resourcesProp ?? resourcesFetched ?? [];
 
-  const { data: playbooksFetched } = useRequest(async () => {
-    if (playbooksProp) return null;
-    const [err, res] = await apiInterceptors(listPlaybooks({ workspace_id: workspaceId, limit: 200 }));
+  // 专家团队列表（Agent Team 空间重构 Phase 1.4）：替代原"可跑剧本/发起任务"，展示团队卡片
+  const { data: expertsFetched } = useRequest(async () => {
+    const [err, res] = await apiInterceptors(listExperts(workspaceId));
     return err ? [] : res || [];
-  }, { refreshDeps: [workspaceId, playbooksProp] });
-  const playbooks = playbooksProp ?? playbooksFetched ?? [];
+  }, { refreshDeps: [workspaceId] });
+  const experts = expertsFetched ?? [];
 
   const { data: triggersFetched } = useRequest(async () => {
     if (triggersProp) return null;
@@ -98,22 +103,19 @@ export function SpaceGuideCard({
   const stats = useMemo(() => {
     const dataCount = (resources || []).filter((r: any) => DATA_TYPES.includes(r.type)).length;
     const capCount = (resources || []).filter((r: any) => CAPABILITY_TYPES.includes(r.type)).length;
-    const pbCount = (playbooks || []).length;
-    const triggeredPb = new Set(
-      (triggers || []).filter((t: any) => t.is_active !== false).map((t: any) => t.playbook_id),
-    ).size;
-    return { dataCount, capCount, pbCount, triggeredPb, semanticCount: semanticNames.length };
-  }, [resources, playbooks, triggers, semanticNames]);
+    const expertCount = (experts || []).length;
+    return { dataCount, capCount, expertCount, semanticCount: semanticNames.length };
+  }, [resources, experts, semanticNames]);
 
   // 推荐问题:由空间已有内容推导(前端 fallback,后续由 /overview 聚合端点替换)
   const suggestions = useMemo(() => {
     const qs: string[] = [];
-    const firstPb: any = (playbooks || [])[0];
-    if (firstPb?.name) qs.push(`跑一下「${firstPb.name}」剧本`);
+    const firstExpert: any = (experts || [])[0];
+    if (firstExpert?.app_name || firstExpert?.app_code) qs.push(`问问「${firstExpert.app_name || firstExpert.app_code}」`);
     if (semanticNames.length > 0) qs.push(`「${semanticNames[0]}」的现状如何?`);
     if (qs.length < 2) qs.push('帮我看看这周的数据情况');
     return qs.slice(0, 3);
-  }, [playbooks, semanticNames]);
+  }, [experts, semanticNames]);
 
   const toggle = () => {
     const next = !collapsed;
@@ -125,7 +127,7 @@ export function SpaceGuideCard({
 
   const statusLine = pendingCount > 0
     ? `今天有 ${pendingCount} 件待办需要你,处理完流水线继续跑`
-    : '一切就绪,可以随时提问或跑一个剧本';
+    : '一切就绪,可以随时提问或发起一个专家任务';
 
   return (
     <div className="ws-guide">
@@ -173,9 +175,8 @@ export function SpaceGuideCard({
               语义 <b>{stats.semanticCount}</b>
             </span>
             <span className="ws-guide__stat">
-              <BookOutlined />
-              剧本 <b>{stats.pbCount}</b>
-              {stats.triggeredPb > 0 && <em>({stats.triggeredPb} 有自动触发)</em>}
+              <TeamOutlined />
+              专家 <b>{stats.expertCount}</b>
             </span>
           </div>
           <div className="ws-guide__actions">
@@ -195,7 +196,7 @@ export function SpaceGuideCard({
               onClick={() => onGuide?.('run_playbook')}
               onKeyDown={(e) => { if (e.key === 'Enter') onGuide?.('run_playbook'); }}
             >
-              <PlayCircleOutlined /> 跑一个剧本
+              <PlayCircleOutlined /> 发起专家任务
             </span>
             <span
               className="ws-guide__action"
@@ -217,7 +218,7 @@ export function SpaceGuideCard({
             </span>
           </div>
 
-          {/* 开始工作:推荐问题 + 可跑剧本 */}
+          {/* 开始工作:推荐问题 + 专家团队 */}
           <div className="ws-guide__work">
             {suggestions.length > 0 && (
               <div className="ws-guide__qs">
@@ -235,20 +236,38 @@ export function SpaceGuideCard({
                 ))}
               </div>
             )}
-            {(playbooks || []).length > 0 && (
+            {(experts || []).length > 0 && (
               <div className="ws-guide__pbs">
-                {(playbooks || []).slice(0, 3).map((pb: any) => (
+                {(experts || []).slice(0, 3).map((ex: ExpertInfo) => (
                   <div
-                    key={pb.id}
+                    key={ex.app_code}
                     className="ws-guide__pb"
                     role="button"
                     tabIndex={0}
-                    onClick={() => onRunPlaybook?.({ playbook_id: pb.id, playbook_name: pb.name })}
-                    onKeyDown={(e) => { if (e.key === 'Enter') onRunPlaybook?.({ playbook_id: pb.id, playbook_name: pb.name }); }}
+                    onClick={() => onTalkExpert?.(ex)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') onTalkExpert?.(ex); }}
                   >
                     <PlayCircleOutlined className="ws-guide__pb-icon" />
-                    <span className="ws-guide__pb-name">{pb.name}</span>
-                    <span className="ws-guide__pb-hint">点击运行</span>
+                    <span className="ws-guide__pb-name">{ex.app_name || ex.app_code}</span>
+                    <span className="ws-guide__pb-hint">对话</span>
+                    <span
+                      className="ws-guide__pb-link"
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => { e.stopPropagation(); onEditExpert?.(ex); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onEditExpert?.(ex); } }}
+                    >
+                      编辑
+                    </span>
+                    <span
+                      className="ws-guide__pb-link"
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => { e.stopPropagation(); onDispatchExpert?.(ex); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onDispatchExpert?.(ex); } }}
+                    >
+                      派单
+                    </span>
                     <RightOutlined className="ws-guide__pb-arrow" />
                   </div>
                 ))}

@@ -10,6 +10,7 @@ jest.mock('@/client/api', () => ({
   getMCPList: jest.fn(),
   postChatModeParamsFileLoad: jest.fn(),
   listResources: jest.fn(),
+  listExperts: jest.fn(),
   listArtifacts: jest.fn(),
   listAssets: jest.fn(),
 }));
@@ -26,8 +27,9 @@ jest.mock('ahooks', () => ({
         data: [{ id: 9, type: 'command', name: '开启深度思考', physical_ref: 'deep-think', is_active: true, config: { kind: 'toggle', description: '更深度的推理', payload: { deep_think: true } } }],
       };
     }
-    if (src.includes('listResources')) {
-      return { loading: false, data: [{ resource_id: 1, name: '数据分析专家', physical_ref: 'app-analyst', description: '擅长报表分析' }] };
+    // `@` 子 Agent = 空间专家团队(listExperts)
+    if (src.includes('listExperts')) {
+      return { loading: false, data: [{ id: 1, app_code: 'app-analyst', app_name: '数据分析专家', role_hint: '擅长报表分析' }] };
     }
     if (src.includes('listArtifacts')) {
       return { loading: false, data: [{ artifact_id: 11, title: '月度报告.html', content_ref: '/files/11.html' }] };
@@ -40,89 +42,16 @@ jest.mock('ahooks', () => ({
 }));
 
 describe('AgentWorkspaceInput', () => {
-  test('输入 / 且有 playbooks 时显示剧本列表', () => {
+  test('输入 / 唤起统一命令菜单,按类型分组(技能/命令/文件)与键盘提示,无剧本组', () => {
     const onSend = jest.fn();
-    render(
-      <AgentWorkspaceInput
-        conversationId="c1"
-        onSend={onSend}
-        playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
-      />,
-    );
+    render(<AgentWorkspaceInput conversationId="c1" onSend={onSend} playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]} />);
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '/' } });
-    expect(screen.getByText('营收分析')).toBeInTheDocument();
-  });
-
-  test('输入 / 唤起统一命令菜单,按类型分组展示剧本项与键盘提示', () => {
-    const onSend = jest.fn();
-    render(
-      <AgentWorkspaceInput
-        conversationId="c1"
-        onSend={onSend}
-        playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
-      />,
-    );
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: '/' } });
-    // 菜单打开:分组标题(文件/剧本/命令) + 剧本项 + 键盘提示
-    expect(screen.getByText('剧本')).toBeInTheDocument();
-    expect(screen.getByText('营收分析')).toBeInTheDocument();
+    // 菜单打开:技能 / 命令 组 + 键盘提示;剧本组已收敛(专家走 @),不显示
+    expect(screen.getByText('技能')).toBeInTheDocument();
+    expect(screen.queryByText('剧本')).not.toBeInTheDocument();
     expect(screen.getByText('↑↓ 选择')).toBeInTheDocument();
     expect(screen.getByText('Enter 确认')).toBeInTheDocument();
-  });
-
-  test('/ 后输入关键词实时过滤菜单项', () => {
-    const onSend = jest.fn();
-    render(
-      <AgentWorkspaceInput
-        conversationId="c1"
-        onSend={onSend}
-        playbooks={[
-          { playbook_id: 1, playbook_name: '营收分析' },
-          { playbook_id: 2, playbook_name: '日志巡检' },
-        ]}
-      />,
-    );
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: '/营收' } });
-    expect(screen.getByText('营收分析')).toBeInTheDocument();
-    expect(screen.queryByText('日志巡检')).not.toBeInTheDocument();
-  });
-
-  test('/ 菜单键盘导航:Enter 选中高亮剧本', () => {
-    const onSend = jest.fn();
-    render(
-      <AgentWorkspaceInput
-        conversationId="c1"
-        onSend={onSend}
-        playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
-      />,
-    );
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: '/' } });
-    // ArrowDown 高亮第一项,Enter 选中(消费事件,不触发发送)
-    fireEvent.keyDown(textarea, { key: 'ArrowDown' });
-    fireEvent.keyDown(textarea, { key: 'Enter' });
-    expect(screen.getByTitle('移除剧本')).toBeInTheDocument();
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  test('/ 菜单选中后生成剧本 chip', () => {
-    const onSend = jest.fn();
-    render(
-      <AgentWorkspaceInput
-        conversationId="c1"
-        onSend={onSend}
-        playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
-      />,
-    );
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: '/' } });
-    expect(screen.getByText('营收分析')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('营收分析'));
-    // 选中生成 chip
-    expect(screen.getByTitle('移除剧本')).toBeInTheDocument();
   });
 
   test('/ 菜单命令组包含内置与空间自定义命令', () => {
@@ -181,7 +110,8 @@ describe('AgentWorkspaceInput', () => {
     );
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '帮我看下 /' } });
-    expect(screen.getByText('营收分析')).toBeInTheDocument();
+    // 菜单打开(键盘提示出现);剧本组已收敛,但 '/' 唤起能力编排菜单
+    expect(screen.getByText('↑↓ 选择')).toBeInTheDocument();
   });
 
   test('@ 唤起子 Agent 菜单并接管,发送时携带 subAgent', () => {
@@ -230,29 +160,6 @@ describe('AgentWorkspaceInput', () => {
     ]);
   });
 
-  test('选中剧本后 onSend 携带 playbookCommand 与主题文本', () => {
-    const onSend = jest.fn();
-    render(
-      <AgentWorkspaceInput
-        conversationId="c1"
-        onSend={onSend}
-        playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
-      />,
-    );
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    // 开头 / 弹出剧本列表,选中后清掉 / 再输入主题
-    fireEvent.change(textarea, { target: { value: '/' } });
-    fireEvent.click(screen.getByText('营收分析'));
-    fireEvent.change(textarea, { target: { value: '本月营收' } });
-    fireEvent.keyDown(textarea, { key: 'Enter' });
-    expect(onSend).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: '本月营收',
-        playbookCommand: { playbook_id: 1, playbook_name: '营收分析' },
-      }),
-    );
-  });
-
   test('focus 存在时渲染当前关注 chip, 点 × 调 onClearFocus', () => {
     const onSend = jest.fn();
     const onClearFocus = jest.fn();
@@ -278,7 +185,7 @@ describe('AgentWorkspaceInput', () => {
     expect(screen.queryByText('当前关注')).not.toBeInTheDocument();
   });
 
-  test('+ 号菜单展开显示 添加文件/剧本/技能 入口', () => {
+  test('+ 号菜单展开显示 添加文件/技能 入口,无剧本', () => {
     const onSend = jest.fn();
     render(
       <AgentWorkspaceInput
@@ -287,53 +194,10 @@ describe('AgentWorkspaceInput', () => {
         playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
       />,
     );
-    fireEvent.click(screen.getByTitle('添加文件 / 剧本 / 技能 / MCP / 命令'));
+    fireEvent.click(screen.getByTitle('添加文件 / 技能 / MCP / 命令'));
     expect(screen.getByText('添加文件')).toBeInTheDocument();
-    expect(screen.getByText('剧本')).toBeInTheDocument();
+    expect(screen.queryByText('剧本')).not.toBeInTheDocument();
     expect(screen.getByText('技能')).toBeInTheDocument();
-  });
-
-  test('+ 号菜单进入剧本面板, 选中后 chip 上屏且 onSend 携带 playbookCommand', () => {
-    const onSend = jest.fn();
-    render(
-      <AgentWorkspaceInput
-        conversationId="c1"
-        onSend={onSend}
-        playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
-      />,
-    );
-    fireEvent.click(screen.getByTitle('添加文件 / 剧本 / 技能 / MCP / 命令'));
-    fireEvent.click(screen.getByText('剧本'));
-    fireEvent.click(screen.getByText('营收分析'));
-    // chip 上屏
-    expect(screen.getByTitle('移除剧本')).toBeInTheDocument();
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: '本月营收' } });
-    fireEvent.keyDown(textarea, { key: 'Enter' });
-    expect(onSend).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: '本月营收',
-        playbookCommand: { playbook_id: 1, playbook_name: '营收分析' },
-      }),
-    );
-  });
-
-  test('选中剧本 chip 带 / 前缀', () => {
-    const onSend = jest.fn();
-    render(
-      <AgentWorkspaceInput
-        conversationId="c1"
-        onSend={onSend}
-        playbooks={[{ playbook_id: 1, playbook_name: '营收分析' }]}
-      />,
-    );
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: '/' } });
-    fireEvent.click(screen.getByText('营收分析'));
-    const chip = screen.getByTitle('移除剧本').closest('span');
-    // 剧本 chip 以 / 前缀标识
-    expect(chip?.textContent).toContain('/');
-    expect(chip?.textContent).toContain('营收分析');
   });
 
   test('选中技能 chip 带「技能」前缀,发送时携带 skills', () => {
@@ -342,7 +206,7 @@ describe('AgentWorkspaceInput', () => {
       <AgentWorkspaceInput conversationId="c1" onSend={onSend} playbooks={[]} />,
     );
     // + 菜单 → 技能面板 → 选中技能(数据来自被 mock 的 useRequest)
-    fireEvent.click(screen.getByTitle('添加文件 / 剧本 / 技能 / MCP / 命令'));
+    fireEvent.click(screen.getByTitle('添加文件 / 技能 / MCP / 命令'));
     fireEvent.click(screen.getByText('技能'));
     fireEvent.click(screen.getByText('代码审查'));
     // 技能 chip 上屏,带「技能」前缀

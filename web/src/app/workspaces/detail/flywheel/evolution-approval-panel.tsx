@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 剧本演化审批面板 —— 提议列表 + 差异预览 + 一键审批。
+ * 合约演化审批面板 —— 提议列表 + 差异预览 + 一键审批。
  *
  * 视觉:提议卡左侧色条按变更类型着色,操作行通过/拒绝按钮,
  * 差异预览弹窗展示 detector / diff 详情。
@@ -221,7 +221,7 @@ export function EvolutionApprovalPanel({ workspaceId }: EvolutionApprovalPanelPr
           <span className="ws-flywheel__card-icon" style={{ color: 'var(--fw-evolution)' }}>
             <ExperimentOutlined />
           </span>
-          <span className="ws-flywheel__card-title">剧本演化审批</span>
+          <span className="ws-flywheel__card-title">专家演化审批</span>
           <span
             className="ws-flywheel__card-chip"
             style={

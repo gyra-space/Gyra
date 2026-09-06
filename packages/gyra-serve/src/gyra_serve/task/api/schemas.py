@@ -29,6 +29,8 @@ class TaskRequest(BaseModel):
     playbook_id: Optional[int] = None
     playbook_version_id: Optional[int] = None
     conv_session_id: Optional[str] = Field(None, description="conversation session id bound to this task")
+    expert_app_code: Optional[str] = Field(None, description="执行专家（gpts_app.app_code），Agent Team 空间重构")
+    contract_id: Optional[int] = Field(None, description="交付合约 id（playbook 表收窄语义）")
     created_by_user_id: Optional[int] = None
     assignee_user_id: Optional[int] = None
     assigned_agents: Optional[List[str]] = Field(default_factory=list)
@@ -52,6 +54,8 @@ class TaskResponse(BaseModel):
     playbook_id: Optional[int] = None
     playbook_version_id: Optional[int] = None
     conv_session_id: Optional[str] = None
+    expert_app_code: Optional[str] = None
+    contract_id: Optional[int] = None
     created_by_user_id: Optional[int] = None
     assignee_user_id: Optional[int] = None
     assigned_agents: List[str] = Field(default_factory=list)
@@ -69,6 +73,12 @@ class TaskListFilter(BaseModel):
     workspace_id: int
     status: Optional[str] = None
     type: Optional[str] = None
+    triggered_by: Optional[str] = Field(
+        None, description="按触发来源过滤,逗号分隔多值,如 timer,webhook,alert"
+    )
+    trigger_ref: Optional[str] = Field(
+        None, description="按关联订阅(trigger id)过滤,精确匹配"
+    )
     user_id: Optional[int] = None
     assignee_user_id: Optional[int] = None
     mine: bool = Field(False, description="我发起的或指派给我的(created_by or assignee)")

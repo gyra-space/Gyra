@@ -211,29 +211,6 @@ _MATERIALIZE_DISPATCH = {
 _NON_AGENT_RESOURCE_TYPES = {"command"}
 
 
-def _declaration_item_to_ref_config(
-    item: Any, item_type: Optional[str] = None
-) -> tuple[Optional[str], Dict[str, Any]]:
-    """Normalize a playbook declaration item into (physical_ref, config).
-
-    Supports the v1 string form (skill code) as well as dict forms.
-    """
-    if isinstance(item, str):
-        return item, {}
-    if not isinstance(item, dict):
-        return None, {}
-    if item_type is None:
-        item_type = item.get("type")
-    if item_type == "mcp":
-        physical_ref = item.get("server_name") or item.get("name") or item.get("ref")
-    else:
-        physical_ref = item.get("name") or item.get("ref")
-    if not physical_ref:
-        return None, {}
-    config = {k: v for k, v in item.items() if k != "type"}
-    return physical_ref, config
-
-
 def _load_pool_by_ref(
     system_app, workspace_id: int
 ) -> Dict[str, Any]:
@@ -261,195 +238,133 @@ def _load_pool_by_ref(
     return pool
 
 
-def _materialize_declared_item(
-    system_app, item: Any, item_type: Optional[str],
-    pool_by_ref: Optional[Dict[str, Any]] = None,
-) -> Optional["AgentResource"]:
-    """物化单个声明项(skill / resource),优先对齐空间资源池。
-
-    规则:
-    - 空间池命中:以绑定记录为准物化(type/physical_ref/config 用绑定记录)。
-    - 空间池未命中:按声明类型走全局兜底(存量兼容),并记 warning 引导绑定。
-    - ``app`` 类型跳过(playbook 子 Agent 由 roles 块装配,不走技能物化)。
-    """
-    if item_type == "app":
-        return None
-    physical_ref, config = _declaration_item_to_ref_config(item, item_type)
-    if physical_ref is None:
-        return None
-
-    if pool_by_ref is not None:
-        pool_rec = pool_by_ref.get(physical_ref)
-        if pool_rec is not None:
-            rec_type = getattr(pool_rec, "type", None)
-            if not rec_type:
-                return None
-            rec_handler_name = _MATERIALIZE_DISPATCH.get(rec_type)
-            rec_handler = globals().get(rec_handler_name) if rec_handler_name else None
-            if rec_handler is None:
-                logger.warning(
-                    f"materializer skip pool type={rec_type} name={physical_ref} "
-                    f"(资源已绑定到空间但类型不支持物化)"
-                )
-                return None
-            raw_config = getattr(pool_rec, "config", None)
-            if raw_config is None:
-                raw_config = getattr(pool_rec, "config_json", None)
-            pool_config = _parse_config(raw_config)
-            pool_ref = getattr(pool_rec, "physical_ref", None) or physical_ref
-            try:
-                materialized = rec_handler(pool_ref, pool_config)
-                if materialized is not None:
-                    return materialized
-                return None
-            except Exception as e:
-                logger.warning(
-                    f"materializer pool fail type={rec_type} name={physical_ref}: {e}"
-                )
-                return None
-
-    # 池外兜底:按声明类型全局解析(存量/seed 兼容)
-    handler_name = _MATERIALIZE_DISPATCH.get(item_type) or _MATERIALIZE_DISPATCH.get("skill")
-    handler = globals().get(handler_name) if handler_name else None
-    if handler is None:
-        return None
-    try:
-        return handler(physical_ref, config)
-    except Exception as e:
-        logger.warning(
-            f"materializer playbook fail type={item_type} name={physical_ref}: {e}"
-        )
-        return None
-
-
-def _materialize_declared_skill(skill_item: Any) -> Optional["AgentResource"]:
-    """物化单个声明技能项 -> AgentResource 或 None。
-
-    复用 ``_MATERIALIZE_DISPATCH`` 分派;``app`` 类型跳过(playbook 子 Agent 由
-    roles 块/AgentRoleService 装配,不走技能物化)。供顶层 skills 与 roles 块角色技能共用。
-    """
-    if isinstance(skill_item, str):
-        skill_type = "skill"
-    elif isinstance(skill_item, dict):
-        skill_type = skill_item.get("type") or "skill"
-    else:
-        return None
-    if skill_type == "app":
-        return None
-    handler_name = _MATERIALIZE_DISPATCH.get(skill_type) or _MATERIALIZE_DISPATCH.get("skill")
-    if handler_name is None:
-        return None
-    # 通过 globals 解析,便于单元测试 patch 模块级 handler
-    handler = globals().get(handler_name)
-    if handler is None:
-        return None
-    physical_ref, config = _declaration_item_to_ref_config(skill_item, skill_type)
-    if physical_ref is None:
-        return None
-    try:
-        return handler(physical_ref, config)
-    except Exception as e:
-        logger.warning(
-            f"materializer skill fail type={skill_type} name={physical_ref}: {e}"
-        )
-        return None
-
-
-def materialize_playbook_declaration(
-    system_app, declaration_dsl_json: Optional[Dict[str, Any]],
-    workspace_id: Optional[int] = None,
+def materialize_expert_equipment(
+    system_app, workspace_id: int, app_code: str
 ) -> List["AgentResource"]:
-    """Materialize skills + context.resources from a playbook declaration.
+    """组装专家在某空间的外挂资源为 AgentResource 列表。
 
-    Reuses ``_MATERIALIZE_DISPATCH`` handlers. Returns a flat list of
-    ``AgentResource`` objects; ``app`` resources are skipped because they
-    produce ``extra_agents`` dicts rather than ``AgentResource``.
+    Agent Team 空间重构（Phase 1.2）：外挂 = workspace_expert_equipment 明细行。
+    逐行先对齐空间资源池（workspace_resource）：命中的以空间绑定记录为准物化
+    （type/config 用绑定记录，获得空间治理与权限投影）；池未命中时 skill/MCP
+    回退全局注册表直引（playbook validate_references 同语义：空间绑定非必需）；
+    其余类型（知识库/数据源等空间域资源）无全局兜底，按悬空跳过不阻断执行。
 
-    传入 ``workspace_id`` 时,引用优先对齐空间资源池(空间=注册/治理池,
-    剧本=选配/编排子集):命中的引用按空间绑定记录物化,未命中的走全局兜底
-    (存量兼容)。不传则保持原行为(直接按声明类型全局物化)。
+    无成员行 / 无外挂行 / 查询失败 → 返回 []（调用方以专家标准装备兜底）。
     """
-    if not declaration_dsl_json:
+    try:
+        from gyra_serve.workspace.expert import WorkspaceExpertService
+
+        service = WorkspaceExpertService()
+        member = service.get_member_by_app_code(workspace_id, app_code)
+        if member is None:
+            return []
+        equipment_rows = service.list_equipment(member.id)
+    except Exception as e:
+        logger.warning(
+            f"materialize expert equipment failed (ws={workspace_id} app={app_code}): {e}"
+        )
         return []
 
-    pool_by_ref = _load_pool_by_ref(system_app, workspace_id) if workspace_id is not None else None
+    if not equipment_rows:
+        return []
 
+    # P1 资产收口:把专家外挂的 datasource/knowledge 自动登记进本空间派生 ECP
+    # workspace 的 asset_ref,使这些资产默认被 ECP 托管(asset_gate 据此拦截直连)。
+    # 幂等(register 为 idempotent);失败仅记 warning,不阻断物化。
+    try:
+        from gyra_serve.workspace.ecp_derive import derived_ecp_workspace_id
+        from gyra_serve.workspace.service.service import WorkspaceService
+
+        ws_service = WorkspaceService(system_app=system_app, config=ServeConfig())
+        ws = ws_service.get_by_id(workspace_id)
+        ecp_ws = derived_ecp_workspace_id(getattr(ws, "workspace_code", str(workspace_id)))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"[expert-equipment] resolve ecp workspace failed (ws={workspace_id}): {e}"
+        )
+        ecp_ws = None
+
+    def _register_asset(kind: str, ref_id: str) -> None:
+        if not ecp_ws or not ref_id:
+            return
+        try:
+            from gyra_serve.ecp.models.models import AssetRefDao
+
+            AssetRefDao().register(kind, str(ref_id), ecp_ws)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[expert-equipment] register ecp asset {kind}:{ref_id} failed: {e}"
+            )
+
+    pool_by_ref = _load_pool_by_ref(system_app, workspace_id)
     resources: List["AgentResource"] = []
-
-    skills = declaration_dsl_json.get("skills") or []
-    for skill in skills:
-        skill_type = "skill" if isinstance(skill, str) else (skill.get("type") or "skill")
-        materialized = _materialize_declared_item(system_app, skill, skill_type, pool_by_ref)
-        if materialized is not None:
-            resources.append(materialized)
-
-    ctx = declaration_dsl_json.get("context") or {}
-    for res in ctx.get("resources") or []:
-        if not isinstance(res, dict):
-            continue
-        res_type = res.get("type")
-        if res_type == "app":
-            continue
-        materialized = _materialize_declared_item(system_app, res, res_type, pool_by_ref)
-        if materialized is not None:
-            resources.append(materialized)
-
-    # P2 任务10: 物化 roles 块中各角色声明的技能(按角色装配不同 skill 集)
-    # 无 roles 块时此处为空操作,行为与原实现完全一致(向后兼容)。
-    roles_block = declaration_dsl_json.get("roles") or {}
-    if isinstance(roles_block, dict):
-        for _role_key, role_decl in roles_block.items():
-            if not isinstance(role_decl, dict):
-                continue
-            for skill in role_decl.get("skills") or []:
-                materialized = _materialize_declared_skill(skill)
+    for row in equipment_rows:
+        equipment_config = _parse_config(row.config_json)
+        pool_rec = pool_by_ref.get(row.resource_ref)
+        if pool_rec is None:
+            # 池未命中：skill/MCP 有全局注册表，回退全局直引（空间绑定非必需，
+            # 绑定仅带来空间治理/权限投影）；其余类型无全局兜底，按悬空跳过。
+            if row.resource_type in ("skill", "agent_skill"):
+                logger.info(
+                    f"[expert-equipment] pool miss, fallback global skill: "
+                    f"app={app_code} ref={row.resource_ref!r}"
+                )
+                materialized = _materialize_skill(row.resource_ref, equipment_config)
                 if materialized is not None:
                     resources.append(materialized)
-
-    return resources
-
-
-def materialize_playbook_roles(
-    system_app, declaration_dsl_json: Optional[Dict[str, Any]], workspace_id: int
-) -> List[Dict[str, Any]]:
-    """按 Playbook declaration 的 roles 块装配职能角色团队。
-
-    P2 任务10: 把"裸 app_code"的多 Agent 协作抽象为职能角色团队。
-    调用 ``AgentRoleService.assemble_team`` 产出角色蓝图(role/skills/
-    maturity_min/prompt),并为每个角色物化其技能成 ``AgentResource`` 列表,
-    供运行时按角色装配不同 skill 集与 prompt。
-
-    无 roles 块时返回 [](向后兼容)。
-    """
-    if not declaration_dsl_json:
-        return []
-    roles_block = declaration_dsl_json.get("roles")
-    if not isinstance(roles_block, dict) or not roles_block:
-        return []
-
-    try:
-        from .agent_roles import AgentRoleService
-
-        role_service = AgentRoleService(system_app=system_app, config=ServeConfig())
+                continue
+            if row.resource_type == "mcp":
+                logger.info(
+                    f"[expert-equipment] pool miss, fallback global mcp: "
+                    f"app={app_code} ref={row.resource_ref!r}"
+                )
+                try:
+                    materialized = _materialize_mcp(row.resource_ref, equipment_config)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"[expert-equipment] global mcp fallback fail "
+                        f"ref={row.resource_ref}: {e}"
+                    )
+                    materialized = None
+                if materialized is not None:
+                    resources.append(materialized)
+                continue
+            logger.warning(
+                f"[expert-equipment] dangling ref: app={app_code} "
+                f"type={row.resource_type} ref={row.resource_ref!r} "
+                f"not in workspace pool (ws={workspace_id}), skipped"
+            )
+            continue
+        rec_type = getattr(pool_rec, "type", None)
+        handler_name = _MATERIALIZE_DISPATCH.get(rec_type)
+        handler = globals().get(handler_name) if handler_name else None
+        if handler is None:
+            logger.warning(
+                f"[expert-equipment] unsupported pool type={rec_type} ref={row.resource_ref}"
+            )
+            continue
+        raw_config = getattr(pool_rec, "config", None)
+        if raw_config is None:
+            raw_config = getattr(pool_rec, "config_json", None)
+        pool_config = _parse_config(raw_config)
+        # 外挂级参数（如知识库 top_k）覆盖池配置同名键
+        merged_config = {**pool_config, **equipment_config}
+        pool_ref = getattr(pool_rec, "physical_ref", None) or row.resource_ref
+        # P1 资产收口:datasource→kind=db, knowledge_space→kind=space(slug)
+        if rec_type == "data_source":
+            _register_asset("db", pool_ref)
+        elif rec_type == "knowledge_space":
+            _register_asset("space", pool_ref)
         try:
-            role_service.init_app(system_app)
-        except Exception:
-            # assemble_team 不依赖 DAO,init_app 失败不阻断团队装配
-            pass
-        team = role_service.assemble_team(declaration_dsl_json, workspace_id)
-    except Exception as e:
-        logger.warning(f"materialize_playbook_roles assemble_team failed: {e}")
-        return []
-
-    # 为每个角色物化其技能 -> AgentResource(不同 skill 集)
-    for entry in team:
-        role_resources: List["AgentResource"] = []
-        for skill in entry.get("skills") or []:
-            materialized = _materialize_declared_skill(skill)
+            materialized = handler(pool_ref, merged_config)
             if materialized is not None:
-                role_resources.append(materialized)
-        entry["resources"] = role_resources
-    return team
+                resources.append(materialized)
+        except Exception as e:
+            logger.warning(
+                f"[expert-equipment] materialize fail type={rec_type} "
+                f"ref={row.resource_ref}: {e}"
+            )
+    return resources
 
 
 def materialize_resources(system_app, workspace_id: int) -> MaterializedResources:

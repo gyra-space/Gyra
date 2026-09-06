@@ -47,6 +47,9 @@ class WorkspaceContextSnapshot:
     active_tasks: List[Any] = field(default_factory=list)
     triggers: List[Any] = field(default_factory=list)
     focused_artifact: Optional[Any] = None  # 用户当前关注的交付物(隐式上下文)
+    # Agent Team 空间重构(Phase 2.2)：任务绑定专家时注入该专家在本空间的
+    # role_hint(空间职责说明)作为 prompt 补丁，使专家明确"在本空间主要负责…"。
+    expert_role_hint: Optional[str] = None
 
 
 def get_workspace_service(system_app) -> WorkspaceService:
@@ -134,6 +137,7 @@ def build_workspace_context(
     task = None
     playbook_declaration = None
     playbook_resource = None  # NEW: RFC-005 剧本资源
+    expert_role_hint = None  # Agent Team 空间重构(Phase 2.2)：专家空间职责补丁
 
     if task_id is not None:
         task_service = get_task_service(system_app)
@@ -157,6 +161,24 @@ def build_workspace_context(
                 import logging
                 logging.getLogger(__name__).warning(
                     f"Failed to create PlaybookResource: {e}"
+                )
+
+        # Agent Team 空间重构(Phase 2.2)：任务绑定专家 → 注入该专家在本空间的
+        # role_hint 作为 prompt 补丁。任何异常降级为 None,不阻断对话。
+        expert_app_code = getattr(task, "expert_app_code", None)
+        if expert_app_code:
+            try:
+                from gyra_serve.workspace.expert import WorkspaceExpertService
+
+                member = WorkspaceExpertService().get_member_by_app_code(
+                    workspace_id, expert_app_code
+                )
+                if member:
+                    expert_role_hint = getattr(member, "role_hint", None) or None
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Failed to load expert role_hint for {expert_app_code}: {e}"
                 )
 
     active_tasks: List[Any] = []
@@ -230,6 +252,7 @@ def build_workspace_context(
         playbooks=playbooks,
         triggers=triggers,
         focused_artifact=focused_artifact,
+        expert_role_hint=expert_role_hint,
     )
 
 
@@ -271,6 +294,10 @@ def render_workspace_context_summary(
             f"当前任务：{getattr(ctx.task, 'title', '')} "
             f"(id={getattr(ctx.task, 'id', '')})"
         )
+
+    # Agent Team 空间重构(Phase 2.2)：专家空间职责补丁
+    if ctx.expert_role_hint:
+        lines.append(f"你在本空间主要负责：{ctx.expert_role_hint}")
 
     if ctx.playbooks:
         lines.append("可用剧本：")

@@ -42,6 +42,38 @@ class AssetOps:
         svc = self._svc
         return svc._asset_dao.list(svc._ws(workspace_id), kind)
 
+    def list_overview(
+        self, kind: Optional[str] = None
+    ) -> List[AssetRefVO]:
+        """全局资产视图:跨所有 ECP workspace 聚合登记资产。
+
+        P2 全局资产总览:把各场景空间(派生 ecp_<code> / default 全局共享库 /
+        legacy)登记的原资产(db/space/document)聚合成一张统一的资产视图,
+        供"空间资源全局视图"前端页消费。仅聚合登记引用(ECP 只拥有引用),
+        不读取原始资产。
+        """
+        try:
+            from ..models.models import AssetRefDao, EcpAssetRefEntity
+
+            dao = AssetRefDao()
+            session = dao.get_raw_session()
+            try:
+                query = session.query(EcpAssetRefEntity)
+                if kind:
+                    query = query.filter(EcpAssetRefEntity.kind == kind)
+                rows = (
+                    query.order_by(
+                        EcpAssetRefEntity.workspace_id, EcpAssetRefEntity.kind
+                    )
+                    .all()
+                )
+                return [dao.to_response(r) for r in rows]
+            finally:
+                session.close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[ecp-asset] list_overview failed: {e}")
+            return []
+
     def remove(
         self,
         asset_id: int,

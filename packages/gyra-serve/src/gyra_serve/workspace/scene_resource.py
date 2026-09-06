@@ -25,6 +25,7 @@ class WorkspaceSceneConfig:
     workspace_id: int
     conv_uid: str
     workspace_name: str
+    team_summary: str = ""
 
 
 def build_scene_management_tools(workspace_id: int, conv_uid: str) -> List[FunctionTool]:
@@ -64,6 +65,15 @@ class WorkspaceSceneResource(ResourceProtocol):
             content=cls._render_system_framework(config),
             lifetime=Lifetime.SESSION, cache_scope=CacheScope.USER, order=0,
         ))
+        if config.team_summary:
+            # 专家团队清单（Agent Team 空间重构 Phase 1.2）：成员行+外挂摘要，
+            # 使 Leader 无需工具调用即可看到"本空间有哪些专家、各带什么外挂"。
+            contributions.append(Contribution(
+                capability_id="workspace_scene:team",
+                slot=Slot.SYSTEM,
+                content=config.team_summary,
+                lifetime=Lifetime.SESSION, cache_scope=CacheScope.USER, order=1,
+            ))
         for tool in build_scene_management_tools(config.workspace_id, config.conv_uid):
             contributions.append(Contribution(
                 capability_id=f"workspace_scene:tool:{tool.name}",
@@ -79,17 +89,21 @@ class WorkspaceSceneResource(ResourceProtocol):
         # Tool names below MUST exist in build_scene_management_tools output
         # (reads: list_tasks, get_task_info, list_artifacts, list_deliveries,
         # list_assets, get_workspace_memory, list_workspace_members,
-        # list_playbooks, get_playbook_detail, list_interventions, list_triggers;
+        # list_playbooks(合约), get_playbook_detail,
+        # get_expert_detail, list_interventions, list_triggers;
         # writes: start_task, close_task, publish_asset, create_delivery,
-        # update_workspace, create_playbook, update_playbook,
-        # delete_playbook, resolve_intervention, abort_intervention,
-        # update_trigger, delete_trigger, fire_trigger).
+        # update_workspace, resolve_intervention,
+        # abort_intervention, update_trigger, delete_trigger, fire_trigger).
+        # 专家协作不走本表:专家清单在 SYSTEM 上下文【本空间专家团队】,各专家
+        # 已作为 app 资源挂载,用标准 SubAgent 工具(agent_id=专家 app_code)协作。
         # Do NOT reference tools the agent doesn't have (e.g. create_task).
         return (
             f"# 场景空间工具速查（{config.workspace_name}）\n"
             "以当前会话实际挂载的工具为准，实时数据一律用工具按需查询：\n"
             "- 任务：list_tasks / get_task_info / start_task / close_task\n"
-            "- 剧本：list_playbooks / get_playbook_detail / create_playbook / update_playbook / delete_playbook（删除需确认）\n"
+            "- 专家协作：标准 SubAgent 工具（agent_id=专家 app_code；mode=sync 同步等待结果，mode=async 后台独立运行完成后自动回传）；"
+            "需要合约/交付物/任务台账的正式派单用 start_task(app_code=专家)；详情 get_expert_detail\n"
+            "- 交付合约：list_playbooks / get_playbook_detail\n"
             "- 触发规则：list_triggers / update_trigger / fire_trigger / delete_trigger（删除需确认）\n"
             "- 交付与资产：list_artifacts / list_deliveries / list_assets / publish_asset / create_delivery\n"
             "- 协作与空间：list_interventions / resolve_intervention / abort_intervention / list_workspace_members / get_workspace_memory / update_workspace\n"
@@ -120,6 +134,7 @@ class WorkspaceSceneResource(ResourceProtocol):
             "workspace_id": config.workspace_id,
             "conv_uid": config.conv_uid,
             "workspace_name": config.workspace_name,
+            "team_summary": config.team_summary,
         }, ensure_ascii=False)
         return AgentResource(
             type="workspace_scene",

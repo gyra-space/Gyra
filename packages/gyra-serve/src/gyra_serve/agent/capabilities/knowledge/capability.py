@@ -19,6 +19,7 @@ KnowledgePackSearchResource 移植,KnowledgeRetrieveAction 与 cron ToolContext 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field as dc_field
 from typing import Any, List, Optional
 
 from gyra.core import Chunk
@@ -67,6 +68,37 @@ except ImportError:  # pragma: no cover - rag module removed
     YuqueService = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# 兼容响应对象:当旧 rag 服务不可用(已删除),改用新 knowledge vault 检索时,
+# 仍以旧的 document_response_list 形状返回,保证 _build_knowledge_tools /
+# retrieve 等既有消费者无需改动。
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class _DocHitCompat:
+    content: str = ""
+    score: float = 0.0
+    yuque_url: str = ""
+    doc_uuid: str = ""
+
+
+@dataclass
+class _SearchResponseCompat:
+    document_response_list: List[_DocHitCompat] = dc_field(default_factory=list)
+    document_contents: List[str] = dc_field(default_factory=list)
+    summary_content: str = ""
+    references: dict = dc_field(default_factory=dict)
+    raw_query: str = ""
+    doc_uuids: Optional[List[str]] = None
+
+    def __iter__(self):
+        # 兼容旧代码里对 response 的 dict 遍历
+        return iter(self.__dict__.items())
+
+    def __bool__(self) -> bool:
+        return bool(self.document_response_list or self.document_contents)
 
 # 检索参数默认值,对齐 KnowledgePackLoadResourceParameters
 _RETRIEVE_DEFAULTS = {
@@ -215,6 +247,7 @@ class KnowledgeCapability(Capability):
         self._system_app = system_app
         self._rag_service = None
         self._yuque_service = None
+        self._knowledge_service = None
         self._status = ExecutorStatus.UNINITIALIZED
 
     @classmethod
@@ -361,17 +394,98 @@ class KnowledgeCapability(Capability):
             self._status = ExecutorStatus.READY  # 降级:用现有 _spaces/_description
 
     def _ensure_services(self) -> bool:
-        """懒解析 rag Service/YuqueService;不可用(stub None)时返回 False 降级。"""
-        if Service is None or YuqueService is None:
-            return False
-        if self._rag_service is None:
-            self._rag_service = Service.get_instance(self._system_app)
-        if self._yuque_service is None:
-            self._yuque_service = YuqueService.get_instance(self._system_app)
-        return self._rag_service is not None and self._yuque_service is not None
+        """懒解析检索后端:优先旧 rag Service(存量兼容),不可用时回退到新
+        knowledge vault Service(gyra_serve.knowledge)。均不可用则返回 False 降级空。"""
+        if self._rag_service is None and Service is not None:
+            try:
+                self._rag_service = Service.get_instance(self._system_app)
+            except Exception:  # noqa: BLE001
+                self._rag_service = None
+        if self._rag_service is not None:
+            self._yuque_service = None
+            return True
+        return self._knowledge_service_ready()
+
+    def _knowledge_service_ready(self) -> bool:
+        """解析新 knowledge vault Service(gyra_serve.knowledge)。"""
+        if self._knowledge_service is None:
+            try:
+                from gyra_serve.knowledge.config import (
+                    SERVE_SERVICE_COMPONENT_NAME as KNOWLEDGE_SERVICE,
+                )
+                from gyra_serve.knowledge.service.service import (
+                    Service as KnowledgeService,
+                )
+
+                if self._system_app is not None:
+                    self._knowledge_service = self._system_app.get_component(
+                        KNOWLEDGE_SERVICE, KnowledgeService,
+                    )
+                else:
+                    self._knowledge_service = None
+            except Exception:  # noqa: BLE001
+                self._knowledge_service = None
+        return self._knowledge_service is not None
 
     def _empty_response(self):
-        return KnowledgeSearchResponse() if KnowledgeSearchResponse else None
+        if KnowledgeSearchResponse is not None:
+            return KnowledgeSearchResponse()
+        return _SearchResponseCompat()
+
+    async def _search_vault(
+        self,
+        query: str,
+        knowledge_ids: Optional[List[str]],
+        limit: int,
+        mode: str = "hybrid",
+    ) -> _SearchResponseCompat:
+        """用新 knowledge vault 的 verbat_search 检索,构造兼容响应。
+
+        knowledge_ids 为 knowledge space slug(如 docs-<code>/ecp-<ws>)。
+        verbat_search 返回 VerbatHit(verbat_id/snippet/source_file/score)。
+        """
+        response = _SearchResponseCompat()
+        if not self._knowledge_service:
+            return response
+        try:
+            for slug in knowledge_ids or []:
+                vault = await self._knowledge_service.get_vault(slug)
+                found = await vault.verbat_search(query, limit=limit, mode=mode)
+                for h in found or []:
+                    response.document_response_list.append(
+                        _DocHitCompat(
+                            content=(getattr(h, "snippet", "") or ""),
+                            score=float(getattr(h, "score", 0.0) or 0.0),
+                            yuque_url=getattr(h, "source_file", "") or "",
+                            doc_uuid=str(getattr(h, "verbat_id", "") or ""),
+                        )
+                    )
+            response.raw_query = query
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[knowledge-capability] vault search failed: {e}")
+        return response
+
+    async def _read_vault(
+        self,
+        doc_uuids: Optional[List[str]],
+        selected_knowledge_ids: Optional[List[str]],
+        header: Optional[str] = None,
+    ) -> _SearchResponseCompat:
+        """按 verbat id 精读原文(verbat_get)。"""
+        response = _SearchResponseCompat()
+        if not self._knowledge_service:
+            return response
+        try:
+            for slug in selected_knowledge_ids or []:
+                vault = await self._knowledge_service.get_vault(slug)
+                for doc_uuid in (doc_uuids or []):
+                    verbat = await vault.verbat_get(doc_uuid)
+                    if verbat is not None and getattr(verbat, "content", None):
+                        response.document_contents.append(verbat.content)
+            response.doc_uuids = doc_uuids
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[knowledge-capability] vault read failed: {e}")
+        return response
 
     async def retrieve(
         self,
@@ -430,6 +544,12 @@ class KnowledgeCapability(Capability):
         if not self._ensure_services():
             logger.warning("[knowledge-capability] rag services unavailable, read_document degraded")
             return self._empty_response()
+        if self._rag_service is None:
+            return await self._read_vault(
+                doc_uuids=doc_uuids,
+                selected_knowledge_ids=selected_knowledge_ids,
+                header=header,
+            )
         search_res = await self._yuque_service.read_document(
             knowledge_ids=selected_knowledge_ids,
             doc_uuids=doc_uuids,
@@ -470,6 +590,15 @@ class KnowledgeCapability(Capability):
         if not self._ensure_services():
             logger.warning("[knowledge-capability] rag services unavailable, retrieve degraded")
             return self._empty_response()
+
+        # 旧 rag 服务不可用(已删除)但新 knowledge vault 可用时,走 vault 检索。
+        if self._rag_service is None:
+            limit = self._retrieve_config.get("top_k", 10) or 10
+            return await self._search_vault(
+                query=query,
+                knowledge_ids=list(knowledge_ids),
+                limit=int(limit),
+            )
 
         selected_knowledge_ids = []
         for knowledge_id in knowledge_ids:

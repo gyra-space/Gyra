@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 
 /**
- * 触发器创建入口已统一到「新建任务」页(剧本+指令+触发方式)。
+ * 触发器创建入口已统一到「新建任务」页(合约+指令+触发方式)。
  * 此路由保留以兼容旧链接,直接重定向到统一创建页。
  */
 export default function TriggerCreateRedirect() {

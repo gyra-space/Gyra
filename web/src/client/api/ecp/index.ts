@@ -325,9 +325,10 @@ export const generateEcpProposals = (data: {
 }) =>
   POST<typeof data, { task_id: string }>(`${API_PREFIX}/proposals/generate`, data);
 
-/** Async proposal generation task status/result (polled by the asset tab). */
-export const getEcpProposalTask = (taskId: string) =>
-  GET<{}, {
+/** Async proposal generation task status/result (polled by the asset tab).
+ *  workspace_id 透传给 require_ecp 空间投影判定(场景空间内轮询不 403)。 */
+export const getEcpProposalTask = (taskId: string, workspace_id?: string) =>
+  GET<{ workspace_id?: string }, {
     task_id: string;
     conv_id: string;
     /** ecp_proposal */
@@ -349,7 +350,10 @@ export const getEcpProposalTask = (taskId: string) =>
     created_at?: string;
     started_at?: string;
     completed_at?: string;
-  }>(`${API_PREFIX}/proposals/tasks/${encodeURIComponent(taskId)}`);
+  }>(
+    `${API_PREFIX}/proposals/tasks/${encodeURIComponent(taskId)}`,
+    { workspace_id },
+  );
 
 export const listEcpConfirmers = (workspace_id?: string) =>
   GET<{ workspace_id?: string }, EcpConfirmer[]>(`${API_PREFIX}/confirmers`, {
@@ -445,6 +449,9 @@ export const registerEcpAsset = (data: {
 export const listEcpAssets = (params?: { workspace_id?: string; kind?: string }) =>
   GET<typeof params, EcpAssetRef[]>(`${API_PREFIX}/assets`, params);
 
+export const listEcpAssetsOverview = (params?: { kind?: string }) =>
+  GET<typeof params, EcpAssetRef[]>(`${API_PREFIX}/assets/overview`, params);
+
 export const deleteEcpAsset = (asset_id: number, workspace_id?: string) =>
   DELETE<{ workspace_id?: string }, boolean>(
     `${API_PREFIX}/assets/${asset_id}`,
@@ -527,20 +534,23 @@ export const addEcpAlignment = (data: {
   workspace_id?: string;
 }) => POST<typeof data, EcpSemanticAlignment>(`${API_PREFIX}/graph/alignments`, data);
 
-export const confirmEcpAlignment = (id: number, data?: { user_id?: string }) =>
+export const confirmEcpAlignment = (id: number, data?: { user_id?: string; workspace_id?: string }) =>
   POST<typeof data, EcpSemanticAlignment>(
     `${API_PREFIX}/graph/alignments/${id}/confirm`,
     data ?? {},
   );
 
-export const rejectEcpAlignment = (id: number, data?: { user_id?: string }) =>
+export const rejectEcpAlignment = (id: number, data?: { user_id?: string; workspace_id?: string }) =>
   POST<typeof data, EcpSemanticAlignment>(
     `${API_PREFIX}/graph/alignments/${id}/reject`,
     data ?? {},
   );
 
-export const removeEcpAlignment = (id: number) =>
-  DELETE<Record<string, never>, boolean>(`${API_PREFIX}/graph/alignments/${id}`);
+export const removeEcpAlignment = (id: number, workspace_id?: string) =>
+  DELETE<{ workspace_id?: string }, boolean>(
+    `${API_PREFIX}/graph/alignments/${id}`,
+    { workspace_id },
+  );
 
 // =============================================================================
 // Workspace config (proposal agent settings)

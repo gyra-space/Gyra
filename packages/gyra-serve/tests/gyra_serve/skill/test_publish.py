@@ -187,6 +187,27 @@ def test_publish_service_unavailable():
     assert result["code"] == "SERVICE_UNAVAILABLE"
 
 
+def test_publish_warns_when_root_has_archives(tmp_path):
+    d = _make_skill_dir(tmp_path)
+    (tmp_path / "my-cool-skill" / "medical-quality-audit.zip").write_bytes(b"PK")
+    svc = FakeSkillService()
+
+    result = publish_skill_from_dir(str(d), system_app=FakeSystemApp(svc))
+
+    assert result["success"] is True
+    assert result["warnings"]
+    assert "medical-quality-audit.zip" in result["warnings"][0]
+    assert "独立子目录" in result["message"]
+
+
+def test_publish_clean_dir_has_no_warnings(tmp_path):
+    result = publish_skill_from_dir(
+        _make_skill_dir(tmp_path), system_app=FakeSystemApp(FakeSkillService())
+    )
+    assert result["success"] is True
+    assert "warnings" not in result
+
+
 def test_publish_emits_workspace_event(tmp_path):
     from gyra_serve.workspace.event_bus import register_workspace_queue
 

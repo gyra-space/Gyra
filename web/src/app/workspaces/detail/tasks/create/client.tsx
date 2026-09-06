@@ -70,7 +70,7 @@ const TYPE_CONFIG: Record<TriggerType, {
   timer: {
     label: '定时触发',
     desc: '按 Cron 周期执行',
-    detail: '创建定时触发规则：到点自动按剧本创建任务，每次执行你设定的指令。',
+    detail: '创建定时触发规则：到点自动按合约创建任务，每次执行你设定的指令。',
     icon: <ClockCircleOutlined />,
     iconBg: 'bg-emerald-100',
     iconText: 'text-emerald-600',
@@ -82,7 +82,7 @@ const TYPE_CONFIG: Record<TriggerType, {
   webhook: {
     label: 'Webhook',
     desc: '外部请求触发',
-    detail: '创建 Webhook 触发规则：外部系统向 Webhook URL 发 POST 即自动按剧本创建任务。',
+    detail: '创建 Webhook 触发规则：外部系统向 Webhook URL 发 POST 即自动按合约创建任务。',
     icon: <GlobalOutlined />,
     iconBg: 'bg-violet-100',
     iconText: 'text-violet-600',
@@ -94,7 +94,7 @@ const TYPE_CONFIG: Record<TriggerType, {
   alert: {
     label: '告警触发',
     desc: '告警事件触发',
-    detail: '创建告警触发规则：监控系统向告警 URL 推送事件即自动按剧本创建任务。',
+    detail: '创建告警触发规则：监控系统向告警 URL 推送事件即自动按合约创建任务。',
     icon: <AlertOutlined />,
     iconBg: 'bg-amber-100',
     iconText: 'text-amber-600',
@@ -257,7 +257,7 @@ export default function TaskCreatePage() {
       );
       setSubmitting(false);
       if (err) { message.error(err.message); return; }
-      message.success(editTriggerId ? '触发规则已更新' : '触发规则已创建，到点/事件发生时将自动按剧本创建任务');
+      message.success(editTriggerId ? '触发规则已更新' : '触发规则已创建，到点/事件发生时将自动按合约创建任务');
       router.push(`/workspaces/detail/tasks?id=${workspaceCode}&tab=triggers`);
     } catch {
       setSubmitting(false);
@@ -301,7 +301,7 @@ export default function TaskCreatePage() {
                 </div>
                 <h1 className="ws-page-title">{isEditing ? '编辑订阅' : (selectedType === 'adhoc' ? '手动执行任务' : '新建订阅')}</h1>
                 <p className="ws-page-subtitle">
-                  给当前场景订阅一个触发源:定时 / 事件 / 告警,到点或事件发生时自动按剧本创建任务
+                  给当前场景订阅一个触发源:定时 / 事件 / 告警,到点或事件发生时自动按合约创建任务
                 </p>
               </div>
             </div>
@@ -362,7 +362,7 @@ export default function TaskCreatePage() {
               <div className="flex items-center gap-2 mb-5">
                 <div className="w-1 h-5 bg-[var(--ws-accent)] rounded-full" />
                 <h3 className="text-sm font-semibold text-[var(--ws-ink)]">核心配置</h3>
-                <span className="text-xs text-[var(--ws-ink-3)]">剧本 + 指令</span>
+                <span className="text-xs text-[var(--ws-ink-3)]">合约 + 指令</span>
               </div>
               <Form
                 form={form}
@@ -372,13 +372,13 @@ export default function TaskCreatePage() {
               >
                 <Form.Item
                   name="target_playbook_id"
-                  label={<span className="font-medium text-[var(--ws-ink)]">使用剧本 <span className="text-[var(--ws-ink-3)] text-xs font-normal">任务模板</span></span>}
-                  rules={[{ required: true, message: '请选择一个剧本' }]}
+                  label={<span className="font-medium text-[var(--ws-ink)]">使用合约 <span className="text-[var(--ws-ink-3)] text-xs font-normal">任务模板</span></span>}
+                  rules={[{ required: true, message: '请选择一个合约' }]}
                 >
                   <Select
                     size="large"
                     loading={pbLoading}
-                    placeholder="选择要使用的剧本"
+                    placeholder="选择要使用的合约"
                     showSearch
                     optionFilterProp="children"
                   >
@@ -522,7 +522,7 @@ export default function TaskCreatePage() {
                 </div>
                 <div className="space-y-3 text-sm">
                   <div className="flex items-start gap-2">
-                    <span className="text-[var(--ws-ink-3)] shrink-0">剧本</span>
+                    <span className="text-[var(--ws-ink-3)] shrink-0">合约</span>
                     <span className="text-[var(--ws-ink)] font-medium">{selectedPlaybook?.name || <span className="text-[var(--ws-ink-3)]">未选择</span>}</span>
                   </div>
                   <div className="text-xs text-[var(--ws-ink-2)] leading-relaxed bg-[var(--ws-border-subtle)] rounded-lg p-3">
@@ -537,7 +537,7 @@ export default function TaskCreatePage() {
                 title={
                   <span className="flex items-center gap-2 text-sm font-medium text-[var(--ws-ink)]">
                     <FileTextOutlined className="text-purple-500" />
-                    已选剧本
+                    已选合约
                   </span>
                 }
               >
@@ -561,7 +561,7 @@ export default function TaskCreatePage() {
                   </>
                 ) : (
                   <div className="text-sm text-[var(--ws-ink-2)] leading-relaxed">
-                    选择一个剧本作为任务模板，它将定义可用的资源、技能、产出物和蒸馏规则。
+                    选择一个合约作为任务模板，它将定义可用的资源、技能、产出物和蒸馏规则。
                   </div>
                 )}
               </Card>

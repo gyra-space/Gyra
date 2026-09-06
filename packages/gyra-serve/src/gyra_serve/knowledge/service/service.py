@@ -719,6 +719,23 @@ class Service(BaseComponent):
                 exc_info=True,
             )
 
+        # Agent Team 重构(P1 资产收口):清理引用该知识空间的外挂行,避免专家
+        # 外挂残留悬空引用。
+        try:
+            from gyra_serve.workspace.expert.expert_models import (
+                WorkspaceExpertEquipmentDao,
+            )
+
+            WorkspaceExpertEquipmentDao().delete_by_resource_ref(
+                resource_type="knowledge_space", resource_ref=slug,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "cascade delete workspace_expert_equipment for space %s failed",
+                slug,
+                exc_info=True,
+            )
+
     async def list_spaces(self) -> List[Dict[str, Any]]:
         """List all known spaces (local directories + distributed registry)."""
         out: List[Dict[str, Any]] = []

@@ -26,7 +26,7 @@ import type { UserInfoResponse } from '@/types/userinfo';
 import VisSubagentBoard from '@/components/chat/chat-content-components/VisComponents/VisSubagentBoard';
 import { SceneAskUserCard, extractAskUserData } from './scene-ask-user-card';
 import { statusLabel } from './scene-task-rail';
-import { StepFlow } from './step-flow';
+import { StepFlow, RoundProcessBar } from './step-flow';
 import { buildExecutionPhases, usePlanningTimeline } from './use-execution-phases';
 import {
   openAttachmentPreview,
@@ -237,6 +237,72 @@ function TaskCreatedCard({
         </div>
       </div>
       {clickable && <RightOutlined className="ws-task-card__chevron" />}
+    </div>
+  );
+}
+
+/** 专家卡片:专家任务完成(expert_completed)时在对话记录中渲染。
+ *  派单侧无专用事件:协作调用走标准 SubAgent(工具调用渲染/子会话看板),
+ *  任务化派单由 start_task 渲染任务卡片。 */
+function ExpertCard({ step }: { step: WorkspaceExecutionStep }) {
+  const isCompleted = step.type === 'expert_completed';
+  const isFailed = step.status === 'failed';
+
+  return (
+    <div className={`ws-expert-card${isCompleted ? ' ws-expert-card--completed' : ''}${isFailed ? ' ws-expert-card--failed' : ''}`}>
+      <div className="ws-expert-card__avatar">
+        {step.expert_avatar ? (
+          <img src={step.expert_avatar} alt={step.expert_name || ''} />
+        ) : (
+          <span className="ws-expert-card__avatar-placeholder">{(step.expert_name || '专')[0]}</span>
+        )}
+      </div>
+      <div className="ws-expert-card__info">
+        <div className="ws-expert-card__header">
+          <span className="ws-expert-card__name">{step.expert_name || step.expert_app_code || '专家'}</span>
+          <span className={`ws-expert-card__status ws-expert-card__status--${step.status}`}>
+            {isFailed ? '失败' : '已完成'}
+          </span>
+        </div>
+        <div className="ws-expert-card__title">{step.task_title || step.title}</div>
+        {step.output && <div className="ws-expert-card__output">{step.output}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** 子 Agent 卡片:leader 经标准 spawn_subagent 委托子 Agent 协作时,在对话流中
+ *  渲染为一个独立的协作单元(身份/任务/模式/执行状态/结果),区别于普通工具胶囊。 */
+function SubAgentCard({ step }: { step: WorkspaceExecutionStep }) {
+  const isRunning = step.status === 'running';
+  const isFailed = step.status === 'failed';
+  const isAsync = step.mode === 'async';
+  const name = step.expert_name || step.expert_app_code || '子 Agent';
+  const modeLabel = isAsync ? '异步' : '同步';
+  // 异步派单在 spawn_subagent 工具完成时子 Agent 仍在后台运行，故 done 态
+  // 展示"已派发"而非"已完成"，实时进展交给子 Agent 看板(VisSubagentBoard)轮询。
+  let statusText = '已完成';
+  if (isFailed) statusText = '失败';
+  else if (isRunning) statusText = '执行中';
+  else if (isAsync) statusText = '已派发';
+  return (
+    <div className={`ws-subagent-card${isRunning ? ' ws-subagent-card--running' : ''}${isFailed ? ' ws-subagent-card--failed' : ''}`}>
+      <div className="ws-subagent-card__avatar">
+        <RocketOutlined className="ws-subagent-card__avatar-icon" />
+      </div>
+      <div className="ws-subagent-card__body">
+        <div className="ws-subagent-card__header">
+          <span className="ws-subagent-card__name">{name}</span>
+          <span className="ws-subagent-card__mode">{modeLabel}协作</span>
+          <span className={`ws-subagent-card__status ws-subagent-card__status--${step.status}`}>
+            {statusText}
+          </span>
+        </div>
+        {step.task && <div className="ws-subagent-card__task">{step.task}</div>}
+        {(step.output || step.narration) && (
+          <div className="ws-subagent-card__output">{step.output || step.narration}</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -474,6 +540,8 @@ export interface AgentWorkspaceRendererProps {
   agentName?: string | null;
   /** 本次对话选用的模型名(运行中文案「xx模型 思考中」使用) */
   modelName?: string | null;
+  /** compactProcess:执行过程折叠成单行「Agent 思考」(简洁模式全员启用,结果为主、过程随行) */
+  compactProcess?: boolean;
 }
 
 /** 交付文件分组块:标题 + 文件卡片列表(点击在中间容器渲染文件内容) */
@@ -535,7 +603,7 @@ function DeliverablesBlock({ files, onDeliverableClick }: { files: WorkspaceDeli
   );
 }
 
-export function AgentWorkspaceRenderer({ view, running = false, onStepClick, selectedStepId, onDeliverableClick, onTaskClick, onSubagentClick, onAttachmentsClick, onInteractionResume, agentIcon, agentName, modelName }: AgentWorkspaceRendererProps) {
+export function AgentWorkspaceRenderer({ view, running = false, onStepClick, selectedStepId, onDeliverableClick, onTaskClick, onSubagentClick, onAttachmentsClick, onInteractionResume, agentIcon, agentName, modelName, compactProcess = false }: AgentWorkspaceRendererProps) {
   // 单次调用还原（排查定位）：深层组件通过 context 打开抽屉，未挂 Provider 时为 no-op
   const { openCallDetail, enabled: callDetailEnabled } = useCallDetail();
   const deliverable_files = useMemo(() => view.deliverable_files ?? [], [view.deliverable_files]);
@@ -733,6 +801,14 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
         // 本轮产出的文件(按产出时间戳归属到本轮)
         const roundDeliverables = deliverablesByRound.get(round.key) ?? NO_DELIVERABLES;
         const roundTaskFiles = taskFilesByRound.get(round.key) ?? NO_TASK_FILES;
+        // compact(简洁模式):整轮过程合并成「一行折叠条」。后端已保证 answer 步骤只含
+        // 「发给 human 的最终答复」(过程叙述 agent→agent 不生成 answer),故折叠条只收
+        // 工具/思考等过程步骤,answer 一律留正文。
+        const roundProcessSteps = compactProcess
+          ? round.steps.filter(
+              (s) => CAPSULE_STEP_TYPES.has(s.type) && !extractAskUserData(s.output || s.vis),
+            )
+          : [];
         // 轮内节点:连续过程步骤攒批成 StepFlow。answer 按时间序排在对应工具批次之后
         // (先冲刷前置工具批次,再渲染答案),运行中与完成后同一套顺序。
         const nodes: ReactNode[] = [];
@@ -770,6 +846,8 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
             }
             continue;
           }
+          // compact:过程步骤已由轮级折叠条统一渲染,这里跳过,避免重复/碎块
+          if (compactProcess && CAPSULE_STEP_TYPES.has(step.type)) continue;
           if (CAPSULE_STEP_TYPES.has(step.type)) {
             if (!batch.length) batchKey = `flow-${step.id}`;
             batch.push(step);
@@ -785,6 +863,10 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
             flushBatch();
             if (step.type === 'task_created') {
               nodes.push(<TaskCreatedCard key={step.id} step={step} onTaskClick={onTaskClick} />);
+            } else if (step.type === 'expert_completed') {
+              nodes.push(<ExpertCard key={step.id} step={step} />);
+            } else if (step.type === 'subagent') {
+              nodes.push(<SubAgentCard key={step.id} step={step} />);
             }
           }
         }
@@ -827,6 +909,15 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
                   </button>
                 )}
               </div>
+            )}
+            {/* compact:整轮过程合并成一行折叠条(仅本轮有过程步骤时渲染,避免空块) */}
+            {compactProcess && roundProcessSteps.length > 0 && (
+              <RoundProcessBar
+                steps={roundProcessSteps}
+                running={running && isLastRound}
+                onStepClick={onStepClick}
+                selectedStepId={selectedStepId}
+              />
             )}
             {nodes}
             {/* 本轮产出的文件:跟在该轮回复末尾,随对话滚动而非会话级固定组件 */}

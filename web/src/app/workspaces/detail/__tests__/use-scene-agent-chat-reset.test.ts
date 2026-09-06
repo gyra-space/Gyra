@@ -3,9 +3,10 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { useSceneAgentChat } from '../use-scene-agent-chat';
 import type { ChatQueryResponse } from '@/client/api/chat';
 
-// 模拟 useChat:捕获每次 send 传入的 ctrl 与 SSE 回调,便于测试切换时中断旧流
+// 模拟 useChat:捕获每次 send 传入的 ctrl、data 与 SSE 回调,便于测试切换时中断旧流
 interface ChatCallbacks {
   ctrl?: AbortController;
+  data?: { conv_uid?: string; user_input?: unknown };
   onMessage?: (message: string) => void;
   onClose?: () => void;
   onDone?: () => void;
@@ -166,5 +167,77 @@ describe('useSceneAgentChat conversationId 切换重置', () => {
     });
     expect(result.current.workspaceView.execution).toEqual([]);
     expect(result.current.error).toBeNull();
+  });
+});
+
+describe('useSceneAgentChat 欢迎态新建会话(internalConvUid 残留)', () => {
+  test('resetConv 后再次发送必须重新懒创建,不能复用上一轮懒创建的会话', async () => {
+    const onConvCreated = jest
+      .fn<Promise<string | null>, ['']>()
+      .mockResolvedValueOnce('conv-B')
+      .mockResolvedValueOnce('conv-C');
+    const { result } = renderHook(() =>
+      useSceneAgentChat({ enabled: true, onConvCreated }),
+    );
+
+    // 首页第一问:懒创建 conv-B
+    await act(async () => {
+      result.current.send({ text: '第一问' });
+    });
+    expect(onConvCreated).toHaveBeenCalledTimes(1);
+    expect(lastChatCall?.data?.conv_uid).toBe('conv-B');
+    expect(result.current.convUid).toBe('conv-B');
+
+    // 「新任务」回到欢迎页:resetConv 清掉内部会话
+    act(() => {
+      result.current.resetConv();
+    });
+    expect(result.current.convUid).toBeUndefined();
+
+    // 首页第二问:必须新建 conv-C,而不是把消息发进 conv-B(最后一个会话)
+    await act(async () => {
+      result.current.send({ text: '第二问' });
+    });
+    expect(onConvCreated).toHaveBeenCalledTimes(2);
+    expect(lastChatCall?.data?.conv_uid).toBe('conv-C');
+    expect(result.current.convUid).toBe('conv-C');
+  });
+
+  test('send(payload, { forceNew: true }) 跳过 internalConvUid 强制新建', async () => {
+    const onConvCreated = jest
+      .fn<Promise<string | null>, ['']>()
+      .mockResolvedValueOnce('conv-B')
+      .mockResolvedValueOnce('conv-C');
+    const { result } = renderHook(() =>
+      useSceneAgentChat({ enabled: true, onConvCreated }),
+    );
+
+    await act(async () => {
+      result.current.send({ text: '第一问' });
+    });
+    expect(lastChatCall?.data?.conv_uid).toBe('conv-B');
+
+    // 不 resetConv,欢迎态发送强制新建:不得复用 conv-B
+    await act(async () => {
+      result.current.send({ text: '第二问' }, { forceNew: true });
+    });
+    expect(onConvCreated).toHaveBeenCalledTimes(2);
+    expect(lastChatCall?.data?.conv_uid).toBe('conv-C');
+  });
+
+  test('未 reset 也未 forceNew 时保持原有复用行为(同会话追问不新建)', async () => {
+    const onConvCreated = jest.fn<Promise<string | null>, ['']>().mockResolvedValue('conv-B');
+    const { result } = renderHook(() =>
+      useSceneAgentChat({ enabled: true, onConvCreated }),
+    );
+
+    await act(async () => {
+      result.current.send({ text: '第一问' });
+    });
+    await act(async () => {
+      result.current.send({ text: '追问' });
+    });
+    expect(onConvCreated).toHaveBeenCalledTimes(1);
+    expect(lastChatCall?.data?.conv_uid).toBe('conv-B');
   });
 });

@@ -73,6 +73,8 @@ class TriggerService(BaseService[TriggerSourceEntity, TriggerSourceRequest, Trig
             entity.name = request.name
             entity.type = request.type
             entity.target_playbook_id = request.target_playbook_id
+            if request.target_app_code is not None:
+                entity.target_app_code = request.target_app_code
             entity.instruction = request.instruction
             entity.config_json = json.dumps(request.config or {}, ensure_ascii=False)
             entity.is_active = request.is_active
@@ -106,14 +108,15 @@ class TriggerService(BaseService[TriggerSourceEntity, TriggerSourceRequest, Trig
         finally:
             session.close()
 
-    def _launch_task(self, task_id: int, playbook_id: Optional[int] = None) -> None:
+    def _launch_task(self, task_id: int, playbook_id: Optional[int] = None,
+                     expert_app_code: Optional[str] = None) -> None:
         """detached 启动 task 执行(start + run_task),不阻塞 fire 调用方。
 
         复用 workspace._task_creator 的 detached 启动器(含失败转 failed)。
         所有 fire 调用路径(timer 经 cron / webhook / alert / 手动 fire)都在
         事件循环内;若不在(loop 缺失)则降级为停留在 pending_trigger。
-        playbook_id 必须透传给 _run_task_detached,否则 start 后 run_task 被
-        playbook 守卫跳过,任务永久停在 running。
+        playbook_id/expert_app_code 必须透传给 _run_task_detached,否则
+        start 后 run_task 被守卫跳过,任务永久停在 running。
         """
         try:
             from gyra_serve.workspace.agent_tools._task_creator import (
@@ -128,7 +131,9 @@ class TriggerService(BaseService[TriggerSourceEntity, TriggerSourceRequest, Trig
             logger.warning("no running loop; trigger task %s left in pending_trigger", task_id)
             return
         t = loop.create_task(
-            _run_task_detached(self._system_app, task_id, None, playbook_id)
+            _run_task_detached(
+                self._system_app, task_id, None, playbook_id, expert_app_code,
+            )
         )
         _pending_detached_tasks.add(t)
         t.add_done_callback(_pending_detached_tasks.discard)
@@ -266,6 +271,7 @@ class TriggerService(BaseService[TriggerSourceEntity, TriggerSourceRequest, Trig
                 triggered_by=entity.type,
                 trigger_ref=str(entity.id),
                 playbook_id=entity.target_playbook_id,
+                expert_app_code=entity.target_app_code,
                 context={
                     "trigger_payload": request.payload or {},
                     "trigger_config": json.loads(entity.config_json) if entity.config_json else {},
@@ -273,7 +279,7 @@ class TriggerService(BaseService[TriggerSourceEntity, TriggerSourceRequest, Trig
                 },
             )
             task = task_service.create(task_req)
-            self._launch_task(task.id, task.playbook_id)
+            self._launch_task(task.id, task.playbook_id, task.expert_app_code)
             return {"task_id": task.id, "trigger_id": entity.id}
         except Exception:
             session.rollback()

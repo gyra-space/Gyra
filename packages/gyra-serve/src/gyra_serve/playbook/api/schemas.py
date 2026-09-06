@@ -16,6 +16,7 @@ class PlaybookRequest(BaseModel):
         default_factory=dict,
         description="strategy declaration DSL: skills/context/deliverables/distill",
     )
+    target_app_code: Optional[str] = Field(None, description="合约目标专家（gpts_app.app_code），Agent Team 空间重构")
     is_active: bool = True
 
     model_config = ConfigDict(title=f"PlaybookRequest for {SERVE_APP_NAME_HUMP}")
@@ -29,6 +30,7 @@ class PlaybookResponse(BaseModel):
     task_type: str
     trigger: Dict[str, Any] = Field(default_factory=dict)
     declaration: Dict[str, Any] = Field(default_factory=dict)
+    target_app_code: Optional[str] = None
     current_version: int = 1
     is_active: bool = True
     created_by_user_id: Optional[int] = None

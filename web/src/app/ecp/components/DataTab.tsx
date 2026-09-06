@@ -202,7 +202,7 @@ export default function DataTab({ workspaceId }: { workspaceId: string }) {
           resolve(res);
         };
         const tick = async () => {
-          const [err, res] = await apiInterceptors(getEcpProposalTask(taskId));
+          const [err, res] = await apiInterceptors(getEcpProposalTask(taskId, workspaceId));
           if (err) {
             done({ error: err.message || '任务查询失败' });
             return;
@@ -238,7 +238,7 @@ export default function DataTab({ workspaceId }: { workspaceId: string }) {
         start();
       });
     },
-    [],
+    [workspaceId],
   );
 
   const { data: registered, loading, refresh } = useRequest(

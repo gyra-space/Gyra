@@ -395,7 +395,7 @@ export function SceneTaskRail({
 
   // 大厅会话:conversations 中 task_id 为空的(workspace 级对话)。
   // 任务≈会话(task 创建即建 conv),不再单列会话栏;这里把大厅会话混排进任务视图,
-  // 按对话开始时间(gmt_created)倒序与任务统一展示,用类型 chip 区分剧本/大厅。
+  // 按对话开始时间(gmt_created)倒序与任务统一展示,用类型 chip 区分合约/大厅。
   const lobbyConvItems = useMemo(
     () => (conversations || [])
       .filter((c) => c.task_id == null)
@@ -424,7 +424,7 @@ export function SceneTaskRail({
       const tb = statusToTab(it.raw.status);
       if (tb !== 'all') c[tb] += 1;
     });
-    // 大厅会话计入 all(剧本/大厅统一计数,无状态归 all)
+    // 大厅会话计入 all(合约/大厅统一计数,无状态归 all)
     lobbyConvItems.forEach(() => { c.all += 1; });
     // 孤立介入计入 all + awaiting(仍需人响应)
     orphanItems.forEach(() => { c.all += 1; c.awaiting += 1; });
@@ -1003,7 +1003,7 @@ export function SceneTaskRail({
             <div className="ws-rail-empty-t">
               {tab === 'failed' ? '没有失败的任务' : tab === 'done' ? '还没有已完成的任务' : tab === 'awaiting' ? '当前没有待介入' : '暂无任务'}
             </div>
-            <div className="ws-rail-empty-h">在右侧输入发起任务,选剧本 + 写目标,Agent 会跑起来。</div>
+            <div className="ws-rail-empty-h">在右侧输入发起任务,选专家 + 写目标,Agent 会跑起来。</div>
           </div>
         )}
         {groups.map((g) => {

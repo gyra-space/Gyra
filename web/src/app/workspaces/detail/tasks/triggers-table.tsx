@@ -33,8 +33,8 @@ const TYPE_VARIANT: Record<string, string> = {
 };
 
 /**
- * 触发规则表格(定时/webhook/告警/手动规则,到点或事件发生时自动按剧本创建任务)。
- * 嵌在任务页「触发规则」Tab 中;workspaceId 由父页面传入。
+ * 订阅记录表格(定时/webhook/告警/手动订阅源,到点或事件发生时自动按合约创建任务)。
+ * 嵌在订阅页「订阅」Tab 中;workspaceId 由父页面传入。
  */
 export default function TriggersTable({ workspaceId, workspaceCode }: { workspaceId: number; workspaceCode: string }) {
   const { t } = useTranslation();
@@ -133,7 +133,7 @@ export default function TriggersTable({ workspaceId, workspaceCode }: { workspac
     {
       title: '',
       key: 'actions',
-      width: 200,
+      width: 260,
       render: (_: unknown, r: TriggerRow) => (
         <div style={{ display: 'flex', gap: 6 }}>
           {canStart && (
@@ -141,6 +141,9 @@ export default function TriggersTable({ workspaceId, workspaceCode }: { workspac
               {t('triggers.fire') || 'Fire'}
             </Button>
           )}
+          <Link href={`/workspaces/detail/tasks?id=${workspaceCode}&tab=runs&trigger_id=${r.id}`}>
+            <Button size="small">{t('subscriptions.tab_runs') || '执行记录'}</Button>
+          </Link>
           {canManage && (
             <Link href={`/workspaces/detail/tasks/create?id=${workspaceCode}&trigger_id=${r.id}&type=${r.type}`}>
               <Button size="small">{t('edit') || 'Edit'}</Button>

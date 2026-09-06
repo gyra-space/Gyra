@@ -70,12 +70,11 @@ describe('SceneTriggerMenu', () => {
     expect(screen.getByText('客户分群规则')).toBeInTheDocument();
   });
 
-  test('/ 展示剧本/技能/MCP/命令分组', () => {
+  test('/ 展示命令分组,无剧本组(剧本已收敛到 @)', () => {
     setup(ts('/'));
-    expect(screen.getByText('剧本')).toBeInTheDocument();
-    expect(screen.getByText('营收分析')).toBeInTheDocument();
     expect(screen.getByText('命令')).toBeInTheDocument();
     expect(screen.getByText('/规划模式')).toBeInTheDocument();
+    expect(screen.queryByText('剧本')).not.toBeInTheDocument();
   });
 
   test('选中子 Agent 回传 trigger=@ 与原始引用', () => {
@@ -128,9 +127,9 @@ describe('SceneTriggerMenu', () => {
     expect((onSelect.mock.calls[0][0] as any).type).toBe('subAgent');
   });
 
-  test('搜索提示带当前 trigger 字符', () => {
+  test('搜索框回显当前过滤词', () => {
     setup(ts('@', '分析'));
-    expect(screen.getByText('@分析')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('分析')).toBeInTheDocument();
   });
 });
 

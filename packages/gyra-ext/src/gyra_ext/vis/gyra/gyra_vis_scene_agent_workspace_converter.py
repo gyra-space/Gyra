@@ -72,8 +72,9 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         # key 前缀区分来源: tool-{action_id} / think-{message_id} / narr-{message_id}
         # value = (step_dict, ts_str);ts 用于跨来源按时间交错排序
         self._scene_items: Dict[str, Tuple[Dict[str, Any], str]] = {}
-        # message_id -> (assistant 文本, ts_str);最新一条进 summary,其余凝固为步骤
-        self._scene_narrations: Dict[str, Tuple[str, str]] = {}
+        # message_id -> (assistant 文本, ts_str, receiver);最新一条进 summary,其余凝固为步骤。
+        # receiver 用于区分「agent 发给 agent(过程叙述)」与「agent 发给 human(最终答复)」。
+        self._scene_narrations: Dict[str, Tuple[str, str, Optional[str]]] = {}
         # message_id -> 最终回答时序锚点(该消息全部工具之后);仅最新一条 narration 采用
         self._narr_final_ts: Dict[str, str] = {}
         # 交付文件 / 任务文件(类似 vis manus,任务结束时从 gpts_memory 或 messages 收集)
@@ -337,6 +338,12 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         raw_input = self._report_get(report, "action_input")
         action_input = raw_input if isinstance(raw_input, dict) else self._safe_json_loads(raw_input)
 
+        # spawn_subagent（标准 SubAgent 协作）渲染为独立的 subagent 步骤：
+        # 子 Agent 在独立会话运行，其 thinking/tool 事件不进主会话 messages，
+        # 若当作普通 tool_call 会退化成一条无身份标注的胶囊，无法体现多 Agent 交互。
+        # 这里抽出 agent_name/task/模式，交给前端渲染 SubAgentCard。
+        is_subagent = str(tool).lower() == "spawn_subagent"
+
         content = self._report_get(report, "content")
         output = None
         if isinstance(content, str) and content.strip() and content.strip() not in _RUNNING_PLACEHOLDERS:
@@ -367,7 +374,7 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         existing = self._scene_items.get(key)
         step = existing[0] if existing else {
             "id": str(action_id),
-            "type": "tool_call",
+            "type": "subagent" if is_subagent else "tool_call",
             "title": str(tool),
             "status": "running",
             "action": str(tool),
@@ -380,6 +387,31 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         step["title"] = str(tool)
         step["action"] = str(tool)
         step["status"] = status
+        # subagent 步骤：透出子 Agent 身份/任务/模式，前端据此渲染 SubAgentCard
+        if is_subagent:
+            step["type"] = "subagent"
+            if isinstance(action_input, dict):
+                step["expert_app_code"] = (
+                    action_input.get("agent_name")
+                    or step.get("expert_app_code")
+                )
+                step["expert_name"] = (
+                    action_input.get("app_name")
+                    or action_input.get("agent_name")
+                    or step.get("expert_name")
+                )
+                if action_input.get("task"):
+                    step["task"] = str(action_input.get("task"))
+                # run_in_background 可能是 bool 或 JSON 字符串（"false"/"true"），
+                # 统一归一为异步/同步模式标记
+                raw_bg = action_input.get("run_in_background")
+                if isinstance(raw_bg, str):
+                    is_async = raw_bg.strip().lower() in ("1", "true", "yes", "on")
+                else:
+                    is_async = bool(raw_bg)
+            else:
+                is_async = False
+            step["mode"] = "async" if is_async else "sync"
         if action_input is not None:
             step["action_input"] = action_input
         if output is not None:
@@ -408,6 +440,47 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
             step["narration"] = thoughts.strip()[:_MAX_OUTPUT_CHARS]
         self._scene_items[key] = (step, ts)
 
+    @staticmethod
+    def _is_ask_user_step(step: Dict[str, Any]) -> bool:
+        """判断步骤是否为 ask_user 交互(产出 ```drsk-confirm 围栏)。"""
+        for field in ("output", "vis"):
+            value = step.get(field)
+            if isinstance(value, str) and "```drsk-confirm" in value:
+                return True
+        return False
+
+    def _anchor_ask_user_steps(self, message_id: Optional[str], reports: Any) -> None:
+        """ask_user 确认卡片必须排在其引导旁白之后(先文字解释、再交互组件)。
+
+        LLM 先输出引导旁白再调用 ask_user 工具,但旁白锚消息 created_at(持久化
+        时间,晚于工具执行)、工具锚动作 start_time,按 ts 排序会把确认卡片排到
+        旁白之前。这里把同一消息内 ask_user 步骤的 ts 重锚到该消息旁白 ts 之后
+        (旁白 ts + 微偏移后缀),保证「先旁白、后卡片」;时序本就正确
+        (工具 ts 已晚于旁白)时不改动。按消息归属锚定,多轮 resume 历史不错位。
+        """
+        if not isinstance(reports, (list, tuple)):
+            return
+        narr = self._scene_narrations.get(message_id or "unknown")
+        if not narr or not narr[1]:
+            return
+        narr_ts = narr[1]
+        for report in reports:
+            action_id = self._report_get(report, "action_id")
+            if not action_id:
+                continue
+            key = f"tool-{action_id}"
+            item = self._scene_items.get(key)
+            if not item:
+                continue
+            step, ts = item
+            if not self._is_ask_user_step(step):
+                continue
+            if ts and ts > narr_ts:
+                continue
+            anchored = f"{narr_ts}~ask"
+            if not ts or anchored > ts:
+                self._scene_items[key] = (step, anchored)
+
     def _ingest_assistant_text(
         self,
         message_id: Optional[str],
@@ -415,19 +488,27 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         ts: Any = None,
         append: bool = False,
         final_ts: Any = None,
+        receiver: Optional[str] = None,
     ) -> None:
         """登记 assistant 文本(阶段回复/最终回答候选,最新一条进 summary)。
 
         append=True 用于 LLM 流式:stream_msg.content 是增量 delta,需追加;
         来自持久化消息的全量文本则整体替换。
         final_ts 为该消息最终回答的锚点(落在全部工具之后),供最新一条 narration 沉底。
+        receiver 为该消息的接收者 role(用于区分 agent→agent 过程叙述 / agent→human 最终答复);
+        流式增量若已登记过 receiver 则保留首次值。
         """
         if not isinstance(content, str) or not content:
             return
         mid = message_id or "unknown"
-        prev_text, prev_ts = self._scene_narrations.get(mid, ("", ""))
+        prev = self._scene_narrations.get(mid, ("", "", None))
+        prev_text, prev_ts, prev_receiver = prev
         text = (prev_text + content) if append else content
-        self._scene_narrations[mid] = (text.strip() if not append else text, self._ts_str(ts) or prev_ts)
+        self._scene_narrations[mid] = (
+            text.strip() if not append else text,
+            self._ts_str(ts) or prev_ts,
+            receiver if receiver is not None else prev_receiver,
+        )
         if final_ts:
             self._narr_final_ts[mid] = self._ts_str(final_ts) or final_ts
 
@@ -579,7 +660,17 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                 self._upsert_tool_step(report)
 
         self._ingest_thinking(message_id, getattr(msg, "thinking", None), live=False, ts=ts)
-        self._ingest_assistant_text(message_id, getattr(msg, "content", None), ts=ts, final_ts=answer_ts)
+        # receiver 透出:区分 agent→agent(过程叙述) 与 agent→human(最终答复)
+        receiver = getattr(msg, "receiver", None)
+        self._ingest_assistant_text(
+            message_id,
+            getattr(msg, "content", None),
+            ts=ts,
+            final_ts=answer_ts,
+            receiver=str(receiver) if receiver else None,
+        )
+        # 旁白已登记,此时重锚 ask_user 步骤到旁白之后(见 _anchor_ask_user_steps)
+        self._anchor_ask_user_steps(message_id, reports)
 
     def _ingest_stream_msg(self, stream_msg: Union[Dict, str]) -> None:
         if not isinstance(stream_msg, dict):
@@ -631,6 +722,16 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         return {"goal": goal or "任务计划", "steps": steps}
 
     def _build_view(self, plans_map: Optional[Dict[str, Any]], messages: List[Any]) -> Dict[str, Any]:
+        # 兜底:流式路径(_ingest_stream_msg)不做逐条重锚,构建视图前统一兜底一次,
+        # 确保旁白最后到齐时 ask_user 卡片仍排在旁白之后(幂等,已正确的不动)。
+        for msg in messages or []:
+            if str(getattr(msg, "role", "") or "") in _HUMAN_ROLES:
+                continue
+            if str(getattr(msg, "sender", "") or "") in _HUMAN_ROLES:
+                continue
+            self._anchor_ask_user_steps(
+                getattr(msg, "message_id", None), getattr(msg, "action_report", None)
+            )
         # narration(assistant 正文文本)一律作为 answer 步骤按时序内联 —— 与 thinking
         # (推理 think-{mid}) / tool_call(工具步骤) 三类各自独立,哪个有就展示哪个,不拼不接。
         # 最新一条 narration 同时进 summary 供底部兜底;前端检测到已有 answer step 后
@@ -639,17 +740,31 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
         summary: Optional[str] = None
         final_mid: Optional[str] = None
         if narr_ids:
-            # 取时序最新的一条 narration;若全部无 ts(如离线重建的消息无 created_at),
-            # 回退为插入序最后一条 —— 保持「最新一条进 summary」的既有语义。
-            with_ts = [(mid, v) for mid, v in self._scene_narrations.items() if v[1]]
+            # 优先取「发给 human(receiver ∈ _HUMAN_ROLES)且时序最新」的 narration 作为最终答复/summary;
+            # 若无任何 to_human 记录(如全部 agent→agent 或 receiver 缺失),回退为时序最新一条,
+            # 保持「最新一条进 summary」的既有兜底语义。
+            def _is_to_human(mid: str) -> bool:
+                return (self._scene_narrations[mid][2] or "") in _HUMAN_ROLES
+
+            to_human_ids = [mid for mid in narr_ids if _is_to_human(mid)]
+            pool = to_human_ids or narr_ids
+            with_ts = [(mid, self._scene_narrations[mid]) for mid in pool if self._scene_narrations[mid][1]]
             final_mid, latest = (
-                max(with_ts, key=lambda it: it[1][1]) if with_ts else (narr_ids[-1], self._scene_narrations[narr_ids[-1]])
+                max(with_ts, key=lambda it: it[1][1]) if with_ts else (pool[-1], self._scene_narrations[pool[-1]])
             )
             summary = latest[0]
 
         execution: List[Tuple[Dict[str, Any], str]] = list(self._scene_items.values())
         for mid in narr_ids:
-            text, ts = self._scene_narrations[mid]
+            text, ts, receiver = self._scene_narrations[mid]
+            # TEMP-DEBUG:确认每条 narration 的 receiver 与是否被判 to_human
+            import sys as _sys
+            print(f"[narr-debug] mid={mid} receiver={receiver!r} to_human={(receiver or '') in _HUMAN_ROLES} text={text[:40]!r}", file=_sys.stderr)
+            # 只有「发给 human」的 narration 才生成 answer 步骤(最终答复);
+            # agent→agent 的过程叙述不生成 answer,避免正文被中间过程文本淹没。
+            # 过程叙述仍保留在 _scene_narrations 供 summary/面板等使用,但不出现在 execution 步骤流。
+            if (receiver or "") not in _HUMAN_ROLES:
+                continue
             if mid == final_mid:
                 # 仅最终回答沉到该消息全部工具之后;中间旁白保持 created_at(思考后、工具前)
                 ts = self._narr_final_ts.get(mid) or ts
@@ -663,6 +778,8 @@ class SceneAgentWorkspaceConverter(GyraIncrVisManusConverter):
                 "output": text[:_MAX_OUTPUT_CHARS],
                 "artifact": None,
                 "vis": None,
+                "receiver": receiver,
+                "to_human": True,
             }, ts))
 
         # 按时间交错排序(无 ts 的排后,稳定)

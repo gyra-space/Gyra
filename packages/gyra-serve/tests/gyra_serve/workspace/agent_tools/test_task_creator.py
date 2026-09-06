@@ -37,7 +37,8 @@ def _make_task_entity(eid=1, title="raw text", playbook_id=7):
     for f in ("workspace_id", "parent_task_id", "type", "description", "status",
               "priority", "triggered_by", "trigger_ref", "playbook_id",
               "playbook_version_id", "conv_session_id", "created_by_user_id",
-              "assigned_agents", "context", "due_at"):
+              "assigned_agents", "context", "due_at",
+              "expert_app_code", "contract_id"):
         setattr(entity, f, None)
     return entity
 
@@ -142,3 +143,44 @@ def test_run_task_detached_skips_run_task_when_no_playbook(monkeypatch):
 
     task_service.start.assert_called_once_with(entity.id)
     run_task_mock.assert_not_called()
+
+
+def test_run_task_detached_runs_when_expert_bound_without_playbook(monkeypatch):
+    """绑定专家(无 playbook)的任务:detached start 后应运行 run_task(runtime 以
+    expert_app_code 为执行体),不因缺 playbook 跳过。"""
+    from gyra_serve.workspace.agent_tools import _task_creator
+
+    entity = _make_task_entity(playbook_id=None)
+    entity.expert_app_code = "expert_dataops_weekly_report"
+    system_app, task_service = _make_system_app(entity, playbook=None)
+
+    created_tasks = []
+
+    def fake_create_task(coro):
+        task = asyncio.ensure_future(coro)
+        created_tasks.append(task)
+        return task
+
+    async def _noop_title(*a, **kw):
+        return None
+
+    monkeypatch.setattr(_task_creator.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(_task_creator, "_summarize_title_detached", _noop_title)
+    run_task_mock = MagicMock()
+    monkeypatch.setattr(_task_creator.playbook_runtime, "run_task", run_task_mock)
+
+    _task_creator.create_task_from_tool(
+        system_app=system_app,
+        workspace_id=10,
+        user_id="123",
+        playbook_id=None,
+        expert_app_code="expert_dataops_weekly_report",
+        title="专家任务",
+        description=None,
+        model_name="test-provider/test-model",
+    )
+
+    asyncio.get_event_loop().run_until_complete(created_tasks[0])
+
+    task_service.start.assert_called_once_with(entity.id)
+    run_task_mock.assert_called_once()

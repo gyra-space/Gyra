@@ -21,7 +21,7 @@ import {
 } from '@ant-design/icons';
 import classNames from 'classnames';
 
-/** 剧本引用 */
+/** 合约/技能引用 */
 export interface PlusMenuPlaybookRef {
   playbook_id: number;
   playbook_name: string;
@@ -48,7 +48,7 @@ export interface PlusMenuMcpRef {
   available?: boolean;
 }
 
-/** 斜杠命令(剧本以 / 前缀形式快捷唤起) */
+/** 斜杠命令(合约以 / 前缀形式快捷唤起) */
 export interface PlusMenuCommandRef {
   command: string;
   name: string;
@@ -94,7 +94,7 @@ export interface PlusMenuProps {
   permissions?: PlusMenuPermission[];
   selectedPermission?: string;
   onPermissionChange?: (key: string) => void;
-  /** 剧本 */
+  /** 合约 */
   playbooks?: PlusMenuPlaybookRef[];
   playbooksLoading?: boolean;
   selectedPlaybook?: PlusMenuPlaybookRef | null;
@@ -299,16 +299,6 @@ export function PlusMenu({
               <RightOutlined className="text-[10px] text-gray-400" />
             </button>
           )}
-          {(playbooksLoading || (playbooks?.length ?? 0) > 0) && (
-            <button type="button" className={itemCls} onClick={() => goPanel('playbook')}>
-              <RocketOutlined className="text-sm text-indigo-500" />
-              <span>剧本</span>
-              {selectedPlaybook && (
-                <span className="ml-auto h-1.5 w-1.5 rounded-full flex-shrink-0" style={{ background: accentColor }} />
-              )}
-              <RightOutlined className={classNames('text-[10px] text-gray-400', !selectedPlaybook && 'ml-auto')} />
-            </button>
-          )}
           {onSkillsChange && (
             <button type="button" className={itemCls} onClick={() => goPanel('skill')}>
               <AppstoreOutlined className="text-sm text-violet-500" />
@@ -362,29 +352,6 @@ export function PlusMenu({
                 icon: <SafetyOutlined className="text-sm text-amber-500" />,
                 title: p.label,
                 description: p.description,
-              }),
-            )}
-          </div>
-        </div>
-      );
-    }
-
-    if (panel === 'playbook') {
-      const list = filter(playbooks, (p) => `${p.playbook_name}`);
-      return (
-        <div className="w-72">
-          <PanelHeader title="选择剧本" onBack={() => setPanel('root')} />
-          <PanelSearch value={search} onChange={setSearch} placeholder="搜索剧本" />
-          <div className="max-h-64 overflow-y-auto py-1">
-            {playbooksLoading && <EmptyText><LoadingOutlined className="mr-1" />加载中…</EmptyText>}
-            {!playbooksLoading && list.length === 0 && <EmptyText>暂无剧本</EmptyText>}
-            {!playbooksLoading && list.map((pb) =>
-              renderCheckableRow({
-                key: String(pb.playbook_id),
-                checked: selectedPlaybook?.playbook_id === pb.playbook_id,
-                onClick: () => { onPlaybookChange?.(pb); close(); },
-                icon: <RocketOutlined className="text-sm text-indigo-400" />,
-                title: pb.playbook_name,
               }),
             )}
           </div>
@@ -547,7 +514,7 @@ export function PlusMenu({
         <button
           type="button"
           disabled={disabled}
-          title={title ?? '添加文件 / 剧本 / 技能 / MCP / 命令'}
+          title={title ?? '添加文件 / 技能 / MCP / 命令'}
           className={classNames(
             'h-8 w-8 rounded-full flex items-center justify-center border transition-all flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed',
             open

@@ -40,7 +40,21 @@ export default function ModelManage() {
       const data = await configService.getConfig();
       setConfig(data);
     } catch (error: any) {
-      message.error('加载模型配置失败: ' + error.message);
+      // 仅持 model.read 的用户会被 /config/current(system.read) 拒绝:
+      // 回退到 model.read 门控的窄端点拼装 LLMSettingsSection 所需字段
+      if (error?.response?.status === 403) {
+        try {
+          const [agentLLM, defaultModel] = await Promise.all([
+            configService.getAgentLLMConfig(),
+            configService.getDefaultModelConfig(),
+          ]);
+          setConfig({ agent_llm: agentLLM, default_model: defaultModel } as AppConfig);
+        } catch (fallbackError: any) {
+          message.error('加载模型配置失败: ' + fallbackError.message);
+        }
+      } else {
+        message.error('加载模型配置失败: ' + error.message);
+      }
     } finally {
       setConfigLoading(false);
     }

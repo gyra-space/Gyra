@@ -16,3 +16,18 @@ CREATE UNIQUE INDEX "uk_workspace_agent_role" ON "server_app_workspace_agent_rol
 CREATE INDEX "ix_server_app_workspace_agent_role_workspace_id" ON "server_app_workspace_agent_role" ("workspace_id");
 CREATE UNIQUE INDEX "ix_gyra_memory_recall_stats_memory_id" ON "gyra_memory_recall_stats" ("memory_id");
 CREATE INDEX "ix_gyra_memory_recall_stats_space_id" ON "gyra_memory_recall_stats" ("space_id");
+ALTER TABLE "server_app_trigger_source" ALTER COLUMN "target_playbook_id" DROP NOT NULL;
+ALTER TABLE "server_app_trigger_source" ADD COLUMN IF NOT EXISTS "target_app_code" VARCHAR(128);
+CREATE INDEX IF NOT EXISTS "ix_server_app_trigger_source_target_app_code" ON "server_app_trigger_source" ("target_app_code");
+CREATE INDEX "ix_server_app_workspace_expert_workspace_id" ON "server_app_workspace_expert" ("workspace_id");
+CREATE INDEX "ix_server_app_workspace_expert_equipment_expert_id" ON "server_app_workspace_expert_equipment" ("expert_id");
+ALTER TABLE "gpts_app" ADD COLUMN "owner_workspace_id" INTEGER;
+CREATE INDEX "ix_gpts_app_owner_workspace_id" ON "gpts_app" ("owner_workspace_id");
+CREATE INDEX "idx_gpts_app_owner_workspace" ON "gpts_app" ("owner_workspace_id");
+ALTER TABLE "server_app_playbook" ADD COLUMN "target_app_code" VARCHAR(128);
+CREATE INDEX "ix_server_app_playbook_target_app_code" ON "server_app_playbook" ("target_app_code");
+ALTER TABLE "server_app_task" ADD COLUMN "expert_app_code" VARCHAR(128);
+ALTER TABLE "server_app_task" ADD COLUMN "contract_id" INTEGER;
+CREATE INDEX "ix_server_app_task_contract_id" ON "server_app_task" ("contract_id");
+CREATE INDEX "ix_server_app_task_expert_app_code" ON "server_app_task" ("expert_app_code");
+ALTER TABLE "server_app_workspace_expert" ADD COLUMN "icon" VARCHAR(512);

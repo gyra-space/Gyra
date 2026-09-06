@@ -102,50 +102,98 @@ class SceneResourceAssembler:
         ws = ws_service.get_by_id(workspace_id) if ws_service else None
         if not ws:
             return []
+        # 专家团队清单（Agent Team 空间重构 Phase 1.2）：装配成员行+外挂摘要进
+        # Leader 上下文，使 Leader 无需工具调用即可感知本空间团队。
+        team_summary = ""
+        try:
+            from gyra_serve.workspace.expert import WorkspaceExpertService
+
+            team_summary = WorkspaceExpertService().assemble_team_summary(workspace_id)
+        except Exception as e:
+            logger.warning(f"assemble team summary failed (ws={workspace_id}): {e}")
         config = WorkspaceSceneConfig(
             workspace_id=workspace_id, conv_uid=conv_uid,
             workspace_name=str(getattr(ws, "name", "") or ""),
+            team_summary=team_summary,
         )
-        return [
+        resources = [
             WorkspaceSceneResource.to_agent_resource(config),
             SceneResourceAssembler._ecp_resource(ws),
         ]
+        # 每位专家挂为 Leader 的 app 资源（AgentResource type="app"）→
+        # build_pack 还原为 AppCapability：标准 SubAgent 工具的 sync/async
+        # 均可按 app_code 寻址到专家（统一走标准多 Agent 协作机制）。
+        resources.extend(SceneResourceAssembler._expert_app_resources(workspace_id))
+        return resources
+
+    @staticmethod
+    def _expert_app_resources(workspace_id: int) -> List[AgentResource]:
+        """空间专家 → app AgentResource 列表;异常降级返回 [](不阻断装配)。"""
+        try:
+            from gyra_serve.workspace.expert.expert_api import (
+                _get_app_info, _service,
+            )
+
+            out: List[AgentResource] = []
+            for member in _service().list_members(workspace_id):
+                app_info = _get_app_info(member.app_code)
+                out.append(AgentResource(
+                    type="app",
+                    name=f"expert_{member.app_code}",
+                    value=json.dumps({
+                        "app_code": member.app_code,
+                        "app_name": getattr(app_info, "app_name", None) or member.app_code,
+                        "app_desc": getattr(app_info, "app_describe", None) or member.role_hint or "",
+                    }, ensure_ascii=False),
+                ))
+            return out
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"expert app resources failed (ws={workspace_id}): {e}")
+            return []
 
     @staticmethod
     def _assemble_workbench(system_app, workspace_id, task_id):
         task_service = _task_service(system_app)
         task = task_service.get_by_id(task_id) if task_service else None
-        if not task or not task.playbook_id:
+        if not task:
             return []
-        playbook_service = _playbook_service(system_app)
-        pb = playbook_service.get_by_id(task.playbook_id) if playbook_service else None
-        if not pb:
-            return []
-        config = PlaybookConfig.from_playbook_response(pb)
-        resources = [PlaybookResource.to_agent_resource(config)]
+        resources: List[AgentResource] = []
         # 派生 ECP workspace 资源(同 lobby);取不到 workspace 则不注入,降级为
         # 无 ECP 能力,不阻塞任务链路。
         ws_service = _workspace_service(system_app)
         ws = ws_service.get_by_id(workspace_id) if ws_service else None
         if ws:
             resources.append(SceneResourceAssembler._ecp_resource(ws))
-        # 物化剧本 declaration 的 skills/resources 成 agent 可调用的工具
-        # (agent_skill/datasource/mcp/knowledge)。否则剧本 skill 只停留在 system prompt
-        # 的名字(剧本技能:...),agent 看到却没真实工具可调。复用 workspace 物化分派。
-        # 传 workspace_id:引用优先对齐空间资源池(空间=注册/治理池,剧本=选配子集),
-        # 使剧本引用与空间绑定物化结果一致,为权限投影铺路;未绑定引用全局兜底兼容存量。
-        try:
-            from gyra_serve.workspace.materializer import (
-                materialize_playbook_declaration,
-            )
-            declaration = getattr(pb, "declaration", {}) or {}
-            resources.extend(
-                materialize_playbook_declaration(
-                    system_app, declaration, workspace_id=workspace_id,
+
+        # Agent Team 空间重构 Phase 2.1/2.2:任务绑定了专家 →
+        # 装配专家空间外挂(workspace_expert_equipment)进 agent 可调用工具集。
+        # 无外挂行则跳过(用专家标准装备),异常降级不阻断。
+        expert_app_code = getattr(task, "expert_app_code", None)
+        if expert_app_code:
+            try:
+                from gyra_serve.workspace.materializer import (
+                    materialize_expert_equipment,
                 )
-            )
-        except Exception as e:
-            logger.warning(
-                f"materialize playbook declaration failed: {e}", exc_info=True
-            )
+                resources.extend(
+                    materialize_expert_equipment(
+                        system_app, workspace_id, expert_app_code,
+                    )
+                )
+            except Exception as e:
+                logger.warning(
+                    f"materialize expert equipment failed: {e}", exc_info=True
+                )
+
+        # 合约(收窄后的 playbook 表)存在 → 注入其交付/沉淀声明资源。
+        # 合约的技能/数据源等能力已收敛于专家标准装备(GptsApp.resource_tool)+
+        # 空间外挂(workspace_expert_equipment),不再从合约声明二次物化,
+        # 因此这里仅注入承载合约文本/交付/沉淀规则的 PlaybookResource。
+        if not task.playbook_id:
+            return resources
+        playbook_service = _playbook_service(system_app)
+        pb = playbook_service.get_by_id(task.playbook_id) if playbook_service else None
+        if not pb:
+            return resources
+        config = PlaybookConfig.from_playbook_response(pb)
+        resources.append(PlaybookResource.to_agent_resource(config))
         return resources

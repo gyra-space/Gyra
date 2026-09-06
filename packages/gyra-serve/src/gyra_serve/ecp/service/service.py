@@ -1136,6 +1136,12 @@ class Service(BaseService[EcpSemanticObjectEntity, None, None]):
     ) -> List[AssetRefVO]:
         return self._assets.list(workspace_id, kind)
 
+    def list_assets_overview(
+        self, kind: Optional[str] = None
+    ) -> List[AssetRefVO]:
+        """全局资产视图:跨所有 ECP workspace 聚合登记资产(P2)。"""
+        return self._assets.list_overview(kind)
+
     def remove_asset(
         self,
         asset_id: int,

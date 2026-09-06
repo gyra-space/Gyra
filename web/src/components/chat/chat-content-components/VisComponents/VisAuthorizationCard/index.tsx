@@ -19,7 +19,7 @@ import {
 } from '@ant-design/icons';
 import { useInteraction } from '@/components/interaction';
 import { GrantScope } from '@/types/interaction';
-import { STORAGE_USERINFO_KEY } from '@/utils/constants';
+import { STORAGE_USERINFO_KEY } from '@/utils/constants/index';
 
 const { Text } = Typography;
 

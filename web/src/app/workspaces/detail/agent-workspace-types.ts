@@ -81,7 +81,7 @@ export interface WorkspaceUserAttachment {
 
 export interface WorkspaceExecutionStep {
   id: string;
-  type: 'tool_call' | 'thinking' | 'artifact' | 'delivery' | 'user' | 'task_created' | 'skill_loaded' | 'memory_loaded' | 'answer' | 'skill_published';
+  type: 'tool_call' | 'thinking' | 'artifact' | 'delivery' | 'user' | 'task_created' | 'skill_loaded' | 'memory_loaded' | 'answer' | 'skill_published' | 'expert_completed' | 'subagent';
   title: string;
   status: 'running' | 'done' | 'failed';
   /** 时间戳(ISO 字符串),跨轮次合并时按此交错排序 */
@@ -107,6 +107,17 @@ export interface WorkspaceExecutionStep {
   triggered_by?: string;
   /** user 步骤:随消息上传的文件附件 */
   attachments?: WorkspaceUserAttachment[] | null;
+  /** 专家步骤:专家身份信息（多 Agent 群聊 Phase 1） */
+  expert_app_code?: string;
+  expert_name?: string;
+  expert_avatar?: string;
+  /** subagent 步骤:子 Agent 委托任务描述 / 模式(sync|async) */
+  task?: string;
+  mode?: string;
+  /** answer 步骤:消息接收者 role(后端透出,区分 agent→agent 过程叙述 / agent→human 最终答复) */
+  receiver?: string | null;
+  /** answer 步骤:是否发给 human(最终答复)。true 留正文;false/undefined 为过程叙述,收进折叠 */
+  to_human?: boolean;
 }
 
 export interface WorkspacePlanning {
@@ -187,6 +198,12 @@ export interface WorkspaceView {
 export interface PlaybookCommand {
   playbook_id: number;
   playbook_name: string;
+}
+
+/** 对话中选用的专家(Agent Team 空间重构)/专家名 前缀派单 */
+export interface ExpertCommand {
+  app_code: string;
+  app_name: string;
 }
 
 /** 对话中选用的技能(与 SelectedSkill 结构一致,避免依赖 context 模块) */

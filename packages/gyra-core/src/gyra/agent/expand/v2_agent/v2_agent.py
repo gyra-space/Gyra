@@ -210,6 +210,22 @@ class V2Agent(ReActMasterAgent):
             )
         return self._prompt_assembler
 
+    def _v2_agent_id(self) -> str:
+        """解析 V2 引擎的 agent 标识符。
+
+        V2 引擎构造 StepEvent/ToolContext/PermissionGate/compactor 时严格要求
+        agent_id 为非空字符串。agent_context.agent_app_code 在空间场景/子 Agent
+        链路可能未赋值（构造时为 None），此处统一兜底：agent_app_code →
+        gpts_app_code → agent.name → "unknown"，避免 pydantic validation 错误。
+        """
+        ctx = self.not_null_agent_context
+        return (
+            ctx.agent_app_code
+            or ctx.gpts_app_code
+            or getattr(self, "name", None)
+            or "unknown"
+        )
+
     def _ensure_v2_state_store(self):
         """懒创建 V2 事件溯源持久化 StateStore（真实库，非 tempdir）。
 
@@ -219,11 +235,11 @@ class V2Agent(ReActMasterAgent):
         """
         if self._v2_state_store is None:
             from gyra.agent.core.v2.state_store import create_state_store
-            key = (self.v2_state_dir or "", self.not_null_agent_context.agent_app_code)
+            key = (self.v2_state_dir or "", self._v2_agent_id())
             store = _V2_STATE_STORES.get(key)
             if store is None:
                 store = create_state_store(
-                    agent_id=self.not_null_agent_context.agent_app_code,
+                    agent_id=self._v2_agent_id(),
                     data_dir=self.v2_state_dir,
                 )
                 _state_store_cache_put(key, store)
@@ -686,7 +702,7 @@ class V2Agent(ReActMasterAgent):
                 else None
             )
             self._v2_tool_context_factory = ToolContextFactory(
-                agent_id=agent_ctx.agent_app_code,
+                agent_id=agent_ctx.agent_app_code or agent_ctx.gpts_app_code or "unknown",
                 conv_id=self._v2_conv_id,
                 agent=self,
                 user_request=user_req,
@@ -751,7 +767,7 @@ class V2Agent(ReActMasterAgent):
                 mode=PermissionMode.DEFAULT,
                 step_id=None,  # bound by run_step
                 conv_id=self._v2_conv_id,
-                agent_id=self.not_null_agent_context.agent_app_code,
+                agent_id=self._v2_agent_id(),
                 tool=None,
             )
 
@@ -830,7 +846,7 @@ class V2Agent(ReActMasterAgent):
 
             self._v2_model_alias = model_alias
             self._v2_runtime = V2AgentRuntime(
-                agent_id=self.not_null_agent_context.agent_app_code,
+                agent_id=self._v2_agent_id(),
                 conv_id=self._v2_conv_id,
                 harness=self._v2_harness,
                 max_steps=getattr(self, "get_effective_max_steps", lambda: 20)()
@@ -935,7 +951,7 @@ class V2Agent(ReActMasterAgent):
                 extra={
                     "session_id": session_id,
                     "conv_id": conv_id,
-                    "agent_id": self.not_null_agent_context.agent_app_code,
+                    "agent_id": self._v2_agent_id(),
                     # 透传 system prompt：default_thinking 从 input_["system_prompt"]
                     # 读取并作为首条 system 消息注入 LLM（缺省则模型完全无系统指令，
                     # 表现为无目标地反复探索工具）。注意：缺省时 input_ 无该键，这里
@@ -967,8 +983,8 @@ class V2Agent(ReActMasterAgent):
                 _cm = getattr(runtime, "_context_manager", None)
                 if _cm is not None:
                     _compactor = _cm._ensure_compactor(
-                        step_id=f"{self.not_null_agent_context.agent_app_code}-{conv_id}-manual",
-                        agent_id=self.not_null_agent_context.agent_app_code,
+                        step_id=f"{self._v2_agent_id()}-{conv_id}-manual",
+                        agent_id=self._v2_agent_id(),
                     )
                     if _compactor is not None:
                         await _compactor.run(force=True)
@@ -1205,6 +1221,13 @@ class V2Agent(ReActMasterAgent):
         gpts_memory = self.memory.gpts_memory if self.memory else None
         output = step_event.output or {}
         result_text = str(output.get("content") or "")
+        # spawn_subagent 的 tool_result 是 SubAgentHandle.to_payload()（无 content），
+        # 子 Agent 的答复在 result.answer 里。不提取则 WorkEntry.result 为空，
+        # 前端 subagent 卡片只显示任务、看不到结果。
+        if not result_text:
+            sub_answer = (output.get("result") or {}).get("answer")
+            if sub_answer:
+                result_text = str(sub_answer)
         if not result_text and output.get("error"):
             result_text = str(output["error"])
         success = bool(output.get("is_exe_success", True))
@@ -1326,7 +1349,7 @@ class V2Agent(ReActMasterAgent):
                 event_id=f"evt-{uuid.uuid4().hex[:8]}",
                 step_id=f"dialog-{uuid.uuid4().hex[:6]}",
                 conv_id=self._v2_conv_id,
-                agent_id=self.not_null_agent_context.agent_app_code,
+                agent_id=self._v2_agent_id(),
                 parent_step_id=None,
                 state=StepState.DONE,
                 event_type=f"{role}/message",
@@ -1359,7 +1382,7 @@ class V2Agent(ReActMasterAgent):
 
             conv_id = conv_id or self._v2_conv_id
             if agent_id is None:
-                agent_id = self.not_null_agent_context.agent_app_code
+                agent_id = self._v2_agent_id()
             events = await self._ensure_v2_state_store().get_events(conv_id)
             events = [
                 e for e in events if getattr(e, "agent_id", None) == agent_id
@@ -1427,7 +1450,7 @@ class V2Agent(ReActMasterAgent):
             events = await self._ensure_v2_state_store().get_events(
                 self._v2_conv_id
             )
-            agent_id = self.not_null_agent_context.agent_app_code
+            agent_id = self._v2_agent_id()
             events = [
                 e for e in events if getattr(e, "agent_id", None) == agent_id
             ]

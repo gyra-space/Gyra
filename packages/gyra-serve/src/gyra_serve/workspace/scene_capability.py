@@ -79,6 +79,7 @@ class WorkspaceSceneCapability(Capability):
             workspace_id=int(data.get("workspace_id")),
             conv_uid=data.get("conv_uid") or "",
             workspace_name=data.get("workspace_name") or "",
+            team_summary=data.get("team_summary") or "",
         )
         return cls(config, system_app=system_app)
 

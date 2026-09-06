@@ -295,7 +295,7 @@ export default function MobileWorkspace() {
             <div className="ms-empty">
               <div className="ms-empty__icon"><ScheduleOutlined /></div>
               <div className="ms-empty__title">暂无任务</div>
-              <p className="ms-empty__hint">在 Agent 下发起任务，或等待剧本自动触发。</p>
+              <p className="ms-empty__hint">在 Agent 下发起任务，或等待合约自动触发。</p>
             </div>
           ) : (
             <div className="ms-list">

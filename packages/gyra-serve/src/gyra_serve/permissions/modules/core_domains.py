@@ -108,3 +108,13 @@ class DatabasePermModule(PermissionModule):
         PermDef("database.admin", "数据库完全管理", "数据库全部权限（覆盖所有表读写）",
                 risk_level="dangerous"),
     ]
+
+
+class EcpPermModule(PermissionModule):
+    name = "ecp"
+    permissions = [
+        PermDef("ecp.read", "ECP 查看", "查看语义资产/数据契约控制台",
+                risk_level="read", grantable=True),
+        PermDef("ecp.manage", "ECP 管理", "提案确认/驳回、语义对象维护与治理操作",
+                risk_level="write"),
+    ]

@@ -11,7 +11,7 @@
  * ├──────────────────────┬────────────────────────┤
  * │  评委工作台           │  Agent 成长面板        │
  * ├──────────────────────┴────────────────────────┤
- * │  剧本演化审批                                  │
+ * │  合约演化审批                                  │
  * └───────────────────────────────────────────────┘
  */
 import { useState } from 'react';
@@ -59,7 +59,7 @@ export function FlywheelWorkspace({ workspaceId }: FlywheelWorkspaceProps) {
           <AgentGrowthPanel workspaceId={workspaceId} key={`growth-${refreshKey}`} />
         </div>
 
-        {/* 剧本演化审批 */}
+        {/* 专家演化审批 */}
         <EvolutionApprovalPanel workspaceId={workspaceId} key={`evo-${refreshKey}`} />
       </div>
     </div>

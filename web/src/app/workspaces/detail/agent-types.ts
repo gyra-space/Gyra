@@ -35,4 +35,7 @@ export type DetailContext =
   | 'subagent'
   | 'triggers'
   | 'data-assets'
+  | 'capability'
+  | 'deliveries'
+  | 'assets'
   | 'app-card';

@@ -199,6 +199,60 @@ async def test_non_skill_long_content_still_truncated():
 
 
 @pytest.mark.asyncio
+async def test_spawn_subagent_becomes_subagent_step():
+    """标准 SubAgent 协作:spawn_subagent 工具步骤渲染为独立 subagent 类型,
+    透出子 Agent 身份/任务/模式,前端据此渲染 SubAgentCard(而非普通工具胶囊)。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    report = _make_action_output(
+        action_id="sub-1",
+        action="spawn_subagent",
+        state="complete",
+        content="子 Agent 已完成分析",
+        action_input={
+            "agent_name": "data_analyst",
+            "task": "分析季度营收",
+            "run_in_background": True,
+        },
+    )
+    payload = _extract_payload(
+        await conv.visualization(
+            messages=[], stream_msg={"type": "all", "message_id": "m1", "action_report": [report]}
+        )
+    )
+    step = payload["execution"][0]
+    assert step["type"] == "subagent"
+    assert step["expert_app_code"] == "data_analyst"
+    assert step["task"] == "分析季度营收"
+    assert step["mode"] == "async"
+    assert step["output"] == "子 Agent 已完成分析"
+
+
+@pytest.mark.asyncio
+async def test_spawn_subagent_sync_mode_and_str_background():
+    """run_in_background 可能为字符串 'false' 或缺省:应归为同步模式。"""
+    conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")
+    report = _make_action_output(
+        action_id="sub-2",
+        action="spawn_subagent",
+        state="running",
+        action_input={
+            "agent_name": "legal_expert",
+            "task": "审阅合同",
+            "run_in_background": "false",
+        },
+    )
+    payload = _extract_payload(
+        await conv.visualization(
+            messages=[], stream_msg={"type": "all", "message_id": "m1", "action_report": [report]}
+        )
+    )
+    step = payload["execution"][0]
+    assert step["type"] == "subagent"
+    assert step["mode"] == "sync"
+    assert step["status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_streaming_text_becomes_summary():
     """LLM 流式文本(stream_msg.content,增量 delta)→ summary 实时拼接更新。"""
     conv = SceneAgentWorkspaceConverter(gyra_url="http://localhost")

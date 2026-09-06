@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Spin } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { WorkspaceEvent } from '@/hooks/use-chat';
@@ -9,6 +9,7 @@ import { AgentWorkspaceInput } from './agent-workspace-input';
 import { AgentWorkspaceRenderer } from './agent-workspace-renderer';
 import DockPanel from '@/components/chat/dock/dock-panel';
 import type { AgentWorkspaceInputHandle, WorkspaceDeliverableFile } from './agent-workspace-types';
+import type { SubAgentRef } from '@/components/chat/input/trigger-types';
 import { useSceneAgentChat } from './use-scene-agent-chat';
 import { useUserInput } from '@/hooks/use-user-input';
 import { useRequest } from 'ahooks';
@@ -119,6 +120,13 @@ export function AgentWorkspace({
     { refreshDeps: [appCode] },
   );
   const appInfo = appInfoTuple?.[1];
+
+  // `@` 接管态(会话级):提升到本层持有,供会话头部/轮次头部显示实际执行的子 Agent。
+  // 仅当前会话生效(刷新后回退默认主 Agent),不做持久化。
+  const [activeSubAgent, setActiveSubAgent] = useState<SubAgentRef | null>(null);
+  // 界面归属:被 @ 的子 Agent 接管时显示子 Agent 名/头像,否则显示空间默认主 Agent。
+  const displayAgentName = activeSubAgent?.name || appInfo?.app_name || 'Agent';
+  const displayAgentIcon = activeSubAgent?.physical_ref ? null : appInfo?.icon;
 
   // 空间配置模型:任务级工作区输入框默认取「空间设置 → 空间模型」列表第一个启用的模型。
   // 未配置空间模型时为空字符串,输入框内部回退到全局模型列表首个(与旧逻辑一致)。
@@ -244,8 +252,8 @@ export function AgentWorkspace({
               onTaskClick={onTaskClick}
               onSubagentClick={onSubagentClick}
               onInteractionResume={resumeInteraction}
-              agentIcon={appInfo?.icon}
-              agentName={appInfo?.app_name}
+              agentIcon={displayAgentIcon}
+              agentName={displayAgentName}
               modelName={modelName}
             />
           )}
@@ -258,6 +266,8 @@ export function AgentWorkspace({
             conversationId={conversationId}
             appInfo={appInfo}
             defaultModel={spaceDefaultModel}
+            subAgent={activeSubAgent ?? undefined}
+            onSubAgentChange={setActiveSubAgent}
             onSend={async (p) => {
               if (running) {
                 // 运行中追问:投递补充输入队列(后端校验确有活跃执行才入队)。

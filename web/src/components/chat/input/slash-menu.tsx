@@ -1,13 +1,13 @@
 'use client';
 
 /**
- * `/` 菜单(能力编排):剧本 / 技能 / MCP / 命令 四类 + 添加文件。
+ * `/` 菜单(能力编排):合约 / 技能 / MCP / 命令 四类 + 添加文件。
  *
  * 交互与浮层全部委托给通用 TriggerMenu,本文件只负责「按 `/` 语义构建分组」。
  * 与 + 菜单(PlusMenu)共享同一份数据与选中结果:`/` 是键盘入口,`+` 是鼠标入口。
  *
  * 「命令」组承载会话级行为命令(压缩上下文/清理会话/规划模式等),
- * 与剧本/技能/MCP 的"资源引用"语义不同:命令选中即执行或切换模式,不随消息发送。
+ * 与合约/技能/MCP 的"资源引用"语义不同:命令选中即执行或切换模式,不随消息发送。
  */
 
 import { forwardRef, useMemo } from 'react';
@@ -87,6 +87,7 @@ function SessionCommandIcon({ action }: { action: SessionCommandAction }) {
     compact: { icon: <CompressOutlined className="text-sm" />, cls: 'bg-gradient-to-br from-slate-500 to-gray-600' },
     clear: { icon: <ClearOutlined className="text-sm" />, cls: 'bg-gradient-to-br from-orange-500 to-red-500' },
     plan: { icon: <ThunderboltOutlined className="text-sm" />, cls: 'bg-gradient-to-br from-cyan-500 to-blue-600' },
+    custom: { icon: <RocketOutlined className="text-sm" />, cls: 'bg-gradient-to-br from-indigo-500 to-blue-600' },
   };
   const { icon, cls } = map[action];
   return (
@@ -119,18 +120,6 @@ export const SlashMenu = forwardRef<SlashMenuHandle, SlashMenuProps>(function Sl
         ],
       });
     }
-
-    out.push({
-      key: 'playbook',
-      label: '剧本',
-      items: (playbooks ?? []).map<TriggerMenuItem<SlashItemData>>((pb) => ({
-        key: `playbook:${pb.playbook_id}`,
-        icon: <IconBox gradient="bg-gradient-to-br from-indigo-500 to-blue-600" fallback={<RocketOutlined className="text-sm" />} />,
-        title: pb.playbook_name,
-        description: '以该剧本发起任务',
-        data: { kind: 'playbook', ref: pb },
-      })),
-    });
 
     out.push({
       key: 'skill',

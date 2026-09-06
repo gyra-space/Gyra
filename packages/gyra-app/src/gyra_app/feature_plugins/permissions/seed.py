@@ -57,89 +57,67 @@ SEED_ROLES = [
     },
     {
         "name": "guest",
-        "description": "访客（仅可查看模型和监控，不能查看智能体/工具/知识库）",
+        "description": "访客（默认无资源模块权限；如需使用模型对话由管理员授权）",
         "is_system": 1,
         "permissions": [
-            ("model", "read"),
             ("model", "chat"),
         ],
     },
     {
         "name": "normal_user",
-        "description": "普通用户（可查看和使用智能体对话，可打开分享链接）",
+        "description": "普通用户（默认无资源管理权限；可对话、打开分享链接，模块权限由管理员授予）",
         "is_system": 1,
         "permissions": [
-            ("agent", "read"),
             ("agent", "chat"),
-            ("model", "read"),
             ("model", "chat"),
         ],
     },
     {
         "name": "viewer",
-        "description": "只读访问所有资源（可查看界面和详情，但不能对话/执行/编辑）",
+        "description": "只读访问（默认无权限；需管理员显式授予各模块 read 权限）",
         "is_system": 1,
-        "permissions": [
-            ("agent", "read"),
-            ("tool", "read"),
-            ("knowledge", "read"),
-            ("model", "read"),
-        ],
+        "permissions": [],
     },
     {
         "name": "operator",
-        "description": "操作员（可查看、对话、执行工具、检索知识库，但不能编辑配置）",
+        "description": "操作员（默认无资源管理权限；对话/执行/检索等使用权限由管理员授予）",
         "is_system": 1,
         "permissions": [
-            ("agent", "read"),
             ("agent", "chat"),
-            ("tool", "read"),
             ("tool", "execute"),
-            ("knowledge", "read"),
             ("knowledge", "query"),
-            ("model", "read"),
             ("model", "chat"),
         ],
     },
     {
         "name": "developer",
-        "description": "开发者（可新增/编辑/删除智能体，使用对话，管理Skills/MCP/数据库/模型/定时任务/渠道）",
+        "description": "开发者（默认无资源模块查看权限；编辑/管理能力由管理员授予后可用）",
         "is_system": 1,
         "permissions": [
-            ("agent", "read"),
             ("agent", "chat"),
             ("agent", "write"),
-            ("tool", "read"),
             ("tool", "execute"),
             ("tool", "manage"),
-            ("knowledge", "read"),
             ("knowledge", "query"),
-            ("model", "read"),
+            ("knowledge", "write"),
             ("model", "chat"),
             ("model", "manage"),
-            ("database", "read"),
             ("database", "manage"),
-            ("cron", "read"),
             ("cron", "manage"),
-            ("channel", "read"),
             ("channel", "manage"),
         ],
     },
     {
         "name": "editor",
-        "description": "编辑者（可查看、使用、编辑所有资源配置）",
+        "description": "编辑者（默认无资源模块查看权限；使用/编辑能力由管理员授予）",
         "is_system": 1,
         "permissions": [
-            ("agent", "read"),
             ("agent", "chat"),
             ("agent", "write"),
-            ("tool", "read"),
             ("tool", "execute"),
             ("tool", "manage"),
-            ("knowledge", "read"),
             ("knowledge", "query"),
             ("knowledge", "write"),
-            ("model", "read"),
             ("model", "chat"),
             ("model", "manage"),
         ],
@@ -171,6 +149,8 @@ SEED_ROLES = [
             ("cron", "manage"),
             ("channel", "read"),
             ("channel", "manage"),
+            ("ecp", "read"),
+            ("ecp", "manage"),
             ("system", "read"),
             ("system", "write"),
             ("system", "admin"),
@@ -247,6 +227,56 @@ def _ensure_system_role_permissions(
             )
 
 
+# 收权涉及的全局资源域（空间域 scope_type=space 不在范围）
+_GLOBAL_READ_PRUNE_TYPES = {"agent", "tool", "knowledge", "model", "database", "cron", "channel"}
+
+_READ_PRUNE_MARKER_KEY = "permission_seed_read_prune_done"
+_READ_PRUNE_MARKER_TYPE = "internal"
+
+
+def _prune_builtin_role_reads(dao: PermissionDao) -> None:
+    """一次性清理：非 admin 内置角色的资源 read 权限（资源模块默认仅管理员可见）。
+
+    seed 矩阵收紧对存量库不生效（_ensure_system_role_permissions 只增不删），
+    这里删除五个内置角色上 resource_id='*' 的资源 read 行。用 system_config
+    标记 key 保证只执行一次——执行后管理员手工授予的 read 不会被后续启动回滚。
+    """
+    from ..system_config_dao import SystemConfigDao
+
+    try:
+        cfg = SystemConfigDao()
+        if cfg.get_config(_READ_PRUNE_MARKER_KEY, config_type=_READ_PRUNE_MARKER_TYPE) is not None:
+            return
+
+        removed = 0
+        for role_def in SEED_ROLES:
+            if role_def["name"] in ("superadmin", "admin"):
+                continue
+            role = dao.get_role_by_name(role_def["name"])
+            if not role:
+                continue
+            for p in dao.list_role_permissions(role["id"]):
+                if (
+                    (p.get("resource_id") or "*") == "*"
+                    and p.get("action") == "read"
+                    and p.get("resource_type") in _GLOBAL_READ_PRUNE_TYPES
+                ):
+                    if dao.remove_role_permission(p["id"]):
+                        removed += 1
+
+        cfg.set_config(
+            _READ_PRUNE_MARKER_KEY,
+            {"done": True, "removed": removed},
+            config_type=_READ_PRUNE_MARKER_TYPE,
+            description="内置角色资源 read 收权迁移标记（只执行一次）",
+        )
+        logger.info(
+            "Pruned %d wildcard read permissions from non-admin built-in roles", removed
+        )
+    except Exception as e:
+        logger.warning("Failed to prune builtin role reads: %s", e)
+
+
 def ensure_default_roles() -> None:
     """Idempotent: 创建内置角色（如果不存在）并创建默认 admin 用户。"""
     dao = PermissionDao()
@@ -284,6 +314,9 @@ def ensure_default_roles() -> None:
                 admin_role_id = role["id"]
         except Exception as e:
             logger.exception(f"Failed to create seed role {role_def['name']}: {e}")
+
+    # 1.5 存量库收权：清掉内置角色上的资源 read（只执行一次，见函数 docstring）
+    _prune_builtin_role_reads(dao)
 
     # 2. 创建默认 admin 用户并分配角色
     if admin_role_id:

@@ -3,8 +3,9 @@
 Layer 1 (空间基线, both Lobby + Workbench): list_tasks, get_task_info,
 list_artifacts, list_deliveries, list_assets.
 Layer 2 (空间操作, Lobby only): get_workspace_memory, list_workspace_members.
-Layer 3 (剧本能力, Workbench only): list_playbooks, get_playbook_detail,
-list_interventions, list_triggers.
+Layer 3 (合约/专家/触发, Workbench only): list_contracts, get_contract_detail,
+get_expert_detail, list_interventions, list_triggers.
+专家协作不走专用工具:清单在 SYSTEM 上下文,派活用标准 SubAgent 工具。
 """
 from typing import Any, List
 
@@ -209,20 +210,45 @@ def _list_assets(system_app, workspace_id: int):
     return _to_jsonable(items)
 
 
-def _list_playbooks(system_app, workspace_id: int):
+def _list_contracts(system_app, workspace_id: int):
+    """列出空间下的交付合约（playbook 表收窄语义）。"""
     from gyra_serve.playbook.api.schemas import PlaybookListFilter
 
     svc = get_playbook_service(system_app)
     items = svc.list_playbooks(
-        PlaybookListFilter(workspace_id=workspace_id)
+        PlaybookListFilter(workspace_id=workspace_id, is_active=True)
     ) or []
     return _to_jsonable(items)
 
 
-def _get_playbook_detail(system_app, workspace_id: int, playbook_id: int):
+def _get_contract_detail(system_app, workspace_id: int, contract_id: int):
     svc = get_playbook_service(system_app)
-    item = svc.get_by_id(playbook_id)
-    return _to_jsonable(item) if item else {"error": "playbook not found"}
+    item = svc.get_by_id(contract_id)
+    return _to_jsonable(item) if item else {"error": "contract not found"}
+
+
+# ---------------- 专家团队 ----------------
+def _get_expert_detail(system_app, workspace_id: int, app_code: str):
+    """查询专家详情（成员 + 身份）。"""
+    from gyra_serve.workspace.expert.expert_api import (
+        _get_app_info, _service,
+    )
+
+    service = _service()
+    member = service.get_member_by_app_code(workspace_id, app_code)
+    if member is None:
+        return {"error": f"expert {app_code} not bound in this workspace"}
+    return {
+        "id": member.id,
+        "app_code": member.app_code,
+        "role_hint": member.role_hint,
+        "default_contract_id": member.default_contract_id,
+        "equipment": [
+            {"resource_type": e.resource_type, "resource_ref": e.resource_ref}
+            for e in service.list_equipment(member.id)
+        ],
+        **(_to_jsonable(_get_app_info(member.app_code)) or {}),
+    }
 
 
 def _list_triggers(system_app, workspace_id: int, type: str = None, is_active: bool = None):
@@ -292,9 +318,12 @@ def build_read_tools(system_app, workspace_id: int) -> List[FunctionTool]:
         ("list_assets", "列出空间下沉淀的 Asset", _list_assets, {}),
         ("get_workspace_memory", "读取空间记忆", _get_workspace_memory, {}),
         ("list_workspace_members", "列出空间成员", _list_workspace_members, {}),
-        ("list_playbooks", "列出空间下的剧本", _list_playbooks, {}),
-        ("get_playbook_detail", "查询剧本详情", _get_playbook_detail, {
-            "playbook_id": _p("playbook_id", "integer", "剧本 ID", required=True),
+        ("list_contracts", "列出空间下的交付合约（deliverables/distill 语义）", _list_contracts, {}),
+        ("get_contract_detail", "查询交付合约详情", _get_contract_detail, {
+            "contract_id": _p("contract_id", "integer", "合约 ID", required=True),
+        }),
+        ("get_expert_detail", "查询专家详情（成员 + 身份 + 外挂）", _get_expert_detail, {
+            "app_code": _p("app_code", "string", "专家 app_code", required=True),
         }),
         ("list_interventions", "列出空间下（可选指定任务）的人工介入记录", _list_interventions, {
             "task_id": _p("task_id", "integer", "任务 ID,不传则列出空间全部"),

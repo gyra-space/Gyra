@@ -165,3 +165,4 @@ export * from './intervention';
 export * from './trigger';
 export * from './async-task';
 export * from './app-card';
+export * from './expert';

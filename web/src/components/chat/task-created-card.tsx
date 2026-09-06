@@ -26,7 +26,7 @@ export function TaskCreatedCard({ payload, onViewTask }: TaskCreatedCardProps) {
         <Tag>{payload.status}</Tag>
       </div>
       <div style={{ color: '#666', fontSize: 13, marginBottom: 12 }}>
-        {payload.playbook_name && <span>剧本：{payload.playbook_name}</span>}
+        {payload.playbook_name && <span>合约：{payload.playbook_name}</span>}
         {payload.triggered_by && (
           <span style={{ marginLeft: payload.playbook_name ? 12 : 0 }}>
             触发：{payload.triggered_by}

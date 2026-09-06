@@ -59,23 +59,56 @@ def test_lobby_injects_derived_ecp_resource():
     assert data["workspace_id"] == "ecp_ws_abc123"
 
 
+def test_lobby_attaches_experts_as_app_resources():
+    """每位空间专家挂为 Leader 的 app 资源(AgentResource type="app"):
+    标准 SubAgent 工具 sync/async 均可按 app_code 寻址到专家,
+    场景空间不再有专用派单工具。"""
+    from gyra_serve.workspace.scene_resource_assembler import SceneResourceAssembler
+
+    member = MagicMock()
+    member.app_code = "expert_sales"
+    member.role_hint = "销售分析"
+    app_info = MagicMock()
+    app_info.app_name = "销售专家"
+    app_info.app_describe = "擅长销售数据分析"
+    with patch(
+        "gyra_serve.workspace.expert.expert_api._service"
+    ) as svc, patch(
+        "gyra_serve.workspace.expert.expert_api._get_app_info"
+    ) as gai:
+        svc.return_value.list_members.return_value = [member]
+        gai.return_value = app_info
+        sa = _mock_system_app(workspace=_ws_mock(code="ws_abc123"))
+        out = SceneResourceAssembler.assemble(sa, workspace_id=1, task_id=None, conv_uid="c1")
+    apps = [r for r in out if r.type == "app"]
+    assert len(apps) == 1
+    data = json.loads(apps[0].value) if isinstance(apps[0].value, str) else apps[0].value
+    assert data["app_code"] == "expert_sales"
+    assert data["app_name"] == "销售专家"
+    assert data["app_desc"] == "擅长销售数据分析"
+
+
 def test_workbench_with_playbook_assembles_playbook_resource():
     from gyra_serve.workspace.scene_resource_assembler import SceneResourceAssembler
     task = MagicMock(); task.playbook_id = 7
+    task.expert_app_code = None
     # 用真实 dict 的 declaration 构造 playbook,使 from_playbook_response -> to_agent_resource
     # 的整条路径产出 JSON 可序列化的 PlaybookConfig(零 I/O 序列化是 Task 4 的要求)。
     pb = MagicMock(); pb.id = 7; pb.name = "营收分析"
     pb.declaration = {"text_content": {"workflow": "step1"}}
-    sa = _mock_system_app(task=task, playbook=pb)
+    sa = _mock_system_app(workspace=_ws_mock(code="ws_abc123"), task=task, playbook=pb)
     out = SceneResourceAssembler.assemble(sa, workspace_id=1, task_id=99, conv_uid="c1")
-    assert len(out) == 2
-    assert out[0].type == "playbook"
+    # 有 workspace 时先注入 ecp;有合约时注入承载合约文本/交付的 playbook 资源。
+    types = [r.type for r in out]
+    assert "ecp" in types
+    assert "playbook" in types
 
 
 def test_workbench_injects_derived_ecp_resource():
     """workbench(任务运行时)同样注入派生 ECP 资源。"""
     from gyra_serve.workspace.scene_resource_assembler import SceneResourceAssembler
     task = MagicMock(); task.playbook_id = 7
+    task.expert_app_code = None
     pb = MagicMock(); pb.id = 7; pb.name = "营收分析"
     pb.declaration = {"text_content": {"workflow": "step1"}}
     sa = _mock_system_app(workspace=_ws_mock(code="ws_task9"), task=task, playbook=pb)
@@ -86,32 +119,34 @@ def test_workbench_injects_derived_ecp_resource():
     assert data["workspace_id"] == "ecp_ws_task9"
 
 
-def test_workbench_materializes_playbook_skills():
-    """_assemble_workbench 把剧本 declaration.skills/resources 物化成 agent 工具。
-
-    否则剧本 skill 只在 system prompt 里是名字(剧本技能:...),agent 看到却没真实
-    工具可调 -- 这是"还在用默认剧本 mock skill"问题的根因。
-    """
+def test_workbench_materializes_expert_equipment_only_not_declaration_skills():
+    """_assemble_workbench 不再从合约 declaration 二次物化 skills/resources
+    (专家能力收敛于 GptsApp 标准装备 + 空间外挂)；仅注入承载合约文本/交付的
+    playbook 资源,以及可能的专家外挂。缺专家外挂时不从声明物化任何工具。"""
     from gyra_serve.workspace.scene_resource_assembler import SceneResourceAssembler
     task = MagicMock(); task.playbook_id = 7
+    task.expert_app_code = None
     pb = MagicMock(); pb.id = 7; pb.name = "营收分析"
     pb.declaration = {
         "skills": ["data-analysis", "doc-coauthoring"],
         "context": {"resources": [{"type": "datasource", "ref": "prod_db"}]},
     }
-    sa = _mock_system_app(task=task, playbook=pb)
+    sa = _mock_system_app(workspace=_ws_mock(code="ws_abc123"), task=task, playbook=pb)
     out = SceneResourceAssembler.assemble(sa, workspace_id=1, task_id=99, conv_uid="c1")
     types = [r.type for r in out]
-    assert "playbook" in types                    # 剧本元资源
-    assert types.count("skill(gyra)") == 2      # 2 个 skill 物化成工具
-    assert "datasource" in types                  # context.resources 物化
+    assert "playbook" in types          # 合约元资源(承载交付/沉淀规则)
+    assert types.count("skill(gyra)") == 0  # 不再从声明物化 skill
+    assert "datasource" not in types    # 不再从声明物化 datasource
 
 
-def test_workbench_without_playbook_returns_empty():
+def test_workbench_without_playbook_still_injects_ecp():
+    """workbench 无合约但 workspace 存在时,仍注入派生 ECP 资源(不因缺合约清空)。"""
     from gyra_serve.workspace.scene_resource_assembler import SceneResourceAssembler
     task = MagicMock(); task.playbook_id = None
-    sa = _mock_system_app(task=task)
-    assert SceneResourceAssembler.assemble(sa, 1, 99, "c1") == []
+    task.expert_app_code = None
+    sa = _mock_system_app(workspace=_ws_mock(code="ws_abc123"), task=task)
+    out = SceneResourceAssembler.assemble(sa, 1, 99, "c1")
+    assert [r.type for r in out] == ["ecp"]
 
 
 def test_missing_workspace_returns_empty():

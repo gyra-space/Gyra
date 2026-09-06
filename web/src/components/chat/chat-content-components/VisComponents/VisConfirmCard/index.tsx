@@ -6,10 +6,10 @@ import {
   markdownPlugins,
 } from '../../config';
 import { GPTVis } from '@antv/gpt-vis';
-import { Button, Divider, Input, App } from 'antd';
-import { BellOutlined, CheckCircleFilled } from '@ant-design/icons';
+import { Button, Input, App } from 'antd';
+import { CheckCircleFilled, ClockCircleOutlined, EditOutlined } from '@ant-design/icons';
 import { ChatContentContext } from '@/contexts';
-import { STORAGE_USERINFO_KEY } from '@/utils/constants';
+import { STORAGE_USERINFO_KEY } from '@/utils/constants/index';
 
 interface QuestionOption {
   label: string;
@@ -485,7 +485,7 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
             )}
           </span>
           <div className="confirm-record-who">
-            <span className="confirm-record-title">Confirmed by {who || 'user'}</span>
+            <span className="confirm-record-title">{who || '用户'} 已确认</span>
             {rec?.responded_at && (
               <span className="confirm-record-time">{formatTime(rec.responded_at)}</span>
             )}
@@ -517,7 +517,7 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
             const shouldShowInput = isSelected && opt.requires_input;
 
             return (
-              <div key={idx} style={{ width: '100%' }}>
+              <div key={idx} className="option-row">
                 <button
                   type="button"
                   className={`option-item${isSelected ? ' is-selected' : ''}`}
@@ -528,8 +528,8 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
                   }}
                   disabled={interactionDisabled}
                 >
-                  <span className="option-radio">
-                    {isSelected && <CheckCircleFilled />}
+                  <span className="option-radio" aria-hidden>
+                    <span className="option-radio-dot" />
                   </span>
                   <span className="option-label-wrap">
                     <span className="option-label">{opt.label}</span>
@@ -537,8 +537,11 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
                       <span className="option-desc">{opt.description}</span>
                     )}
                     {opt.requires_input && (
-                      <span className="option-hint">(can add notes)</span>
+                      <span className="option-hint">可补充说明</span>
                     )}
+                  </span>
+                  <span className="option-check" aria-hidden>
+                    <CheckCircleFilled />
                   </span>
                 </button>
 
@@ -547,7 +550,7 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
                     <Input.TextArea
                       value={optionInputValue}
                       onChange={(e) => setOptionInputValue(e.target.value)}
-                      placeholder={opt.input_placeholder || 'Please provide additional details...'}
+                      placeholder={opt.input_placeholder || '补充说明（可选）…'}
                       disabled={interactionDisabled}
                       rows={2}
                       autoSize={{ minRows: 2, maxRows: 4 }}
@@ -558,38 +561,43 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
             );
           })}
           {allowCustomInput && (
-            <button
-              type="button"
-              className={`option-item custom-input-item${isCustomInputMode ? ' is-selected' : ''}`}
-              onClick={() => {
-                setIsCustomInputMode(true);
-                setSelectedOption(null);
-                setOptionInputValue('');
-              }}
-              disabled={interactionDisabled}
-            >
-              <span className="option-radio">
-                {isCustomInputMode && <CheckCircleFilled />}
-              </span>
-              <span className="option-label-wrap">
-                <span className="option-label">Custom input</span>
-                <span className="option-desc">Type your own response</span>
-              </span>
-            </button>
+            <div className="option-row">
+              <button
+                type="button"
+                className={`option-item custom-input-item${isCustomInputMode ? ' is-selected' : ''}`}
+                onClick={() => {
+                  setIsCustomInputMode(true);
+                  setSelectedOption(null);
+                  setOptionInputValue('');
+                }}
+                disabled={interactionDisabled}
+              >
+                <span className="option-custom-icon" aria-hidden>
+                  <EditOutlined />
+                </span>
+                <span className="option-label-wrap">
+                  <span className="option-label">自定义回复</span>
+                  <span className="option-desc">以上都不是，我自己说明</span>
+                </span>
+                <span className="option-check" aria-hidden>
+                  <CheckCircleFilled />
+                </span>
+              </button>
+              {isCustomInputMode && (
+                <div className="option-input">
+                  <Input.TextArea
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    placeholder="输入你的回复…"
+                    disabled={interactionDisabled}
+                    rows={2}
+                    autoSize={{ minRows: 2, maxRows: 5 }}
+                  />
+                </div>
+              )}
+            </div>
           )}
         </div>
-        {isCustomInputMode && (
-          <div className="custom-input-area">
-            <Input.TextArea
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              placeholder="Type your custom content..."
-              disabled={interactionDisabled}
-              rows={2}
-              autoSize={{ minRows: 2, maxRows: 5 }}
-            />
-          </div>
-        )}
       </div>
     );
   };
@@ -619,28 +627,30 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
           <span className="confirm-status-dot">
             <CheckCircleFilled />
           </span>
-          <span className="confirm-status-text">Confirmed</span>
+          <span className="confirm-status-text">已确认</span>
         </div>
       );
     }
 
-    let buttonText = 'Confirm';
+    let buttonText = '确认';
     let isDisabled = false;
 
     if (confirmType === 'select') {
       if (isCustomInputMode) {
-        buttonText = 'Submit Reply';
+        buttonText = '提交回复';
         isDisabled = !inputValue.trim();
       } else if (selectedOptionData?.requires_input) {
-        buttonText = 'Confirm Selection';
+        buttonText = '确认选择';
         isDisabled = selectedOptionData.input_required !== false && !optionInputValue.trim();
       } else {
-        buttonText = 'Confirm Selection';
+        buttonText = '确认选择';
         isDisabled = !selectedOption;
       }
     } else if (confirmType === 'input') {
-      buttonText = 'Submit Reply';
+      buttonText = '提交回复';
       isDisabled = !inputValue.trim();
+    } else {
+      buttonText = '确认';
     }
 
     return (
@@ -656,27 +666,25 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
     );
   };
 
-  const cardTitle = hasQuestions ? 'Needs your confirmation' : 'Confirm Action';
+  const cardTitle = hasQuestions ? '确认一下' : '操作确认';
 
   return (
-    <VisConfirmCardWrap className="VisConfirmCardClass">
+    <VisConfirmCardWrap className={`VisConfirmCardClass${isConfirmedState ? ' is-confirmed' : ''}`}>
       <div className="card-content">
         <div className="confirm-header">
-          <span className={`confirm-header-icon${isConfirmedState ? ' is-confirmed' : ''}`}>
-            {isConfirmedState ? <CheckCircleFilled /> : <BellOutlined />}
-          </span>
-          <span className="confirm-title">{cardTitle}</span>
+          <div className="confirm-header-main">
+            <span className="confirm-title">{cardTitle}</span>
+            {data.header && hasQuestions && (
+              <span className="confirm-subtitle">{data.header}</span>
+            )}
+          </div>
           {!isConfirmedState && (
-            <span className="confirm-pill">Awaiting your input</span>
+            <span className="confirm-pill">
+              <ClockCircleOutlined />
+              等待你的选择
+            </span>
           )}
         </div>
-        <Divider
-          style={{
-            margin: '12px 0',
-            borderWidth: '1px',
-            borderColor: 'var(--line-soft)',
-          }}
-        />
         <div className="confirm-markdown whitespace-normal">
           {/* @ts-ignore */}
           <GPTVis
@@ -684,7 +692,7 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
             components={{ ...codeComponents, ...(otherComponents || {}) }}
             {...markdownPlugins}
           >
-            {data?.markdown || '-'}
+            {data?.markdown || ''}
           </GPTVis>
         </div>
 
@@ -697,16 +705,7 @@ const VisConfirmCard: React.FC<VisConfirmIProps> = ({ data, otherComponents, onC
         {confirmType === 'confirm' && isConfirmedState && renderConfirmedRecord()}
 
         {!isConfirmedState && (
-          <>
-            <Divider
-              style={{
-                margin: '12px 0',
-                borderWidth: '1px',
-                borderColor: 'var(--line-soft)',
-              }}
-            />
-            <div className="confirm-footer">{renderConfirmButton()}</div>
-          </>
+          <div className="confirm-footer">{renderConfirmButton()}</div>
         )}
       </div>
     </VisConfirmCardWrap>

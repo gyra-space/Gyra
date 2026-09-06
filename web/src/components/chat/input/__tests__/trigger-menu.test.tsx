@@ -6,12 +6,17 @@ import type { TriggerMenuHandle, TriggerMenuGroup } from '../trigger-menu';
 
 const icon = <span data-testid="icon" />;
 
-const item = (key: string, title: string, extra?: { description?: string; mono?: boolean }) => ({
+const item = (
+  key: string,
+  title: string,
+  extra?: { description?: string; mono?: boolean; keywords?: string[] },
+) => ({
   key,
   icon,
   title,
   description: extra?.description ?? `desc-${key}`,
   mono: extra?.mono,
+  keywords: extra?.keywords,
   data: { id: key },
 });
 
@@ -32,6 +37,8 @@ function setup(initial: Partial<React.ComponentProps<typeof TriggerMenu>> & {
     open: true,
     query: '',
     triggerChar: '/',
+    // tree() 渲染时用 JSX children 覆盖,这里仅满足类型必填
+    children: null,
     onSelect,
     onClose,
     ...initial,
@@ -102,13 +109,10 @@ describe('TriggerMenu', () => {
       query: 'upload',
       groups: [
         group('文件', [
-          {
-            key: 'addFile',
-            icon: <span />,
-            title: '添加文件',
+          item('addFile', '添加文件', {
             description: '上传本地文件作为上下文',
             keywords: ['file', 'upload'],
-          },
+          }),
         ]),
       ],
     });
@@ -226,13 +230,53 @@ describe('TriggerMenu', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  test('搜索提示展示 trigger 字符 + 过滤词', () => {
+  test('搜索框回显输入框过滤词', () => {
     setup({ query: 'comp', triggerChar: '/', groups: [group('命令', [item('c1', '/compact', { mono: true })])] });
-    expect(screen.getByText('/comp')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('comp')).toBeInTheDocument();
   });
 
-  test('无过滤词时展示占位提示', () => {
+  test('无过滤词时搜索框展示占位提示', () => {
     setup({ query: '', placeholder: '输入关键词检索资源', groups: [group('资源', [item('r1', 'A')])] });
-    expect(screen.getByText('输入关键词检索资源')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('输入关键词检索资源')).toBeInTheDocument();
+  });
+
+  test('搜索框输入可独立过滤列表', () => {
+    setup({ groups: [group('技能', [item('s1', '代码审查'), item('s2', '单元测试')])] });
+    const input = screen.getByPlaceholderText('选择类型或输入关键词过滤');
+    fireEvent.change(input, { target: { value: '审查' } });
+    expect(screen.getByText('代码审查')).toBeInTheDocument();
+    expect(screen.queryByText('单元测试')).not.toBeInTheDocument();
+  });
+
+  test('搜索框过滤优先于输入框过滤词,搜索框内回车可选中', () => {
+    const { onSelect } = setup({
+      query: 'zzz',
+      groups: [group('技能', [item('s1', '代码审查'), item('s2', '单元测试')])],
+    });
+    // 输入框过滤词 zzz 无命中 → 空态
+    expect(screen.getByText('无匹配项')).toBeInTheDocument();
+    const input = screen.getByPlaceholderText('选择类型或输入关键词过滤');
+    fireEvent.change(input, { target: { value: '审查' } });
+    expect(screen.getByText('代码审查')).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect.mock.calls[0][0].key).toBe('s1');
+  });
+
+  test('视口空间不足时收缩列表高度,避免弹窗溢出屏幕', () => {
+    // 锚点 top=200,bottom=300,视口高 320:上方可用 188px,
+    // 扣掉表头/底部提示固定开销 ≈72px 后不足 340px,收缩到下限 140px
+    const rectSpy = jest
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ top: 200, bottom: 300, height: 100 } as unknown as DOMRect);
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 320 });
+    try {
+      setup({ groups: [group('技能', [item('s1', 'A')])] });
+      const list = document.querySelector('.overflow-y-auto') as HTMLElement;
+      expect(list).toBeInTheDocument();
+      expect(list.style.maxHeight).toBe('140px');
+    } finally {
+      rectSpy.mockRestore();
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 });
+    }
   });
 });

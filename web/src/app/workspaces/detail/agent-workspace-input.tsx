@@ -17,7 +17,7 @@ import {
 } from '@ant-design/icons';
 import classNames from 'classnames';
 import { useRequest } from 'ahooks';
-import { apiInterceptors, getModelList, getSkillList, getMCPList, postChatModeParamsFileLoad, listResources, listArtifacts, listAssets } from '@/client/api';
+import { apiInterceptors, getModelList, getSkillList, getMCPList, postChatModeParamsFileLoad, listResources, listExperts, listArtifacts, listAssets } from '@/client/api';
 import ModelIcon from '@/components/icons/model-icon';
 import { transformFileUrl } from '@/utils';
 import { formatFileSize } from '@/utils/fileUtils';
@@ -82,7 +82,7 @@ function getModelProvider(m: IModelData): string {
   return '自定义模型';
 }
 
-/** 选了剧本时必须输入任务目标;没选剧本按原逻辑(有文本或有资源即可)。 */
+/** 选了合约时必须输入任务目标;没选合约按原逻辑(有文本或有资源即可)。 */
 export function canSendSceneTask(
   text: string,
   hasResources: boolean,
@@ -399,10 +399,15 @@ interface AgentWorkspaceInputProps {
   attachmentScopeKey?: string;
   /** 会话缺失时的懒创建回调(可选):上传需要会话上下文,空间连当前会话都没有时由外部创建 */
   onEnsureConversation?: () => Promise<string | null>;
+  /** `@` 接管态(受控):会话级 sticky,选中后持续生效直到显式退出或改选他人。
+   *  提升到外层 shell 持有,供会话头部/轮次头部显示实际执行的子 Agent。 */
+  subAgent?: SubAgentRef | null;
+  /** `@` 接管态变化回调(与 subAgent 成对使用) */
+  onSubAgentChange?: (sub: SubAgentRef | null) => void;
 }
 
 export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWorkspaceInputProps>(
-  function AgentWorkspaceInput({ conversationId, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, model, onModelChange, defaultModel, workspaceId, attachmentScopeKey, onEnsureConversation }, ref) {
+  function AgentWorkspaceInput({ conversationId, onSend, loading, onStop, disabled, readOnly, lastInput, onRetry, playbooks, focus, onClearFocus, onClearContext, usageMetrics, appInfo, model, onModelChange, defaultModel, workspaceId, attachmentScopeKey, onEnsureConversation, subAgent: activeSubAgent, onSubAgentChange: setActiveSubAgent }, ref) {
     const [text, setText] = useState('');
     // 已上传未发送附件:挂载时从暂存域恢复(跨重挂载存活),变更统一走 applyResources 双写
     const [resources, setResources] = useState<ResourceItem[]>(() =>
@@ -437,8 +442,6 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     // 统一 trigger 状态:null = 未激活;char 决定当前唤起的是 `/` `@` `#` 中的哪一个
     const [activeTrigger, setActiveTrigger] = useState<TriggerState | null>(null);
     const [playbookCommand, setPlaybookCommand] = useState<PlaybookCommand | null>(null);
-    // @ 接管态:会话级 sticky,选中后持续生效直到显式退出或改选他人
-    const [activeSubAgent, setActiveSubAgent] = useState<SubAgentRef | null>(null);
     // # 引用的资源(交付产物/空间资产)。start/end 为 P1 内联化预留,P0 恒在文本末尾
     // 挂载时从暂存域恢复(跨重挂载存活),变更统一走 applyResourceRefs 双写
     const [resourceRefs, setResourceRefs] = useState<ResourceRef[]>(() =>
@@ -522,13 +525,20 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     /** 是否已请求过 `@`/`#` 菜单数据(首次唤起时置 true,之后常驻不重复拉) */
     const [menuDataRequested, setMenuDataRequested] = useState(false);
 
-    // `@` 子 Agent:空间绑定的 app 型资源(physical_ref = app_code)
-    const { data: subAgentList, loading: subAgentsLoading } = useRequest(async () => {
+    // `@` 子 Agent = 空间专家团队(唯一子 Agent 维护入口)。
+    // 专家 = 子 Agent 本体(GptsApp 身份 + workspace_expert 成员/外挂),
+    // @ 选中即会话级接管,后端覆写 gpts_name=专家 app_code 并注入空间外挂。
+    const { data: expertList, loading: subAgentsLoading } = useRequest(async () => {
       if (!workspaceId || !menuDataRequested) return [];
-      const [err, res] = await apiInterceptors(listResources({ workspace_id: workspaceId, type: 'app' }));
-      return err ? [] : (((res as any)?.items ?? res ?? []) as SubAgentRef[]);
+      const [err, res] = await apiInterceptors(listExperts(workspaceId));
+      return err ? [] : (res as any[] ?? []);
     }, { refreshDeps: [workspaceId, menuDataRequested] });
-    const allSubAgents: SubAgentRef[] = subAgentList ?? [];
+    const allSubAgents: SubAgentRef[] = (expertList ?? []).map((ex: any) => ({
+      resource_id: ex.id,
+      name: ex.app_name || ex.app_code,
+      physical_ref: ex.app_code,
+      description: ex.role_hint || ex.app_describe || '专家',
+    }));
 
     // `#` 交付产物(Artifact,会话/任务产出、已落盘)
     const { data: artifactList, loading: artifactsLoading } = useRequest(async () => {
@@ -735,8 +745,8 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
       const v = e.target.value;
       setText(v);
       // 统一 trigger 检测:`/` `@` `#` 在任意位置都能唤起(前置需为行首或空白),
-      // 规则见 trigger-detect.ts。已选了剧本 chip 后 `/` 不再重复触发
-      // (剧本单选,要换剧本先移除 chip)。
+      // 规则见 trigger-detect.ts。已选了合约 chip 后 `/` 不再重复触发
+      // (合约单选,要换合约先移除 chip)。
       const caret = (e.target as HTMLTextAreaElement).selectionStart ?? v.length;
       const next = detectTrigger(v, caret);
       // 首次唤起任一 trigger 时拉取 `@`/`#`/自定义命令数据源(进空间不一定用得到)
@@ -778,7 +788,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
     };
 
     // 会话命令数据源:`/` 菜单「命令」组 = 内置种子 + 空间自定义。
-    // 与剧本/技能/MCP 的"资源引用"不同,命令选中即执行或切换模式。
+    // 与合约/技能/MCP 的"资源引用"不同,命令选中即执行或切换模式。
     const builtinCommands: SessionCommandItem[] = [
       { command: '压缩上下文', name: '压缩上下文', description: '压缩当前会话上下文,释放上下文空间', action: 'compact', source: 'builtin' },
       { command: '清理会话', name: '清理会话', description: '开启新会话,清空当前上下文', action: 'clear', source: 'builtin' },
@@ -814,11 +824,11 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
 
     /** `@` 选中:会话级接管,持续生效直到显式退出或改选他人 */
     const takeOverSubAgent = (agent: SubAgentRef) => {
-      setActiveSubAgent(agent);
+      setActiveSubAgent?.(agent);
       consumeTriggerToken();
     };
 
-    const removeSubAgent = () => setActiveSubAgent(null);
+    const removeSubAgent = () => setActiveSubAgent?.(null);
 
     /**
      * `#` 选中:加入引用列表。
@@ -1141,7 +1151,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
               </span>
             </div>
           )}
-          {/* SECTION 1.5 — selected playbook command chip (single, removable),前缀 / 标识剧本命令 */}
+          {/* SECTION 1.5 — selected contract chip (single, removable),前缀 / 标识合约命令 */}
           {playbookCommand && (
             <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
               <SelectionChip
@@ -1149,7 +1159,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                 prefix="/"
                 label={playbookCommand.playbook_name}
                 onRemove={() => setPlaybookCommand(null)}
-                removeTitle="移除剧本"
+                removeTitle="移除合约"
               />
             </div>
           )}
@@ -1273,7 +1283,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
                       }
                     }
                   }}
-                  placeholder="输入指令给 Agent…(/ 选择剧本/技能/MCP/命令,+ 添加文件)"
+                  placeholder="输入指令给 Agent…(/ 选择技能/MCP/命令,@ 选择专家,+ 添加文件)"
                   className="!text-sm !bg-transparent !border-0 !resize-none placeholder:!text-gray-400 !text-gray-800 dark:!text-gray-200 !shadow-none !p-0 !min-h-[60px]"
                   autoSize={{ minRows: 2, maxRows: 8 }}
                   disabled={inputDisabled}
@@ -1298,7 +1308,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
           {/* SECTION 3 — footer toolbar: left tools / right send */}
           <div className="flex items-center justify-between gap-2 px-3 pb-3 min-w-0">
             <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-visible">
-              {/* + 菜单:添加文件 / 剧本 / 技能 / MCP / 命令(与 / 菜单同一套数据与选中结果) */}
+              {/* + 菜单:添加文件 / 技能 / MCP / 命令(与 / 菜单同一套数据与选中结果) */}
               <PlusMenu
                 onAddFile={() => fileInputRef.current?.click()}
                 playbooks={visiblePlaybooks}
@@ -1395,7 +1405,7 @@ export const AgentWorkspaceInput = forwardRef<AgentWorkspaceInputHandle, AgentWo
             <div className="flex items-center gap-1.5 flex-shrink-0">
               {playbookCommand && !text.trim() && (
                 <div className="text-[11px] text-amber-600 px-1 pb-1">
-                  选了剧本要写本次任务目标 — 剧本只指定资源/能力,目标由你定。
+                  选了合约要写本次任务目标 — 合约只指定资源/能力,目标由你定。
                 </div>
               )}
               {/* 上下文空间消耗环形图:实时显示当前 Agent 上下文用量，点击打开详情抽屉 */}

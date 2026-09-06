@@ -3,7 +3,7 @@ import { UserInfoResponse } from '@/types/userinfo';
 import { STORAGE_USERINFO_KEY } from '@/utils/constants/index';
 import { authService } from '@/services/auth';
 import { Dropdown } from 'antd';
-import { LogoutOutlined, UserOutlined } from '@ant-design/icons';
+import { HistoryOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import UserAvatar from '@/components/common/user-avatar';
 import cls from 'classnames';
 import { useEffect, useState } from 'react';
@@ -47,6 +47,12 @@ function UserBar({ onlyAvatar = false }: UserBarProps) {
       icon: <UserOutlined />,
       label: t('me') || '我的视图',
       onClick: () => router.push('/me'),
+    },
+    {
+      key: 'history',
+      icon: <HistoryOutlined />,
+      label: t('chat_history') || '历史会话',
+      onClick: () => router.push('/chat'),
     },
     ...(oauthEnabled
       ? [

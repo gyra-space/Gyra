@@ -306,6 +306,11 @@ class ConfigService {
     return response.data.data;
   }
 
+  async getDefaultModelConfig(): Promise<ModelConfig> {
+    const response = await axios.get(`${API_BASE}/config/model`);
+    return response.data.data;
+  }
+
   async validateConfig(): Promise<{ valid: boolean; warnings: Array<{ level: string; message: string }> }> {
     const response = await axios.post(`${API_BASE}/config/validate`);
     return response.data.data;

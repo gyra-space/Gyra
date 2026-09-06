@@ -138,44 +138,6 @@ async def list_versions(
         return Result.failed(str(e))
 
 
-@router.post("/playbooks/seed_builtin", response_model=Result,
-             dependencies=[Depends(check_api_key),
-                           Depends(require_space("space.playbook.manage"))])
-async def seed_builtin(
-    workspace_id: int = Query(...),
-    service: Service = Depends(get_service),
-) -> Result:
-    """Seed the two built-in Playbook examples (data ops weekly + SRE capacity)
-    into the given workspace. Idempotent: skips ones that already exist by name.
-    """
-    try:
-        from ..builtin_examples import BUILTIN_PLAYBOOKS
-        existing = service.list_playbooks(PlaybookListFilter(
-            workspace_id=workspace_id, limit=200,
-        ))
-        existing_names = {p.name for p in existing}
-        results = []
-        for tmpl in BUILTIN_PLAYBOOKS:
-            if tmpl["name"] in existing_names:
-                results.append({"name": tmpl["name"], "status": "exists"})
-                continue
-            req = PlaybookRequest(
-                workspace_id=workspace_id,
-                name=tmpl["name"],
-                scenario_type=tmpl["scenario_type"],
-                task_type=tmpl["task_type"],
-                trigger=tmpl.get("trigger"),
-                declaration=tmpl["declaration"],
-                is_active=True,
-            )
-            created = service.create(req)
-            results.append({"name": tmpl["name"], "id": created.id, "status": "created"})
-        return Result.succ(results)
-    except Exception as e:
-        logger.exception("playbook seed_builtin exception!")
-        return Result.failed(str(e))
-
-
 def init_endpoints(system_app: SystemApp, config: ServeConfig) -> None:
     global global_system_app
     system_app.register(Service, config=config)

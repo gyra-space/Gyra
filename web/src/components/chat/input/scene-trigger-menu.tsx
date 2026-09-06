@@ -166,17 +166,6 @@ export const SceneTriggerMenu = forwardRef<SceneTriggerMenuHandle, SceneTriggerM
           });
         }
         out.push({
-          key: 'playbook',
-          label: '剧本',
-          items: (playbooks ?? []).map<TriggerMenuItem<SceneItemData>>((pb) => ({
-            key: `playbook:${pb.playbook_id}`,
-            icon: <IconBox gradient={ICON_BG.playbook} fallback={<RocketOutlined className="text-sm" />} />,
-            title: pb.playbook_name,
-            description: '以该剧本发起任务',
-            data: { kind: 'playbook', ref: pb },
-          })),
-        });
-        out.push({
           key: 'skill',
           label: '技能',
           items: (skills ?? []).map<TriggerMenuItem<SceneItemData>>((s) => ({
@@ -215,7 +204,7 @@ export const SceneTriggerMenu = forwardRef<SceneTriggerMenuHandle, SceneTriggerM
             data: { kind: 'command', ref: c },
           })),
         });
-        return { groups: out, placeholder: '选择剧本/技能/MCP/命令或输入关键词', emptyText: '无匹配项' };
+        return { groups: out, placeholder: '选择技能/MCP/命令或输入关键词', emptyText: '无匹配项' };
       }
 
       if (trigger.char === '@') {

@@ -1,0 +1,17 @@
+{
+  "space_slug": "platform-manual",
+  "space_name": "平台使用手册",
+  "description": "Gyra 平台内置帮助手册,分模块覆盖各功能的使用说明与 FAQ。文档随代码版本发布,启动时自动同步进知识空间。",
+  "version": "1.1.0",
+  "docs": [
+    {"file": "00-overview.md", "title": "平台总览"},
+    {"file": "01-scene-workspace.md", "title": "场景空间"},
+    {"file": "02-app-building.md", "title": "应用构建"},
+    {"file": "03-knowledge.md", "title": "知识库"},
+    {"file": "04-rbac.md", "title": "权限管理"},
+    {"file": "05-datasource.md", "title": "数据源"},
+    {"file": "06-cron-skill-channel.md", "title": "定时任务/技能/渠道"},
+    {"file": "07-faq.md", "title": "常见问题"},
+    {"file": "08-ecp.md", "title": "ECP 企业语义资产"}
+  ]
+}

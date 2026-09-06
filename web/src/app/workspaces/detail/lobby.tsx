@@ -32,8 +32,12 @@ export interface LobbyProps {
   onSelectInbox?: (item: any) => void;
   /** 推荐问题:填入输入框并聚焦 */
   onAsk?: (text?: string) => void;
-  /** 剧本快捷执行:@引用 带入输入框并聚焦 */
-  onRunPlaybook?: (pb: { playbook_id: number; playbook_name: string }) => void;
+  /** 专家对话:@引用 带入输入框 */
+  onTalkExpert?: (expert: any) => void;
+  /** 专家编辑:进入空间内专家编辑器 */
+  onEditExpert?: (expert: any) => void;
+  /** 专家派单:为该专家创建任务 */
+  onDispatchExpert?: (expert: any) => void;
 }
 
 const INBOX_SOURCE_LABEL: Record<string, string> = {
@@ -91,9 +95,11 @@ export function Lobby({
   onGuide,
   onSelectInbox,
   onAsk,
-  onRunPlaybook,
+  onTalkExpert,
+  onEditExpert,
+  onDispatchExpert,
 }: LobbyProps) {
-  // 空间首屏聚合:一次请求返回 交付/产出/待办/资源/剧本/触发/语义/成长,消灭多请求与数字跳变
+  // 空间首屏聚合:一次请求返回 交付/产出/待办/资源/合约/触发/语义/成长,消灭多请求与数字跳变
   const { data: overview, loading: overviewLoading } = useRequest(
     async () => {
       const [err, res] = await apiInterceptors(getWorkspaceOverview(workspaceId));
@@ -107,7 +113,6 @@ export function Lobby({
   const deliveries = overview?.deliveries ?? [];
   const artifacts = overview?.artifacts ?? [];
   const resources = overview?.resources ?? [];
-  const playbooks = overview?.playbooks ?? [];
   const triggers = overview?.triggers ?? [];
   const pendingInbox = (overview?.inbox ?? []).filter((i: any) => i.inbox_status !== 'done');
   const semantics = overview?.semantics ?? [];
@@ -167,7 +172,7 @@ export function Lobby({
             <Switch size="small" checked={focusMode} onChange={toggleFocus} />
           </label>
         </div>
-        {/* 空间问候条 + 开始工作区(推荐问题/可跑剧本,让用户不用想"问什么") */}
+        {/* 空间问候条 + 开始工作区(推荐问题/发起任务,让用户不用想"问什么") */}
         <SpaceGuideCard
           workspaceId={workspaceId}
           workspaceCode={workspaceCode}
@@ -175,12 +180,13 @@ export function Lobby({
           semanticNames={semantics.slice(0, 3).map((s: any) => s.name || s.id)}
           workspace={overview?.workspace}
           resources={resources}
-          playbooks={playbooks}
           triggers={triggers}
           loading={overviewLoading && !overview}
           onGuide={onGuide}
           onAsk={onAsk}
-          onRunPlaybook={onRunPlaybook}
+          onTalkExpert={onTalkExpert}
+          onEditExpert={onEditExpert}
+          onDispatchExpert={onDispatchExpert}
         />
 
         {/* 应用卡片:Agent 生成的常驻交互子应用(多 tab 多指标看板等) */}
@@ -201,7 +207,7 @@ export function Lobby({
           {pendingInbox.length === 0 ? (
             <div className="ws-lobby__inbox-empty">
               <div className="ws-lobby__empty-title">暂无待办</div>
-              <div className="ws-lobby__empty-hint">没有需要你介入的事项。可以跑一个剧本,或上传数据让 Agent 干活。</div>
+              <div className="ws-lobby__empty-hint">没有需要你介入的事项。可以发起一个专家任务,或上传数据让 Agent 干活。</div>
             </div>
           ) : (
             <>

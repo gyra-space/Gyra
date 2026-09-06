@@ -55,11 +55,11 @@ def test_user_query_excludes_playbook_skills_resources_deliverables():
     assert "db_query_skill" not in q    # skills (injected as tools)
     assert "prod_db" not in q           # resources (injected as tools)
     assert "数据运营周报" not in q       # deliverables (in system prompt)
-    assert "Execute playbook" not in q
+    assert "执行专家任务" not in q
     assert "Required skills" not in q
     assert "Expected deliverables" not in q
 
 
 def test_user_query_fallback_when_no_title():
     q = _build_user_query(_playbook(), _task(title=None), _workspace(), DECL)
-    assert "Execute playbook" in q
+    assert "执行专家任务" in q

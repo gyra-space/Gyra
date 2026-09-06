@@ -10,7 +10,7 @@ import {
   getDbSupportType,
 } from '@/client/api';
 import { listDatasets, uploadDataset } from '@/client/api/workspace';
-import { listEcpAssets } from '@/client/api/ecp';
+import { listEcpAssets, listEcpAssetsOverview, type EcpAssetRef } from '@/client/api/ecp';
 import {
   listSpaces,
   createSpace,
@@ -48,6 +48,14 @@ const DB_TYPE_COLOR: Record<string, string> = {
   oracle: 'red',
   mssql: 'volcano',
   mongodb: 'lime',
+};
+
+/** 全局资产视图中 ECP 资产 kind 的中文标签。 */
+const GLOBAL_ASSET_KIND_LABEL: Record<string, string> = {
+  db: '数据源',
+  space: '知识空间',
+  document: '文档',
+  api: 'API',
 };
 
 /** 排序:启用在前,最近更新在前 —— 有数据可用的资产浮上来,禁用的沉底置灰。 */
@@ -122,6 +130,12 @@ export function DataAssetsTab({
     },
     { ready: !!ecpWsId, refreshDeps: [ecpWsId] },
   );
+
+  // P2 全局资产视图:跨所有 ECP workspace 聚合登记资产(数据源/知识空间/文档)
+  const { data: globalAssets } = useRequest(async () => {
+    const [err, res] = await apiInterceptors(listEcpAssetsOverview());
+    return err ? [] : (res ?? []) as EcpAssetRef[];
+  });
 
   const { data: spaces, refresh: refreshSpaces } = useRequest(async () => {
     const [err, res] = await apiInterceptors(listSpaces());
@@ -520,6 +534,32 @@ export function DataAssetsTab({
           <Button icon={<BookOutlined />} onClick={() => setKnowledgeOpen(true)}>挂载知识库</Button>
         </div>
       </div>
+
+      {/* P2 全局资产视图:跨场景空间的 ECP 托管资产总览 */}
+      {globalAssets && globalAssets.length > 0 && (
+        <div className="ws-asset-section ws-asset-section--global">
+          <div className="ws-asset-section__head">
+            <span className="ws-asset-section__icon"><DeploymentUnitOutlined /></span>
+            <span className="ws-asset-section__title">全局资产视图</span>
+            <span className="ws-asset-section__count">{globalAssets.length}</span>
+          </div>
+          <div className="ws-asset-grid">
+            {globalAssets.map((a) => (
+              <div key={`${a.workspace_id}:${a.kind}:${a.ref_id}`} className="ws-asset-card">
+                <div className="ws-asset-card__top">
+                  <span className="ws-asset-card__name">{a.ref_meta?.name || a.ref_id}</span>
+                  <span className="ws-asset-card__badge">{GLOBAL_ASSET_KIND_LABEL[a.kind] || a.kind}</span>
+                </div>
+                <div className="ws-asset-card__tags">
+                  <span className="ws-asset-card__tag">{a.workspace_id}</span>
+                  <span className={`ws-asset-card__tag ${a.status === 'active' ? 'ws-asset-card__tag--ok' : ''}`}>{a.status}</span>
+                </div>
+                <div className="ws-asset-card__source" title={a.ref_id}>{a.ref_id}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {loading ? <div className="flex justify-center py-8"><Spin /></div> : totalCount === 0 ? (
         <Empty description="还没有数据资产" style={{ padding: '32px 0' }}>

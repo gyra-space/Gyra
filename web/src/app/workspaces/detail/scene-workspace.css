@@ -990,6 +990,231 @@
   color: var(--ws-accent);
 }
 
+/* ═══ Expert card (in-conversation expert_completed step) ═══ */
+.ws-expert-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  background: var(--ws-surface);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  border-radius: 10px;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.ws-expert-card--completed {
+  border-color: rgba(34, 197, 94, 0.25);
+  background: rgba(34, 197, 94, 0.03);
+}
+
+.ws-expert-card--failed {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.03);
+}
+
+.ws-expert-card__avatar {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ws-expert-card__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ws-expert-card__avatar-placeholder {
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ws-expert-card__info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ws-expert-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ws-expert-card__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ws-ink-2);
+}
+
+.ws-expert-card__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--ws-mono);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ws-expert-card__status::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ws-expert-card__status--running {
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.1);
+}
+
+.ws-expert-card__status--done {
+  color: var(--ws-success);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.ws-expert-card__status--failed {
+  color: var(--ws-danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.ws-expert-card__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ws-ink);
+}
+
+.ws-expert-card__output {
+  font-size: 12px;
+  color: var(--ws-ink-3);
+}
+
+/* === 子 Agent 协作卡片:leader 经 spawn_subagent 委托的独立协作单元 === */
+.ws-subagent-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  background: var(--ws-surface);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 10px;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.ws-subagent-card--running {
+  border-color: rgba(99, 102, 241, 0.45);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.06);
+}
+
+.ws-subagent-card--failed {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.03);
+}
+
+.ws-subagent-card__avatar {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ws-subagent-card__avatar-icon {
+  font-size: 15px;
+  color: #fff;
+}
+
+.ws-subagent-card__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ws-subagent-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ws-subagent-card__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ws-ink-2);
+}
+
+.ws-subagent-card__mode {
+  font-size: 10px;
+  font-family: var(--ws-mono);
+  color: var(--ws-ink-3);
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.ws-subagent-card__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--ws-mono);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ws-subagent-card__status::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ws-subagent-card__status--running {
+  color: var(--ws-accent);
+  background: rgba(var(--ws-accent-rgb), 0.1);
+}
+
+.ws-subagent-card__status--done {
+  color: var(--ws-success);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.ws-subagent-card__status--failed {
+  color: var(--ws-danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.ws-subagent-card__task {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ws-ink);
+}
+
+.ws-subagent-card__output {
+  font-size: 12px;
+  color: var(--ws-ink-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* === 任务计划卡片:目标 + 进度 + rail 步骤节点 === */
 .ws-plan {
   padding: 10px 12px;
@@ -1712,7 +1937,7 @@
 }
 .ws-rail-tm { color: var(--ws-ink-3); font-family: var(--ws-mono); font-size: 9.5px; flex-shrink: 0; }
 
-/* 会话维度视图:剧本/大厅类型 chip + 当前会话标记 */
+/* 会话维度视图:合约/大厅类型 chip + 当前会话标记 */
 .ws-rail-conv-kind {
   font-size: 10.5px; font-weight: 600; line-height: 1;
   padding: 3px 7px; border-radius: 999px; flex-shrink: 0;
@@ -2874,15 +3099,22 @@
 }
 
 /* ---- 简洁模式:欢迎态(居中对话框) ---- */
+/* 垂直居中用首尾伪元素均分剩余空间实现(替代 justify-content:center):
+   内容超高时伪元素 flex-shrink 到 0,内容从顶部完整排列,
+   避免 center 把顶部溢出内容(logo)推出滚动区外导致无法滚回 */
 .ws-simple-welcome {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   padding: 24px 32px 64px;
   overflow-y: auto;
+}
+.ws-simple-welcome::before,
+.ws-simple-welcome::after {
+  content: '';
+  flex: 1 0 0;
 }
 .ws-simple-welcome__hero { text-align: center; margin-bottom: 30px; }
 .ws-simple-welcome__ava {
@@ -2926,43 +3158,6 @@
   border-color: var(--ws-border);
 }
 .ws-simple-welcome__sugg { margin-top: 26px; width: 100%; max-width: 680px; }
-/* 「继续上次会话」入口:位于输入框与预设问题之间 */
-.ws-simple-welcome__resume {
-  margin-top: 14px;
-  display: flex;
-  justify-content: center;
-  width: 100%;
-  max-width: 680px;
-}
-.ws-simple-welcome__resume-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  border: 1px solid var(--ws-border);
-  background: var(--ws-surface);
-  border-radius: 999px;
-  padding: 6px 14px;
-  font-size: 12.5px;
-  color: var(--ws-ink-2);
-  cursor: pointer;
-  transition: all .18s;
-}
-.ws-simple-welcome__resume-btn:hover {
-  border-color: var(--ws-accent);
-  color: var(--ws-accent);
-  box-shadow: var(--ws-shadow-sm);
-}
-.ws-simple-welcome__resume-btn em {
-  font-style: normal;
-  font-weight: 500;
-  color: var(--ws-ink);
-  max-width: 260px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.ws-simple-welcome__resume-btn:hover em { color: inherit; }
 .ws-simple-welcome__sugg-label {
   font-size: 11px;
   color: var(--ws-ink-2);
@@ -3951,6 +4146,67 @@
   max-height: 220px;
   overflow-y: auto;
 }
+
+/* compact 单行折叠「Agent 思考」:面向只看结果的业务用户,整过程收成一行 */
+.ws-flowline {
+  margin: 2px 0 6px;
+  border: 1px solid var(--ws-line, rgba(0, 0, 0, 0.08));
+  border-radius: 9px;
+  background: var(--ws-bg);
+  overflow: hidden;
+}
+.ws-flowline__head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12.5px;
+  text-align: left;
+  font-family: inherit;
+}
+.ws-flowline__head:hover { background: rgba(0, 0, 0, 0.02); }
+.ws-flowline__icon {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  opacity: 0.7;
+}
+.ws-flowline__name {
+  flex-shrink: 0;
+  color: var(--ws-ink-2);
+  font-weight: 500;
+}
+.ws-flowline__preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ws-ink-2);
+  opacity: 0.72;
+}
+.ws-flowline__meta {
+  flex-shrink: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ws-ink-3);
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+.ws-flowline--running .ws-flowline__name { color: var(--ws-ink-1, var(--ws-ink-2)); }
+.ws-flowline--failed { border-color: rgba(220, 38, 38, 0.28); }
+.ws-flowline__steps {
+  border-top: 1px solid var(--ws-line, rgba(0, 0, 0, 0.06));
+  padding: 6px 8px 8px;
+}
+/* 只读(viewer)展开态:步骤不可点,去掉指针避免误导 */
+.ws-flowline__steps--readonly .ws-capsule-step { cursor: default; }
 
 /* 上下文注入(参考图2):用户消息后、Agent 回复前,展示默认注入的协议文件(skill / agents.md 等) */
 .ws-context-inject {

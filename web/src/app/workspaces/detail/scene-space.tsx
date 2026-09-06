@@ -23,6 +23,9 @@ import { statusLabel } from './scene-task-rail';
 import { EcpProposalDetail } from './ecp-proposal-detail';
 import SkillContentRenderer from '@/components/chat/chat-content-components/VisComponents/VisManusRightPanel/renderers/SkillContentRenderer';
 import { DataAssetsTab } from './assets/data-assets-tab';
+import { CapabilityTab } from './assets/capability-tab';
+import { DeliveryPanel } from './assets/delivery-panel';
+import { EcpConsole } from '@/app/ecp/components/ecp-console';
 import TriggersTable from './tasks/triggers-table';
 import type { WorkspaceView } from './agent-workspace-types';
 import type { WorkspaceDeliverableFile } from './agent-workspace-types';
@@ -53,8 +56,14 @@ export interface SceneSpaceProps {
   onSelectInbox?: (item: any) => void;
   /** 推荐问题:填入输入框并聚焦 */
   onAsk?: (text?: string) => void;
-  /** 剧本快捷执行:@引用 带入输入框并聚焦 */
-  onRunPlaybook?: (pb: { playbook_id: number; playbook_name: string }) => void;
+  /** 专家对话:@引用 带入输入框 */
+  onTalkExpert?: (expert: any) => void;
+  /** 专家编辑:进入空间内专家编辑器 */
+  onEditExpert?: (expert: any) => void;
+  /** 专家派单:为该专家创建任务 */
+  onDispatchExpert?: (expert: any) => void;
+  /** 是否空间管理员 owner(管理);成员只看不改 */
+  canManage?: boolean;
   /** 任务/介入刷新信号(最近产出/交付/待办同步刷新) */
   listsRefreshKey?: number;
   /** 场景空间最大化状态(顶栏按钮显示最大化/还原) */
@@ -556,7 +565,10 @@ export function SceneSpace({
   onGuide,
   onSelectInbox,
   onAsk,
-  onRunPlaybook,
+  onTalkExpert,
+  onEditExpert,
+  onDispatchExpert,
+  canManage,
   listsRefreshKey,
   isMaximized,
   onToggleMaximize,
@@ -589,7 +601,9 @@ export function SceneSpace({
           onGuide={onGuide}
           onSelectInbox={onSelectInbox}
           onAsk={onAsk}
-          onRunPlaybook={onRunPlaybook}
+          onTalkExpert={onTalkExpert}
+          onEditExpert={onEditExpert}
+          onDispatchExpert={onDispatchExpert}
         />
       </div>
     );
@@ -607,6 +621,9 @@ export function SceneSpace({
     'subagent': '子任务对话',
     'triggers': '订阅提醒',
     'data-assets': '数据资产',
+    'capability': '能力绑定',
+    'deliveries': '交付',
+    'assets': '语义资产',
     'app-card': '应用卡片',
   };
 
@@ -641,6 +658,21 @@ export function SceneSpace({
       {context === 'data-assets' && (
         <div className="ws-scene-space__body">
           <DataAssetsTab workspaceId={workspaceId} workspaceCode={workspaceCode} />
+        </div>
+      )}
+      {context === 'capability' && (
+        <div className="ws-scene-space__body">
+          <CapabilityTab workspaceId={workspaceId} workspaceCode={workspaceCode} canManage={canManage} />
+        </div>
+      )}
+      {context === 'deliveries' && (
+        <div className="ws-scene-space__body">
+          <DeliveryPanel workspaceId={workspaceId} />
+        </div>
+      )}
+      {context === 'assets' && (
+        <div className="ws-scene-space__body">
+          <EcpConsole workspaceId={`ecp_${workspaceCode}`} />
         </div>
       )}
       {context === 'task-detail' && (

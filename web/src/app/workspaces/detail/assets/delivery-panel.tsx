@@ -8,7 +8,7 @@ import {
   sendDelivery,
 } from '@/client/api';
 import {
-  App, Button, Empty, Modal, Descriptions, Spin, Tag,
+  App, Button, Empty, Modal, Descriptions, Spin, Tag, Segmented,
 } from 'antd';
 import {
   FileTextOutlined,
@@ -16,6 +16,9 @@ import {
   HistoryOutlined,
   EyeOutlined,
   LinkOutlined,
+  UnorderedListOutlined,
+  CalendarOutlined,
+  AppstoreOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useMemo, useState } from 'react';
@@ -44,6 +47,36 @@ const KIND_META: Record<FeedKind, { label: string; icon: React.ReactNode; color:
   delivery: { label: '交付', icon: <SendOutlined />, color: '#9333ea' },
   asset: { label: '沉淀', icon: <HistoryOutlined />, color: '#16a34a' },
 };
+
+type ViewMode = 'list' | 'time' | 'category';
+
+const VIEW_MODES: { value: ViewMode; label: string; icon: React.ReactNode }[] = [
+  { value: 'list', label: '列表', icon: <UnorderedListOutlined /> },
+  { value: 'time', label: '按时间', icon: <CalendarOutlined /> },
+  { value: 'category', label: '按分类', icon: <AppstoreOutlined /> },
+];
+
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+/** 时间分组标签:今天/昨天相对化,同年省去年份,跨年补全。 */
+function timeGroupOf(time: string): { key: string; label: string } {
+  if (!time || !dayjs(time).isValid()) return { key: 'unknown', label: '未知时间' };
+  const d = dayjs(time);
+  const today = dayjs();
+  const day = d.format('YYYY-MM-DD');
+  if (d.isSame(today, 'day')) return { key: day, label: `今天 ${d.format('MM-DD')}` };
+  if (d.isSame(today.subtract(1, 'day'), 'day')) return { key: day, label: `昨天 ${d.format('MM-DD')}` };
+  if (d.isSame(today, 'year')) return { key: day, label: `${d.format('MM-DD')} ${WEEKDAYS[d.day()]}` };
+  return { key: day, label: `${d.format('YYYY-MM-DD')} ${WEEKDAYS[d.day()]}` };
+}
+
+interface FeedGroup {
+  key: string;
+  label: string;
+  icon?: React.ReactNode;
+  color?: string;
+  items: FeedItem[];
+}
 
 function isHtmlContent(text: string): boolean {
   const head = text.trimStart().slice(0, 200).toLowerCase();
@@ -85,6 +118,7 @@ function deliveryStatusColor(s: string) {
 /** 交付沉淀:这个空间干出来了什么 —— 产出物 / 交付记录 / 沉淀资产,统一时间线。 */
 export function DeliveryPanel({ workspaceId }: { workspaceId: number }) {
   const [kindFilter, setKindFilter] = useState<'all' | FeedKind>('all');
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [activeArtifact, setActiveArtifact] = useState<any | null>(null);
   const { message } = App.useApp();
@@ -159,6 +193,32 @@ export function DeliveryPanel({ workspaceId }: { workspaceId: number }) {
     [feed, kindFilter],
   );
 
+  // feed 已按时间倒序,分组后组内保持最新在前;分类组固定按 产出物/交付/沉淀 顺序
+  const groups = useMemo<FeedGroup[]>(() => {
+    const ordered = visible.slice(0, visibleCount);
+    if (viewMode === 'time') {
+      const map = new Map<string, FeedGroup>();
+      ordered.forEach((item) => {
+        const g = timeGroupOf(item.time);
+        if (!map.has(g.key)) map.set(g.key, { key: g.key, label: g.label, items: [] });
+        map.get(g.key)!.items.push(item);
+      });
+      return [...map.values()];
+    }
+    if (viewMode === 'category') {
+      return (Object.keys(KIND_META) as FeedKind[])
+        .map((k) => ({
+          key: k,
+          label: KIND_META[k].label,
+          icon: KIND_META[k].icon,
+          color: KIND_META[k].color,
+          items: ordered.filter((i) => i.kind === k),
+        }))
+        .filter((g) => g.items.length > 0);
+    }
+    return [];
+  }, [visible, visibleCount, viewMode]);
+
   const handleResend = async (deliveryId: number) => {
     const [err] = await apiInterceptors(sendDelivery(deliveryId));
     if (err) { message.error('投递失败,请稍后重试'); return; }
@@ -166,32 +226,67 @@ export function DeliveryPanel({ workspaceId }: { workspaceId: number }) {
     refreshDeliveries();
   };
 
+  const renderItem = (item: FeedItem) => {
+    const meta = KIND_META[item.kind];
+    return (
+      <div key={item.key} className="ws-feed-item">
+        <span className="ws-feed-item__icon" style={{ color: meta.color }}>{meta.icon}</span>
+        <span className="ws-feed-item__main">
+          <span className="ws-feed-item__title" title={item.title}>{item.title}</span>
+          <Tag color={item.tagColor} style={{ marginInlineEnd: 0 }}>{item.tagLabel}</Tag>
+        </span>
+        <span className="ws-feed-item__time">
+          {item.time ? dayjs(item.time).format('MM-DD HH:mm') : ''}
+        </span>
+        <span className="ws-feed-item__ops">
+          {item.kind === 'artifact' && (
+            <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => setActiveArtifact(item.raw)} />
+          )}
+          {item.kind === 'artifact' && item.raw.content_ref && (
+            <Button size="small" type="text" icon={<LinkOutlined />} onClick={() => window.open(item.raw.content_ref, '_blank')} />
+          )}
+          {item.kind === 'delivery' && (
+            <Button size="small" type="text" icon={<SendOutlined />} onClick={() => handleResend(item.raw.id)} />
+          )}
+        </span>
+      </div>
+    );
+  };
+
   return (
     <div>
-      <div className="ws-feed-chips">
-        <span
-          className={`ws-feed-chip${kindFilter === 'all' ? ' ws-feed-chip--on' : ''}`}
-          role="button"
-          tabIndex={0}
-          onClick={() => { setKindFilter('all'); setVisibleCount(PAGE_SIZE); }}
-          onKeyDown={(e) => { if (e.key === 'Enter') { setKindFilter('all'); setVisibleCount(PAGE_SIZE); } }}
-        >
-          全部 {feed.length}
-        </span>
-        {(Object.keys(KIND_META) as FeedKind[])
-          .filter((k) => counts[k] > 0)
-          .map((k) => (
-            <span
-              key={k}
-              className={`ws-feed-chip${kindFilter === k ? ' ws-feed-chip--on' : ''}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => { setKindFilter(k); setVisibleCount(PAGE_SIZE); }}
-              onKeyDown={(e) => { if (e.key === 'Enter') { setKindFilter(k); setVisibleCount(PAGE_SIZE); } }}
-            >
-              {KIND_META[k].label} {counts[k]}
-            </span>
-          ))}
+      <div className="ws-feed-toolbar">
+        <div className="ws-feed-chips">
+          <span
+            className={`ws-feed-chip${kindFilter === 'all' ? ' ws-feed-chip--on' : ''}`}
+            role="button"
+            tabIndex={0}
+            onClick={() => { setKindFilter('all'); setVisibleCount(PAGE_SIZE); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { setKindFilter('all'); setVisibleCount(PAGE_SIZE); } }}
+          >
+            全部 {feed.length}
+          </span>
+          {(Object.keys(KIND_META) as FeedKind[])
+            .filter((k) => counts[k] > 0)
+            .map((k) => (
+              <span
+                key={k}
+                className={`ws-feed-chip${kindFilter === k ? ' ws-feed-chip--on' : ''}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => { setKindFilter(k); setVisibleCount(PAGE_SIZE); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { setKindFilter(k); setVisibleCount(PAGE_SIZE); } }}
+              >
+                {KIND_META[k].label} {counts[k]}
+              </span>
+            ))}
+        </div>
+        <Segmented
+          size="small"
+          value={viewMode}
+          onChange={(v) => { setViewMode(v as ViewMode); setVisibleCount(PAGE_SIZE); }}
+          options={VIEW_MODES.map(({ value, label, icon }) => ({ value, label, icon }))}
+        />
       </div>
 
       {loading ? (
@@ -200,34 +295,29 @@ export function DeliveryPanel({ workspaceId }: { workspaceId: number }) {
         <Empty description="还没有交付沉淀 —— 任务跑完后,产出、交付与沉淀会出现在这里" style={{ padding: '32px 0' }} />
       ) : (
         <>
-          <div className="ws-feed">
-            {visible.slice(0, visibleCount).map((item) => {
-              const meta = KIND_META[item.kind];
-              return (
-                <div key={item.key} className="ws-feed-item">
-                  <span className="ws-feed-item__icon" style={{ color: meta.color }}>{meta.icon}</span>
-                  <span className="ws-feed-item__main">
-                    <span className="ws-feed-item__title" title={item.title}>{item.title}</span>
-                    <Tag color={item.tagColor} style={{ marginInlineEnd: 0 }}>{item.tagLabel}</Tag>
-                  </span>
-                  <span className="ws-feed-item__time">
-                    {item.time ? dayjs(item.time).format('MM-DD HH:mm') : ''}
-                  </span>
-                  <span className="ws-feed-item__ops">
-                    {item.kind === 'artifact' && (
-                      <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => setActiveArtifact(item.raw)} />
+          {viewMode === 'list' ? (
+            <div className="ws-feed">
+              {visible.slice(0, visibleCount).map(renderItem)}
+            </div>
+          ) : (
+            <div className="ws-feed-groups">
+              {groups.map((g) => (
+                <div key={g.key} className="ws-feed-group">
+                  <div className="ws-feed-group__head">
+                    {g.icon && (
+                      <span className="ws-feed-group__icon" style={{ color: g.color }}>{g.icon}</span>
                     )}
-                    {item.kind === 'artifact' && item.raw.content_ref && (
-                      <Button size="small" type="text" icon={<LinkOutlined />} onClick={() => window.open(item.raw.content_ref, '_blank')} />
-                    )}
-                    {item.kind === 'delivery' && (
-                      <Button size="small" type="text" icon={<SendOutlined />} onClick={() => handleResend(item.raw.id)} />
-                    )}
-                  </span>
+                    <span className="ws-feed-group__title">{g.label}</span>
+                    <span className="ws-feed-group__count">{g.items.length}</span>
+                    <span className="ws-feed-group__line" />
+                  </div>
+                  <div className="ws-feed">
+                    {g.items.map(renderItem)}
+                  </div>
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          )}
           {visible.length > visibleCount && (
             <div
               className="ws-feed-more"

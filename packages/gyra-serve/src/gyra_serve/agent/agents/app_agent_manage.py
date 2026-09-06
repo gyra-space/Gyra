@@ -212,6 +212,12 @@ class AppManager(BaseComponent, ABC):
         context.gpts_app_code = gpts_app.app_code
         context.gpts_app_name = gpts_app.app_name
         context.language = gpts_app.language
+        # agent_app_code 是当前 Agent 的应用 ID：V2 引擎发射 StepEvent/ToolContext/
+        # PermissionGate 时严格要求非空字符串，缺省 None 会报
+        # "agent_id Input should be a valid string"。此处兜底为当前 app_code，
+        # 覆盖 context=None（默认构建）及外部传入但未赋名的两种情况。
+        if not context.agent_app_code:
+            context.agent_app_code = gpts_app.app_code
 
         agent: ConversableAgent = await self.create_app_agent(
             gpts_app, agent_memory, context

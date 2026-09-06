@@ -1,4 +1,4 @@
-import type { PlaybookCommand, SkillRef, WorkspaceUserAttachment } from './agent-workspace-types';
+import type { PlaybookCommand, SkillRef, WorkspaceUserAttachment, ExpertCommand } from './agent-workspace-types';
 import type { MediaParams, MediaImageRef, MediaImageRole } from '@/components/chat/input/media-params';
 import type { PlusMenuMcpRef } from '@/components/chat/input/plus-menu';
 import type { SubAgentRef, ResourceRef } from '@/components/chat/input/trigger-types';
@@ -108,6 +108,8 @@ export interface SceneAgentSendPayload {
   resources?: SceneAgentResource[];
   model?: string;
   playbookCommand?: PlaybookCommand;
+  /** 本次对话选用的专家(随 chat_in_params 下发,param_type='expert_command') */
+  expertCommand?: ExpertCommand;
   /** 本次对话选用的技能(随 chat_in_params 下发,sub_type='skill(gyra)') */
   skills?: SkillRef[];
   /** 本次对话选用的 MCP 连接器(随 chat_in_params 下发,sub_type='mcp(gyra)') */
@@ -163,7 +165,7 @@ export interface SceneAgentSendData {
     vis_render: 'scene_agent_workspace';
     workspace_id?: number;
     task_id?: number;
-    /** 显式命中的剧本:后端回合前路由据此预建会话内任务(in_session 同步执行) */
+    /** 显式命中的合约:后端回合前路由据此预建会话内任务(in_session 同步执行) */
     playbook_id?: number;
     /** 当前关注的产出物 id(隐式上下文) */
     focus_artifact_id?: number;
@@ -196,7 +198,7 @@ export function buildSceneAgentSendData(
   options: SendDataOptions,
   conversationId: string,
 ): SceneAgentSendData {
-  const { text, resources = [], model, playbookCommand, skills, mcps, media, permission, forceCompress, subAgent, resourceRefs = [], commandPayload } = payload;
+  const { text, resources = [], model, playbookCommand, expertCommand, skills, mcps, media, permission, forceCompress, subAgent, resourceRefs = [], commandPayload } = payload;
   const { workspaceId, taskId, focusArtifactId } = options;
   const trimmed = text.trim();
 
@@ -220,6 +222,13 @@ export function buildSceneAgentSendData(
       param_type: 'playbook_command',
       sub_type: 'playbook',
       param_value: JSON.stringify(playbookCommand),
+    });
+  }
+  if (expertCommand) {
+    chatInParams.push({
+      param_type: 'expert_command',
+      sub_type: 'expert',
+      param_value: JSON.stringify(expertCommand),
     });
   }
   if (skills && skills.length > 0) {
@@ -302,10 +311,12 @@ export function buildSceneAgentSendData(
       vis_render: 'scene_agent_workspace',
       ...(workspaceId !== undefined ? { workspace_id: Number(workspaceId) } : {}),
       ...(taskId !== undefined ? { task_id: Number(taskId) } : {}),
-      // 显式命中剧本:透传 playbook_id 给后端回合前路由,预建会话内任务
+      // 显式命中合约:透传 playbook_id 给后端回合前路由,预建会话内任务
       // (execution_mode=in_session)并在当前对话同步执行。已绑定任务的
       // workbench 对话不受影响(路由对 task_id 已有时跳过)。
       ...(playbookCommand ? { playbook_id: Number(playbookCommand.playbook_id) } : {}),
+      // 显式选中专家:透传 expert_app_code,后端回合前路由据此创建专家任务
+      ...(expertCommand ? { expert_app_code: expertCommand.app_code } : {}),
       ...(focusArtifactId !== undefined ? { focus_artifact_id: Number(focusArtifactId) } : {}),
       // 自定义 toggle 命令的 payload:放在显式模式开关之前,让 plan/compact 可覆盖
       ...(commandPayload && Object.keys(commandPayload).length ? commandPayload : {}),

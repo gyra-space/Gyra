@@ -9,7 +9,7 @@ import type {
   WorkspaceView,
 } from './agent-workspace-types';
 
-const VALID_TYPES = ['tool_call', 'thinking', 'artifact', 'delivery', 'user', 'task_created', 'answer', 'skill_loaded', 'memory_loaded', 'skill_published'];
+const VALID_TYPES = ['tool_call', 'thinking', 'artifact', 'delivery', 'user', 'task_created', 'answer', 'skill_loaded', 'memory_loaded', 'skill_published', 'expert_completed', 'subagent'];
 const VALID_STATUS = ['running', 'done', 'failed'];
 const VALID_PANEL_VIEWS = ['execution', 'deliverable', 'summary', 'task_files'];
 const VALID_SUBAGENT_STATUS = ['pending', 'running', 'done', 'failed', 'awaiting_authorization'];
@@ -115,6 +115,13 @@ function normalizeStep(raw: unknown): WorkspaceExecutionStep | null {
     playbook_name: typeof r.playbook_name === 'string' ? r.playbook_name : undefined,
     triggered_by: typeof r.triggered_by === 'string' ? r.triggered_by : undefined,
     attachments: Array.isArray(r.attachments) ? (r.attachments as WorkspaceExecutionStep['attachments']) : null,
+    expert_app_code: typeof r.expert_app_code === 'string' ? r.expert_app_code : undefined,
+    expert_name: typeof r.expert_name === 'string' ? r.expert_name : undefined,
+    expert_avatar: typeof r.expert_avatar === 'string' ? r.expert_avatar : undefined,
+    task: typeof r.task === 'string' ? r.task : undefined,
+    mode: typeof r.mode === 'string' ? r.mode : undefined,
+    receiver: typeof r.receiver === 'string' ? r.receiver : null,
+    to_human: typeof r.to_human === 'boolean' ? r.to_human : undefined,
   };
 }
 
@@ -289,10 +296,12 @@ export function parseWorkspaceView(chunk: unknown, prev: WorkspaceView | null): 
   const planning = c.planning && typeof c.planning === 'object'
     ? (c.planning as WorkspaceView['planning'])
     : (prev?.planning ?? null);
-  // summary 兜底修正:execution 已按 ts 排序,时序最后一个 answer 步骤即最新回答;
-  // 后端 summary 取自 narration 插入序,可能停在中间轮的过渡文本上
+  // summary 兜底修正:execution 已按 ts 排序,优先取「发给 human(to_human=true)」的最新 answer;
+  // 无 to_human 标记(旧数据)时回退为时序最后一个 answer 步骤,保持「最新回答进 summary」语义。
   let summary = typeof c.summary === 'string' ? c.summary : (prev?.summary ?? null);
-  const lastAnswer = [...execution].reverse().find((s) => s.type === 'answer' && (s.output || '').trim());
+  const answers = execution.filter((s) => s.type === 'answer' && (s.output || '').trim());
+  const toHuman = [...answers].reverse().find((s) => s.to_human === true);
+  const lastAnswer = toHuman ?? [...answers].reverse()[0];
   if (lastAnswer?.output) summary = lastAnswer.output;
 
   // 交付文件 / 任务文件:后端按当前轮次(agent conv)全量推送,新轮追问(新建

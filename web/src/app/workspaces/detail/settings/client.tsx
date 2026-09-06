@@ -1,6 +1,6 @@
 'use client';
 
-import { apiInterceptors, getOrCreateHomeWorkspace, getWorkspaceInfo, listMembers, addMember, removeMember, updateMemberRole, updateWorkspace, setHomeWorkspace, releaseWorkspace } from '@/client/api';
+import { apiInterceptors, getOrCreateHomeWorkspace, getWorkspaceInfo, updateWorkspace, setHomeWorkspace, releaseWorkspace } from '@/client/api';
 import { addEcpConfirmer, listEcpConfirmers, removeEcpConfirmer, type EcpConfirmer } from '@/client/api/ecp';
 import { usersService, type User } from '@/services/users';
 import { getUserId } from '@/utils';
@@ -14,13 +14,6 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SpaceModelsTab } from './space-models-tab';
 
-// 空间角色展示名(与成员表格 Role 下拉选项一致)
-const ROLE_LABELS: Record<string, string> = {
-  owner: '管理',
-  contributor: '使用',
-  viewer: '查看',
-};
-
 /** 欢迎预设问题的默认值(与首页简洁模式兜底一致) */
 const DEFAULT_SUGGEST_QUESTIONS = ['帮我看看这周的数据情况'];
 
@@ -32,14 +25,10 @@ export default function SettingsPage() {
   // ECP 语义层 workspace 由场景空间 code 派生(ecp_<workspace_code>,见 ecp_derive.py)
   const ecpWsId = workspaceCode ? `ecp_${workspaceCode}` : '';
   const [form] = Form.useForm();
-  const [memberForm] = Form.useForm();
   const [suggestForm] = Form.useForm();
   const [editOpen, setEditOpen] = useState(false);
-  const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingSuggest, setSavingSuggest] = useState(false);
-  const [userOptions, setUserOptions] = useState<User[]>([]);
-  const [searching, setSearching] = useState(false);
   // 提案确认人(ECP confirmer)配置
   const [newConfirmerId, setNewConfirmerId] = useState<string>();
   const [confirmerOptions, setConfirmerOptions] = useState<User[]>([]);
@@ -56,13 +45,7 @@ export default function SettingsPage() {
     return err ? null : res;
   }, { refreshDeps: [workspaceCode] });
 
-  const { data: members, refresh: refreshMembers } = useRequest(async () => {
-    if (!ws?.id) return [];
-    const [err, res] = await apiInterceptors(listMembers({ workspace_id: ws.id }));
-    return err ? [] : res || [];
-  }, { refreshDeps: [ws?.id] });
-
-  // 权限整合:空间管理(space.workspace.manage,owner)才可维护成员/模型/确认人。
+  // 权限整合:空间管理(space.workspace.manage,owner)才可维护模型/确认人。
   const { can } = useSpaceRole(ws?.id);
   const canManage = can('space.workspace.manage');
 
@@ -135,54 +118,6 @@ export default function SettingsPage() {
       message.success('已保存预设问题');
       refresh();
     } catch (e) {}
-  };
-
-  const handleSearchUser = async (keyword: string) => {
-    setSearching(true);
-    try {
-      // 空关键词也加载全部用户，便于在“添加成员”下拉中直接浏览并选择所有平台用户
-      const res = await usersService.listUsers(1, 20, keyword);
-      setUserOptions(res?.list || []);
-    } catch {
-      setUserOptions([]);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const handleOpenAddMember = () => {
-    setAddMemberOpen(true);
-    handleSearchUser('');
-  };
-
-  const handleAddMember = async () => {
-    try {
-      const values = await memberForm.validateFields();
-      const [err] = await apiInterceptors(addMember({
-        workspace_id: ws?.id,
-        user_id: Number(values.user_id),
-        role: values.role,
-      }));
-      if (err) { message.error(err.message); return; }
-      message.success('Member added');
-      setAddMemberOpen(false);
-      memberForm.resetFields();
-      refreshMembers();
-    } catch (e) {}
-  };
-
-  const handleRoleChange = async (userId: number, role: string) => {
-    const [err] = await apiInterceptors(updateMemberRole({
-      workspace_id: ws?.id, user_id: userId, role,
-    }));
-    if (err) { message.error(err.message); return; }
-    refreshMembers();
-  };
-
-  const handleRemoveMember = async (userId: number) => {
-    const [err] = await apiInterceptors(removeMember({ workspace_id: ws?.id, user_id: userId }));
-    if (err) { message.error(err.message); return; }
-    refreshMembers();
   };
 
   // ---------- 提案确认人(ECP confirmer)配置 ----------
@@ -271,45 +206,6 @@ export default function SettingsPage() {
           <Descriptions.Item label="Default Agent">{ws.default_agent_app_code || '-'}</Descriptions.Item>
           <Descriptions.Item label="Description" span={2}>{ws.description || '-'}</Descriptions.Item>
         </Descriptions>
-      </Card>
-
-      <Card title={t('settings.members') || 'Members'}
-        extra={canManage && <Button onClick={handleOpenAddMember}>+ {t('settings.add_member') || 'Add Member'}</Button>}>
-        <Table
-          rowKey="id"
-          size="small"
-          pagination={false}
-          dataSource={members || []}
-          locale={{ emptyText: 'No members' }}
-          columns={[
-            { title: 'User ID', dataIndex: 'user_id', width: 100 },
-            { title: 'Name', dataIndex: 'user_name' },
-            {
-              title: 'Role', dataIndex: 'role', width: 200,
-              render: (role: string, r: any) => canManage ? (
-                <Select
-                  size="small"
-                  value={role}
-                  onChange={(v) => handleRoleChange(r.user_id, v)}
-                  options={[
-                    { value: 'owner', label: '管理' },
-                    { value: 'contributor', label: '使用' },
-                    { value: 'viewer', label: '查看' },
-                  ]}
-                  disabled={role === 'owner'}
-                />
-              ) : (
-                <span>{ROLE_LABELS[role] || role}</span>
-              ),
-            },
-            {
-              title: '', key: 'actions', width: 100,
-              render: (_: any, r: any) => canManage && r.role !== 'owner' ? (
-                <Button size="small" danger onClick={() => handleRemoveMember(r.user_id)}>Remove</Button>
-              ) : null,
-            },
-          ]}
-        />
       </Card>
 
       <Card title="提案确认" className="mb-4">
@@ -455,37 +351,6 @@ export default function SettingsPage() {
           <Form.Item name="description" label="Description"><Input.TextArea rows={2} /></Form.Item>
           <Form.Item name="scenario_type" label="Scenario Type"><Input /></Form.Item>
           <Form.Item name="default_agent_app_code" label="Default Agent App Code"><Input /></Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal
-        open={addMemberOpen}
-        onCancel={() => setAddMemberOpen(false)}
-        onOk={handleAddMember}
-        title="Add Member"
-        okText="Add"
-      >
-        <Form form={memberForm} layout="vertical" className="mt-4" initialValues={{ role: 'contributor' }}>
-          <Form.Item name="user_id" label="User" rules={[{ required: true, message: 'Search and select a user' }]}>
-            <Select
-              showSearch
-              filterOption={false}
-              loading={searching}
-              placeholder="Search by username / user code / email"
-              onSearch={handleSearchUser}
-              notFoundContent={searching ? <Spin size="small" /> : null}
-              options={userOptions.map((u) => ({
-                value: u.id,
-                label: `#${u.id} ${u.name}${u.fullname ? ` (${u.fullname})` : ''}${u.email ? ` · ${u.email}` : ''}`,
-              }))}
-            />
-          </Form.Item>
-          <Form.Item name="role" label="Role">
-            <Select options={[
-              { value: 'contributor', label: '使用' },
-              { value: 'viewer', label: '查看' },
-            ]} />
-          </Form.Item>
         </Form>
       </Modal>
 

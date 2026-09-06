@@ -8,7 +8,6 @@ import {
   updateResource,
   getSkillList,
   getMCPList,
-  getAppList,
 } from '@/client/api';
 import {
   Alert, App, Button, Checkbox, Empty, Input, Modal, Select, Space, Spin, Switch, Tag,
@@ -16,7 +15,6 @@ import {
 import {
   ToolOutlined,
   ApiOutlined,
-  RobotOutlined,
   PlusOutlined,
   ExportOutlined,
   ReloadOutlined,
@@ -31,7 +29,6 @@ import './assets.css';
 const TYPE_META: Record<string, { label: string; tagColor: string; color: string; icon: React.ReactNode }> = {
   skill: { label: '技能', tagColor: 'geekblue', color: '#6366f1', icon: <ToolOutlined /> },
   mcp: { label: 'MCP', tagColor: 'purple', color: '#8b5cf6', icon: <ApiOutlined /> },
-  app: { label: '智能体', tagColor: 'blue', color: '#3b82f6', icon: <RobotOutlined /> },
   command: { label: '命令', tagColor: 'cyan', color: '#06b6d4', icon: <ThunderboltOutlined /> },
 };
 
@@ -43,7 +40,7 @@ function sortCaps(rows: any[]) {
   });
 }
 
-/** 能力:空间里的 Agent 会"干"什么 —— 技能 / MCP / 子智能体 / 专属模型。 */
+/** 能力:空间里的 Agent 会"干"什么 —— 技能 / MCP / 命令。子智能体已进成员页,模型在设置页维护。 */
 export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: {
   workspaceId: number;
   workspaceCode?: string;
@@ -54,11 +51,10 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
   const { modal, message } = App.useApp();
   const [addOpen, setAddOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [addType, setAddType] = useState<'skill' | 'mcp' | 'app' | 'command'>('skill');
+  const [addType, setAddType] = useState<'skill' | 'mcp' | 'command'>('skill');
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [skillDefault, setSkillDefault] = useState(false);
   const [selectedMcp, setSelectedMcp] = useState<any>(null);
-  const [selectedApp, setSelectedApp] = useState<string | null>(null);
   // 自定义命令表单(workspace_resource type='command' 的新建,非选择已有实体)
   const [cmdName, setCmdName] = useState('');
   const [cmdRef, setCmdRef] = useState('');
@@ -97,21 +93,11 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
   );
   const allMcps = useMemo(() => mcpData || [], [mcpData]);
 
-  // 可配置为子 Agent 的应用(物理引用取 app_code)
-  const { data: appData, refresh: refreshApps } = useRequest(
-    async () => {
-      const [err, res] = await apiInterceptors(getAppList({ page: 1, page_size: 200 }));
-      return err ? [] : res?.app_list || [];
-    },
-  );
-  const allApps = useMemo(() => appData || [], [appData]);
-
   const sections = useMemo(() => {
     const rows = allResources.rows;
     return [
       { key: 'skill', title: '技能', items: sortCaps(rows.filter((r: any) => r.type === 'skill')) },
       { key: 'mcp', title: 'MCP 服务', items: sortCaps(rows.filter((r: any) => r.type === 'mcp')) },
-      { key: 'app', title: '子智能体', items: sortCaps(rows.filter((r: any) => r.type === 'app')) },
       { key: 'command', title: '命令', items: sortCaps(rows.filter((r: any) => r.type === 'command')) },
     ].filter((s) => s.items.length > 0);
   }, [allResources]);
@@ -121,10 +107,6 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
   const candidateSkills = useMemo(
     () => allSkills.filter((s: any) => !allResources.byType(['skill']).has(String(s.skill_code)) && !allResources.byType(['skill']).has(String(s.name))),
     [allSkills, allResources],
-  );
-  const candidateApps = useMemo(
-    () => allApps.filter((a: any) => !allResources.byType(['app']).has(String(a.app_code))),
-    [allApps, allResources],
   );
 
   const handleAdd = async () => {
@@ -150,19 +132,6 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
         type: 'mcp',
         name: selectedMcp.name || selectedMcp.mcp_code,
         physical_ref: selectedMcp.mcp_code,
-        category: 'scenario_bound',
-        access_mode: 'read',
-        is_active: true,
-        config: {},
-      }));
-    } else if (addType === 'app') {
-      const app = allApps.find((a: any) => a.app_code === selectedApp);
-      if (!app) { setSaving(false); message.warning('请选择子智能体'); return; }
-      [err] = await apiInterceptors(addResource({
-        workspace_id: workspaceId,
-        type: 'app',
-        name: app.app_name || app.app_code,
-        physical_ref: app.app_code,
         category: 'scenario_bound',
         access_mode: 'read',
         is_active: true,
@@ -200,7 +169,6 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
     setSelectedSkill(null);
     setSkillDefault(false);
     setSelectedMcp(null);
-    setSelectedApp(null);
     setCmdName('');
     setCmdRef('');
     setCmdDesc('');
@@ -339,7 +307,7 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
           <div key={s.key} className="ws-asset-section">
             <div className="ws-asset-section__head">
               <span className="ws-asset-section__icon">
-                {s.key === 'skill' ? <ToolOutlined /> : s.key === 'mcp' ? <ApiOutlined /> : s.key === 'command' ? <ThunderboltOutlined /> : <RobotOutlined />}
+                {s.key === 'skill' ? <ToolOutlined /> : s.key === 'mcp' ? <ApiOutlined /> : <ThunderboltOutlined />}
               </span>
               <span className="ws-asset-section__title">{s.title}</span>
               <span className="ws-asset-section__count">{s.items.length}</span>
@@ -364,7 +332,6 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
             {[
               { v: 'skill', label: '技能', desc: '指导 Agent 做事的方法', icon: <ToolOutlined /> },
               { v: 'mcp', label: 'MCP', desc: '扩展 Agent 工具能力的服务', icon: <ApiOutlined /> },
-              { v: 'app', label: '子智能体', desc: '主 Agent 可调用的协作 Agent', icon: <RobotOutlined /> },
               { v: 'command', label: '命令', desc: '输入框 / 唤起的会话开关', icon: <ThunderboltOutlined /> },
             ].map((opt) => (
               <div
@@ -411,24 +378,6 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
                   去 MCP 模块配置 <ExportOutlined />
                 </Link>
                 <Button type="link" size="small" icon={<ReloadOutlined />} onClick={refreshMcp}>
-                  刷新列表
-                </Button>
-              </Space>
-            }
-          />
-        )}
-        {addType === 'app' && (
-          <Alert
-            type="info"
-            showIcon
-            className="mb-3"
-            message="勾选的子智能体将被物化为主 Agent 的协作 Agent(extra_agents)"
-            description={
-              <Space>
-                <Link href="/apps" target="_blank">
-                  去应用模块创建 <ExportOutlined />
-                </Link>
-                <Button type="link" size="small" icon={<ReloadOutlined />} onClick={refreshApps}>
                   刷新列表
                 </Button>
               </Space>
@@ -526,23 +475,6 @@ export function CapabilityTab({ workspaceId, workspaceCode, canManage = true }: 
               options={allMcps.map((m: any) => ({
                 value: m.mcp_code,
                 label: `${m.name}${m.description ? ` — ${m.description}` : ''}`,
-              }))}
-            />
-          </div>
-        ) : addType === 'app' ? (
-          <div>
-            <div className="text-sm text-gray-500 mb-2">选择子智能体</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="从应用列表选择"
-              value={selectedApp}
-              onChange={setSelectedApp}
-              showSearch
-              optionFilterProp="label"
-              notFoundContent={allApps.length ? null : <Spin size="small" />}
-              options={candidateApps.map((a: any) => ({
-                value: a.app_code,
-                label: `${a.app_name || a.app_code}${a.app_describe ? ` — ${a.app_describe}` : ''}`,
               }))}
             />
           </div>

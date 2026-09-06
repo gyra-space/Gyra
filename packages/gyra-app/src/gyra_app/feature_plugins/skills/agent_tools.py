@@ -66,7 +66,8 @@ def _operator_name(user_request) -> str:
     "skill_publish",
     description=(
         "把会话内创建的技能发布到技能资源库(全局生效,发布后所有 Agent/空间可用)。"
-        "参数为含 SKILL.md 的技能目录路径(也支持传其父目录,自动查找)。"
+        "参数 skill_dir 传技能的独立子目录(含 SKILL.md,如 <work>/<skill-name>/),"
+        "不要传工作目录根(根目录的无关文件会被一并发布,结果 warnings 会提示)。"
         "skill-creator 创建或修改完技能后调用;同名技能会被覆盖更新。"
     ),
     category=ToolCategory.BUILTIN,
