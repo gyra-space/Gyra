@@ -13,7 +13,7 @@ import {
 import { CodePreview } from '../../code-preview';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { GPTVis } from '@antv/gpt-vis';
-import { injectLocalLibsForReport } from '@/utils';
+import { injectLocalLibsForReport, resolveFileDownloadUrl, safeApiBase, transformFileUrl } from '@/utils';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -94,19 +94,26 @@ const FilePreviewModal: FC<FilePreviewModalProps> = ({ visible, file, onClose })
 
   // gyra-fs:// 走 /files/preview（支持 inline）；object_path 走 legacy 接口；其余按原样/拼 apiBase
   const buildPreviewUrl = (fileUri: string): string => {
-    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+    const apiBaseUrl = safeApiBase();
     if (fileUri.startsWith('gyra-fs://')) {
-      return `${apiBaseUrl}/api/v2/serve/file/files/preview?uri=${encodeURIComponent(fileUri)}`;
+      return transformFileUrl(
+        `${apiBaseUrl}/api/v2/serve/file/files/preview?uri=${encodeURIComponent(fileUri)}`
+      );
     }
     if (fileUri.startsWith('/')) {
       return `${apiBaseUrl}${fileUri}`;
     }
-    return fileUri;
+    // Absolute URLs may embed a non-routable bind address (e.g. http://172.22.x.x)
+    // that the browser blocks as mixed content behind an HTTPS reverse proxy.
+    // Rewrite them to a same-origin (relative) URL via transformFileUrl.
+    return transformFileUrl(fileUri);
   };
 
   const buildObjectPathUrl = (objectPath: string): string => {
-    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
-    return `${apiBaseUrl}/api/oss/getFileByFileName?fileName=${encodeURIComponent(objectPath)}`;
+    const apiBaseUrl = safeApiBase();
+    return transformFileUrl(
+      `${apiBaseUrl}/api/oss/getFileByFileName?fileName=${encodeURIComponent(objectPath)}`
+    );
   };
 
   /** 远程候选 URL，按优先级排列；前一个加载失败时自动顺延到下一个 */
@@ -343,7 +350,7 @@ ${content}
   const handleDownload = () => {
     if (!activeFile) return;
     const anchor = document.createElement('a');
-    anchor.href = resolvedUrl || candidates[0] || '';
+    anchor.href = resolveFileDownloadUrl(resolvedUrl || candidates[0] || '');
     anchor.download = activeFile.file_name || 'download';
     anchor.rel = 'noreferrer';
     document.body.appendChild(anchor);

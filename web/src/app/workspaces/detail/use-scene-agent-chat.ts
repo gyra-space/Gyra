@@ -670,16 +670,19 @@ export function useSceneAgentChat({
           // Route a parsed vis object: step-list → appendStep, else
           // scene_agent_workspace → parseWorkspaceView.
           const routeObject = (obj: object) => {
-            // Agent 产出首条内容(任何帧) → 清除 agent_preparing 占位状态
-            console.log('[agent_preparing] routeObject called, clearing agentPreparing');
-            setAgentPreparing(false);
             const step = parseAgentSteps(obj);
             if (step) {
+              // Agent 产出真实步骤 → 清除 agent_preparing 占位状态
+              console.log('[routeObject] clearing agentPreparing (step):', step?.type, step?.title);
+              setAgentPreparing(false);
               appendStep(step);
               return;
             }
             const mv = obj as Record<string, unknown>;
             if (mv.render_name === 'scene_agent_workspace' || Array.isArray(mv.execution)) {
+              // 全量视图帧同样代表 Agent 已启动 → 清除占位状态
+              console.log('[routeObject] clearing agentPreparing (view): render_name=', mv.render_name, 'execution_len=', (mv.execution as unknown[])?.length);
+              setAgentPreparing(false);
               setWorkspaceView((prev) => {
                 const merged = parseWorkspaceView(obj, prev);
                 return { ...merged, execution: dedupOptimisticUser(merged.execution) };
@@ -702,6 +705,7 @@ export function useSceneAgentChat({
         },
         onDone: () => {
           if (streamEpochRef.current !== epoch) return;
+          console.log('[agentPreparing] onDone -> clear');
           setLoading(false);
           setAgentPreparing(false);
           setLastInput(null);
@@ -709,6 +713,7 @@ export function useSceneAgentChat({
         },
         onClose: () => {
           if (streamEpochRef.current !== epoch) return;
+          console.log('[agentPreparing] onClose -> clear');
           setLoading(false);
           setAgentPreparing(false);
           setLastInput(null);
@@ -717,6 +722,7 @@ export function useSceneAgentChat({
         onError: (content: string) => {
           if (streamEpochRef.current !== epoch) return;
           // 服务端 [ERROR] 帧:Agent 真实报错,直接展示(连接断开走 onStreamDrop)
+          console.log('[agentPreparing] onError -> clear:', content);
           setError(content || 'Agent error');
           setAgentPreparing(false);
           appendStep({
@@ -732,6 +738,7 @@ export function useSceneAgentChat({
         },
         onStreamDrop: (content: string) => {
           if (streamEpochRef.current !== epoch) return;
+          console.log('[agentPreparing] onStreamDrop -> clear:', content);
           setLoading(false);
           setAgentPreparing(false);
           setLastInput(null);

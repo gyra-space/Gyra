@@ -126,6 +126,21 @@ function AnswerBlock({ step }: { step: WorkspaceExecutionStep }) {
   );
 }
 
+/** Agent 启动占位行:SSE 建立后、Agent 产出首条内容前(沙箱/MCP 加载期间),
+ *  渲染在最新一轮用户消息之后。用独立状态驱动,不注入 execution,
+ *  避免被 parseWorkspaceView 排序/轮次切分影响;Agent 产出内容后自动消失。 */
+function PreparingRow() {
+  return (
+    <div className="ws-capsule-think ws-agent-preparing">
+      <span className="ws-capsule-think__icon" aria-hidden>
+        <LoadingOutlined />
+      </span>
+      <span className="ws-capsule-think__label">正在启动 Agent…</span>
+      <span className="ws-capsule-step__spin" aria-label="运行中" />
+    </div>
+  );
+}
+
 /** 空态引导:图标 tile + 标题 + 提示 */
 function EmptyState() {
   return (
@@ -610,12 +625,12 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
   const { openCallDetail, enabled: callDetailEnabled } = useCallDetail();
   const deliverable_files = useMemo(() => view.deliverable_files ?? [], [view.deliverable_files]);
   const task_files = useMemo(() => view.task_files ?? [], [view.task_files]);
-  // 运行中置底文案:agent_preparing 期间优先显示"正在启动 Agent",
-  // Agent 产出内容后按当前产出动态推导(工具执行 / 模型思考 / todo 阶段)
-  const runningLabel = useMemo(() => {
-    if (agentPreparing) return '正在启动 Agent…';
-    return deriveRunningLabel(view, agentName, modelName);
-  }, [agentPreparing, view, agentName, modelName]);
+  // 运行中置底文案:按当前产出动态推导(工具执行 / 模型思考 / todo 阶段)
+  // 占位提示已由 PreparingRow 在用户消息下方渲染,底部不再重复显示"正在启动 Agent"
+  const runningLabel = useMemo(
+    () => deriveRunningLabel(view, agentName, modelName),
+    [view, agentName, modelName],
+  );
   // 用户头像数据:localStorage 一次性读取(全 feed 共享,避免每个 UserBubble 重复 parse)
   const userInfo = useMemo(() => {
     try {
@@ -878,6 +893,10 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
         const hasAgentOutput = round.steps.some(
           (s) => s.type !== 'user',
         );
+        // 占位提示只渲染在最新一轮(带用户消息)之后:Agent 未产出任何内容时,
+        // 在用户消息下方展示"正在启动 Agent…",消除首 token 前的空白。
+        const showPreparing = agentPreparing && isLastRound && round.user;
+        console.log('[PreparingRow] showPreparing=', showPreparing, 'agentPreparing=', agentPreparing, 'isLastRound=', isLastRound, 'hasUser=', !!round.user, 'roundIdx=', roundIdx);
         return (
           <Fragment key={round.key}>
             {round.user && (
@@ -889,6 +908,8 @@ export function AgentWorkspaceRenderer({ view, running = false, onStepClick, sel
                 onAttachmentsClick={onAttachmentsClick}
               />
             )}
+            {/* 启动占位:用户消息之后、Agent 产出内容前(避免空白期无感知) */}
+            {showPreparing && <PreparingRow />}
             {/* 上下文注入:插到用户消息之后、Agent 回复之前(仅首个用户轮次展示) */}
             {roundIdx === injectionRoundIdx && injectedSteps.length > 0 && (
               <ContextInjectionSection steps={injectedSteps} />

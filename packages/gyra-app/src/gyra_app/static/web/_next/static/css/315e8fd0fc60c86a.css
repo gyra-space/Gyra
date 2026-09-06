@@ -5096,6 +5096,20 @@
   }
 }
 
+.ws-agent-preparing {
+  color: var(--ws-ink-3);
+  align-items: center;
+  gap: 7px;
+  padding: 8px 2px 8px 14px;
+  font-size: 12px;
+  display: flex;
+}
+
+.ws-agent-preparing .ws-capsule-think__icon {
+  color: var(--ws-accent);
+  font-size: 12px;
+}
+
 .ws-simple-drawer__preview {
   min-height: 200px;
 }

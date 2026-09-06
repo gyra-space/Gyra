@@ -383,6 +383,26 @@ def _probe_view_spec(connector, names: List[str]) -> str:
     return "\n\n".join(parts)
 
 
+def _format_view_section(view_names) -> str:
+    """把视图名列表格式化为独立的 "Views (视图)" 区块。
+
+    学习阶段不识别视图，list_tables/search_tables 默认只列基表；这里把
+    connector.get_view_names() 的视图统一透出，并提示用 get_table_spec 探测。
+    """
+    if not view_names:
+        return ""
+    if isinstance(view_names, set):
+        view_names = sorted(str(v) for v in view_names)
+    lines = ["", "**Views (视图)**"]
+    for v in view_names:
+        lines.append(f"- `{v}` (VIEW)")
+    lines.append(
+        "_视图无标准表结构，用 `get_table_spec` 探测列结构；"
+        "若有基表不可查，会提示改用底层基表_"
+    )
+    return "\n".join(lines)
+
+
 @tool(
     "get_table_spec",
     description=(
@@ -1790,6 +1810,19 @@ async def list_tables(
             except ImportError:
                 pass
 
+        # 视图清单:学习阶段不识别视图,这里统一从 connector 拉取,供两条路径透出
+        view_connector = agent_connector
+        if view_connector is None:
+            try:
+                view_connector = CFG.local_db_manager.get_connector(db_name)
+            except Exception:
+                view_connector = None
+        view_names = (
+            sorted(str(v) for v in _get_view_names(view_connector))
+            if view_connector is not None
+            else []
+        )
+
         # Try spec service for structured table list (preferred)
         if ds_id:
             try:
@@ -1873,6 +1906,9 @@ async def list_tables(
 
                     lines.append("")
                     lines.append("_Use `get_table_spec` to get detailed schema for specific tables._")
+                    view_section = _format_view_section(view_names)
+                    if view_section:
+                        lines.append(view_section)
 
                     return "\n".join(lines)
             except ImportError:
@@ -1908,6 +1944,9 @@ async def list_tables(
 
         lines.append("")
         lines.append("_Use `get_table_spec` to get detailed schema for specific tables._")
+        view_section = _format_view_section(view_names)
+        if view_section:
+            lines.append(view_section)
 
         return "\n".join(lines)
 
@@ -2072,6 +2111,19 @@ async def search_tables(
 
             link_service = SchemaLinkService()
 
+            # 视图名集合:学习阶段不识别视图,这里从 connector 拉取供关键词匹配命中
+            view_connector = agent_connector
+            if view_connector is None:
+                try:
+                    view_connector = CFG.local_db_manager.get_connector(db_name)
+                except Exception:
+                    view_connector = None
+            view_names_set = (
+                set(str(v) for v in _get_view_names(view_connector))
+                if view_connector is not None
+                else set()
+            )
+
             # Collect all recommendations from each query
             # table_name -> (score, reasons, matched_queries, group, row_count, latest_data_time)
             all_recommendations = {}
@@ -2096,6 +2148,35 @@ async def search_tables(
                             rec.row_count,  # 新增：行数信息
                             rec.latest_data_time,  # 新增：数据新鲜度
                         ]
+
+            # 视图命中:视图名与检索意图做 token/包含匹配,作为候选并入(低分,标注视图)
+            if view_names_set:
+                for query in search_queries:
+                    ql = (query or "").strip().lower()
+                    if not ql:
+                        continue
+                    q_tokens = set(
+                        t for t in re.split(r"[^0-9A-Za-z\u4e00-\u9fff]+", ql)
+                        if len(t) >= 2
+                    )
+                    for v in view_names_set:
+                        vl = v.lower()
+                        v_tokens = set(
+                            t for t in re.split(r"[^0-9A-Za-z\u4e00-\u9fff]+", vl)
+                            if len(t) >= 2
+                        )
+                        hit = bool(q_tokens & v_tokens) or ql in vl or vl in ql
+                        if not hit:
+                            continue
+                        if v not in all_recommendations:
+                            all_recommendations[v] = [
+                                0.5,
+                                ["视图名与检索意图匹配"],
+                                [query],
+                                "",
+                                None,
+                                None,
+                            ]
 
             if not all_recommendations:
                 return (
@@ -2127,8 +2208,13 @@ async def search_tables(
                 score, reasons, matched_queries, group, row_count, latest_data_time = info
                 score_display = f"{score:.1f}"
                 reason_str = "; ".join(reasons[:3])
-                lines.append(f"{i}. **{table_name}**")
+                is_view = table_name in view_names_set
+                lines.append(
+                    f"{i}. **{table_name}**" + (" `(VIEW)`" if is_view else "")
+                )
                 lines.append(f"   - 匹配分数: {score_display}")
+                if is_view:
+                    lines.append("   - 类型: 视图（无标准表结构，用 get_table_spec 探测）")
                 if row_count:
                     lines.append(f"   - 数据行数: {row_count}")
                 if latest_data_time:
@@ -2196,6 +2282,24 @@ async def _search_tables_with_llm(
 
         if not all_specs:
             return f"No tables found in database '{db_name}'."
+
+        # 视图并入候选:学习阶段不识别视图,这里从 connector 拉取视图名当伪 spec,
+        # 让 LLM prompt 能感知到视图,过滤/展示也能命中
+        view_names_set = set()
+        try:
+            from gyra._private.config import Config as _C
+
+            _view_conn = _C().local_db_manager.get_connector(db_name)
+        except Exception:
+            _view_conn = None
+        if _view_conn is not None:
+            for _v in _get_view_names(_view_conn):
+                _vs = str(_v)
+                view_names_set.add(_vs)
+                if not any(s.get("table_name") == _vs for s in all_specs):
+                    all_specs = all_specs + [
+                        {"table_name": _vs, "table_comment": "视图", "group_name": ""}
+                    ]
 
         # Build table list for LLM prompt
         table_info_lines = []
@@ -2327,16 +2431,19 @@ orders,customers,products,order_items
         for i, table_name in enumerate(suggested_tables, 1):
             # Get table info for display
             spec = next((s for s in all_specs if s.get("table_name") == table_name), None)
+            is_view = table_name in view_names_set
+            lines.append(
+                f"{i}. **{table_name}**" + (" `(VIEW)`" if is_view else "")
+            )
             if spec:
                 comment = spec.get("table_comment", "") or spec.get("comment", "")
                 group = spec.get("group_name", "") or spec.get("group", "")
-                lines.append(f"{i}. **{table_name}**")
+                if is_view:
+                    lines.append("   - 类型: 视图（无标准表结构，用 get_table_spec 探测）")
                 if comment:
                     lines.append(f"   - 简介: {comment[:80]}")
                 if group and group != "default":
                     lines.append(f"   - 分组: {group}")
-            else:
-                lines.append(f"{i}. **{table_name}**")
             lines.append("")  # Add spacing
 
         lines.append("**推荐的表名（可直接用于 get_table_spec）:**")

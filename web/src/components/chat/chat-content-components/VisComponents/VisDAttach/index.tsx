@@ -6,6 +6,7 @@ import {
 } from '@ant-design/icons';
 import { AttachWrap, AttachItemWrap } from './style';
 import { formatFileSize, getFileIcon, canPreview } from './utils';
+import { resolveFileDownloadUrl } from '@/utils';
 
 const { Text } = Typography;
 
@@ -88,7 +89,7 @@ const VisDAttach: FC<IProps> = ({ data }) => {
     const fileName = item.file_name ?? item.name ?? item.ref_name ?? 'download';
 
     const a = document.createElement('a');
-    a.href = downloadUrl;
+    a.href = resolveFileDownloadUrl(downloadUrl);
     a.download = fileName;
     a.style.display = 'none';
     document.body.appendChild(a);

@@ -4484,6 +4484,17 @@
   40% { transform: scale(1); opacity: 1; }
 }
 
+/* Agent 启动占位:SSE 建立后、Agent 产出首条内容前,渲染在用户消息下方 */
+.ws-agent-preparing {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 2px 8px 14px;
+  font-size: 12px;
+  color: var(--ws-ink-3);
+}
+.ws-agent-preparing .ws-capsule-think__icon { font-size: 12px; color: var(--ws-accent); }
+
 /* 简洁模式:溯源抽屉内文件预览 */
 .ws-simple-drawer__preview { min-height: 200px; }
 

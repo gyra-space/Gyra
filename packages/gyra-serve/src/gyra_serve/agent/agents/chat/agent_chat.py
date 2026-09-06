@@ -1549,7 +1549,6 @@ class AgentChat(BaseComponent, ABC):
         #     f"agent_chat conv_id:{conv_id}, agent_conv_id:{agent_conv_id},gpts_name:{gpts_name},user_query:"
         #     f"{user_query}"
         # )
-        logger.info(f"[agent_preparing] aggregation_chat FUNCTION CALLED: conv={agent_conv_id}, stream={stream}")
         root_tracer.set_current_agent_id(gpts_name)  # 将当前agent app_code写入trace存储
         digest(
             CHAT_LOGGER,
@@ -1572,7 +1571,6 @@ class AgentChat(BaseComponent, ABC):
         is_retry_chat = False
         last_speaker_name = None
         history_messages = None
-        logger.info(f"[agent_preparing] aggregation_chat entered: conv={agent_conv_id}, stream={stream}")
 
         ########################################################
         app_config = self.system_app.config.configs.get("app_config")
@@ -2115,7 +2113,6 @@ class AgentChat(BaseComponent, ABC):
                     }
                 ).decode("utf-8")
                 yield task, f"data:{metadata_content}\n\n", agent_conv_id
-                logger.info(f"[agent_preparing] metadata frame sent: conv={agent_conv_id}")
 
                 # 感知优化：Agent 构建/沙箱创建/MCP 工具加载可能耗时数秒且期间无任何
                 # 可见输出（首 token 前的空白期），立即推送 agent_preparing 状态帧，
@@ -2123,10 +2120,8 @@ class AgentChat(BaseComponent, ABC):
                 preparing_frame = format_workspace_event(
                     "agent_preparing", {"conv_uid": agent_conv_id}
                 )
-                logger.info(f"[agent_preparing] frame built: conv={agent_conv_id}, len={len(preparing_frame)}")
                 if preparing_frame:
                     yield task, preparing_frame, agent_conv_id
-                    logger.info(f"[agent_preparing] frame sent: conv={agent_conv_id}")
 
                 # SSE heartbeat: if the agent is still running but no output has
                 # been produced for 30 seconds, send an SSE comment every 10 seconds
