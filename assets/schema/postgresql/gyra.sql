@@ -1,7 +1,7 @@
 -- ============================================================
 -- PostgreSQL DDL Script for Gyra
 -- Version: 0.6.0
--- Generated: 2026-09-06T22:16:55.408518
+-- Generated: 2026-09-06T22:24:24.413603
 -- ============================================================
 
 -- Table: chat_history
@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS "chat_history" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_conv_uid" UNIQUE ("conv_uid")
 );
-CREATE INDEX "ix_chat_history_task_id" ON "chat_history" ("task_id");
 CREATE INDEX "ix_chat_history_workspace_id" ON "chat_history" ("workspace_id");
+CREATE INDEX "ix_chat_history_task_id" ON "chat_history" ("task_id");
 CREATE INDEX "ix_chat_history_sys_code" ON "chat_history" ("sys_code");
 
 -- Table: chat_history_message
@@ -61,9 +61,9 @@ CREATE TABLE IF NOT EXISTS "connect_config" (
   CONSTRAINT "uk_db" UNIQUE ("db_name")
 );
 CREATE INDEX "ix_connect_config_user_name" ON "connect_config" ("user_name");
-CREATE INDEX "ix_connect_config_sys_code" ON "connect_config" ("sys_code");
 CREATE INDEX "ix_connect_config_user_id" ON "connect_config" ("user_id");
 CREATE INDEX "idx_q_owner_workspace" ON "connect_config" ("owner_workspace_id");
+CREATE INDEX "ix_connect_config_sys_code" ON "connect_config" ("sys_code");
 CREATE INDEX "idx_q_db_type" ON "connect_config" ("db_type");
 
 -- Table: db_learning_subtask
@@ -84,8 +84,8 @@ CREATE TABLE IF NOT EXISTS "db_learning_subtask" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_subtask_task_table" UNIQUE ("task_id", "table_name")
 );
-CREATE INDEX "idx_subtask_ds" ON "db_learning_subtask" ("datasource_id");
 CREATE INDEX "idx_subtask_task_status" ON "db_learning_subtask" ("task_id", "status");
+CREATE INDEX "idx_subtask_ds" ON "db_learning_subtask" ("datasource_id");
 
 -- Table: table_spec
 CREATE TABLE IF NOT EXISTS "table_spec" (
@@ -141,8 +141,8 @@ CREATE TABLE IF NOT EXISTS "db_learning_task" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_learning_task_status" ON "db_learning_task" ("status");
 CREATE INDEX "idx_learning_task_ds" ON "db_learning_task" ("datasource_id");
+CREATE INDEX "idx_learning_task_status" ON "db_learning_task" ("status");
 
 -- Table: server_app_intervention
 CREATE TABLE IF NOT EXISTS "server_app_intervention" (
@@ -169,9 +169,9 @@ CREATE TABLE IF NOT EXISTS "server_app_intervention" (
 );
 CREATE INDEX "ix_server_app_intervention_parent_conv_id" ON "server_app_intervention" ("parent_conv_id");
 CREATE INDEX "ix_server_app_intervention_conv_uid" ON "server_app_intervention" ("conv_uid");
+CREATE INDEX "ix_server_app_intervention_task_id" ON "server_app_intervention" ("task_id");
 CREATE INDEX "ix_server_app_intervention_assignee_user_id" ON "server_app_intervention" ("assignee_user_id");
 CREATE INDEX "ix_server_app_intervention_workspace_id" ON "server_app_intervention" ("workspace_id");
-CREATE INDEX "ix_server_app_intervention_task_id" ON "server_app_intervention" ("task_id");
 
 -- Table: server_app_playbook
 CREATE TABLE IF NOT EXISTS "server_app_playbook" (
@@ -204,8 +204,8 @@ CREATE TABLE IF NOT EXISTS "server_app_playbook_version" (
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE UNIQUE INDEX "uk_playbook_version" ON "server_app_playbook_version" ("playbook_id", "version");
 CREATE INDEX "ix_server_app_playbook_version_playbook_id" ON "server_app_playbook_version" ("playbook_id");
+CREATE UNIQUE INDEX "uk_playbook_version" ON "server_app_playbook_version" ("playbook_id", "version");
 
 -- Table: server_app_workspace
 CREATE TABLE IF NOT EXISTS "server_app_workspace" (
@@ -277,12 +277,12 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_conv_link" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
+CREATE INDEX "ix_server_app_workspace_conv_link_task_id" ON "server_app_workspace_conv_link" ("task_id");
 CREATE INDEX "ix_server_app_workspace_conv_link_user_id" ON "server_app_workspace_conv_link" ("user_id");
 CREATE INDEX "ix_server_app_workspace_conv_link_is_favorited" ON "server_app_workspace_conv_link" ("is_favorited");
-CREATE INDEX "ix_server_app_workspace_conv_link_is_current" ON "server_app_workspace_conv_link" ("is_current");
 CREATE INDEX "ix_server_app_workspace_conv_link_workspace_id" ON "server_app_workspace_conv_link" ("workspace_id");
+CREATE INDEX "ix_server_app_workspace_conv_link_is_current" ON "server_app_workspace_conv_link" ("is_current");
 CREATE UNIQUE INDEX "ix_server_app_workspace_conv_link_conv_uid" ON "server_app_workspace_conv_link" ("conv_uid");
-CREATE INDEX "ix_server_app_workspace_conv_link_task_id" ON "server_app_workspace_conv_link" ("task_id");
 
 -- Table: server_app_workspace_inbox_item
 CREATE TABLE IF NOT EXISTS "server_app_workspace_inbox_item" (
@@ -301,11 +301,11 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_inbox_item" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_inbox_user_status" ON "server_app_workspace_inbox_item" ("user_id", "inbox_status");
 CREATE INDEX "ix_server_app_workspace_inbox_item_source_id" ON "server_app_workspace_inbox_item" ("source_id");
 CREATE INDEX "ix_server_app_workspace_inbox_item_inbox_status" ON "server_app_workspace_inbox_item" ("inbox_status");
 CREATE INDEX "ix_server_app_workspace_inbox_item_workspace_id" ON "server_app_workspace_inbox_item" ("workspace_id");
 CREATE INDEX "ix_server_app_workspace_inbox_item_user_id" ON "server_app_workspace_inbox_item" ("user_id");
+CREATE INDEX "idx_inbox_user_status" ON "server_app_workspace_inbox_item" ("user_id", "inbox_status");
 
 -- Table: server_app_workspace_agent_maturity
 CREATE TABLE IF NOT EXISTS "server_app_workspace_agent_maturity" (
@@ -324,9 +324,9 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_agent_maturity" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
+CREATE UNIQUE INDEX "uk_workspace_agent_maturity" ON "server_app_workspace_agent_maturity" ("workspace_id", "agent_id");
 CREATE INDEX "ix_server_app_workspace_agent_maturity_agent_id" ON "server_app_workspace_agent_maturity" ("agent_id");
 CREATE INDEX "ix_server_app_workspace_agent_maturity_workspace_id" ON "server_app_workspace_agent_maturity" ("workspace_id");
-CREATE UNIQUE INDEX "uk_workspace_agent_maturity" ON "server_app_workspace_agent_maturity" ("workspace_id", "agent_id");
 
 -- Table: server_app_workspace_agent_role
 CREATE TABLE IF NOT EXISTS "server_app_workspace_agent_role" (
@@ -339,8 +339,8 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_agent_role" (
   PRIMARY KEY ("id")
 );
 CREATE INDEX "ix_server_app_workspace_agent_role_workspace_id" ON "server_app_workspace_agent_role" ("workspace_id");
-CREATE UNIQUE INDEX "uk_workspace_agent_role" ON "server_app_workspace_agent_role" ("workspace_id", "agent_id");
 CREATE INDEX "ix_server_app_workspace_agent_role_agent_id" ON "server_app_workspace_agent_role" ("agent_id");
+CREATE UNIQUE INDEX "uk_workspace_agent_role" ON "server_app_workspace_agent_role" ("workspace_id", "agent_id");
 
 -- Table: server_app_playbook_trace
 CREATE TABLE IF NOT EXISTS "server_app_playbook_trace" (
@@ -362,9 +362,9 @@ CREATE TABLE IF NOT EXISTS "server_app_playbook_trace" (
   PRIMARY KEY ("id")
 );
 CREATE UNIQUE INDEX "ix_server_app_playbook_trace_trace_id" ON "server_app_playbook_trace" ("trace_id");
-CREATE INDEX "ix_server_app_playbook_trace_task_id" ON "server_app_playbook_trace" ("task_id");
-CREATE INDEX "ix_server_app_playbook_trace_playbook_id" ON "server_app_playbook_trace" ("playbook_id");
 CREATE INDEX "ix_server_app_playbook_trace_workspace_id" ON "server_app_playbook_trace" ("workspace_id");
+CREATE INDEX "ix_server_app_playbook_trace_playbook_id" ON "server_app_playbook_trace" ("playbook_id");
+CREATE INDEX "ix_server_app_playbook_trace_task_id" ON "server_app_playbook_trace" ("task_id");
 
 -- Table: server_app_playbook_evolution_proposal
 CREATE TABLE IF NOT EXISTS "server_app_playbook_evolution_proposal" (
@@ -407,9 +407,9 @@ CREATE TABLE IF NOT EXISTS "server_app_trigger_source" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
+CREATE INDEX "ix_server_app_trigger_source_target_playbook_id" ON "server_app_trigger_source" ("target_playbook_id");
 CREATE INDEX "ix_server_app_trigger_source_workspace_id" ON "server_app_trigger_source" ("workspace_id");
 CREATE INDEX "ix_server_app_trigger_source_target_app_code" ON "server_app_trigger_source" ("target_app_code");
-CREATE INDEX "ix_server_app_trigger_source_target_playbook_id" ON "server_app_trigger_source" ("target_playbook_id");
 
 -- Table: gyra_memory_recall_stats
 CREATE TABLE IF NOT EXISTS "gyra_memory_recall_stats" (
@@ -425,8 +425,8 @@ CREATE TABLE IF NOT EXISTS "gyra_memory_recall_stats" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE UNIQUE INDEX "ix_gyra_memory_recall_stats_memory_id" ON "gyra_memory_recall_stats" ("memory_id");
 CREATE INDEX "ix_gyra_memory_recall_stats_space_id" ON "gyra_memory_recall_stats" ("space_id");
+CREATE UNIQUE INDEX "ix_gyra_memory_recall_stats_memory_id" ON "gyra_memory_recall_stats" ("memory_id");
 
 -- Table: server_app_skill
 CREATE TABLE IF NOT EXISTS "server_app_skill" (
@@ -519,9 +519,9 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_config" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_config" UNIQUE ("name")
 );
-CREATE INDEX "idx_category" ON "gyra_serve_config" ("category");
 CREATE INDEX "idx_upload_cls" ON "gyra_serve_config" ("upload_cls");
 CREATE INDEX "idx_creator" ON "gyra_serve_config" ("creator");
+CREATE INDEX "idx_category" ON "gyra_serve_config" ("category");
 
 -- Table: server_app_workspace_asset
 CREATE TABLE IF NOT EXISTS "server_app_workspace_asset" (
@@ -549,8 +549,8 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_asset" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_workspace_asset_source_task_id" ON "server_app_workspace_asset" ("source_task_id");
 CREATE INDEX "ix_server_app_workspace_asset_workspace_id" ON "server_app_workspace_asset" ("workspace_id");
+CREATE INDEX "ix_server_app_workspace_asset_source_task_id" ON "server_app_workspace_asset" ("source_task_id");
 
 -- Table: server_app_asset_maturity_log
 CREATE TABLE IF NOT EXISTS "server_app_asset_maturity_log" (
@@ -565,8 +565,8 @@ CREATE TABLE IF NOT EXISTS "server_app_asset_maturity_log" (
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_asset_maturity_log_workspace_id" ON "server_app_asset_maturity_log" ("workspace_id");
 CREATE INDEX "ix_server_app_asset_maturity_log_asset_id" ON "server_app_asset_maturity_log" ("asset_id");
+CREATE INDEX "ix_server_app_asset_maturity_log_workspace_id" ON "server_app_asset_maturity_log" ("workspace_id");
 
 -- Table: server_app_workspace_asset_version
 CREATE TABLE IF NOT EXISTS "server_app_workspace_asset_version" (
@@ -579,8 +579,8 @@ CREATE TABLE IF NOT EXISTS "server_app_workspace_asset_version" (
   "gmt_create" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE UNIQUE INDEX "uk_workspace_asset_version" ON "server_app_workspace_asset_version" ("asset_id", "version");
 CREATE INDEX "ix_server_app_workspace_asset_version_asset_id" ON "server_app_workspace_asset_version" ("asset_id");
+CREATE UNIQUE INDEX "uk_workspace_asset_version" ON "server_app_workspace_asset_version" ("asset_id", "version");
 
 -- Table: server_app_task_asset_link
 CREATE TABLE IF NOT EXISTS "server_app_task_asset_link" (
@@ -592,8 +592,8 @@ CREATE TABLE IF NOT EXISTS "server_app_task_asset_link" (
   PRIMARY KEY ("id")
 );
 CREATE INDEX "ix_server_app_task_asset_link_task_id" ON "server_app_task_asset_link" ("task_id");
-CREATE UNIQUE INDEX "uk_task_asset_link" ON "server_app_task_asset_link" ("task_id", "asset_id", "link_type");
 CREATE INDEX "ix_server_app_task_asset_link_asset_id" ON "server_app_task_asset_link" ("asset_id");
+CREATE UNIQUE INDEX "uk_task_asset_link" ON "server_app_task_asset_link" ("task_id", "asset_id", "link_type");
 
 -- Table: server_app_asset_index
 CREATE TABLE IF NOT EXISTS "server_app_asset_index" (
@@ -725,8 +725,8 @@ CREATE TABLE IF NOT EXISTS "gpts_conversations" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_gpts_conversations" UNIQUE ("conv_id")
 );
-CREATE INDEX "ix_gpts_conversations_workspace_id" ON "gpts_conversations" ("workspace_id");
 CREATE INDEX "ix_gpts_conversations_task_id" ON "gpts_conversations" ("task_id");
+CREATE INDEX "ix_gpts_conversations_workspace_id" ON "gpts_conversations" ("workspace_id");
 CREATE INDEX "idx_gpts_name" ON "gpts_conversations" ("gpts_name");
 
 -- Table: gpts_messages
@@ -823,8 +823,8 @@ CREATE TABLE IF NOT EXISTS "gpts_work_log" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_work_log_conv_tool" ON "gpts_work_log" ("conv_id", "tool");
 CREATE INDEX "idx_work_log_conv_session" ON "gpts_work_log" ("conv_id", "session_id");
+CREATE INDEX "idx_work_log_conv_tool" ON "gpts_work_log" ("conv_id", "tool");
 
 -- Table: gpts_cold_segments
 CREATE TABLE IF NOT EXISTS "gpts_cold_segments" (
@@ -911,13 +911,13 @@ CREATE TABLE IF NOT EXISTS "authorization_audit_log" (
   "created_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
+CREATE INDEX "idx_audit_agent" ON "authorization_audit_log" ("agent_name");
+CREATE INDEX "idx_audit_risk_level" ON "authorization_audit_log" ("risk_level");
+CREATE INDEX "idx_audit_user" ON "authorization_audit_log" ("user_id");
 CREATE INDEX "idx_audit_session" ON "authorization_audit_log" ("session_id");
 CREATE INDEX "idx_audit_tool" ON "authorization_audit_log" ("tool_name");
-CREATE INDEX "idx_audit_risk_level" ON "authorization_audit_log" ("risk_level");
-CREATE INDEX "idx_audit_agent" ON "authorization_audit_log" ("agent_name");
-CREATE INDEX "idx_audit_decision" ON "authorization_audit_log" ("decision");
 CREATE INDEX "idx_audit_created_at" ON "authorization_audit_log" ("created_at");
-CREATE INDEX "idx_audit_user" ON "authorization_audit_log" ("user_id");
+CREATE INDEX "idx_audit_decision" ON "authorization_audit_log" ("decision");
 
 -- Table: gpts_async_tasks
 CREATE TABLE IF NOT EXISTS "gpts_async_tasks" (
@@ -960,9 +960,9 @@ CREATE TABLE IF NOT EXISTS "agent_input_queue" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
+CREATE INDEX "idx_input_conv_session_status" ON "agent_input_queue" ("conv_session_id", "status");
 CREATE INDEX "idx_input_conv_id_status" ON "agent_input_queue" ("conv_id", "status");
 CREATE INDEX "idx_input_gmt_create" ON "agent_input_queue" ("gmt_create");
-CREATE INDEX "idx_input_conv_session_status" ON "agent_input_queue" ("conv_session_id", "status");
 
 -- Table: gpts_tool
 CREATE TABLE IF NOT EXISTS "gpts_tool" (
@@ -1027,8 +1027,8 @@ CREATE TABLE IF NOT EXISTS "gpts_file_metadata" (
   CONSTRAINT "uk_file_id" UNIQUE ("file_id")
 );
 CREATE INDEX "idx_file_meta_file_key" ON "gpts_file_metadata" ("conv_id", "file_key");
-CREATE INDEX "idx_file_meta_conv_session" ON "gpts_file_metadata" ("conv_id", "conv_session_id");
 CREATE INDEX "idx_file_meta_file_type" ON "gpts_file_metadata" ("conv_id", "file_type");
+CREATE INDEX "idx_file_meta_conv_session" ON "gpts_file_metadata" ("conv_id", "conv_session_id");
 
 -- Table: gpts_file_catalog
 CREATE TABLE IF NOT EXISTS "gpts_file_catalog" (
@@ -1081,12 +1081,12 @@ CREATE TABLE IF NOT EXISTS "gpts_app" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_gpts_app" UNIQUE ("app_name")
 );
+CREATE INDEX "idx_gpts_app_user_published" ON "gpts_app" ("user_code", "published");
 CREATE INDEX "ix_gpts_app_owner_workspace_id" ON "gpts_app" ("owner_workspace_id");
 CREATE INDEX "idx_gpts_app_team_mode" ON "gpts_app" ("team_mode");
+CREATE INDEX "idx_gpts_app_user_code" ON "gpts_app" ("user_code");
 CREATE INDEX "idx_gpts_app_owner_workspace" ON "gpts_app" ("owner_workspace_id");
 CREATE INDEX "idx_gpts_app_published" ON "gpts_app" ("published");
-CREATE INDEX "idx_gpts_app_user_published" ON "gpts_app" ("user_code", "published");
-CREATE INDEX "idx_gpts_app_user_code" ON "gpts_app" ("user_code");
 
 -- Table: gpts_app_detail
 CREATE TABLE IF NOT EXISTS "gpts_app_detail" (
@@ -1119,9 +1119,9 @@ CREATE TABLE IF NOT EXISTS "user_recent_apps" (
   "last_accessed" TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_user_r_app_code" ON "user_recent_apps" ("app_code");
-CREATE INDEX "idx_last_accessed" ON "user_recent_apps" ("last_accessed");
 CREATE INDEX "idx_user_code" ON "user_recent_apps" ("user_code");
+CREATE INDEX "idx_last_accessed" ON "user_recent_apps" ("last_accessed");
+CREATE INDEX "idx_user_r_app_code" ON "user_recent_apps" ("app_code");
 
 -- Table: gpts_messages_system
 CREATE TABLE IF NOT EXISTS "gpts_messages_system" (
@@ -1142,10 +1142,10 @@ CREATE TABLE IF NOT EXISTS "gpts_messages_system" (
   "final_status" VARCHAR(20),
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_message_type" ON "gpts_messages_system" ("conv_id", "type", "phase");
-CREATE INDEX "idx_agent_message" ON "gpts_messages_system" ("conv_id", "agent_message_id");
 CREATE INDEX "idx_message_phase" ON "gpts_messages_system" ("conv_id", "phase");
 CREATE INDEX "idx_message" ON "gpts_messages_system" ("message_id");
+CREATE INDEX "idx_message_type" ON "gpts_messages_system" ("conv_id", "type", "phase");
+CREATE INDEX "idx_agent_message" ON "gpts_messages_system" ("conv_id", "agent_message_id");
 
 -- Table: gpts_tool_messages
 CREATE TABLE IF NOT EXISTS "gpts_tool_messages" (
@@ -1164,10 +1164,10 @@ CREATE TABLE IF NOT EXISTS "gpts_tool_messages" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_session_id" ON "gpts_tool_messages" ("session_id");
-CREATE INDEX "idx_tool_name_sub_name" ON "gpts_tool_messages" ("name", "sub_name");
-CREATE INDEX "idx_tool_id" ON "gpts_tool_messages" ("tool_id");
 CREATE INDEX "idx_gpts_tool_messages_name" ON "gpts_tool_messages" ("name");
+CREATE INDEX "idx_tool_name_sub_name" ON "gpts_tool_messages" ("name", "sub_name");
+CREATE INDEX "idx_session_id" ON "gpts_tool_messages" ("session_id");
+CREATE INDEX "idx_tool_id" ON "gpts_tool_messages" ("tool_id");
 
 -- Table: gyra_serve_mcp
 CREATE TABLE IF NOT EXISTS "gyra_serve_mcp" (
@@ -1214,11 +1214,11 @@ CREATE TABLE IF NOT EXISTS "sql_audit_log" (
   "created_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_sql_audit_session" ON "sql_audit_log" ("session_id");
-CREATE INDEX "idx_sql_audit_result" ON "sql_audit_log" ("check_result");
 CREATE INDEX "idx_sql_audit_user" ON "sql_audit_log" ("user_id");
 CREATE INDEX "idx_sql_audit_ds" ON "sql_audit_log" ("datasource_id");
 CREATE INDEX "idx_sql_audit_time" ON "sql_audit_log" ("created_at");
+CREATE INDEX "idx_sql_audit_session" ON "sql_audit_log" ("session_id");
+CREATE INDEX "idx_sql_audit_result" ON "sql_audit_log" ("check_result");
 
 -- Table: sensitive_column_config
 CREATE TABLE IF NOT EXISTS "sensitive_column_config" (
@@ -1258,8 +1258,8 @@ CREATE TABLE IF NOT EXISTS "chat_feed_back" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_gmt_create" ON "chat_feed_back" ("gmt_create");
 CREATE INDEX "idx_conv_uid" ON "chat_feed_back" ("conv_uid");
+CREATE INDEX "idx_gmt_create" ON "chat_feed_back" ("gmt_create");
 
 -- Table: gyra_serve_channel_config
 CREATE TABLE IF NOT EXISTS "gyra_serve_channel_config" (
@@ -1303,9 +1303,9 @@ CREATE TABLE IF NOT EXISTS "evaluate_manage" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_evaluate_code" UNIQUE ("evaluate_code")
 );
-CREATE INDEX "ix_evaluate_manage_user_name" ON "evaluate_manage" ("user_name");
 CREATE INDEX "ix_evaluate_manage_user_id" ON "evaluate_manage" ("user_id");
 CREATE INDEX "ix_evaluate_manage_sys_code" ON "evaluate_manage" ("sys_code");
+CREATE INDEX "ix_evaluate_manage_user_name" ON "evaluate_manage" ("user_name");
 
 -- Table: prompt_manage
 CREATE TABLE IF NOT EXISTS "prompt_manage" (
@@ -1330,11 +1330,11 @@ CREATE TABLE IF NOT EXISTS "prompt_manage" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_prompt_name_sys_code" UNIQUE ("prompt_name", "sys_code", "prompt_language", "model")
 );
+CREATE INDEX "ix_prompt_manage_sys_code" ON "prompt_manage" ("sys_code");
+CREATE INDEX "ix_prompt_manage_user_name" ON "prompt_manage" ("user_name");
 CREATE INDEX "ix_prompt_manage_prompt_language" ON "prompt_manage" ("prompt_language");
 CREATE INDEX "ix_prompt_manage_prompt_format" ON "prompt_manage" ("prompt_format");
 CREATE INDEX "ix_prompt_manage_user_code" ON "prompt_manage" ("user_code");
-CREATE INDEX "ix_prompt_manage_user_name" ON "prompt_manage" ("user_name");
-CREATE INDEX "ix_prompt_manage_sys_code" ON "prompt_manage" ("sys_code");
 
 -- Table: server_app_task
 CREATE TABLE IF NOT EXISTS "server_app_task" (
@@ -1365,15 +1365,15 @@ CREATE TABLE IF NOT EXISTS "server_app_task" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_task_workspace_id" ON "server_app_task" ("workspace_id");
-CREATE INDEX "ix_server_app_task_assignee_user_id" ON "server_app_task" ("assignee_user_id");
 CREATE INDEX "ix_server_app_task_playbook_id" ON "server_app_task" ("playbook_id");
+CREATE INDEX "ix_server_app_task_assignee_user_id" ON "server_app_task" ("assignee_user_id");
 CREATE INDEX "ix_server_app_task_created_by_user_id" ON "server_app_task" ("created_by_user_id");
 CREATE UNIQUE INDEX "ix_server_app_task_conv_session_id" ON "server_app_task" ("conv_session_id");
 CREATE INDEX "ix_server_app_task_parent_task_id" ON "server_app_task" ("parent_task_id");
 CREATE INDEX "ix_server_app_task_expert_app_code" ON "server_app_task" ("expert_app_code");
 CREATE INDEX "ix_server_app_task_contract_id" ON "server_app_task" ("contract_id");
 CREATE INDEX "ix_server_app_task_status" ON "server_app_task" ("status");
+CREATE INDEX "ix_server_app_task_workspace_id" ON "server_app_task" ("workspace_id");
 
 -- Table: server_app_task_relation
 CREATE TABLE IF NOT EXISTS "server_app_task_relation" (
@@ -1448,11 +1448,11 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_job" (
   "gmt_modified" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_gyra_serve_job_lease_until" ON "gyra_serve_job" ("lease_until");
-CREATE INDEX "ix_gyra_serve_job_status" ON "gyra_serve_job" ("status");
 CREATE INDEX "ix_gyra_serve_job_space_slug" ON "gyra_serve_job" ("space_slug");
+CREATE INDEX "ix_gyra_serve_job_status" ON "gyra_serve_job" ("status");
 CREATE INDEX "ix_gyra_serve_job_not_before" ON "gyra_serve_job" ("not_before");
 CREATE INDEX "ix_gyra_serve_job_job_type" ON "gyra_serve_job" ("job_type");
+CREATE INDEX "ix_gyra_serve_job_lease_until" ON "gyra_serve_job" ("lease_until");
 
 -- Table: server_app_delivery
 CREATE TABLE IF NOT EXISTS "server_app_delivery" (
@@ -1476,9 +1476,9 @@ CREATE TABLE IF NOT EXISTS "server_app_delivery" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_delivery_artifact_id" ON "server_app_delivery" ("artifact_id");
-CREATE INDEX "ix_server_app_delivery_workspace_id" ON "server_app_delivery" ("workspace_id");
 CREATE INDEX "ix_server_app_delivery_task_id" ON "server_app_delivery" ("task_id");
+CREATE INDEX "ix_server_app_delivery_workspace_id" ON "server_app_delivery" ("workspace_id");
+CREATE INDEX "ix_server_app_delivery_artifact_id" ON "server_app_delivery" ("artifact_id");
 
 -- Table: server_app_artifact
 CREATE TABLE IF NOT EXISTS "server_app_artifact" (
@@ -1574,8 +1574,8 @@ CREATE TABLE IF NOT EXISTS "server_app_app_card" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_server_app_app_card_workspace_id" ON "server_app_app_card" ("workspace_id");
 CREATE INDEX "ix_server_app_app_card_source_task_id" ON "server_app_app_card" ("source_task_id");
+CREATE INDEX "ix_server_app_app_card_workspace_id" ON "server_app_app_card" ("workspace_id");
 
 -- Table: server_app_app_card_version
 CREATE TABLE IF NOT EXISTS "server_app_app_card_version" (
@@ -1607,10 +1607,10 @@ CREATE TABLE IF NOT EXISTS "app_card_record" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_app_card_record_app_card_id" ON "app_card_record" ("app_card_id");
-CREATE UNIQUE INDEX "uk_app_card_record_dedupe" ON "app_card_record" ("workspace_id", "app_card_id", "collection", "dedupe_key");
 CREATE INDEX "ix_app_card_record_workspace_id" ON "app_card_record" ("workspace_id");
 CREATE UNIQUE INDEX "uk_app_card_record_rid" ON "app_card_record" ("workspace_id", "app_card_id", "collection", "record_id");
+CREATE INDEX "ix_app_card_record_app_card_id" ON "app_card_record" ("app_card_id");
+CREATE UNIQUE INDEX "uk_app_card_record_dedupe" ON "app_card_record" ("workspace_id", "app_card_id", "collection", "dedupe_key");
 
 -- Table: app_card_kv
 CREATE TABLE IF NOT EXISTS "app_card_kv" (
@@ -1694,8 +1694,8 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_semantic_object" (
   "gmt_modify" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id", "version")
 );
-CREATE INDEX "idx_ecp_obj_type_status" ON "gyra_serve_ecp_semantic_object" ("obj_type", "status");
 CREATE INDEX "idx_ecp_obj_ws_status" ON "gyra_serve_ecp_semantic_object" ("workspace_id", "status");
+CREATE INDEX "idx_ecp_obj_type_status" ON "gyra_serve_ecp_semantic_object" ("obj_type", "status");
 
 -- Table: gyra_serve_ecp_resolution_cache
 CREATE TABLE IF NOT EXISTS "gyra_serve_ecp_resolution_cache" (
@@ -1829,11 +1829,11 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_flow" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_uid" UNIQUE ("uid")
 );
-CREATE INDEX "ix_gyra_serve_flow_sys_code" ON "gyra_serve_flow" ("sys_code");
 CREATE INDEX "ix_gyra_serve_flow_dag_id" ON "gyra_serve_flow" ("dag_id");
 CREATE INDEX "ix_gyra_serve_flow_name" ON "gyra_serve_flow" ("name");
 CREATE INDEX "ix_gyra_serve_flow_user_name" ON "gyra_serve_flow" ("user_name");
 CREATE INDEX "ix_gyra_serve_flow_uid" ON "gyra_serve_flow" ("uid");
+CREATE INDEX "ix_gyra_serve_flow_sys_code" ON "gyra_serve_flow" ("sys_code");
 
 -- Table: gyra_serve_variables
 CREATE TABLE IF NOT EXISTS "gyra_serve_variables" (
@@ -1856,10 +1856,10 @@ CREATE TABLE IF NOT EXISTS "gyra_serve_variables" (
   "gmt_modified" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "ix_gyra_serve_variables_sys_code" ON "gyra_serve_variables" ("sys_code");
 CREATE INDEX "ix_gyra_serve_variables_user_name" ON "gyra_serve_variables" ("user_name");
-CREATE INDEX "ix_gyra_serve_variables_key_info" ON "gyra_serve_variables" ("key_info");
 CREATE INDEX "ix_gyra_serve_variables_name" ON "gyra_serve_variables" ("name");
+CREATE INDEX "ix_gyra_serve_variables_sys_code" ON "gyra_serve_variables" ("sys_code");
+CREATE INDEX "ix_gyra_serve_variables_key_info" ON "gyra_serve_variables" ("key_info");
 
 -- Table: user
 CREATE TABLE IF NOT EXISTS "user" (
@@ -1952,8 +1952,8 @@ CREATE TABLE IF NOT EXISTS "user_role" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_user_role" UNIQUE ("user_id", "role_id", "scope_id")
 );
-CREATE INDEX "ix_user_role_user_id" ON "user_role" ("user_id");
 CREATE INDEX "ix_user_role_role_id" ON "user_role" ("role_id");
+CREATE INDEX "ix_user_role_user_id" ON "user_role" ("user_id");
 
 -- Table: group_role
 CREATE TABLE IF NOT EXISTS "group_role" (
@@ -1964,8 +1964,8 @@ CREATE TABLE IF NOT EXISTS "group_role" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_group_role" UNIQUE ("group_id", "role_id")
 );
-CREATE INDEX "ix_group_role_group_id" ON "group_role" ("group_id");
 CREATE INDEX "ix_group_role_role_id" ON "group_role" ("role_id");
+CREATE INDEX "ix_group_role_group_id" ON "group_role" ("group_id");
 
 -- Table: permission_definition
 CREATE TABLE IF NOT EXISTS "permission_definition" (
@@ -2053,8 +2053,8 @@ CREATE TABLE IF NOT EXISTS "user_group_member" (
   PRIMARY KEY ("id"),
   CONSTRAINT "uk_user_group_member" UNIQUE ("group_id", "user_id")
 );
-CREATE INDEX "ix_user_group_member_group_id" ON "user_group_member" ("group_id");
 CREATE INDEX "ix_user_group_member_user_id" ON "user_group_member" ("user_id");
+CREATE INDEX "ix_user_group_member_group_id" ON "user_group_member" ("group_id");
 
 -- Table: oauth2_config
 CREATE TABLE IF NOT EXISTS "oauth2_config" (
